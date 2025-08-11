@@ -1,0 +1,47 @@
+{
+  "PolicyName": "ClaudeCodeBaseRestrictions",
+  "Description": "Base security restrictions for Claude Code enterprise deployments",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyDangerousCommands",
+      "Effect": "Deny",
+      "NotAction": [
+        "bedrock:*",
+        "cognito-identity:*",
+        "cloudwatch:PutMetricData",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ClaudeCodeManaged": "true"
+        }
+      }
+    },
+    {
+      "Sid": "AllowSafeToolExecution",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${AllowedBedrockRegions}",
+          "bedrock:guardrailApplied": "true"
+        },
+        "StringLike": {
+          "bedrock:modelId": [
+            "anthropic.claude-3-*",
+            "anthropic.claude-3-5-*"
+          ]
+        }
+      }
+    }
+  ]
+}

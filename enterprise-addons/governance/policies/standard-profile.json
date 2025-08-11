@@ -1,0 +1,86 @@
+{
+  "ProfileName": "standard",
+  "Description": "Standard profile - balanced security and functionality",
+  "PolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "BedrockFullAccess",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListFoundationModels",
+          "bedrock:GetFoundationModel",
+          "bedrock:GetFoundationModelAvailability"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "${AllowedBedrockRegions}"
+          },
+          "StringLike": {
+            "bedrock:modelId": [
+              "anthropic.claude-*",
+              "amazon.titan-*"
+            ]
+          }
+        }
+      },
+      {
+        "Sid": "AllowEnhancedMonitoring",
+        "Effect": "Allow",
+        "Action": [
+          "cloudwatch:PutMetricData",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "cloudwatch:namespace": [
+              "ClaudeCode/Enterprise",
+              "ClaudeCode/Standard"
+            ]
+          }
+        }
+      },
+      {
+        "Sid": "DenyHighRiskOperations",
+        "Effect": "Deny",
+        "Action": [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "ec2:TerminateInstances",
+          "rds:DeleteDBInstance",
+          "s3:DeleteBucket"
+        ],
+        "Resource": "*"
+      }
+    ]
+  },
+  "EnvironmentVariables": {
+    "CLAUDE_DEFAULT_MODE": "interactive",
+    "CLAUDE_ALLOW_FILE_WRITE": "true",
+    "CLAUDE_ALLOW_SHELL_EXEC": "true",
+    "CLAUDE_NETWORK_ACCESS": "allow",
+    "CLAUDE_MAX_SESSION_DURATION": "28800",
+    "CLAUDE_CACHE_ENABLED": "true"
+  },
+  "ToolRestrictions": {
+    "allowed_tools": [
+      "read_file",
+      "write_file",
+      "run_command",
+      "network_request",
+      "git_operations",
+      "package_management"
+    ],
+    "denied_tools": [
+      "system_admin",
+      "infrastructure_management"
+    ]
+  }
+}

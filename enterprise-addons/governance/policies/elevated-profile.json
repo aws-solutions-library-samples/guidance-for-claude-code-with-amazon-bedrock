@@ -1,0 +1,95 @@
+{
+  "ProfileName": "elevated",
+  "Description": "Elevated profile - for senior engineers and platform teams",
+  "PolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "BedrockFullAccess",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:*"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "${AllowedBedrockRegions}"
+          }
+        }
+      },
+      {
+        "Sid": "AllowAdvancedMonitoring",
+        "Effect": "Allow",
+        "Action": [
+          "cloudwatch:*",
+          "logs:*",
+          "xray:*"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringLike": {
+            "aws:RequestedRegion": "${AllowedBedrockRegions}"
+          }
+        }
+      },
+      {
+        "Sid": "AllowLimitedInfrastructureAccess",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket",
+          "lambda:InvokeFunction",
+          "lambda:GetFunction",
+          "ec2:DescribeInstances",
+          "ec2:DescribeImages",
+          "ecs:DescribeTasks",
+          "ecs:DescribeServices"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "aws:PrincipalTag/Team": "${UserTeam}",
+            "aws:RequestedRegion": "${AllowedBedrockRegions}"
+          }
+        }
+      },
+      {
+        "Sid": "StillDenyDestructiveOperations",
+        "Effect": "Deny",
+        "Action": [
+          "iam:DeleteRole",
+          "ec2:TerminateInstances",
+          "rds:DeleteDBInstance",
+          "s3:DeleteBucket",
+          "lambda:DeleteFunction"
+        ],
+        "Resource": "*"
+      }
+    ]
+  },
+  "EnvironmentVariables": {
+    "CLAUDE_DEFAULT_MODE": "interactive",
+    "CLAUDE_ALLOW_FILE_WRITE": "true",
+    "CLAUDE_ALLOW_SHELL_EXEC": "true", 
+    "CLAUDE_NETWORK_ACCESS": "allow",
+    "CLAUDE_MAX_SESSION_DURATION": "43200",
+    "CLAUDE_CACHE_ENABLED": "true",
+    "CLAUDE_ADVANCED_FEATURES": "true"
+  },
+  "ToolRestrictions": {
+    "allowed_tools": [
+      "read_file",
+      "write_file",
+      "run_command",
+      "network_request",
+      "git_operations",
+      "package_management",
+      "infrastructure_query",
+      "advanced_debugging"
+    ],
+    "denied_tools": [
+      "destructive_operations"
+    ]
+  }
+}

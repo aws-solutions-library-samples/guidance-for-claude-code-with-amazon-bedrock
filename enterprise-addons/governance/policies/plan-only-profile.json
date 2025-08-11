@@ -1,0 +1,59 @@
+{
+  "ProfileName": "plan-only",
+  "Description": "Most restrictive profile - Claude Code operates in plan-mode only",
+  "PolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "BedrockReadOnlyAccess",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "${AllowedBedrockRegions}",
+            "aws:TokenIssueTime": "${TokenIssueTime}"
+          },
+          "StringLike": {
+            "bedrock:modelId": "anthropic.claude-3-*"
+          },
+          "NumericLessThan": {
+            "bedrock:maxTokens": "4000"
+          }
+        }
+      },
+      {
+        "Sid": "DenyAllFileOperations",
+        "Effect": "Deny",
+        "NotAction": [
+          "bedrock:*",
+          "cognito-identity:*",
+          "cloudwatch:PutMetricData"
+        ],
+        "Resource": "*"
+      },
+      {
+        "Sid": "AllowMonitoringMetrics",
+        "Effect": "Allow",
+        "Action": [
+          "cloudwatch:PutMetricData"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "cloudwatch:namespace": "ClaudeCode/Enterprise"
+          }
+        }
+      }
+    ]
+  },
+  "EnvironmentVariables": {
+    "CLAUDE_DEFAULT_MODE": "plan",
+    "CLAUDE_ALLOW_FILE_WRITE": "false",
+    "CLAUDE_ALLOW_SHELL_EXEC": "false",
+    "CLAUDE_NETWORK_ACCESS": "deny"
+  }
+}

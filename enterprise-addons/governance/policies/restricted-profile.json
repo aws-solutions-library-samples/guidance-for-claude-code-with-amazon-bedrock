@@ -1,0 +1,83 @@
+{
+  "ProfileName": "restricted",
+  "Description": "Restricted profile - allows safe development tools only",
+  "PolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "BedrockAccess",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListFoundationModels"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "${AllowedBedrockRegions}"
+          },
+          "StringLike": {
+            "bedrock:modelId": [
+              "anthropic.claude-3-*",
+              "anthropic.claude-3-5-*"
+            ]
+          },
+          "NumericLessThan": {
+            "bedrock:maxTokens": "8000"
+          }
+        }
+      },
+      {
+        "Sid": "AllowSafeDevelopmentTools",
+        "Effect": "Allow",
+        "Action": [
+          "cloudwatch:PutMetricData"
+        ],
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "cloudwatch:namespace": [
+              "ClaudeCode/Enterprise",
+              "ClaudeCode/Development"
+            ]
+          }
+        }
+      },
+      {
+        "Sid": "DenyDangerousOperations",
+        "Effect": "Deny",
+        "Action": [
+          "iam:*",
+          "sts:*",
+          "ec2:*",
+          "lambda:*",
+          "s3:Delete*",
+          "s3:Put*"
+        ],
+        "Resource": "*"
+      }
+    ]
+  },
+  "EnvironmentVariables": {
+    "CLAUDE_DEFAULT_MODE": "interactive",
+    "CLAUDE_ALLOW_FILE_WRITE": "true",
+    "CLAUDE_ALLOW_SHELL_EXEC": "restricted",
+    "CLAUDE_NETWORK_ACCESS": "restricted",
+    "CLAUDE_ALLOWED_COMMANDS": "pytest,jest,npm,pip,ruff,eslint,tsc,mypy,black,git",
+    "CLAUDE_DENIED_COMMANDS": "curl,wget,ssh,scp,docker,kubectl"
+  },
+  "ToolRestrictions": {
+    "allowed_tools": [
+      "read_file",
+      "write_file", 
+      "run_command_restricted",
+      "git_operations"
+    ],
+    "denied_tools": [
+      "network_request",
+      "system_command",
+      "docker_operations"
+    ]
+  }
+}

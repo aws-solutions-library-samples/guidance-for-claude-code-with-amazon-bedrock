@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Enterprise Policy Enhancements for Claude Code with Amazon Bedrock'
+
+Parameters:
+  ExistingIdentityPoolId:
+    Type: String
+    Description: Existing Cognito Identity Pool ID from base deployment
+    
+  ExistingBedrockRoleArn:
+    Type: String
+    Description: Existing Bedrock access role ARN from base deployment
+    
+  EnterpriseSecurityProfile:
+    Type: String
+    Default: 'standard'
+    AllowedValues:
+      - 'plan-only'
+      - 'restricted' 
+      - 'standard'
+      - 'elevated'
+    Description: Enterprise security profile to apply
+    
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-west-2'
+    Description: Comma-delimited list of allowed Bedrock regions
+    
+  EnableCostTracking:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable detailed cost tracking and budgets
+    
+  EnableUserAttributeMapping:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false'] 
+    Description: Enable user/team attribute mapping for chargeback
+
+Conditions:
+  IsPlanOnlyProfile: !Equals [!Ref EnterpriseSecurityProfile, 'plan-only']
+  IsRestrictedProfile: !Equals [!Ref EnterpriseSecurityProfile, 'restricted']
+  IsStandardProfile: !Equals [!Ref EnterpriseSecurityProfile, 'standard']
+  IsElevatedProfile: !Equals [!Ref EnterpriseSecurityProfile, 'elevated']
+  CostTrackingEnabled: !Equals [!Ref EnableCostTracking, 'true']
+  UserAttributeMappingEnabled: !Equals [!Ref EnableUserAttributeMapping, 'true']
+
+Resources:
+  # Enhanced Policy for Plan-Only Profile
+  PlanOnlyEnhancedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsPlanOnlyProfile
+    Properties:
+      Description: 'Enhanced policy for plan-only enterprise profile'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BedrockPlanOnlyAccess
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+              StringLike:
+                'bedrock:modelId': 'anthropic.claude-3-*'
+              NumericLessThan:
+                'bedrock:maxTokens': 4000
+          - Sid: DenyAllNonBedrockOperations
+            Effect: Deny
+            NotAction:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:ListFoundationModels'
+              - 'cognito-identity:*'
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+          - !If
+            - CostTrackingEnabled
+            - Sid: AllowCostTrackingMetrics
+              Effect: Allow
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace': 'ClaudeCode/Enterprise/PlanOnly'
+            - !Ref 'AWS::NoValue'
+
+  # Enhanced Policy for Restricted Profile  
+  RestrictedEnhancedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsRestrictedProfile
+    Properties:
+      Description: 'Enhanced policy for restricted enterprise profile'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BedrockRestrictedAccess
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:ListFoundationModels'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+              StringLike:
+                'bedrock:modelId': 
+                  - 'anthropic.claude-3-*'
+                  - 'anthropic.claude-3-5-*'
+              NumericLessThan:
+                'bedrock:maxTokens': 8000
+          - Sid: AllowSafeToolMetrics
+            Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'cloudwatch:namespace': 
+                  - 'ClaudeCode/Enterprise/Restricted'
+                  - 'ClaudeCode/Development'
+          - Sid: DenyDangerousOperations
+            Effect: Deny
+            Action:
+              - 'iam:*'
+              - 'sts:AssumeRole'
+              - 'ec2:*'
+              - 'lambda:*'
+              - 's3:Delete*'
+              - 's3:Put*'
+            Resource: '*'
+
+  # Enhanced Policy for Standard Profile
+  StandardEnhancedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsStandardProfile
+    Properties:
+      Description: 'Enhanced policy for standard enterprise profile'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BedrockStandardAccess
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+              StringLike:
+                'bedrock:modelId':
+                  - 'anthropic.claude-*'
+                  - 'amazon.titan-*'
+          - Sid: AllowEnhancedMonitoring
+            Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'cloudwatch:namespace':
+                  - 'ClaudeCode/Enterprise/Standard'
+                  - 'ClaudeCode/Standard'
+          - Sid: DenyHighRiskOperations
+            Effect: Deny
+            Action:
+              - 'iam:CreateRole'
+              - 'iam:DeleteRole'
+              - 'iam:AttachRolePolicy'
+              - 'iam:DetachRolePolicy'
+              - 'ec2:TerminateInstances'
+              - 'rds:DeleteDBInstance'
+              - 's3:DeleteBucket'
+            Resource: '*'
+
+  # Enhanced Policy for Elevated Profile
+  ElevatedEnhancedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsElevatedProfile
+    Properties:
+      Description: 'Enhanced policy for elevated enterprise profile'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BedrockFullAccess
+            Effect: Allow
+            Action:
+              - 'bedrock:*'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowAdvancedMonitoring
+            Effect: Allow
+            Action:
+              - 'cloudwatch:*'
+              - 'logs:*'
+              - 'xray:*'
+            Resource: '*'
+            Condition:
+              StringLike:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowLimitedInfraAccess
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:ListBucket'
+              - 'lambda:InvokeFunction'
+              - 'lambda:GetFunction'
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeImages'
+              - 'ecs:DescribeTasks'
+              - 'ecs:DescribeServices'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: StillDenyDestructive
+            Effect: Deny
+            Action:
+              - 'iam:DeleteRole'
+              - 'ec2:TerminateInstances'  
+              - 'rds:DeleteDBInstance'
+              - 's3:DeleteBucket'
+              - 'lambda:DeleteFunction'
+            Resource: '*'
+
+  # Cost Tracking Resources
+  CostTrackingBudget:
+    Type: AWS::Budgets::Budget
+    Condition: CostTrackingEnabled
+    Properties:
+      Budget:
+        BudgetName: !Sub 'ClaudeCode-Enterprise-${EnterpriseSecurityProfile}'
+        BudgetLimit:
+          Amount: 1000
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - Amazon Bedrock
+          TagKey:
+            - ClaudeCodeManaged
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: admin@company.com
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 100
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: admin@company.com
+
+  # CloudWatch Dashboard for Enterprise Monitoring
+  EnterpriseDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'ClaudeCode-Enterprise-${EnterpriseSecurityProfile}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  [ "ClaudeCode/Enterprise/${EnterpriseSecurityProfile}", "Requests", { "stat": "Sum" } ],
+                  [ ".", "TokensConsumed", { "stat": "Sum" } ],
+                  [ ".", "CostUSD", { "stat": "Sum" } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Claude Code Usage - ${EnterpriseSecurityProfile} Profile"
+              }
+            },
+            {
+              "type": "metric", 
+              "properties": {
+                "metrics": [
+                  [ "ClaudeCode/Enterprise/${EnterpriseSecurityProfile}", "ActiveUsers", { "stat": "Maximum" } ]
+                ],
+                "period": 3600,
+                "stat": "Maximum",
+                "region": "${AWS::Region}",
+                "title": "Daily Active Users"
+              }
+            },
+            {
+              "type": "log",
+              "properties": {
+                "query": "SOURCE '/aws/bedrock/cognito-access' | fields @timestamp, userIdentity.principalId, eventName, awsRegion\n| filter eventName like /InvokeModel/\n| stats count() by userIdentity.principalId\n| sort count desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "Top Users by Bedrock Calls"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  EnhancedPolicyArn:
+    Description: ARN of the enhanced enterprise policy
+    Value: !If
+      - IsPlanOnlyProfile
+      - !Ref PlanOnlyEnhancedPolicy
+      - !If
+        - IsRestrictedProfile
+        - !Ref RestrictedEnhancedPolicy
+        - !If
+          - IsStandardProfile
+          - !Ref StandardEnhancedPolicy
+          - !Ref ElevatedEnhancedPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-EnhancedPolicyArn'
+      
+  SecurityProfile:
+    Description: Applied enterprise security profile
+    Value: !Ref EnterpriseSecurityProfile
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityProfile'
+      
+  DashboardURL:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${EnterpriseDashboard}'
+    
+  BudgetName:
+    Description: Cost tracking budget name
+    Condition: CostTrackingEnabled
+    Value: !Ref CostTrackingBudget

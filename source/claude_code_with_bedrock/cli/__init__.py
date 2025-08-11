@@ -14,6 +14,7 @@ from .commands.test import TestCommand
 from .commands.package import PackageCommand
 from .commands.destroy import DestroyCommand
 from .commands.cleanup import CleanupCommand
+from .commands.enterprise import EnterpriseCommand
 # TokenCommand temporarily disabled - not implemented
 
 
@@ -32,6 +33,7 @@ def create_application() -> Application:
     application.add(PackageCommand())
     application.add(DestroyCommand())
     application.add(CleanupCommand())
+    application.add(EnterpriseCommand())
     # application.add(TokenCommand())  # Temporarily disabled
     
     return application
