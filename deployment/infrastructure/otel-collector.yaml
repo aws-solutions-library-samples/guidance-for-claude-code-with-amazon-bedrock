@@ -395,6 +395,10 @@ Resources:
               - dimensions: [[session.id, user.id, OTelLib]]
                 metric_name_selectors: ["claude_code.active_time.*"]
 
+              # Aggregated active time for dashboard widget
+              - dimensions: [[OTelLib]]
+                metric_name_selectors: ["claude_code.active_time.*"]
+
               # Cost tracking dimensions
               - dimensions: [[cost_center, aws.account_id, OTelLib]]
                 metric_name_selectors: ["claude_code.cost.usage"]
@@ -414,6 +418,37 @@ Resources:
               # Minimal dimension for overall metrics
               - dimensions: [[OTelLib]]
                 metric_name_selectors: [".*"]
+
+              # Decision tracking for code acceptance
+              - dimensions: [[decision, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+
+              # Type dimensions for token and lines_of_code metrics
+              - dimensions: [[type, OTelLib]]
+                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+
+              # Tool usage tracking
+              - dimensions: [[tool_name, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+
+              # Programming language tracking
+              - dimensions: [[language, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+
+              # User email for attribution
+              - dimensions: [[user.email, OTelLib]]
+                metric_name_selectors: [".*"]
+
+              # Model tracking expanded
+              - dimensions: [[model, OTelLib]]
+                metric_name_selectors: [".*"]
+
+              # Combined dimensions for detailed analysis
+              - dimensions: [[decision, tool_name, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+
+              - dimensions: [[type, model, OTelLib]]
+                metric_name_selectors: ["claude_code.token.usage"]
 
         service:
           extensions: [health_check]

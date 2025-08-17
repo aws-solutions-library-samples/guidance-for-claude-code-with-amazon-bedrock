@@ -1,27 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: '( SO9610 )  Comprehensive monitoring dashboard for Claude Code with user token tracking and cost analysis'
+Description: '( SO9610 )  Comprehensive monitoring dashboard for Claude Code with token usage tracking and productivity analytics'
 
 Parameters:
   DashboardName:
     Type: String
     Default: ClaudeCodeMonitoring
     Description: Name for the CloudWatch dashboard
-  
+
   MetricNamespace:
     Type: String
     Default: ClaudeCode
     Description: CloudWatch namespace for Claude Code metrics
-  
+
   BedrockRegion:
     Type: String
     Default: us-east-1
     Description: Primary region where Bedrock is accessed
-  
-  TokenCostPerMillion:
-    Type: Number
-    Default: 15.00
-    Description: Cost per million tokens (adjust based on your Bedrock pricing)
-  
+
   AlertEmail:
     Type: String
     Default: ''
@@ -57,91 +52,55 @@ Resources:
               "width": 24,
               "height": 3,
               "properties": {
-                "markdown": "# Claude Code Monitoring Dashboard\n**Organization-wide token usage, cost tracking, and user analytics**\n\nLast Updated: ${AWS::StackName} | Region: ${AWS::Region}",
+                "markdown": "# Claude Code Monitoring Dashboard\n**Organization-wide token usage, productivity metrics, and model analytics**\n\nLast Updated: ${AWS::StackName} | Region: ${AWS::Region}",
                 "background": "transparent"
               }
             },
             {
-              "type": "metric",
+              "type": "log",
               "x": 0,
               "y": 3,
               "width": 12,
               "height": 6,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 300, "label": "Total Token Usage" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by bin(5m)",
                 "region": "${AWS::Region}",
                 "title": "Total Token Usage (5-min intervals)",
-                "period": 300,
-                "stat": "Sum",
-                "yAxis": {
-                  "left": {
-                    "label": "Tokens",
-                    "showUnits": false
-                  }
-                }
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "timeSeries",
+                "stacked": false
               }
             },
             {
-              "type": "metric",
+              "type": "log",
               "x": 12,
               "y": 3,
               "width": 12,
               "height": 6,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 3600, "id": "m1", "visible": false } ],
-                  [ { "expression": "m1 * ${TokenCostPerMillion} / 1000000", "id": "e1", "label": "Hourly Cost ($)" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /claude-opus-4-1/, tokens, 0) as opus_4_1_tokens, if(model like /claude-opus-4-0/, tokens, 0) as opus_4_tokens, if(model like /claude-sonnet-4/, tokens, 0) as sonnet_4_tokens, if(model like /claude-3.*7.*sonnet/, tokens, 0) as sonnet_3_7_tokens, if(model like /claude-3.*5.*haiku/, tokens, 0) as haiku_3_5_tokens | stats sum(opus_4_1_tokens) as Opus_4_1, sum(opus_4_tokens) as Opus_4, sum(sonnet_4_tokens) as Sonnet_4, sum(sonnet_3_7_tokens) as Sonnet_3_7, sum(haiku_3_5_tokens) as Haiku_3_5 by time",
                 "region": "${AWS::Region}",
-                "title": "Estimated Hourly Cost",
-                "period": 3600,
-                "stat": "Sum",
-                "yAxis": {
-                  "left": {
-                    "label": "Cost (USD)",
-                    "showUnits": false
-                  }
-                },
-                "annotations": {
-                  "horizontal": [
-                    {
-                      "label": "Budget Threshold",
-                      "value": 100
-                    }
-                  ]
-                }
+                "title": "Token Usage by Model (5-min intervals)",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "timeSeries",
+                "stacked": false
               }
             },
             {
-              "type": "metric",
+              "type": "log",
               "x": 0,
               "y": 9,
               "width": 24,
               "height": 8,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "input", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Input" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "output", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Output" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheCreation", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Cache Creation" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheRead", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Cache Read" } ]
-                ],
-                "view": "bar",
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"type\":\"(?<type>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by type",
                 "region": "${AWS::Region}",
-                "title": "Token Usage by Type (Last 24 Hours)",
-                "period": 86400,
-                "stat": "Sum",
-                "yAxis": {
-                  "left": {
-                    "label": "Tokens",
-                    "showUnits": false
-                  }
-                }
+                "title": "Token Usage by Type",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "pie"
               }
             },
             {
@@ -168,95 +127,50 @@ Resources:
               }
             },
             {
-              "type": "metric",
+              "type": "log",
               "x": 12,
               "y": 17,
               "width": 12,
               "height": 6,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Total Token Usage" } ]
-                ],
-                "view": "singleValue",
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens",
                 "region": "${AWS::Region}",
-                "title": "Total Tokens Used (Last 24 Hours)",
-                "period": 86400,
-                "stat": "Sum"
+                "title": "Total Tokens Used",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "singleValue"
               }
             },
             {
-              "type": "metric",
+              "type": "log",
               "x": 0,
               "y": 23,
               "width": 24,
               "height": 8,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "input", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 300, "label": "Input" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "output", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 300, "label": "Output" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheCreation", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 300, "label": "Cache Creation" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheRead", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 300, "label": "Cache Read" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": true,
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"type\":\"(?<type>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as value by bin(5m) as time, type",
                 "region": "${AWS::Region}",
                 "title": "Token Usage by Type Over Time",
-                "period": 300,
-                "stat": "Sum",
-                "yAxis": {
-                  "left": {
-                    "label": "Tokens",
-                    "showUnits": false
-                  }
-                }
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "timeSeries",
+                "stacked": true
               }
             },
             {
-              "type": "metric",
-              "x": 0,
-              "y": 31,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "input", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 2592000, "id": "m1" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "output", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 2592000, "id": "m2" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheCreation", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 2592000, "id": "m3" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "cacheRead", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 2592000, "id": "m4" } ]
-                ],
-                "view": "pie",
-                "region": "${AWS::Region}",
-                "title": "Token Distribution by Operation Type (30 Days)",
-                "period": 2592000,
-                "stat": "Sum",
-                "legend": {
-                  "position": "bottom"
-                }
-              }
-            },
-            {
-              "type": "metric",
+              "type": "log",
               "x": 12,
               "y": 31,
               "width": 12,
               "height": 6,
               "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "input", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 3600, "label": "Input" } ],
-                  [ "${MetricNamespace}", "claude_code.token.usage", "type", "output", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 3600, "label": "Output" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": true,
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ and @message like /type/ | parse @message /\"type\":\"(?<type>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | filter type in ['input', 'output'] | stats sum(tokens) as total_tokens by bin(1h), type",
                 "region": "${AWS::Region}",
                 "title": "Input vs Output Tokens (Hourly)",
-                "period": 3600,
-                "stat": "Sum",
-                "yAxis": {
-                  "left": {
-                    "label": "Tokens",
-                    "showUnits": false
-                  }
-                }
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "timeSeries",
+                "stacked": true
               }
             },
             {
@@ -301,54 +215,197 @@ Resources:
               "type": "metric",
               "x": 0,
               "y": 49,
-              "width": 8,
+              "width": 6,
               "height": 4,
               "properties": {
                 "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "id": "m1" } ],
-                  [ { "expression": "m1 * ${TokenCostPerMillion} / 1000000", "id": "e1", "label": "Today's Cost" } ]
+                  [ "${MetricNamespace}", "claude_code.lines_of_code.count", "type", "added", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "label": "Lines Added" } ]
                 ],
                 "view": "singleValue",
                 "region": "${AWS::Region}",
-                "title": "Today's Total Cost",
-                "period": 86400,
+                "title": "Lines of Code Added",
+                "setPeriodToTimeRange": true,
                 "stat": "Sum"
               }
             },
             {
               "type": "metric",
-              "x": 8,
+              "x": 6,
               "y": 49,
-              "width": 8,
+              "width": 6,
               "height": 4,
               "properties": {
                 "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 604800, "id": "m1" } ],
-                  [ { "expression": "m1 * ${TokenCostPerMillion} / 1000000", "id": "e1", "label": "Week's Cost" } ]
+                  [ "${MetricNamespace}", "claude_code.commit.count", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "label": "Commits" } ]
                 ],
                 "view": "singleValue",
                 "region": "${AWS::Region}",
-                "title": "This Week's Cost",
-                "period": 604800,
+                "title": "Commits",
+                "setPeriodToTimeRange": true,
                 "stat": "Sum"
               }
             },
             {
               "type": "metric",
-              "x": 16,
+              "x": 12,
               "y": 49,
-              "width": 8,
+              "width": 6,
               "height": 4,
               "properties": {
                 "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 2592000, "id": "m1" } ],
-                  [ { "expression": "m1 * ${TokenCostPerMillion} / 1000000", "id": "e1", "label": "Month's Cost" } ]
+                  [ "${MetricNamespace}", "claude_code.code_edit_tool.decision", "decision", "accept", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "id": "m1" } ],
+                  [ "...", "reject", { "stat": "Sum", "id": "m2" } ],
+                  [ { "expression": "m1/(m1+m2)*100", "id": "e1", "label": "Acceptance Rate %" } ]
                 ],
                 "view": "singleValue",
                 "region": "${AWS::Region}",
-                "title": "This Month's Cost",
-                "period": 2592000,
-                "stat": "Sum"
+                "title": "Code Edit Acceptance Rate",
+                "setPeriodToTimeRange": true
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18,
+              "y": 49,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "claude_code.active_time.total", { "stat": "Sum", "id": "m1", "label": "Active Time (seconds)" } ],
+                  [ { "expression": "m1/3600", "id": "e1", "label": "Active Hours" } ]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Active Development Time",
+                "setPeriodToTimeRange": true
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 53,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /type/ and (@message like /cacheRead/ or @message like /cacheCreation/) | parse @message /\"type\":\"(?<cache_type>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) by bin(1m) as time, cache_type",
+                "region": "${AWS::Region}",
+                "title": "Cache Efficiency Over Time",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 53,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "claude_code.code_edit_tool.decision", "tool_name", "Edit", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 3600, "label": "Edit" } ],
+                  [ "...", "MultiEdit", { "stat": "Sum", "period": 3600, "label": "MultiEdit" } ],
+                  [ "...", "Write", { "stat": "Sum", "period": 3600, "label": "Write" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${AWS::Region}",
+                "title": "Tool Usage Frequency (Hourly)",
+                "period": 3600,
+                "yAxis": {
+                  "left": {
+                    "label": "Count",
+                    "showUnits": false
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 59,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /code_edit_tool.decision/ and @message like /language/ | parse @message /\"language\":\"(?<lang>[^\"]*)\"/ | parse @message /\"claude_code.code_edit_tool.decision\":(?<count>[0-9.]+)/ | stats sum(count) as total by lang | sort total desc",
+                "region": "${AWS::Region}",
+                "title": "Code Generation by Programming Language",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "bar"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 65,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Bedrock", "InvocationLatency", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Average", "period": 3600, "label": "Opus 4.1" } ],
+                  [ "AWS/Bedrock", "InvocationLatency", "ModelId", "us.anthropic.claude-sonnet-4-20250514-v1:0", { "stat": "Average", "period": 3600, "label": "Sonnet 4" } ],
+                  [ "AWS/Bedrock", "InvocationLatency", "ModelId", "us.anthropic.claude-3-7-sonnet-20250219-v1:0", { "stat": "Average", "period": 3600, "label": "Claude 3.7" } ],
+                  [ "AWS/Bedrock", "InvocationLatency", "ModelId", "us.anthropic.claude-3-5-haiku-20241022-v1:0", { "stat": "Average", "period": 3600, "label": "Haiku 3.5" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${BedrockRegion}",
+                "title": "Model Response Latency (ms)",
+                "period": 3600,
+                "yAxis": {
+                  "left": {
+                    "label": "Latency (ms)",
+                    "showUnits": false
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 65,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "period": 3600, "id": "m2", "label": "Client Errors", "color": "#d62728" } ],
+                  [ ".", "InvocationServerErrors", { "stat": "Sum", "period": 3600, "id": "m3", "label": "Server Errors", "color": "#ff7f0e" } ],
+                  [ ".", "InvocationThrottles", { "stat": "Sum", "period": 3600, "id": "m4", "label": "Throttles", "color": "#ffbb78" } ],
+                  [ ".", "Invocations", { "stat": "Sum", "period": 3600, "id": "m1", "visible": false } ],
+                  [ { "expression": "(m2+m3+m4)/m1*100", "id": "e1", "label": "Error Rate %", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${BedrockRegion}",
+                "title": "API Errors and Throttles",
+                "period": 3600,
+                "yAxis": {
+                  "left": {
+                    "label": "Error Count",
+                    "showUnits": false
+                  },
+                  "right": {
+                    "label": "Error Rate %",
+                    "showUnits": false
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 71,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"user.email\":\"(?<user>[^\"]*)\"/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by user | sort total_tokens desc | limit 10",
+                "region": "${AWS::Region}",
+                "title": "Top 10 Users by Token Usage",
+                "queryLanguage": "cwli",
+                "setPeriodToTimeRange": true,
+                "view": "bar"
               }
             }
           ]
@@ -375,10 +432,10 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${DashboardName}-DailyTokenThreshold'
-      AlarmDescription: !Sub 'Alert when daily token usage exceeds threshold (approx $${TokenCostPerMillion} per million tokens)'
+      AlarmDescription: 'Alert when daily token usage exceeds 100M tokens'
       ComparisonOperator: GreaterThanThreshold
       EvaluationPeriods: 1
-      Threshold: 66666667  # ~$1000 worth of tokens at $15/million
+      Threshold: 100000000  # 100M tokens per day
       TreatMissingData: notBreaching
       MetricName: claude_code.token.usage
       Namespace: !Ref MetricNamespace
@@ -422,14 +479,14 @@ Resources:
       AlarmActions:
         - !If [HasAlertEmail, !Ref AlertTopic, !Ref 'AWS::NoValue']
 
-  UnusualModelUsageAlarm:
+  LowCacheEfficiencyAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub '${DashboardName}-UnusualModelUsage'
-      AlarmDescription: 'Alert when expensive models are used excessively'
-      ComparisonOperator: GreaterThanThreshold
-      EvaluationPeriods: 1
-      Threshold: 50000000  # 50M tokens per hour
+      AlarmName: !Sub '${DashboardName}-LowCacheEfficiency'
+      AlarmDescription: 'Alert when cache hit rate drops below 30%'
+      ComparisonOperator: LessThanThreshold
+      EvaluationPeriods: 2
+      Threshold: 30  # 30% cache hit rate
       TreatMissingData: notBreaching
       Metrics:
         - Id: m1
@@ -438,10 +495,72 @@ Resources:
               MetricName: claude_code.token.usage
               Namespace: !Ref MetricNamespace
               Dimensions:
-                - Name: model
-                  Value: '*opus*'
+                - Name: type
+                  Value: cacheRead
             Period: 3600
             Stat: Sum
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: claude_code.token.usage
+              Namespace: !Ref MetricNamespace
+              Dimensions:
+                - Name: type
+                  Value: cacheCreation
+            Period: 3600
+            Stat: Sum
+          ReturnData: false
+        - Id: e1
+          Expression: "(m1/(m1+m2))*100"
+          ReturnData: true
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AlertTopic, !Ref 'AWS::NoValue']
+
+  HighAPIErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${DashboardName}-HighAPIErrorRate'
+      AlarmDescription: 'Alert when Bedrock API error rate exceeds 5%'
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 2
+      Threshold: 5  # 5% error rate
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: InvocationClientErrors
+              Namespace: AWS/Bedrock
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: InvocationServerErrors
+              Namespace: AWS/Bedrock
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: m3
+          MetricStat:
+            Metric:
+              MetricName: InvocationThrottles
+              Namespace: AWS/Bedrock
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: m4
+          MetricStat:
+            Metric:
+              MetricName: Invocations
+              Namespace: AWS/Bedrock
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: e1
+          Expression: "((m1+m2+m3)/m4)*100"
           ReturnData: true
       AlarmActions:
         - !If [HasAlertEmail, !Ref AlertTopic, !Ref 'AWS::NoValue']
@@ -472,10 +591,10 @@ Resources:
         | limit 100
       Description: 'Query to track specific user activity'
 
-  CostByModelQuery:
+  TokensByModelQuery:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: !Sub '/cloudwatch/insights/${DashboardName}/cost-by-model'
+      Name: !Sub '/cloudwatch/insights/${DashboardName}/tokens-by-model'
       Type: String
       Value: |
         fields model, claude_code.token.usage, organization.id
@@ -483,7 +602,7 @@ Resources:
         | stats sum(claude_code.token.usage) as tokens by model, organization.id
         | sort tokens desc
       Description: 'Query to analyze token usage by model type and organization'
-      
+
   OrganizationUsageQuery:
     Type: AWS::SSM::Parameter
     Properties:
@@ -495,7 +614,7 @@ Resources:
         | stats sum(claude_code.token.usage) as total_tokens by organization.id
         | sort total_tokens desc
       Description: 'Query to analyze token usage by organization'
-      
+
   EmailDomainUsageQuery:
     Type: AWS::SSM::Parameter
     Properties:
@@ -520,122 +639,34 @@ Resources:
           Value: Claude Code OTEL Telemetry
         - Key: Stack
           Value: !Ref AWS::StackName
-          
-  # Note: /aws/claude-code/metrics log group is created by the OTEL collector stack
 
-  # Additional Cost Monitoring Dashboard
-  BedrockCostDashboard:
-    Type: AWS::CloudWatch::Dashboard
-    Properties:
-      DashboardName: !Sub '${DashboardName}-Bedrock-Costs'
-      DashboardBody: !Sub |
-        {
-          "widgets": [
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 0,
-              "width": 24,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "AWS/Billing", "EstimatedCharges", { "stat": "Maximum", "period": 86400, "region": "us-east-1", "visible": false } ],
-                  [ { "expression": "SEARCH(' {AWS/Billing,Currency,ServiceName} MetricName=\"EstimatedCharges\" ServiceName=\"AmazonBedrock\" ', 'Maximum', 86400)", "id": "e1", "label": "Bedrock Daily Cost", "region": "us-east-1" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "us-east-1",
-                "title": "Bedrock Service Costs (Daily)",
-                "period": 86400,
-                "yAxis": {
-                  "left": {
-                    "label": "Cost (USD)",
-                    "showUnits": false
-                  }
-                },
-                "annotations": {
-                  "horizontal": [
-                    {
-                      "label": "Budget Threshold",
-                      "value": 1000
-                    }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 6,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "label": "Total Tokens" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Daily Token Usage",
-                "period": 86400,
-                "stat": "Sum"
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12,
-              "y": 6,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "${MetricNamespace}", "claude_code.token.usage", "OTelLib", "com.anthropic.claude_code", { "stat": "Sum", "period": 86400, "id": "m1" } ],
-                  [ { "expression": "m1 * ${TokenCostPerMillion} / 1000000", "id": "e1", "label": "Estimated Cost" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Estimated Daily Cost from Tokens",
-                "period": 86400,
-                "yAxis": {
-                  "left": {
-                    "label": "Cost (USD)"
-                  }
-                }
-              }
-            }
-          ]
-        }
+  # Note: /aws/claude-code/metrics log group is created by the OTEL collector stack
 
 Outputs:
   DashboardURL:
     Description: Direct URL to the CloudWatch dashboard
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
-  
+
   MetricsExplorerURL:
     Description: URL to explore all Claude Code metrics
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#metricsV2:graph=~();query=${MetricNamespace}'
-  
+
   LogsInsightsURL:
     Description: URL to CloudWatch Logs Insights for custom queries
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'
-  
+
   AlertTopicArn:
     Description: SNS Topic ARN for alerts
     Value: !If [HasAlertEmail, !Ref AlertTopic, 'Not configured - provide AlertEmail parameter']
-    
+
   SavedQueriesPrefix:
     Description: SSM Parameter Store prefix for saved queries
     Value: !Sub '/cloudwatch/insights/${DashboardName}/'
-    
+
   MetricsLogGroupName:
     Description: CloudWatch Log Group for Claude Code metrics (use with Logs Insights)
     Value: /aws/claude-code/metrics
-    
+
   TelemetryLogGroupName:
     Description: CloudWatch Log Group for Claude Code telemetry (use with Logs Insights)
     Value: !Ref TelemetryLogGroup
-  
-  BedrockCostDashboardURL:
-    Description: Direct URL to Bedrock cost monitoring dashboard
-    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}-Bedrock-Costs'
