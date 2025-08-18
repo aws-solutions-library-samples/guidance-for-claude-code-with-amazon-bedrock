@@ -6,7 +6,7 @@ Parameters:
     Type: String
     Default: ClaudeCodeEnhancedMetrics
     Description: Name for the enhanced CloudWatch dashboard
-  
+
   WidgetsStackName:
     Type: String
     Default: claude-code-auth-widgets
@@ -17,7 +17,7 @@ Resources:
     Type: AWS::CloudWatch::Dashboard
     Properties:
       DashboardName: !Ref DashboardName
-      DashboardBody: !Sub 
+      DashboardBody: !Sub
         - |
           {
             "widgets": [
@@ -104,7 +104,7 @@ Outputs:
   DashboardURL:
     Description: Direct URL to the enhanced CloudWatch dashboard
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
-  
+
   MainDashboardURL:
     Description: URL to the main monitoring dashboard
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=ClaudeCodeMonitoring'

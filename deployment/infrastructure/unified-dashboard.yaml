@@ -6,10 +6,10 @@ Parameters:
     Type: String
     Default: ClaudeCodeUnifiedDashboard
     Description: Name for the CloudWatch dashboard
-  
+
   WidgetsStackName:
     Type: String
-    Default: claude-code-auth-widgets  
+    Default: claude-code-auth-widgets
     Description: Name of the stack containing custom widget Lambda functions
 
 Resources:
@@ -17,7 +17,7 @@ Resources:
     Type: AWS::CloudWatch::Dashboard
     Properties:
       DashboardName: !Ref DashboardName
-      DashboardBody: !Sub 
+      DashboardBody: !Sub
         - |
           {
             "widgets": [
@@ -97,24 +97,8 @@ Resources:
                 }
               },
               {
-                "type": "custom",
-                "x": 0,
-                "y": 6,
-                "width": 12,
-                "height": 6,
-                "properties": {
-                  "endpoint": "${TokenByModelArn}",
-                  "updateOn": {
-                    "refresh": true,
-                    "resize": true,
-                    "timeRange": true
-                  },
-                  "title": "Token Usage by Model"
-                }
-              },
-              {
                 "type": "log",
-                "x": 12,
+                "x": 0,
                 "y": 6,
                 "width": 12,
                 "height": 6,
@@ -124,6 +108,21 @@ Resources:
                   "title": "Token Usage Over Time",
                   "queryLanguage": "cwli",
                   "view": "timeSeries"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 6,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-0|opus-4-[^1]/, tokens, 0) as opus_4, if(model like /sonnet-4/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
+                  "region": "us-east-1",
+                  "title": "Token Usage by Model Over Time",
+                  "queryLanguage": "cwli",
+                  "view": "timeSeries",
+                  "stacked": false
                 }
               },
               {
@@ -291,7 +290,7 @@ Outputs:
   DashboardURL:
     Description: Direct URL to the CloudWatch dashboard
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
-  
+
   LogsInsightsURL:
     Description: URL to CloudWatch Logs Insights
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'
