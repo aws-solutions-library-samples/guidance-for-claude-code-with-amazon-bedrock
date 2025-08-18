@@ -324,7 +324,7 @@ class DeployCommand(Command):
             console.print("")
 
         elif stack_type == "dashboard":
-            template = project_root / "deployment" / "infrastructure" / "monitoring-dashboard.yaml"
+            template = project_root / "deployment" / "infrastructure" / "unified-dashboard.yaml"
             stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
 
             console.print("[dim]# Deploy monitoring dashboard[/dim]")
@@ -467,7 +467,7 @@ class DeployCommand(Command):
             elif stack_type == "dashboard":
                 task = progress.add_task("Deploying monitoring dashboard...", total=None)
 
-                template = project_root / "deployment" / "infrastructure" / "monitoring-dashboard.yaml"
+                template = project_root / "deployment" / "infrastructure" / "unified-dashboard.yaml"
                 stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
 
                 cmd = [

@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Enhanced monitoring dashboard with custom widgets for Claude Code'
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCodeEnhancedMetrics
+    Description: Name for the enhanced CloudWatch dashboard
+  
+  WidgetsStackName:
+    Type: String
+    Default: claude-code-auth-widgets
+    Description: Name of the stack containing custom widget Lambda functions
+
+Resources:
+  EnhancedDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub 
+        - |
+          {
+            "widgets": [
+              {
+                "type": "text",
+                "x": 0,
+                "y": 0,
+                "width": 24,
+                "height": 2,
+                "properties": {
+                  "markdown": "# Claude Code Enhanced Metrics\n**Custom visualizations with formatted numbers and calculated costs**",
+                  "background": "transparent"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 0,
+                "y": 2,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "endpoint": "${TotalTokensArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Total Tokens Used"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 8,
+                "y": 2,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "endpoint": "${OperationsCountArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Operations Count"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 16,
+                "y": 2,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "endpoint": "${ActiveUsersArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Active Users"
+                }
+              },
+              {
+                "type": "text",
+                "x": 0,
+                "y": 8,
+                "width": 24,
+                "height": 3,
+                "properties": {
+                  "markdown": "## Navigation\n\n[📊 Main Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=ClaudeCodeMonitoring) | [📈 Athena Analytics](https://console.aws.amazon.com/athena/home?region=${AWS::Region}) | [🔍 Logs Insights](https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights)",
+                  "background": "transparent"
+                }
+              }
+            ]
+          }
+        - TotalTokensArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-TotalTokensArn'
+          OperationsCountArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-OperationsCountArn'
+          ActiveUsersArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-ActiveUsersArn'
+
+Outputs:
+  DashboardURL:
+    Description: Direct URL to the enhanced CloudWatch dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+  
+  MainDashboardURL:
+    Description: URL to the main monitoring dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=ClaudeCodeMonitoring'

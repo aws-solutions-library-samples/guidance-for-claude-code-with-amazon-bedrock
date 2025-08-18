@@ -1,0 +1,297 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Unified Claude Code monitoring dashboard using custom widgets for all metrics'
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCodeUnifiedDashboard
+    Description: Name for the CloudWatch dashboard
+  
+  WidgetsStackName:
+    Type: String
+    Default: claude-code-auth-widgets  
+    Description: Name of the stack containing custom widget Lambda functions
+
+Resources:
+  UnifiedDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub 
+        - |
+          {
+            "widgets": [
+              {
+                "type": "text",
+                "x": 0,
+                "y": 0,
+                "width": 24,
+                "height": 2,
+                "properties": {
+                  "markdown": "# Claude Code Monitoring Dashboard\n**Organization-wide token usage, productivity metrics, and model analytics**\n\nAll metrics are interactive - click any widget to view the underlying Logs Insights query\n\nLast updated: ${AWS::StackName}",
+                  "background": "transparent"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 0,
+                "y": 2,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "endpoint": "${TotalTokensArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Total Tokens Used"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 6,
+                "y": 2,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "endpoint": "${ActiveUsersArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Active Users"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 12,
+                "y": 2,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "endpoint": "${OperationsCountArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Operations Count"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 18,
+                "y": 2,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "endpoint": "${CacheEfficiencyArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Cache Efficiency"
+                }
+              },
+              {
+                "type": "custom",
+                "x": 0,
+                "y": 6,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "endpoint": "${TokenByModelArn}",
+                  "updateOn": {
+                    "refresh": true,
+                    "resize": true,
+                    "timeRange": true
+                  },
+                  "title": "Token Usage by Model"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 6,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | fields @timestamp, @message | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by bin(5m)",
+                  "region": "us-east-1",
+                  "title": "Token Usage Over Time",
+                  "queryLanguage": "cwli",
+                  "view": "timeSeries"
+                }
+              },
+              {
+                "type": "log",
+                "x": 0,
+                "y": 12,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /user.email/ | parse @message /\"user.email\":\"(?<user>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by user | sort total_tokens desc | limit 10",
+                  "region": "us-east-1",
+                  "title": "Top Users by Token Usage",
+                  "queryLanguage": "cwli",
+                  "view": "table"
+                }
+              },
+              {
+                "type": "log",
+                "x": 8,
+                "y": 12,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /type/ | parse @message /\"type\":\"(?<type>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | filter type in ['input', 'output', 'cacheCreation', 'cacheRead'] | stats sum(tokens) as total by type",
+                  "region": "us-east-1",
+                  "title": "Token Usage by Type",
+                  "queryLanguage": "cwli",
+                  "view": "pie"
+                }
+              },
+              {
+                "type": "log",
+                "x": 16,
+                "y": 12,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /operation_type/ | parse @message /\"operation_type\":\"(?<op>[^\"]*)\"/  | stats count() as count by op | sort count desc",
+                  "region": "us-east-1",
+                  "title": "Operations by Type",
+                  "queryLanguage": "cwli",
+                  "view": "bar"
+                }
+              },
+              {
+                "type": "log",
+                "x": 0,
+                "y": 18,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /code_edit_tool.decision/ and @message like /language/ | parse @message /\"language\":\"(?<lang>[^\"]*)\"/  | parse @message /\"claude_code.code_edit_tool.decision\":(?<count>[0-9.]+)/ | stats sum(count) as total by lang | sort total desc",
+                  "region": "us-east-1",
+                  "title": "Code Generation by Language",
+                  "queryLanguage": "cwli",
+                  "view": "bar"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 18,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /tool_name/ | parse @message /\"tool_name\":\"(?<tool>[^\"]*)\"/  | stats count() as usage by tool | sort usage desc | limit 10",
+                  "region": "us-east-1",
+                  "title": "Most Used Tools",
+                  "queryLanguage": "cwli",
+                  "view": "bar"
+                }
+              },
+              {
+                "type": "text",
+                "x": 0,
+                "y": 24,
+                "width": 24,
+                "height": 2,
+                "properties": {
+                  "markdown": "## Developer Productivity Metrics",
+                  "background": "transparent"
+                }
+              },
+              {
+                "type": "log",
+                "x": 0,
+                "y": 26,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.lines_of_code.count/ | parse @message /\"claude_code.lines_of_code.count\":(?<lines>[0-9.]+)/ | stats sum(lines) as total_lines",
+                  "region": "us-east-1",
+                  "title": "Lines of Code Added",
+                  "queryLanguage": "cwli",
+                  "view": "singleValue"
+                }
+              },
+              {
+                "type": "log",
+                "x": 6,
+                "y": 26,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.commit.count/ | stats count() as commits",
+                  "region": "us-east-1",
+                  "title": "Commits",
+                  "queryLanguage": "cwli",
+                  "view": "singleValue"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 26,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /code_edit_tool.decision/ | parse @message /\"decision\":\"(?<decision>[^\"]*)\"/  | stats count() by decision | sort decision",
+                  "region": "us-east-1",
+                  "title": "Code Acceptance",
+                  "queryLanguage": "cwli",
+                  "view": "pie"
+                }
+              },
+              {
+                "type": "log",
+                "x": 18,
+                "y": 26,
+                "width": 6,
+                "height": 4,
+                "properties": {
+                  "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /active_time.total/ | parse @message /\"claude_code.active_time.total\":(?<time>[0-9.]+)/ | stats sum(time)/3600 as hours",
+                  "region": "us-east-1",
+                  "title": "Active Hours",
+                  "queryLanguage": "cwli",
+                  "view": "singleValue"
+                }
+              },
+              {
+                "type": "text",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 3,
+                "properties": {
+                  "markdown": "## User Analytics\n\n**For detailed user analytics with identity provider attribution:**\nView user-specific metrics including top users by token consumption across identity providers (Okta, Auth0, Cognito),\norganization-specific usage tracking, and model usage preferences by department.\n\n[Open Athena Analytics Console →](https://console.aws.amazon.com/athena/home?region=us-east-1)",
+                  "background": "transparent"
+                }
+              }
+            ]
+          }
+        - TotalTokensArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-TotalTokensArn'
+          ActiveUsersArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-ActiveUsersArn'
+          OperationsCountArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-OperationsCountArn'
+          CacheEfficiencyArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-CacheEfficiencyArn'
+          TokenByModelArn:
+            Fn::ImportValue: !Sub '${WidgetsStackName}-TokenByModelArn'
+
+Outputs:
+  DashboardURL:
+    Description: Direct URL to the CloudWatch dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+  
+  LogsInsightsURL:
+    Description: URL to CloudWatch Logs Insights
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'

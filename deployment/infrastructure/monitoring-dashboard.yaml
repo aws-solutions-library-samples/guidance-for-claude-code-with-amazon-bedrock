@@ -52,7 +52,7 @@ Resources:
               "width": 24,
               "height": 3,
               "properties": {
-                "markdown": "# Claude Code Monitoring Dashboard\n**Organization-wide token usage, productivity metrics, and model analytics**\n\nLast Updated: ${AWS::StackName} | Region: ${AWS::Region}",
+                "markdown": "# Claude Code Monitoring Dashboard\n**Organization-wide token usage, productivity metrics, and model analytics**\n\nLast Updated: ${AWS::StackName} | Region: ${AWS::Region}\n\n[🚀 View Enhanced Metrics Dashboard →](https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=ClaudeCodeEnhancedMetrics)",
                 "background": "transparent"
               }
             },

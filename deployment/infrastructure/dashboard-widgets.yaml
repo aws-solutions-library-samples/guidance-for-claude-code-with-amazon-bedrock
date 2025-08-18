@@ -1,0 +1,857 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Custom widget Lambda functions for Claude Code enhanced dashboard visualizations'
+
+Parameters:
+  MetricsLogGroup:
+    Type: String
+    Default: /aws/claude-code/metrics
+    Description: CloudWatch Log Group containing Claude Code metrics
+  
+  MetricsRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where metrics log group exists
+
+Resources:
+  # Shared IAM role for all custom widget Lambda functions
+  CustomWidgetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ClaudeCodeDashboardWidgetRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsQuery
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:DescribeLogGroups
+                Resource: '*'
+
+  # Widget 1: Total Tokens with formatted display (33.2M instead of 33154183)
+  TotalTokensWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TotalTokens
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          import time
+
+          def format_number(num):
+              """Format number with appropriate scale (K, M, B)"""
+              if num >= 1_000_000_000:
+                  return f"{num / 1_000_000_000:.1f}B"
+              elif num >= 1_000_000:
+                  return f"{num / 1_000_000:.1f}M"
+              elif num >= 10_000:
+                  return f"{num / 1_000:.0f}K"
+              else:
+                  return f"{num:,.0f}"
+
+          def lambda_handler(event, context):
+              """Main handler for total tokens widget"""
+              
+              # Handle describe request
+              if event.get('describe', False):
+                  return {"markdown": "# Total Tokens Used\nDisplays formatted total token usage"}
+              
+              # Get configuration
+              log_group = os.environ['METRICS_LOG_GROUP']
+              region = os.environ['METRICS_REGION']
+              
+              # Get widget context
+              widget_context = event.get('widgetContext', {})
+              time_range = widget_context.get('timeRange', {})
+              width = widget_context.get('width', 300)
+              height = widget_context.get('height', 200)
+              
+              # Initialize CloudWatch Logs client for the correct region
+              logs_client = boto3.client('logs', region_name=region)
+              
+              try:
+                  # Calculate time range
+                  if 'start' in time_range and 'end' in time_range:
+                      start_time = time_range['start']
+                      end_time = time_range['end']
+                  else:
+                      end_time = int(datetime.now().timestamp() * 1000)
+                      start_time = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
+                  
+                  # CloudWatch Logs Insights query
+                  query = """
+                  fields @message
+                  | filter @message like /claude_code.token.usage/
+                  | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+                  | stats sum(tokens) as total_tokens
+                  """
+                  
+                  # Start query
+                  response = logs_client.start_query(
+                      logGroupName=log_group,
+                      startTime=start_time,
+                      endTime=end_time,
+                      queryString=query
+                  )
+                  
+                  query_id = response['queryId']
+                  
+                  # Wait for query to complete
+                  max_wait = 25
+                  wait_interval = 0.5
+                  elapsed = 0
+                  
+                  while elapsed < max_wait:
+                      response = logs_client.get_query_results(queryId=query_id)
+                      if response['status'] != 'Running':
+                          break
+                      time.sleep(wait_interval)
+                      elapsed += wait_interval
+                  
+                  # Extract total tokens
+                  total_tokens = 0
+                  if response['status'] == 'Complete' and response['results']:
+                      for field in response['results'][0]:
+                          if field['field'] == 'total_tokens':
+                              total_tokens = float(field['value'])
+                              break
+                  
+                  # Format the number
+                  formatted_tokens = format_number(total_tokens)
+                  
+                  # Calculate font size
+                  font_size = min(width // 8, height // 4, 60)
+                  
+                  # Generate HTML
+                  return f"""
+                  <div style="
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="
+                          font-size: {font_size}px;
+                          font-weight: 700;
+                          color: white;
+                          text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                          margin-bottom: 8px;
+                      ">{formatted_tokens}</div>
+                      <div style="
+                          font-size: 14px;
+                          color: rgba(255,255,255,0.9);
+                          text-transform: uppercase;
+                          letter-spacing: 1px;
+                          font-weight: 500;
+                      ">Total Tokens Used</div>
+                  </div>
+                  """
+                  
+              except Exception as e:
+                  return f"""
+                  <div style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      background: #fef2f2;
+                      border-radius: 8px;
+                      padding: 20px;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                  ">
+                      <div style="text-align: center;">
+                          <div style="
+                              font-size: 16px;
+                              color: #991b1b;
+                              margin-bottom: 8px;
+                              font-weight: 600;
+                          ">Unable to load token data</div>
+                          <div style="
+                              font-size: 12px;
+                              color: #7f1d1d;
+                          ">{str(e)[:100]}</div>
+                      </div>
+                  </div>
+                  """
+
+  # Widget 2: Operations Count
+  OperationsCountWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-OperationsCount
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          import time
+
+          def lambda_handler(event, context):
+              """Main handler for operations count widget"""
+              
+              if event.get('describe', False):
+                  return {"markdown": "# Operations Count\nTotal operations performed in time period"}
+              
+              log_group = os.environ['METRICS_LOG_GROUP']
+              region = os.environ['METRICS_REGION']
+              
+              widget_context = event.get('widgetContext', {})
+              time_range = widget_context.get('timeRange', {})
+              
+              logs_client = boto3.client('logs', region_name=region)
+              
+              try:
+                  # Calculate time range
+                  if 'start' in time_range and 'end' in time_range:
+                      start_time = time_range['start']
+                      end_time = time_range['end']
+                  else:
+                      end_time = int(datetime.now().timestamp() * 1000)
+                      start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
+                  
+                  # Query for operations count
+                  query = """
+                  fields @message
+                  | filter @message like /operation_type/
+                  | stats count() as operations
+                  """
+                  
+                  response = logs_client.start_query(
+                      logGroupName=log_group,
+                      startTime=start_time,
+                      endTime=end_time,
+                      queryString=query
+                  )
+                  
+                  query_id = response['queryId']
+                  
+                  # Wait for query
+                  max_wait = 25
+                  wait_interval = 0.5
+                  elapsed = 0
+                  
+                  while elapsed < max_wait:
+                      response = logs_client.get_query_results(queryId=query_id)
+                      if response['status'] != 'Running':
+                          break
+                      time.sleep(wait_interval)
+                      elapsed += wait_interval
+                  
+                  # Extract operations count
+                  operations_count = 0
+                  if response['status'] == 'Complete' and response['results']:
+                      for field in response['results'][0]:
+                          if field['field'] == 'operations':
+                              operations_count = int(float(field['value']))
+                              break
+                  
+                  # Format the number
+                  if operations_count >= 1000:
+                      formatted_ops = f"{operations_count/1000:.1f}K"
+                  else:
+                      formatted_ops = str(operations_count)
+                  
+                  # Generate HTML
+                  return f"""
+                  <div style="
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="
+                          font-size: 48px;
+                          font-weight: 700;
+                          color: white;
+                          text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                          margin-bottom: 8px;
+                      ">{formatted_ops}</div>
+                      <div style="
+                          font-size: 14px;
+                          color: rgba(255,255,255,0.9);
+                          text-transform: uppercase;
+                          letter-spacing: 1px;
+                          font-weight: 500;
+                      ">Operations Today</div>
+                  </div>
+                  """
+                  
+              except Exception as e:
+                  return f"""
+                  <div style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      background: #fef2f2;
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="text-align: center;">
+                          <div style="color: #991b1b;">Unable to count operations</div>
+                          <div style="color: #7f1d1d; font-size: 12px;">{str(e)[:100]}</div>
+                      </div>
+                  </div>
+                  """
+
+  # Widget 3: Active Users Counter
+  ActiveUsersWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-ActiveUsers
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          import time
+
+          def lambda_handler(event, context):
+              """Main handler for active users widget"""
+              
+              if event.get('describe', False):
+                  return {"markdown": "# Active Users\nNumber of unique users in time period"}
+              
+              log_group = os.environ['METRICS_LOG_GROUP']
+              region = os.environ['METRICS_REGION']
+              
+              widget_context = event.get('widgetContext', {})
+              time_range = widget_context.get('timeRange', {})
+              
+              logs_client = boto3.client('logs', region_name=region)
+              
+              try:
+                  # Calculate time range
+                  if 'start' in time_range and 'end' in time_range:
+                      start_time = time_range['start']
+                      end_time = time_range['end']
+                  else:
+                      end_time = int(datetime.now().timestamp() * 1000)
+                      start_time = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
+                  
+                  # Query for unique users
+                  query = """
+                  fields @message
+                  | filter @message like /user.email/
+                  | parse @message /"user.email":"(?<user>[^"]*)"/
+                  | stats count_distinct(user) as active_users
+                  """
+                  
+                  response = logs_client.start_query(
+                      logGroupName=log_group,
+                      startTime=start_time,
+                      endTime=end_time,
+                      queryString=query
+                  )
+                  
+                  query_id = response['queryId']
+                  
+                  # Wait for query
+                  max_wait = 25
+                  wait_interval = 0.5
+                  elapsed = 0
+                  
+                  while elapsed < max_wait:
+                      response = logs_client.get_query_results(queryId=query_id)
+                      if response['status'] != 'Running':
+                          break
+                      time.sleep(wait_interval)
+                      elapsed += wait_interval
+                  
+                  # Extract user count
+                  user_count = 0
+                  if response['status'] == 'Complete' and response['results']:
+                      for field in response['results'][0]:
+                          if field['field'] == 'active_users':
+                              user_count = int(float(field['value']))
+                              break
+                  
+                  # Generate HTML
+                  return f"""
+                  <div style="
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="
+                          font-size: 56px;
+                          font-weight: 700;
+                          color: white;
+                          text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                          margin-bottom: 8px;
+                      ">{user_count}</div>
+                      <div style="
+                          font-size: 14px;
+                          color: rgba(255,255,255,0.9);
+                          text-transform: uppercase;
+                          letter-spacing: 1px;
+                          font-weight: 500;
+                      ">Active Users</div>
+                  </div>
+                  """
+                  
+              except Exception as e:
+                  return f"""
+                  <div style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      background: #fef2f2;
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="text-align: center;">
+                          <div style="color: #991b1b;">Unable to count users</div>
+                          <div style="color: #7f1d1d; font-size: 12px;">{str(e)[:100]}</div>
+                      </div>
+                  </div>
+                  """
+
+  # Widget 4: Token Usage By Model Pie Chart
+  TokenByModelWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TokenByModel
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          import time
+          import math
+          from urllib.parse import quote
+          
+          def lambda_handler(event, context):
+              """Token usage by model pie chart widget"""
+              
+              if event.get('describe', False):
+                  return {"markdown": "# Token Usage by Model\nPie chart showing token distribution"}
+              
+              log_group = os.environ['METRICS_LOG_GROUP']
+              region = os.environ['METRICS_REGION']
+              
+              widget_context = event.get('widgetContext', {})
+              time_range = widget_context.get('timeRange', {})
+              
+              logs_client = boto3.client('logs', region_name=region)
+              
+              try:
+                  if 'start' in time_range and 'end' in time_range:
+                      start_time = time_range['start']
+                      end_time = time_range['end']
+                  else:
+                      end_time = int(datetime.now().timestamp() * 1000)
+                      start_time = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
+                  
+                  query = """
+                  fields @message
+                  | filter @message like /claude_code.token.usage/
+                  | parse @message /"model":"(?<model>[^"]*)"/
+                  | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+                  | stats sum(tokens) as total by model
+                  | sort total desc
+                  """
+                  
+                  response = logs_client.start_query(
+                      logGroupName=log_group,
+                      startTime=start_time,
+                      endTime=end_time,
+                      queryString=query
+                  )
+                  
+                  query_id = response['queryId']
+                  max_wait = 25
+                  wait_interval = 0.5
+                  elapsed = 0
+                  
+                  while elapsed < max_wait:
+                      response = logs_client.get_query_results(queryId=query_id)
+                      if response['status'] != 'Running':
+                          break
+                      time.sleep(wait_interval)
+                      elapsed += wait_interval
+                  
+                  # Process results and aggregate by model family
+                  model_aggregates = {}
+                  
+                  if response['status'] == 'Complete' and response['results']:
+                      for result in response['results']:
+                          model_raw = ''
+                          total = 0
+                          for field in result:
+                              if field['field'] == 'model':
+                                  model_raw = field['value']
+                              elif field['field'] == 'total':
+                                  total = float(field['value'])
+                          
+                          if model_raw and total:
+                              # Normalize the model name
+                              model_name = model_raw.replace('us.anthropic.', '').replace('anthropic.', '')
+                              
+                              # Determine the model family
+                              if 'claude-opus-4-1' in model_name.lower():
+                                  model_family = 'Opus 4.1'
+                              elif 'claude-opus-4-0' in model_name.lower() or 'claude-opus-4' in model_name.lower():
+                                  model_family = 'Opus 4'
+                              elif 'claude-3-opus' in model_name.lower():
+                                  model_family = 'Opus 3'
+                              elif 'claude-sonnet-4' in model_name.lower():
+                                  model_family = 'Sonnet 4'
+                              elif 'claude-3-7-sonnet' in model_name.lower() or 'claude-3.7-sonnet' in model_name.lower():
+                                  model_family = 'Sonnet 3.7'
+                              elif 'claude-3-5-sonnet' in model_name.lower() or 'claude-3.5-sonnet' in model_name.lower():
+                                  model_family = 'Sonnet 3.5'
+                              elif 'claude-3-sonnet' in model_name.lower():
+                                  model_family = 'Sonnet 3'
+                              elif 'claude-3-5-haiku' in model_name.lower() or 'claude-3.5-haiku' in model_name.lower():
+                                  model_family = 'Haiku 3.5'
+                              elif 'claude-3-haiku' in model_name.lower():
+                                  model_family = 'Haiku 3'
+                              elif 'opus' in model_name.lower():
+                                  model_family = 'Opus (Other)'
+                              elif 'sonnet' in model_name.lower():
+                                  model_family = 'Sonnet (Other)'
+                              elif 'haiku' in model_name.lower():
+                                  model_family = 'Haiku (Other)'
+                              else:
+                                  # Keep original for unknown models
+                                  model_family = model_name.split('-')[2] if len(model_name.split('-')) > 2 else model_name
+                              
+                              # Aggregate tokens by model family
+                              if model_family in model_aggregates:
+                                  model_aggregates[model_family] += total
+                              else:
+                                  model_aggregates[model_family] = total
+                  
+                  # Convert aggregates to sorted data list
+                  data = []
+                  colors = ['#667eea', '#764ba2', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#ec4899', '#8b5cf6', '#f97316', '#14b8a6']
+                  
+                  sorted_models = sorted(model_aggregates.items(), key=lambda x: x[1], reverse=True)
+                  for i, (model, total) in enumerate(sorted_models):
+                      data.append({
+                          'label': model,
+                          'value': total,
+                          'color': colors[i % len(colors)]
+                      })
+                  
+                  # Calculate percentages
+                  total_sum = sum(d['value'] for d in data)
+                  for d in data:
+                      d['percentage'] = (d['value'] / total_sum * 100) if total_sum > 0 else 0
+                  
+                  # Create simple pie chart
+                  pie_html = ''
+                  cumulative = 0
+                  for d in data:
+                      pie_html += f'''
+                      <div style="
+                          display: flex;
+                          align-items: center;
+                          margin: 8px 0;
+                      ">
+                          <div style="
+                              width: 16px;
+                              height: 16px;
+                              background: {d['color']};
+                              border-radius: 3px;
+                              margin-right: 12px;
+                          "></div>
+                          <div style="flex: 1; font-weight: 500;">{d['label']}</div>
+                          <div style="font-weight: 600;">{d['percentage']:.1f}%</div>
+                      </div>
+                      '''
+                  
+                  # Build a direct link to Logs Insights with the query pre-populated
+                  # Using the format that CloudWatch actually uses
+                  query_lines = query.strip().split('\n')
+                  # Replace special characters - MUST replace * first since we use it as escape character
+                  query_formatted = '*0a'.join([
+                      line.strip()
+                      .replace('*', '*2a')  # Must be first!
+                      .replace(' ', '*20')
+                      .replace('|', '*7c')
+                      .replace('/', '*2f')
+                      .replace('"', '*22')
+                      .replace(':', '*3a')
+                      .replace('<', '*3c')
+                      .replace('>', '*3e')
+                      .replace('(', '*28')
+                      .replace(')', '*29')
+                      .replace('[', '*5b')
+                      .replace(']', '*5d')
+                      .replace('^', '*5e')
+                      .replace('+', '*2b')
+                      .replace('?', '*3f')
+                      for line in query_lines
+                  ])
+                  log_group_formatted = log_group.replace('/', '*2f')
+                  
+                  # This is the exact format CloudWatch uses for deep links
+                  logs_url = f"https://console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:logs-insights$3FqueryDetail$3D~(end~0~start~-3600~timeType~'RELATIVE~tz~'UTC~unit~'seconds~editorString~'{query_formatted}~queryId~'7df4c7b0-abe9-465f-9385-200f3e21c5e0~source~(~'{log_group_formatted})~lang~'CWLI)"
+                  
+                  return f'''
+                  <div style="
+                      padding: 20px;
+                      height: 100%;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                      background: white;
+                      border-radius: 8px;
+                  ">
+                      <div style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Token Usage by Model</div>
+                      {pie_html}
+                      <a href="{logs_url}" target="_blank" style="
+                          display: inline-block;
+                          margin-top: 16px;
+                          color: #0073bb;
+                          text-decoration: none;
+                          font-size: 12px;
+                      ">View Query in Logs Insights →</a>
+                  </div>
+                  '''
+                  
+              except Exception as e:
+                  return f'''<div style="padding: 20px; color: #991b1b;">Error: {str(e)[:100]}</div>'''
+
+  # Widget 5: Cache Efficiency Rate
+  CacheEfficiencyWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-CacheEfficiency
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          import time
+          
+          def lambda_handler(event, context):
+              """Cache efficiency rate widget"""
+              
+              if event.get('describe', False):
+                  return {"markdown": "# Cache Efficiency\nCache hit rate percentage"}
+              
+              log_group = os.environ['METRICS_LOG_GROUP']
+              region = os.environ['METRICS_REGION']
+              
+              widget_context = event.get('widgetContext', {})
+              time_range = widget_context.get('timeRange', {})
+              
+              logs_client = boto3.client('logs', region_name=region)
+              
+              try:
+                  if 'start' in time_range and 'end' in time_range:
+                      start_time = time_range['start']
+                      end_time = time_range['end']
+                  else:
+                      end_time = int(datetime.now().timestamp() * 1000)
+                      start_time = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
+                  
+                  query = """
+                  fields @message
+                  | filter @message like /type/ and (@message like /cacheRead/ or @message like /cacheCreation/)
+                  | parse @message /"type":"(?<cache_type>[^"]*)"/
+                  | stats count() by cache_type
+                  """
+                  
+                  response = logs_client.start_query(
+                      logGroupName=log_group,
+                      startTime=start_time,
+                      endTime=end_time,
+                      queryString=query
+                  )
+                  
+                  query_id = response['queryId']
+                  max_wait = 25
+                  wait_interval = 0.5
+                  elapsed = 0
+                  
+                  while elapsed < max_wait:
+                      response = logs_client.get_query_results(queryId=query_id)
+                      if response['status'] != 'Running':
+                          break
+                      time.sleep(wait_interval)
+                      elapsed += wait_interval
+                  
+                  # Calculate cache efficiency
+                  cache_reads = 0
+                  cache_creations = 0
+                  
+                  if response['status'] == 'Complete' and response['results']:
+                      for result in response['results']:
+                          cache_type = ''
+                          count = 0
+                          for field in result:
+                              if field['field'] == 'cache_type':
+                                  cache_type = field['value']
+                              elif field['field'] == 'count()':
+                                  count = int(float(field['value']))
+                          
+                          if cache_type == 'cacheRead':
+                              cache_reads = count
+                          elif cache_type == 'cacheCreation':
+                              cache_creations = count
+                  
+                  total = cache_reads + cache_creations
+                  efficiency = (cache_reads / total * 100) if total > 0 else 0
+                  
+                  # Determine color based on efficiency
+                  if efficiency >= 70:
+                      color = '#10b981'  # Green
+                      status = '●'
+                  elif efficiency >= 50:
+                      color = '#f59e0b'  # Yellow
+                      status = '◐'
+                  else:
+                      color = '#ef4444'  # Red
+                      status = '○'
+                  
+                  return f'''
+                  <div style="
+                      display: flex;
+                      flex-direction: column;
+                      align-items: center;
+                      justify-content: center;
+                      height: 100%;
+                      font-family: 'Amazon Ember', -apple-system, sans-serif;
+                      background: linear-gradient(135deg, {color} 0%, {color}aa 100%);
+                      border-radius: 8px;
+                      padding: 20px;
+                  ">
+                      <div style="
+                          font-size: 56px;
+                          font-weight: 700;
+                          color: white;
+                          text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                          margin-bottom: 8px;
+                      ">{efficiency:.0f}% {status}</div>
+                      <div style="
+                          font-size: 14px;
+                          color: rgba(255,255,255,0.9);
+                          text-transform: uppercase;
+                          letter-spacing: 1px;
+                          font-weight: 500;
+                      ">Cache Efficiency</div>
+                      <div style="
+                          margin-top: 12px;
+                          font-size: 12px;
+                          color: rgba(255,255,255,0.8);
+                      ">{cache_reads:,} hits / {total:,} total</div>
+                  </div>
+                  '''
+                  
+              except Exception as e:
+                  return f'''<div style="padding: 20px; color: #991b1b;">Error: {str(e)[:100]}</div>'''
+
+Outputs:
+  TotalTokensWidgetArn:
+    Description: ARN for Total Tokens custom widget
+    Value: !GetAtt TotalTokensWidget.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TotalTokensArn'
+
+  OperationsCountWidgetArn:
+    Description: ARN for Operations Count custom widget
+    Value: !GetAtt OperationsCountWidget.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OperationsCountArn'
+
+  ActiveUsersWidgetArn:
+    Description: ARN for Active Users custom widget
+    Value: !GetAtt ActiveUsersWidget.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ActiveUsersArn'
+
+  TokenByModelWidgetArn:
+    Description: ARN for Token by Model pie chart widget
+    Value: !GetAtt TokenByModelWidget.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TokenByModelArn'
+
+  CacheEfficiencyWidgetArn:
+    Description: ARN for Cache Efficiency widget
+    Value: !GetAtt CacheEfficiencyWidget.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CacheEfficiencyArn'
+
+  StackName:
+    Description: Name of this stack for referencing in dashboard template
+    Value: !Ref AWS::StackName
+    Export:
+      Name: !Sub '${AWS::StackName}-Name'
