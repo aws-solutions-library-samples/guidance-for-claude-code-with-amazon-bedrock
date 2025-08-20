@@ -629,6 +629,203 @@ Resources:
         GROUP BY email_domain
         ORDER BY total_tokens DESC;
         
+  TPMAnalysisQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      Name: Detailed TPM and RPM Analysis
+      Description: Calculate tokens per minute and requests per minute by user and model
+      QueryString: !Sub |
+        WITH minute_metrics AS (
+          SELECT 
+            DATE_TRUNC('minute', from_unixtime(timestamp/1000)) as minute,
+            user_email,
+            user_id,
+            organization_id,
+            model,
+            SUM(token_usage) as tokens_per_minute,
+            COUNT(*) as requests_per_minute
+          FROM "${GlueDatabase}".metrics
+          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+            AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
+          GROUP BY 
+            DATE_TRUNC('minute', from_unixtime(timestamp/1000)),
+            user_email,
+            user_id,
+            organization_id,
+            model
+        )
+        SELECT 
+          minute,
+          user_email,
+          organization_id,
+          model,
+          tokens_per_minute as tpm,
+          requests_per_minute as rpm,
+          ROUND(tokens_per_minute / 60.0, 2) as avg_tps,
+          ROUND(requests_per_minute / 60.0, 2) as avg_rps
+        FROM minute_metrics
+        ORDER BY minute DESC, tokens_per_minute DESC
+        LIMIT 1000;
+        
+  UserSessionAnalysisQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      Name: User Session Analysis
+      Description: Analyze user sessions with duration and intensity metrics
+      QueryString: !Sub |
+        WITH session_metrics AS (
+          SELECT 
+            session_id,
+            user_email,
+            user_id,
+            organization_id,
+            MIN(from_unixtime(timestamp/1000)) as session_start,
+            MAX(from_unixtime(timestamp/1000)) as session_end,
+            SUM(token_usage) as total_tokens,
+            COUNT(*) as api_calls,
+            COUNT(DISTINCT model) as models_used,
+            AVG(token_usage) as avg_tokens_per_call
+          FROM "${GlueDatabase}".metrics
+          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+            AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
+            AND session_id IS NOT NULL
+            AND session_id <> ''
+          GROUP BY session_id, user_email, user_id, organization_id
+        )
+        SELECT 
+          user_email,
+          organization_id,
+          session_id,
+          session_start,
+          session_end,
+          DATE_DIFF('minute', session_start, session_end) as session_duration_minutes,
+          total_tokens,
+          api_calls,
+          models_used,
+          ROUND(avg_tokens_per_call, 2) as avg_tokens_per_call,
+          ROUND(total_tokens / GREATEST(DATE_DIFF('minute', session_start, session_end), 1), 2) as tokens_per_minute,
+          ROUND(total_tokens * 0.000015, 4) as session_cost_usd
+        FROM session_metrics
+        WHERE DATE_DIFF('minute', session_start, session_end) > 0
+        ORDER BY total_tokens DESC
+        LIMIT 100;
+        
+  CostAttributionQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      Name: Detailed Cost Attribution
+      Description: Calculate costs by user, organization, and model with hourly breakdown
+      QueryString: !Sub |
+        WITH hourly_costs AS (
+          SELECT 
+            DATE_TRUNC('hour', from_unixtime(timestamp/1000)) as hour,
+            user_email,
+            user_id,
+            organization_id,
+            model,
+            type as token_type,
+            SUM(token_usage) as tokens,
+            -- Approximate pricing per million tokens
+            CASE 
+              WHEN model LIKE '%opus-4-1%' THEN 15.00
+              WHEN model LIKE '%opus-4%' THEN 15.00
+              WHEN model LIKE '%sonnet-4%' THEN 3.00
+              WHEN model LIKE '%sonnet-3-7%' THEN 3.00
+              WHEN model LIKE '%haiku-3-5%' THEN 0.25
+              ELSE 3.00
+            END as price_per_million
+          FROM "${GlueDatabase}".metrics
+          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+            AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
+          GROUP BY 
+            DATE_TRUNC('hour', from_unixtime(timestamp/1000)),
+            user_email,
+            user_id,
+            organization_id,
+            model,
+            type
+        )
+        SELECT 
+          hour,
+          user_email,
+          organization_id,
+          model,
+          token_type,
+          tokens,
+          price_per_million,
+          ROUND(tokens * price_per_million / 1000000, 4) as cost_usd,
+          SUM(tokens) OVER (PARTITION BY user_email ORDER BY hour) as cumulative_tokens,
+          SUM(ROUND(tokens * price_per_million / 1000000, 4)) OVER (PARTITION BY user_email ORDER BY hour) as cumulative_cost_usd
+        FROM hourly_costs
+        ORDER BY hour DESC, cost_usd DESC;
+        
+  PeakUsageAnalysisQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      Name: Peak Usage and Rate Limit Analysis
+      Description: Identify peak usage periods and potential rate limit issues
+      QueryString: !Sub |
+        WITH minute_usage AS (
+          SELECT 
+            DATE_TRUNC('minute', from_unixtime(timestamp/1000)) as minute,
+            user_email,
+            model,
+            SUM(token_usage) as tpm,
+            COUNT(*) as rpm
+          FROM "${GlueDatabase}".metrics
+          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+            AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
+          GROUP BY 
+            DATE_TRUNC('minute', from_unixtime(timestamp/1000)),
+            user_email,
+            model
+        ),
+        peak_minutes AS (
+          SELECT 
+            minute,
+            user_email,
+            model,
+            tpm,
+            rpm,
+            -- Anthropic rate limits (approximate)
+            CASE 
+              WHEN model LIKE '%opus%' THEN 40000
+              WHEN model LIKE '%sonnet%' THEN 80000
+              WHEN model LIKE '%haiku%' THEN 100000
+              ELSE 80000
+            END as tpm_limit,
+            CASE 
+              WHEN model LIKE '%opus%' THEN 50
+              WHEN model LIKE '%sonnet%' THEN 100
+              WHEN model LIKE '%haiku%' THEN 100
+              ELSE 100
+            END as rpm_limit
+          FROM minute_usage
+        )
+        SELECT 
+          minute,
+          user_email,
+          model,
+          tpm,
+          rpm,
+          tpm_limit,
+          rpm_limit,
+          ROUND(100.0 * tpm / tpm_limit, 2) as tpm_utilization_pct,
+          ROUND(100.0 * rpm / rpm_limit, 2) as rpm_utilization_pct,
+          CASE 
+            WHEN tpm >= tpm_limit * 0.9 OR rpm >= rpm_limit * 0.9 THEN 'HIGH_RISK'
+            WHEN tpm >= tpm_limit * 0.7 OR rpm >= rpm_limit * 0.7 THEN 'MEDIUM_RISK'
+            ELSE 'LOW_RISK'
+          END as rate_limit_risk
+        FROM peak_minutes
+        WHERE tpm > 0 OR rpm > 0
+        ORDER BY GREATEST(tpm_utilization_pct, rpm_utilization_pct) DESC
+        LIMIT 100;
+        
   IdentityProviderUsageQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
@@ -697,10 +894,28 @@ Outputs:
   SampleQueriesInfo:
     Description: Information about sample queries
     Value: !Sub |
-      Sample queries have been created:
-      1. "Top Users by Token Usage" - Find top 10 users in last 7 days with email and org attribution
-      2. "Token Usage by Model and Type" - Analyze usage by model and token type with org context
-      3. "User Activity Pattern" - Show activity patterns by hour of day
-      4. "Token Usage by Organization" - Track token usage across organizations
+      Enhanced queries have been created for comprehensive usage analysis:
+      
+      **Real-Time Metrics:**
+      1. "Detailed TPM and RPM Analysis" - Calculate tokens per minute and requests per minute by user and model
+      2. "Peak Usage and Rate Limit Analysis" - Identify when you're approaching rate limits
+      
+      **User Analytics:**
+      3. "Top Users by Token Usage" - Find top 10 users in last 7 days with email and org attribution
+      4. "User Session Analysis" - Analyze session duration, intensity, and cost metrics
       5. "Token Usage by Email Domain" - Analyze usage patterns by email domain
-      6. "Usage Analysis by Identity Provider" - Compare usage between Okta, Auth0, and Cognito
+      
+      **Cost & Attribution:**
+      6. "Detailed Cost Attribution" - Calculate precise costs by user, org, and model with cumulative tracking
+      7. "Token Usage by Organization" - Track token usage across organizations
+      
+      **Usage Patterns:**
+      8. "Token Usage by Model and Type" - Analyze usage by model and token type with org context
+      9. "User Activity Pattern" - Show activity patterns by hour of day
+      10. "Usage Analysis by Identity Provider" - Compare usage between Okta, Auth0, and Cognito
+      
+      These queries help you:
+      - Track real-time TPM/RPM for rate limit monitoring
+      - Identify heavy users and usage spikes
+      - Calculate accurate cost attribution
+      - Debug metric collection issues

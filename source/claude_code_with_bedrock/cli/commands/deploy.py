@@ -4,6 +4,7 @@
 """Deploy command - Deploy AWS infrastructure."""
 
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -324,13 +325,35 @@ class DeployCommand(Command):
             console.print("")
 
         elif stack_type == "dashboard":
-            template = project_root / "deployment" / "infrastructure" / "unified-dashboard.yaml"
+            template = project_root / "deployment" / "infrastructure" / "claude-code-dashboard.yaml"
             stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
-
-            console.print("[dim]# Deploy monitoring dashboard[/dim]")
-            console.print("aws cloudformation deploy \\")
+            
+            # Get S3 bucket from networking stack for packaging
+            networking_stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+            networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+            
+            console.print("[dim]# Deploy monitoring dashboard (requires packaging)[/dim]")
+            
+            if not networking_outputs or not networking_outputs.get('CfnArtifactsBucket'):
+                console.print("[red]# Error: S3 bucket for packaging not found[/red]")
+                console.print("[yellow]# The networking stack must be deployed first[/yellow]")
+                console.print("[cyan]# Run: ccwb deploy networking[/cyan]")
+                console.print("")
+                return
+            
+            s3_bucket = networking_outputs['CfnArtifactsBucket']
+            console.print(f"[dim]# Package Lambda functions to S3 bucket: {s3_bucket}[/dim]")
+            packaged_template = f"/tmp/packaged-dashboard-{int(time.time())}.yaml"
+            
+            console.print("aws cloudformation package \\")
             console.print(f"  --template-file {template} \\")
+            console.print(f"  --s3-bucket {s3_bucket} \\")
+            console.print(f"  --output-template-file {packaged_template}")
+            console.print("")
+            console.print("aws cloudformation deploy \\")
+            console.print(f"  --template-file {packaged_template} \\")
             console.print(f"  --stack-name {stack_name} \\")
+            console.print("  --capabilities CAPABILITY_IAM \\")
             console.print(f"  --region {profile.aws_region}")
             console.print("")
 
@@ -467,13 +490,45 @@ class DeployCommand(Command):
             elif stack_type == "dashboard":
                 task = progress.add_task("Deploying monitoring dashboard...", total=None)
 
-                template = project_root / "deployment" / "infrastructure" / "unified-dashboard.yaml"
+                template = project_root / "deployment" / "infrastructure" / "claude-code-dashboard.yaml"
                 stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
+                
+                # Get S3 bucket from networking stack for packaging
+                networking_stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+                networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+                
+                if not networking_outputs or not networking_outputs.get('CfnArtifactsBucket'):
+                    console.print(f"[red]Error: S3 bucket for packaging not found[/red]")
+                    console.print("[yellow]The networking stack must be deployed first with the artifacts bucket.[/yellow]")
+                    console.print(f"Run: [cyan]ccwb deploy networking[/cyan]")
+                    return 1
+                
+                # Package the template first
+                s3_bucket = networking_outputs['CfnArtifactsBucket']
+                packaged_template = f"/tmp/packaged-dashboard-{int(time.time())}.yaml"
+                
+                package_cmd = [
+                    "aws", "cloudformation", "package",
+                    "--template-file", str(template),
+                    "--s3-bucket", s3_bucket,
+                    "--output-template-file", packaged_template,
+                    "--region", profile.aws_region
+                ]
+                
+                # Run packaging
+                package_result = subprocess.run(package_cmd, capture_output=True, text=True)
+                if package_result.returncode != 0:
+                    console.print(f"[red]Failed to package dashboard template[/red]")
+                    console.print(f"[dim]{package_result.stderr}[/dim]")
+                    return 1
+                
+                template_file = packaged_template
 
                 cmd = [
                     "aws", "cloudformation", "deploy",
-                    "--template-file", str(template),
+                    "--template-file", template_file,
                     "--stack-name", stack_name,
+                    "--capabilities", "CAPABILITY_IAM",
                     "--region", profile.aws_region
                 ]
 

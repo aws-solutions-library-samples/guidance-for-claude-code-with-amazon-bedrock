@@ -1,0 +1,641 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code monitoring dashboard with embedded custom widget Lambda functions'
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCodeDashboard
+    Description: Name for the CloudWatch dashboard
+
+  MetricsLogGroup:
+    Type: String
+    Default: /aws/claude-code/metrics
+    Description: CloudWatch Log Group containing Claude Code metrics
+
+  MetricsRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where metrics log group exists
+
+Resources:
+  QueryUtilsLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: ClaudeCode-QueryUtils
+      Description: Shared utilities for rate limiting CloudWatch queries
+      Content: ./lambda-functions/layer/
+      CompatibleRuntimes:
+        - python3.11
+      LicenseInfo: MIT
+
+  CustomWidgetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsQuery
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:DescribeLogGroups
+                Resource: '*'
+        - PolicyName: ServiceQuotasAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - servicequotas:GetServiceQuota
+                  - servicequotas:ListServiceQuotas
+                Resource: '*'
+
+  TotalTokensWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TotalTokens
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/total_tokens/
+
+  OperationsCountWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-OperationsCount
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/operations_count/
+
+  ActiveUsersWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-ActiveUsers
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/active_users/
+
+  TokenByModelWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TokenByModel
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/token_by_model/
+
+  CacheEfficiencyWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-CacheEfficiency
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/cache_efficiency/
+
+  TopUsersWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TopUsers
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/top_users/
+
+  OperationsByTypeWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-OperationsByType
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/operations_by_type/
+
+  TokenUsageByTypeWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-TokenUsageByType
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/token_usage_by_type/
+
+  CodeGenerationByLanguageWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-CodeGenByLanguage
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/code_generation_by_language/
+
+  LinesOfCodeWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-LinesOfCode
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/lines_of_code/
+
+  CommitsWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-Commits
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/commits/
+
+  CodeAcceptanceWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-CodeAcceptance
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/code_acceptance/
+
+  ActiveHoursWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-ActiveHours
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/active_hours/
+
+  ModelQuotaUsageWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-ModelQuotaUsage
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/model_quota_usage/
+
+  # CloudWatch Dashboard
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${TotalTokensWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Total Tokens Used"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 6,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${ActiveUsersWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Active Users"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 12,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${OperationsCountWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Operations Count"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 18,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${CacheEfficiencyWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Cache Efficiency"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/metrics' | fields @timestamp, @message | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by bin(5m)",
+                "region": "us-east-1",
+                "title": "Token Usage Over Time",
+                "queryLanguage": "cwli",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-0|opus-4-[^1]/, tokens, 0) as opus_4, if(model like /sonnet-4/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
+                "region": "us-east-1",
+                "title": "Token Usage by Model Over Time",
+                "queryLanguage": "cwli",
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "endpoint": "${TokenByModelWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Token Usage by Model"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "endpoint": "${TopUsersWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Top Users by Token Usage"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "endpoint": "${TokenUsageByTypeWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Token Usage by Type"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 8,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "endpoint": "${OperationsByTypeWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Operations by Type"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 16,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "endpoint": "${CodeGenerationByLanguageWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Code Generation by Language"
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 24,
+              "width": 24,
+              "height": 2,
+              "properties": {
+                "markdown": "## Developer Productivity Metrics",
+                "background": "transparent"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 32,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${LinesOfCodeWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Lines of Code"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 6,
+              "y": 32,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${CommitsWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Commits"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 12,
+              "y": 32,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${CodeAcceptanceWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Code Acceptance"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 18,
+              "y": 32,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "endpoint": "${ActiveHoursWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Active Hours"
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 36,
+              "width": 24,
+              "height": 1,
+              "properties": {
+                "markdown": "## Performance Metrics",
+                "background": "transparent"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 45,
+              "width": 12,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-west-2)", "region": "us-west-2" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-east-2)", "region": "us-east-2" } ],
+                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-west-2)", "region": "us-west-2" } ],
+                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-east-2)", "region": "us-east-2" } ],
+                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-west-2)", "region": "us-west-2" } ],
+                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-east-2)", "region": "us-east-2" } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "us-east-1",
+                "title": "Bedrock API Errors",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 37,
+              "width": 24,
+              "height": 8,
+              "properties": {
+                "endpoint": "${ModelQuotaUsageWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Model Quota Usage"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 45,
+              "width": 12,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-west-2)", "region": "us-west-2" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-20250514-v1:0", { "stat": "Sum", "label": "Opus 4 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-sonnet-4-20250514-v1:0", { "stat": "Sum", "label": "Sonnet 4 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-3-7-sonnet-20250219-v1:0", { "stat": "Sum", "label": "Sonnet 3.7 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "anthropic.claude-3-5-haiku-20241022-v1:0", { "stat": "Sum", "label": "Haiku 3.5 (us-east-1)", "region": "us-east-1" } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "us-east-1",
+                "title": "Throttles by Model",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": false
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardURL:
+    Description: Direct URL to the CloudWatch dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+
+  LogsInsightsURL:
+    Description: URL to CloudWatch Logs Insights
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'
