@@ -170,7 +170,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'false'
+          METRICS_ONLY: 'true'
       Code: ./lambda-functions/total_tokens/
 
   OperationsCountWidget:
@@ -205,7 +205,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'false'
+          METRICS_ONLY: 'true'
       Code: ./lambda-functions/active_users/
 
   TokenByModelWidget:
@@ -240,7 +240,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'false'
+          METRICS_ONLY: 'true'
       Code: ./lambda-functions/cache_efficiency/
 
   TopUsersWidget:
@@ -258,7 +258,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'false'
+          METRICS_ONLY: 'true'
       Code: ./lambda-functions/top_users/
 
   OperationsByTypeWidget:
@@ -395,7 +395,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'false'
+          METRICS_ONLY: 'true'
       Code: ./lambda-functions/model_quota_usage/
 
   # CloudWatch Dashboard
