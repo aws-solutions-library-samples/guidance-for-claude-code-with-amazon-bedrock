@@ -6,6 +6,11 @@ import time
 import sys
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+try:
+    from metrics_utils import get_top_n_metrics, check_metrics_available
+except ImportError:
+    # Metrics utils not available, will fall back to logs
+    pass
 
 
 def format_number(num):
@@ -33,6 +38,19 @@ def lambda_handler(event, context):
     height = widget_size.get("height", 200)
 
     logs_client = boto3.client("logs", region_name=region)
+    cloudwatch_client = boto3.client("cloudwatch", region_name=region)
+    
+    # Check if metrics are available
+    use_metrics = False
+    try:
+        if 'metrics_utils' in sys.modules:
+            use_metrics = check_metrics_available(cloudwatch_client)
+            if use_metrics:
+                print("Using CloudWatch Metrics for top users data")
+            else:
+                print("CloudWatch Metrics not available, falling back to logs")
+    except:
+        print("Metrics utils not available, using logs")
 
     try:
         # Always use dashboard time range
@@ -57,52 +75,80 @@ def lambda_handler(event, context):
 
 
         
-
-
-        query = """
-        fields @message
-        | filter @message like /user.email/
-        | parse @message /"user.email":"(?<user>[^"]*)"/
-        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-        | stats sum(tokens) as total_tokens by user
-        | sort total_tokens desc
-        | limit 10
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
-        query_status = response.get("status", "Unknown")
         users = []
+        
+        # Try to get data from metrics first
+        if use_metrics:
+            try:
+                print("Fetching top users from CloudWatch Metrics")
+                top_users_metrics = get_top_n_metrics(
+                    cloudwatch_client,
+                    'TopUserTokens',
+                    'User',
+                    10,
+                    start_time,
+                    end_time
+                )
+                
+                if top_users_metrics:
+                    for metric in top_users_metrics:
+                        users.append({
+                            "email": metric['dimension'],
+                            "tokens": metric['value']
+                        })
+                    print(f"Retrieved {len(users)} top users from metrics")
+                else:
+                    print("No top users data in metrics, falling back to logs")
+                    use_metrics = False  # Fall back to logs
+            except Exception as e:
+                print(f"Error getting top users from metrics: {str(e)}")
+                use_metrics = False  # Fall back to logs
+        
+        # Fall back to logs if metrics not available or failed
+        if not use_metrics:
+            query = """
+            fields @message
+            | filter @message like /user.email/
+            | parse @message /"user.email":"(?<user>[^"]*)"/
+            | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+            | stats sum(tokens) as total_tokens by user
+            | sort total_tokens desc
+            | limit 10
+            """
 
-        if query_status == "Complete":
-            if response.get("results") and len(response["results"]) > 0:
-                for result in response["results"]:
-                    user_email = ""
-                    tokens = 0
-                    for field in result:
-                        if field["field"] == "user":
-                            user_email = field["value"]
-                        elif field["field"] == "total_tokens":
-                            tokens = float(field["value"])
-
-                    if user_email and tokens:
-                        users.append({"email": user_email, "tokens": tokens})
-        elif query_status == "Failed":
-            raise Exception(
-                f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
             )
-        elif query_status == "Cancelled":
-            raise Exception("Query was cancelled")
-        elif query_status in ["Running", "Scheduled"]:
-            raise Exception(f"Query timed out: {query_status}")
-        else:
-            raise Exception(f"Query status: {query_status}")
+
+            query_id = response['queryId']
+            
+            # Wait for results with optimized polling
+            response = wait_for_query_results(logs_client, query_id)
+
+            query_status = response.get("status", "Unknown")
+
+            if query_status == "Complete":
+                if response.get("results") and len(response["results"]) > 0:
+                    for result in response["results"]:
+                        user_email = ""
+                        tokens = 0
+                        for field in result:
+                            if field["field"] == "user":
+                                user_email = field["value"]
+                            elif field["field"] == "total_tokens":
+                                tokens = float(field["value"])
+
+                        if user_email and tokens:
+                            users.append({"email": user_email, "tokens": tokens})
+            elif query_status == "Failed":
+                raise Exception(
+                    f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+                )
+            elif query_status == "Cancelled":
+                raise Exception("Query was cancelled")
+            elif query_status in ["Running", "Scheduled"]:
+                raise Exception(f"Query timed out: {query_status}")
+            else:
+                raise Exception(f"Query status: {query_status}")
 
         # Calculate total and percentages
         total_tokens = sum(u["tokens"] for u in users)

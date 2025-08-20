@@ -6,6 +6,11 @@ import time
 import sys
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+try:
+    from metrics_utils import get_metric_statistics, check_metrics_available
+except ImportError:
+    # Metrics utils not available, will fall back to logs
+    pass
 
 
 def lambda_handler(event, context):
@@ -22,6 +27,19 @@ def lambda_handler(event, context):
     height = widget_size.get("height", 200)
 
     logs_client = boto3.client("logs", region_name=region)
+    cloudwatch_client = boto3.client("cloudwatch", region_name=region)
+    
+    # Check if metrics are available
+    use_metrics = False
+    try:
+        if 'metrics_utils' in sys.modules:
+            use_metrics = check_metrics_available(cloudwatch_client)
+            if use_metrics:
+                print("Using CloudWatch Metrics for active users")
+            else:
+                print("CloudWatch Metrics not available, falling back to logs")
+    except:
+        print("Metrics utils not available, using logs")
 
     try:
         if "start" in time_range and "end" in time_range:
@@ -44,42 +62,68 @@ def lambda_handler(event, context):
 
 
         
-
-
-        query = """
-        fields @message
-        | filter @message like /user.email/
-        | parse @message /"user.email":"(?<user>[^"]*)"/
-        | stats count_distinct(user) as active_users
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
         user_count = None
-        query_status = response.get("status", "Unknown")
+        
+        # Try to get data from metrics first
+        if use_metrics:
+            try:
+                print("Fetching active users from CloudWatch Metrics")
+                datapoints = get_metric_statistics(
+                    cloudwatch_client,
+                    'ActiveUsers',
+                    start_time,
+                    end_time,
+                    None,  # No dimensions
+                    'Maximum',  # Get max active users in period
+                    300  # 5-minute periods
+                )
+                
+                if datapoints:
+                    # Get the maximum active users across all periods
+                    user_count = int(max(point.get('Maximum', 0) for point in datapoints))
+                    print(f"Retrieved active users from metrics: {user_count}")
+                else:
+                    print("No active users data in metrics, falling back to logs")
+                    use_metrics = False  # Fall back to logs
+            except Exception as e:
+                print(f"Error getting active users from metrics: {str(e)}")
+                use_metrics = False  # Fall back to logs
+        
+        # Fall back to logs if metrics not available or failed
+        if not use_metrics:
+            query = """
+            fields @message
+            | filter @message like /user.email/
+            | parse @message /"user.email":"(?<user>[^"]*)"/
+            | stats count_distinct(user) as active_users
+            """
 
-        if query_status == "Complete":
-            if response.get("results") and len(response["results"]) > 0:
-                for field in response["results"][0]:
-                    if field["field"] == "active_users":
-                        user_count = int(float(field["value"]))
-                        break
-            else:
-                user_count = 0
-        elif query_status == "Failed":
-            raise Exception(
-                f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
             )
-        elif query_status == "Cancelled":
-            raise Exception("Query was cancelled")
-        else:
-            raise Exception(f"Query did not complete: {query_status}")
+
+            query_id = response['queryId']
+            
+            # Wait for results with optimized polling
+            response = wait_for_query_results(logs_client, query_id)
+
+            query_status = response.get("status", "Unknown")
+
+            if query_status == "Complete":
+                if response.get("results") and len(response["results"]) > 0:
+                    for field in response["results"][0]:
+                        if field["field"] == "active_users":
+                            user_count = int(float(field["value"]))
+                            break
+                else:
+                    user_count = 0
+            elif query_status == "Failed":
+                raise Exception(
+                    f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+                )
+            elif query_status == "Cancelled":
+                raise Exception("Query was cancelled")
+            else:
+                raise Exception(f"Query did not complete: {query_status}")
 
         if user_count is None:
             formatted_users = "N/A"

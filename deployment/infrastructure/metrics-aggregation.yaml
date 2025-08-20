@@ -60,12 +60,11 @@ Resources:
   MetricsAggregatorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${MetricsAggregatorFunction}'
+      LogGroupName: /aws/lambda/claude-code-metrics-aggregator
       RetentionInDays: 7
 
   MetricsAggregatorFunction:
     Type: AWS::Lambda::Function
-    DependsOn: MetricsAggregatorLogGroup
     Properties:
       FunctionName: claude-code-metrics-aggregator
       Description: Aggregates Claude Code logs into CloudWatch Metrics

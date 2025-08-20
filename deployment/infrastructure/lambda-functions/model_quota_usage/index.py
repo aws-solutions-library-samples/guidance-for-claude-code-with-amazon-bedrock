@@ -9,6 +9,11 @@ import time
 import sys
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+try:
+    from metrics_utils import get_metric_statistics, get_latest_metric_value, check_metrics_available
+except ImportError:
+    # Metrics utils not available, will fall back to logs
+    pass
 
 # Quota code mappings for each model
 QUOTA_MAPPINGS = {
@@ -177,6 +182,73 @@ def get_service_quota(quota_code, region='us-east-1', quota_name=''):
         return defaults.get(quota_code, 100000 if 'tpm' in quota_name.lower() else 200)
 
 
+def get_usage_metrics_from_cloudwatch(cloudwatch_client, model_id, start_time, end_time):
+    """Get current and peak TPM/RPM from CloudWatch Metrics."""
+    try:
+        # Get TPM from metrics
+        tpm_dimensions = [{'Name': 'Model', 'Value': model_id}]
+        
+        # Get current TPM (most recent data point)
+        tpm_current = get_latest_metric_value(
+            cloudwatch_client,
+            'TokensPerMinute',
+            tpm_dimensions,
+            'Sum',
+            lookback_minutes=10
+        ) or 0
+        
+        # Get peak TPM over the time range
+        tpm_datapoints = get_metric_statistics(
+            cloudwatch_client,
+            'TokensPerMinute',
+            start_time,
+            end_time,
+            tpm_dimensions,
+            'Maximum',
+            300  # 5-minute periods
+        )
+        
+        tpm_peak = tpm_current
+        tpm_peak_time = None
+        if tpm_datapoints:
+            max_point = max(tpm_datapoints, key=lambda x: x.get('Maximum', 0))
+            tpm_peak = max_point.get('Maximum', tpm_current)
+            tpm_peak_time = int(max_point['Timestamp'].timestamp() * 1000) if 'Timestamp' in max_point else None
+        
+        # Get RPM from metrics
+        rpm_current = get_latest_metric_value(
+            cloudwatch_client,
+            'RequestsPerMinute',
+            tpm_dimensions,
+            'Sum',
+            lookback_minutes=10
+        ) or 0
+        
+        # Get peak RPM over the time range
+        rpm_datapoints = get_metric_statistics(
+            cloudwatch_client,
+            'RequestsPerMinute',
+            start_time,
+            end_time,
+            tpm_dimensions,
+            'Maximum',
+            300
+        )
+        
+        rpm_peak = rpm_current
+        rpm_peak_time = None
+        if rpm_datapoints:
+            max_point = max(rpm_datapoints, key=lambda x: x.get('Maximum', 0))
+            rpm_peak = max_point.get('Maximum', rpm_current)
+            rpm_peak_time = int(max_point['Timestamp'].timestamp() * 1000) if 'Timestamp' in max_point else None
+        
+        return tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time
+        
+    except Exception as e:
+        print(f"Error getting metrics for {model_id}: {str(e)}")
+        return None  # Signal to fall back to logs
+
+
 def get_usage_metrics(logs_client, log_group, model_id, start_time, end_time, region):
     """Get current and peak TPM/RPM for a specific model."""
     
@@ -307,6 +379,19 @@ def lambda_handler(event, context):
     time_range = widget_context.get("timeRange", {})
 
     logs_client = boto3.client("logs", region_name=metrics_region)
+    cloudwatch_client = boto3.client("cloudwatch", region_name=metrics_region)
+    
+    # Check if metrics are available
+    use_metrics = False
+    try:
+        if 'metrics_utils' in sys.modules:
+            use_metrics = check_metrics_available(cloudwatch_client)
+            if use_metrics:
+                print("Using CloudWatch Metrics for model quota data")
+            else:
+                print("CloudWatch Metrics not available, falling back to logs")
+    except:
+        print("Metrics utils not available, using logs")
 
     try:
         # Use dashboard time range
@@ -337,10 +422,23 @@ def lambda_handler(event, context):
             tpm_quota = get_service_quota(config['tpm_quota_code'], quota_region, f"{config['name']} TPM")
             rpm_quota = get_service_quota(config['rpm_quota_code'], quota_region, f"{config['name']} RPM")
             
-            # Get current and peak usage from logs
-            tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
-                logs_client, log_group, model_id, start_time, end_time, metrics_region
-            )
+            # Get current and peak usage - try metrics first, fall back to logs
+            if use_metrics:
+                result = get_usage_metrics_from_cloudwatch(
+                    cloudwatch_client, model_id, start_time, end_time
+                )
+                if result is not None:
+                    tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = result
+                else:
+                    # Fall back to logs if metrics failed
+                    tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
+                        logs_client, log_group, model_id, start_time, end_time, metrics_region
+                    )
+            else:
+                # Use logs directly
+                tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
+                    logs_client, log_group, model_id, start_time, end_time, metrics_region
+                )
             
             # Skip models with no usage
             if tpm_current == 0 and tpm_peak == 0 and rpm_current == 0 and rpm_peak == 0:

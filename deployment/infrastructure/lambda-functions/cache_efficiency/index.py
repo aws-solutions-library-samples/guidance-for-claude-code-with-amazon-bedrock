@@ -6,6 +6,11 @@ import time
 import sys
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+try:
+    from metrics_utils import get_metric_statistics, check_metrics_available
+except ImportError:
+    # Metrics utils not available, will fall back to logs
+    pass
 
 
 def lambda_handler(event, context):
@@ -22,6 +27,19 @@ def lambda_handler(event, context):
     height = widget_size.get("height", 200)
 
     logs_client = boto3.client("logs", region_name=region)
+    cloudwatch_client = boto3.client("cloudwatch", region_name=region)
+    
+    # Check if metrics are available
+    use_metrics = False
+    try:
+        if 'metrics_utils' in sys.modules:
+            use_metrics = check_metrics_available(cloudwatch_client)
+            if use_metrics:
+                print("Using CloudWatch Metrics for cache efficiency")
+            else:
+                print("CloudWatch Metrics not available, falling back to logs")
+    except:
+        print("Metrics utils not available, using logs")
 
     try:
         if "start" in time_range and "end" in time_range:
@@ -44,56 +62,99 @@ def lambda_handler(event, context):
 
 
         
-
-
-        query = """
-        fields @message
-        | filter @message like /claude_code.token.usage/
-        | parse @message /"type":"(?<cache_type>[^"]*)"/
-        | filter cache_type in ["cacheRead", "cacheCreation"]
-        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-        | stats sum(tokens) as total by cache_type
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
-        query_status = response.get("status", "Unknown")
         cache_reads = 0
         cache_creations = 0
+        
+        # Try to get data from metrics first
+        if use_metrics:
+            try:
+                print("Fetching cache efficiency from CloudWatch Metrics")
+                
+                # Get cache hits
+                hits_datapoints = get_metric_statistics(
+                    cloudwatch_client,
+                    'CacheHits',
+                    start_time,
+                    end_time,
+                    None,
+                    'Sum',
+                    300
+                )
+                
+                if hits_datapoints:
+                    cache_reads = sum(point.get('Sum', 0) for point in hits_datapoints)
+                
+                # Get cache misses
+                misses_datapoints = get_metric_statistics(
+                    cloudwatch_client,
+                    'CacheMisses',
+                    start_time,
+                    end_time,
+                    None,
+                    'Sum',
+                    300
+                )
+                
+                if misses_datapoints:
+                    cache_creations = sum(point.get('Sum', 0) for point in misses_datapoints)
+                
+                if hits_datapoints or misses_datapoints:
+                    print(f"Retrieved cache metrics - Hits: {cache_reads}, Misses: {cache_creations}")
+                else:
+                    print("No cache data in metrics, falling back to logs")
+                    use_metrics = False  # Fall back to logs
+            except Exception as e:
+                print(f"Error getting cache metrics: {str(e)}")
+                use_metrics = False  # Fall back to logs
+        
+        # Fall back to logs if metrics not available or failed
+        if not use_metrics:
+            query = """
+            fields @message
+            | filter @message like /claude_code.token.usage/
+            | parse @message /"type":"(?<cache_type>[^"]*)"/
+            | filter cache_type in ["cacheRead", "cacheCreation"]
+            | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+            | stats sum(tokens) as total by cache_type
+            """
 
-        if query_status == "Complete":
-            if response.get("results") and len(response["results"]) > 0:
-                for result in response["results"]:
-                    cache_type = ""
-                    total = 0
-                    for field in result:
-                        if field["field"] == "cache_type":
-                            cache_type = field["value"]
-                        elif field["field"] == "total":
-                            total = float(field["value"])
-
-                    if cache_type == "cacheRead":
-                        cache_reads = total
-                    elif cache_type == "cacheCreation":
-                        cache_creations = total
-            else:
-                pass
-        elif query_status == "Failed":
-            raise Exception(
-                f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
             )
-        elif query_status == "Cancelled":
-            raise Exception("Query was cancelled")
-        elif query_status in ["Running", "Scheduled"]:
-            raise Exception(f"Query timed out: {query_status}")
-        else:
-            raise Exception(f"Query status: {query_status}")
+
+            query_id = response['queryId']
+            
+            # Wait for results with optimized polling
+            response = wait_for_query_results(logs_client, query_id)
+
+            query_status = response.get("status", "Unknown")
+
+            if query_status == "Complete":
+                if response.get("results") and len(response["results"]) > 0:
+                    for result in response["results"]:
+                        cache_type = ""
+                        total = 0
+                        for field in result:
+                            if field["field"] == "cache_type":
+                                cache_type = field["value"]
+                            elif field["field"] == "total":
+                                total = float(field["value"])
+
+                        if cache_type == "cacheRead":
+                            cache_reads = total
+                        elif cache_type == "cacheCreation":
+                            cache_creations = total
+                else:
+                    pass
+            elif query_status == "Failed":
+                raise Exception(
+                    f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+                )
+            elif query_status == "Cancelled":
+                raise Exception("Query was cancelled")
+            elif query_status in ["Running", "Scheduled"]:
+                raise Exception(f"Query timed out: {query_status}")
+            else:
+                raise Exception(f"Query status: {query_status}")
 
         total = cache_reads + cache_creations
         efficiency = (cache_reads / total * 100) if total > 0 else None

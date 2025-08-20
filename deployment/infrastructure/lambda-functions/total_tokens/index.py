@@ -6,6 +6,11 @@ import time
 import sys
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+try:
+    from metrics_utils import get_metric_statistics, check_metrics_available
+except ImportError:
+    # Metrics utils not available, will fall back to logs
+    pass
 
 def format_number(num):
     if num >= 1_000_000_000:
@@ -30,6 +35,19 @@ def lambda_handler(event, context):
     height = widget_size.get('height', 200)
 
     logs_client = boto3.client('logs', region_name=region)
+    cloudwatch_client = boto3.client('cloudwatch', region_name=region)
+    
+    # Check if metrics are available
+    use_metrics = False
+    try:
+        if 'metrics_utils' in sys.modules:
+            use_metrics = check_metrics_available(cloudwatch_client)
+            if use_metrics:
+                print("Using CloudWatch Metrics for total tokens")
+            else:
+                print("CloudWatch Metrics not available, falling back to logs")
+    except:
+        print("Metrics utils not available, using logs")
 
     try:
         # Always use dashboard time range
@@ -54,40 +72,66 @@ def lambda_handler(event, context):
 
 
         
-
-
-        query = """
-        fields @message
-        | filter @message like /claude_code.token.usage/
-        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-        | stats sum(tokens) as total_tokens
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
         total_tokens = None
-        query_status = response.get('status', 'Unknown')
+        
+        # Try to get data from metrics first
+        if use_metrics:
+            try:
+                print("Fetching total tokens from CloudWatch Metrics")
+                datapoints = get_metric_statistics(
+                    cloudwatch_client,
+                    'TotalTokens',
+                    start_time,
+                    end_time,
+                    None,  # No dimensions for total
+                    'Sum',
+                    300  # 5-minute periods
+                )
+                
+                if datapoints:
+                    # Sum all datapoints for the total
+                    total_tokens = sum(point.get('Sum', 0) for point in datapoints)
+                    print(f"Retrieved total tokens from metrics: {total_tokens}")
+                else:
+                    print("No total tokens data in metrics, falling back to logs")
+                    use_metrics = False  # Fall back to logs
+            except Exception as e:
+                print(f"Error getting total tokens from metrics: {str(e)}")
+                use_metrics = False  # Fall back to logs
+        
+        # Fall back to logs if metrics not available or failed
+        if not use_metrics:
+            query = """
+            fields @message
+            | filter @message like /claude_code.token.usage/
+            | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+            | stats sum(tokens) as total_tokens
+            """
 
-        if query_status == 'Complete':
-            if response.get('results') and len(response['results']) > 0:
-                for field in response['results'][0]:
-                    if field['field'] == 'total_tokens':
-                        total_tokens = float(field['value'])
-                        break
+            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query
+            )
+
+            query_id = response['queryId']
+            
+            # Wait for results with optimized polling
+            response = wait_for_query_results(logs_client, query_id)
+
+            query_status = response.get('status', 'Unknown')
+
+            if query_status == 'Complete':
+                if response.get('results') and len(response['results']) > 0:
+                    for field in response['results'][0]:
+                        if field['field'] == 'total_tokens':
+                            total_tokens = float(field['value'])
+                            break
+                else:
+                    total_tokens = 0
+            elif query_status == 'Failed':
+                raise Exception(f"Query failed: {response.get('statusReason', 'Unknown reason')}")
+            elif query_status == 'Cancelled':
+                raise Exception("Query was cancelled")
             else:
-                total_tokens = 0
-        elif query_status == 'Failed':
-            raise Exception(f"Query failed: {response.get('statusReason', 'Unknown reason')}")
-        elif query_status == 'Cancelled':
-            raise Exception("Query was cancelled")
-        else:
-            raise Exception(f"Query did not complete: {query_status}")
+                raise Exception(f"Query did not complete: {query_status}")
 
         if total_tokens is None:
             formatted_tokens = "N/A"
