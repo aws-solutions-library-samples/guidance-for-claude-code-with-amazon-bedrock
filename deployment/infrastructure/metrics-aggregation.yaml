@@ -1,0 +1,211 @@
+# ABOUTME: CloudFormation template for metrics aggregation Lambda and EventBridge
+# ABOUTME: Aggregates Claude Code logs into CloudWatch Metrics every 5 minutes
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code Metrics Aggregation Pipeline'
+
+Parameters:
+  MetricsLogGroup:
+    Type: String
+    Description: CloudWatch Logs group to aggregate metrics from
+    Default: /aws/lambda/bedrock-claude-logs
+
+  MetricsRegion:
+    Type: String
+    Description: Region where metrics log group exists
+    Default: us-east-1
+
+  AggregationInterval:
+    Type: Number
+    Description: Aggregation interval in minutes
+    Default: 5
+    MinValue: 1
+    MaxValue: 60
+
+Resources:
+  MetricsAggregatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+        - PolicyName: CloudWatchMetricsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  MetricsAggregatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${MetricsAggregatorFunction}'
+      RetentionInDays: 7
+
+  MetricsAggregatorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: MetricsAggregatorLogGroup
+    Properties:
+      FunctionName: claude-code-metrics-aggregator
+      Description: Aggregates Claude Code logs into CloudWatch Metrics
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt MetricsAggregatorRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code:
+        ZipFile: |
+          # Placeholder code - will be replaced by actual implementation
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps('Placeholder')}
+
+  MetricsAggregatorScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: claude-code-metrics-aggregator-schedule
+      Description: !Sub 'Trigger metrics aggregation every ${AggregationInterval} minutes'
+      ScheduleExpression: !Sub 'rate(${AggregationInterval} minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MetricsAggregatorFunction.Arn
+          Id: MetricsAggregatorTarget
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAge: 600
+
+  MetricsAggregatorSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MetricsAggregatorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MetricsAggregatorScheduleRule.Arn
+
+  # CloudWatch Alarms for monitoring the aggregator
+  MetricsAggregatorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: claude-code-metrics-aggregator-errors
+      AlarmDescription: Alert when metrics aggregator Lambda fails
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MetricsAggregatorFunction
+      TreatMissingData: notBreaching
+
+  MetricsAggregatorDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: claude-code-metrics-aggregator-duration
+      AlarmDescription: Alert when metrics aggregator takes too long
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 60000  # 60 seconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MetricsAggregatorFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics dashboard for monitoring aggregation health
+  MetricsAggregationDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: claude-code-metrics-aggregation-health
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", {"stat": "Sum", "label": "Invocations"}],
+                  [".", "Errors", {"stat": "Sum", "label": "Errors"}],
+                  [".", "Duration", {"stat": "Average", "label": "Avg Duration (ms)"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Metrics Aggregator Performance",
+                "period": 300,
+                "dimensions": {
+                  "FunctionName": "${MetricsAggregatorFunction}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["ClaudeCode", "TotalTokens", {"stat": "Sum"}],
+                  [".", "ActiveUsers", {"stat": "Maximum"}],
+                  [".", "CacheEfficiency", {"stat": "Average"}]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Aggregated Metrics Overview",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+Outputs:
+  MetricsAggregatorFunctionArn:
+    Description: ARN of the Metrics Aggregator Lambda function
+    Value: !GetAtt MetricsAggregatorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-MetricsAggregatorArn'
+
+  MetricsAggregatorFunctionName:
+    Description: Name of the Metrics Aggregator Lambda function
+    Value: !Ref MetricsAggregatorFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-MetricsAggregatorName'
+
+  MetricsNamespace:
+    Description: CloudWatch Metrics namespace for aggregated metrics
+    Value: ClaudeCode
+    Export:
+      Name: !Sub '${AWS::StackName}-MetricsNamespace'
+
+  AggregationScheduleArn:
+    Description: ARN of the EventBridge rule for aggregation schedule
+    Value: !GetAtt MetricsAggregatorScheduleRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ScheduleArn'
