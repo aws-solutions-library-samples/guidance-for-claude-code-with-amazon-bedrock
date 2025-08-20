@@ -26,6 +26,18 @@ Resources:
       Content: ./lambda-functions/layer/
       CompatibleRuntimes:
         - python3.11
+        - python3.12
+      LicenseInfo: MIT
+
+  MetricsUtilsLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: ClaudeCode-MetricsUtils
+      Description: Shared utilities for querying CloudWatch Metrics
+      Content: ./lambda-functions/layer/
+      CompatibleRuntimes:
+        - python3.11
+        - python3.12
       LicenseInfo: MIT
 
   CustomWidgetRole:
@@ -61,6 +73,88 @@ Resources:
                   - servicequotas:GetServiceQuota
                   - servicequotas:ListServiceQuotas
                 Resource: '*'
+        - PolicyName: CloudWatchMetricsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: '*'
+
+  MetricsAggregatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+        - PolicyName: CloudWatchMetricsPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  MetricsAggregatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-MetricsAggregator
+      Description: Aggregates Claude Code logs into CloudWatch Metrics
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt MetricsAggregatorRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/metrics_aggregator/
+
+  MetricsAggregatorScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ClaudeCode-MetricsAggregator-Schedule
+      Description: Trigger metrics aggregation every 5 minutes
+      ScheduleExpression: 'rate(5 minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MetricsAggregatorFunction.Arn
+          Id: MetricsAggregatorTarget
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAge: 600
+
+  MetricsAggregatorSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MetricsAggregatorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MetricsAggregatorScheduleRule.Arn
 
   TotalTokensWidget:
     Type: AWS::Lambda::Function
@@ -72,6 +166,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -88,6 +183,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -104,6 +200,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -120,6 +217,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -136,6 +234,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -152,6 +251,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -168,6 +268,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -184,6 +285,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -200,6 +302,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -216,6 +319,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -232,6 +336,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -248,6 +353,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -264,6 +370,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
@@ -280,6 +387,7 @@ Resources:
       Timeout: 60
       Layers:
         - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
