@@ -372,8 +372,9 @@ def lambda_handler(event, context):
 
     log_group = os.environ["METRICS_LOG_GROUP"]
     metrics_region = os.environ["METRICS_REGION"]
+    METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
     
-    print(f"Starting Model Quota Usage widget - Log Group: {log_group}, Region: {metrics_region}")
+    print(f"Starting Model Quota Usage widget - Log Group: {log_group}, Region: {metrics_region}, METRICS_ONLY: {METRICS_ONLY}")
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -381,17 +382,22 @@ def lambda_handler(event, context):
     logs_client = boto3.client("logs", region_name=metrics_region)
     cloudwatch_client = boto3.client("cloudwatch", region_name=metrics_region)
     
-    # Check if metrics are available
-    use_metrics = False
-    try:
-        if 'metrics_utils' in sys.modules:
-            use_metrics = check_metrics_available(cloudwatch_client)
-            if use_metrics:
-                print("Using CloudWatch Metrics for model quota data")
-            else:
-                print("CloudWatch Metrics not available, falling back to logs")
-    except:
-        print("Metrics utils not available, using logs")
+    # Check if we should use metrics only mode
+    if METRICS_ONLY:
+        print("METRICS_ONLY mode enabled - using CloudWatch Metrics directly")
+        use_metrics = True
+    else:
+        # Check if metrics are available for fallback mode
+        use_metrics = False
+        try:
+            if 'metrics_utils' in sys.modules:
+                use_metrics = check_metrics_available(cloudwatch_client)
+                if use_metrics:
+                    print("Using CloudWatch Metrics for model quota data")
+                else:
+                    print("CloudWatch Metrics not available, falling back to logs")
+        except:
+            print("Metrics utils not available, using logs")
 
     try:
         # Use dashboard time range
@@ -429,16 +435,26 @@ def lambda_handler(event, context):
                 )
                 if result is not None:
                     tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = result
+                elif METRICS_ONLY:
+                    # In metrics-only mode, don't fall back - use zeros
+                    print(f"No metrics data for {model_id} in METRICS_ONLY mode")
+                    tpm_current, tpm_peak, tpm_peak_time = 0, 0, None
+                    rpm_current, rpm_peak, rpm_peak_time = 0, 0, None
                 else:
                     # Fall back to logs if metrics failed
                     tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
                         logs_client, log_group, model_id, start_time, end_time, metrics_region
                     )
-            else:
-                # Use logs directly
+            elif not METRICS_ONLY:
+                # Use logs directly (only if not in METRICS_ONLY mode)
                 tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
                     logs_client, log_group, model_id, start_time, end_time, metrics_region
                 )
+            else:
+                # METRICS_ONLY mode but no metrics available
+                print(f"METRICS_ONLY mode but metrics not available for {model_id}")
+                tpm_current, tpm_peak, tpm_peak_time = 0, 0, None
+                rpm_current, rpm_peak, rpm_peak_time = 0, 0, None
             
             # Skip models with no usage
             if tpm_current == 0 and tpm_peak == 0 and rpm_current == 0 and rpm_peak == 0:

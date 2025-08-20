@@ -19,6 +19,7 @@ def lambda_handler(event, context):
 
     log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
+    METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -29,17 +30,22 @@ def lambda_handler(event, context):
     logs_client = boto3.client("logs", region_name=region)
     cloudwatch_client = boto3.client("cloudwatch", region_name=region)
     
-    # Check if metrics are available
-    use_metrics = False
-    try:
-        if 'metrics_utils' in sys.modules:
-            use_metrics = check_metrics_available(cloudwatch_client)
-            if use_metrics:
-                print("Using CloudWatch Metrics for cache efficiency")
-            else:
-                print("CloudWatch Metrics not available, falling back to logs")
-    except:
-        print("Metrics utils not available, using logs")
+    # Check if we should use metrics only mode
+    if METRICS_ONLY:
+        print("METRICS_ONLY mode enabled - using CloudWatch Metrics directly")
+        use_metrics = True
+    else:
+        # Check if metrics are available for fallback mode
+        use_metrics = False
+        try:
+            if 'metrics_utils' in sys.modules:
+                use_metrics = check_metrics_available(cloudwatch_client)
+                if use_metrics:
+                    print("Using CloudWatch Metrics for cache efficiency")
+                else:
+                    print("CloudWatch Metrics not available, falling back to logs")
+        except:
+            print("Metrics utils not available, using logs")
 
     try:
         if "start" in time_range and "end" in time_range:
@@ -100,15 +106,43 @@ def lambda_handler(event, context):
                 
                 if hits_datapoints or misses_datapoints:
                     print(f"Retrieved cache metrics - Hits: {cache_reads}, Misses: {cache_creations}")
+                elif METRICS_ONLY:
+                    # In metrics-only mode, don't fall back
+                    print("No cache data available in METRICS_ONLY mode")
+                    # Keep cache_reads and cache_creations as 0
                 else:
                     print("No cache data in metrics, falling back to logs")
                     use_metrics = False  # Fall back to logs
             except Exception as e:
-                print(f"Error getting cache metrics: {str(e)}")
-                use_metrics = False  # Fall back to logs
+                if METRICS_ONLY:
+                    # In metrics-only mode, return error instead of falling back
+                    print(f"Metrics error in METRICS_ONLY mode: {str(e)}")
+                    return f"""
+                    <div style="
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        height: 100%;
+                        background: #fef2f2;
+                        border-radius: 8px;
+                        padding: 10px;
+                        box-sizing: border-box;
+                        overflow: hidden;
+                        font-family: 'Amazon Ember', -apple-system, sans-serif;
+                    ">
+                        <div style="text-align: center; width: 100%; overflow: hidden;">
+                            <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Metrics Unavailable</div>
+                            <div style="color: #7f1d1d; font-size: 10px;">{str(e)[:100]}</div>
+                            <div style="color: #7f1d1d; font-size: 9px; margin-top: 4px;">METRICS_ONLY mode - no fallback</div>
+                        </div>
+                    </div>
+                    """
+                else:
+                    print(f"Error getting cache metrics: {str(e)}")
+                    use_metrics = False  # Fall back to logs
         
-        # Fall back to logs if metrics not available or failed
-        if not use_metrics:
+        # Fall back to logs if metrics not available or failed (and not in METRICS_ONLY mode)
+        if not use_metrics and not METRICS_ONLY:
             query = """
             fields @message
             | filter @message like /claude_code.token.usage/
