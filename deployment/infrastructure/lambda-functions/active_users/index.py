@@ -159,33 +159,33 @@ def lambda_handler(event, context):
                     else:
                         print("No active users data in metrics, falling back to logs")
                         use_metrics = False
-            except Exception as e:
-                if METRICS_ONLY:
-                    # In metrics-only mode, return error instead of falling back
-                    print(f"Metrics error in METRICS_ONLY mode: {str(e)}")
-                    return f"""
-                    <div style="
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        height: 100%;
-                        background: #fef2f2;
-                        border-radius: 8px;
-                        padding: 10px;
-                        box-sizing: border-box;
-                        overflow: hidden;
-                        font-family: 'Amazon Ember', -apple-system, sans-serif;
-                    ">
-                        <div style="text-align: center; width: 100%; overflow: hidden;">
-                            <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Metrics Unavailable</div>
-                            <div style="color: #7f1d1d; font-size: 10px;">{str(e)[:100]}</div>
-                            <div style="color: #7f1d1d; font-size: 9px; margin-top: 4px;">METRICS_ONLY mode - no fallback</div>
+                except Exception as e:
+                    if METRICS_ONLY:
+                        # In metrics-only mode, return error instead of falling back
+                        print(f"Metrics error in METRICS_ONLY mode: {str(e)}")
+                        return f"""
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            height: 100%;
+                            background: #fef2f2;
+                            border-radius: 8px;
+                            padding: 10px;
+                            box-sizing: border-box;
+                            overflow: hidden;
+                            font-family: 'Amazon Ember', -apple-system, sans-serif;
+                        ">
+                            <div style="text-align: center; width: 100%; overflow: hidden;">
+                                <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Metrics Unavailable</div>
+                                <div style="color: #7f1d1d; font-size: 10px;">{str(e)[:100]}</div>
+                                <div style="color: #7f1d1d; font-size: 9px; margin-top: 4px;">METRICS_ONLY mode - no fallback</div>
+                            </div>
                         </div>
-                    </div>
-                    """
-                else:
-                    print(f"Error getting active users from metrics: {str(e)}")
-                    use_metrics = False  # Fall back to logs
+                        """
+                    else:
+                        print(f"Error getting active users from metrics: {str(e)}")
+                        use_metrics = False  # Fall back to logs
         
         # Fall back to logs if metrics not available or failed (and not in METRICS_ONLY mode)
         if not use_metrics and not METRICS_ONLY:

@@ -175,6 +175,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:BatchWriteItem
                   - dynamodb:UpdateItem
+                  - dynamodb:GetItem
                 Resource: !GetAtt MetricsTable.Arn
 
   MetricsAggregatorFunction:
