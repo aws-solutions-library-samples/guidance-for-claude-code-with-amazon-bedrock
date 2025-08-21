@@ -410,6 +410,23 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/lines_of_code/
 
+  LinesOverTimeWidget:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ClaudeCode-Widget-LinesOverTime
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CustomWidgetRole.Arn
+      Timeout: 60
+      Layers:
+        - !Ref QueryUtilsLayer
+        - !Ref MetricsUtilsLayer
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+          METRICS_REGION: !Ref MetricsRegion
+      Code: ./lambda-functions/lines_over_time/
+
   CommitsWidget:
     Type: AWS::Lambda::Function
     Properties:
@@ -569,9 +586,25 @@ Resources:
               }
             },
             {
-              "type": "log",
+              "type": "custom",
               "x": 12,
               "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "endpoint": "${LinesOverTimeWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Lines Added/Removed Over Time"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 12,
               "width": 12,
               "height": 6,
               "properties": {
@@ -584,7 +617,7 @@ Resources:
             },
             {
               "type": "log",
-              "x": 0,
+              "x": 12,
               "y": 12,
               "width": 12,
               "height": 6,
@@ -600,23 +633,7 @@ Resources:
             {
               "type": "custom",
               "x": 0,
-              "y": 12,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "endpoint": "${TokenByModelWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Token Usage by Model"
-              }
-            },
-            {
-              "type": "custom",
-              "x": 12,
-              "y": 12,
+              "y": 18,
               "width": 12,
               "height": 6,
               "properties": {
@@ -631,8 +648,40 @@ Resources:
             },
             {
               "type": "custom",
-              "x": 0,
+              "x": 12,
               "y": 18,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "endpoint": "${TokenByModelWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Token Usage by Model"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 24,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "endpoint": "${CodeGenerationByLanguageWidget.Arn}",
+                "updateOn": {
+                  "refresh": true,
+                  "resize": true,
+                  "timeRange": true
+                },
+                "title": "Code Generation by Language"
+              }
+            },
+            {
+              "type": "custom",
+              "x": 8,
+              "y": 24,
               "width": 8,
               "height": 6,
               "properties": {
@@ -647,8 +696,8 @@ Resources:
             },
             {
               "type": "custom",
-              "x": 8,
-              "y": 18,
+              "x": 16,
+              "y": 24,
               "width": 8,
               "height": 6,
               "properties": {
@@ -662,25 +711,9 @@ Resources:
               }
             },
             {
-              "type": "custom",
-              "x": 16,
-              "y": 18,
-              "width": 8,
-              "height": 6,
-              "properties": {
-                "endpoint": "${CodeGenerationByLanguageWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Code Generation by Language"
-              }
-            },
-            {
               "type": "text",
               "x": 0,
-              "y": 24,
+              "y": 30,
               "width": 24,
               "height": 2,
               "properties": {
