@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 import time
 from collections import defaultdict
+from decimal import Decimal
 
 # Initialize clients
 logs_client = boto3.client('logs')
@@ -509,7 +510,7 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
             'sk': 'SUMMARY',
             'timestamp': ts_str,
             'unique_users': unique_users,
-            'total_tokens': total_tokens if total_tokens else 0,
+            'total_tokens': Decimal(str(total_tokens)) if total_tokens else Decimal(0),
             'top_users': user_details[:10] if user_details else [],  # Top 10 users
             'ttl': ttl
         }
@@ -523,8 +524,8 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
                     'pk': f'USER#{user["email"]}#{date_str}',
                     'sk': f'TS#{timestamp.strftime("%H:%M:%S")}',
                     'timestamp': ts_str,
-                    'tokens': int(user['tokens']),
-                    'requests': user['requests'],
+                    'tokens': Decimal(str(user['tokens'])),
+                    'requests': Decimal(str(user['requests'])),
                     'ttl': ttl
                 }
                 batch.put_item(Item=user_item)
