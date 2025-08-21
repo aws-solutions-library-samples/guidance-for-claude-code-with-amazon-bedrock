@@ -222,8 +222,8 @@ def aggregate_active_users(start_ms, end_ms):
         if user_email:
             user_details.append({
                 'email': user_email,
-                'tokens': Decimal(str(tokens)),
-                'requests': Decimal(str(requests))
+                'tokens': tokens,
+                'requests': requests
             })
     
     return unique_count, user_details
@@ -505,13 +505,22 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
         ttl = int((timestamp + timedelta(days=30)).timestamp())  # 30 day retention
         
         # Write window summary
+        # Convert user details to ensure all numeric values are Decimal
+        top_users_decimal = []
+        for user in (user_details[:10] if user_details else []):
+            top_users_decimal.append({
+                'email': user['email'],
+                'tokens': Decimal(str(user.get('tokens', 0))),
+                'requests': Decimal(str(user.get('requests', 0)))
+            })
+        
         window_item = {
             'pk': f'WINDOW#{ts_str}',
             'sk': 'SUMMARY',
             'timestamp': ts_str,
             'unique_users': unique_users,
             'total_tokens': Decimal(str(total_tokens)) if total_tokens else Decimal(0),
-            'top_users': user_details[:10] if user_details else [],  # Top 10 users
+            'top_users': top_users_decimal,
             'ttl': ttl
         }
         table.put_item(Item=window_item)
@@ -524,8 +533,8 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
                     'pk': f'USER#{user["email"]}#{date_str}',
                     'sk': f'TS#{timestamp.strftime("%H:%M:%S")}',
                     'timestamp': ts_str,
-                    'tokens': Decimal(str(user['tokens'])),
-                    'requests': Decimal(str(user['requests'])),
+                    'tokens': Decimal(str(user.get('tokens', 0))),
+                    'requests': Decimal(str(user.get('requests', 0))),
                     'ttl': ttl
                 }
                 batch.put_item(Item=user_item)
