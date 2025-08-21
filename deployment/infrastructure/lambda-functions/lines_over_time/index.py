@@ -1,14 +1,11 @@
 # ABOUTME: Lambda function to display lines added/removed over time as a dual-line chart
-# ABOUTME: Shows time series visualization of code changes tracked in CloudWatch Logs
+# ABOUTME: Queries DynamoDB for time series data of code changes
 
 import json
 import boto3
 import os
 from datetime import datetime, timedelta
-import time
-import sys
-sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+from boto3.dynamodb.conditions import Key
 
 
 def format_number(num):
@@ -26,8 +23,8 @@ def lambda_handler(event, context):
     if event.get("describe", False):
         return {"markdown": "# Lines Over Time\nCode changes timeline"}
 
-    log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
+    METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -35,7 +32,8 @@ def lambda_handler(event, context):
     width = widget_size.get("width", 600)
     height = widget_size.get("height", 400)
 
-    logs_client = boto3.client("logs", region_name=region)
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table(METRICS_TABLE)
 
     try:
         # Get time range from dashboard
@@ -46,52 +44,56 @@ def lambda_handler(event, context):
             end_time = int(datetime.now().timestamp() * 1000)
             start_time = int((datetime.now() - timedelta(hours=24)).timestamp() * 1000)
 
-        # Validate time range
-        is_valid, range_days, error_html = validate_time_range(start_time, end_time, max_days=7)
-        if not is_valid:
-            return error_html
+        # Convert to datetime
+        start_dt = datetime.fromtimestamp(start_time / 1000)
+        end_dt = datetime.fromtimestamp(end_time / 1000)
 
-        # Query for lines added/removed over time
-        query = """
-        fields @timestamp, @message
-        | filter @message like /claude_code.lines_of_code.count/
-        | parse @message /"type":"(?<type>[^"]*)"/
-        | parse @message /"claude_code.lines_of_code.count":(?<lines>[0-9.]+)/
-        | stats sum(lines) as total by type, bin(30m) as time_window
-        | sort time_window asc
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query)
-        query_id = response['queryId']
-        
-        # Wait for results
-        response = wait_for_query_results(logs_client, query_id)
-
-        query_status = response.get("status", "Unknown")
-        
-        if query_status != "Complete":
-            raise Exception(f"Query failed with status: {query_status}")
-
-        # Process results into time series
         time_series = {}  # {timestamp: {added: X, removed: Y}}
         
-        for result in response.get("results", []):
-            time_window = None
-            line_type = None
-            total = 0
+        # Query each day in the range
+        current_date = start_dt.date()
+        end_date = end_dt.date()
+        
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
             
-            for field in result:
-                if field["field"] == "time_window":
-                    time_window = field["value"]
-                elif field["field"] == "type":
-                    line_type = field["value"].lower()
-                elif field["field"] == "total":
-                    total = float(field["value"])
+            # Determine time boundaries for this day
+            if current_date == start_dt.date():
+                start_time_str = start_dt.strftime('%H:%M:%S')
+            else:
+                start_time_str = '00:00:00'
+                
+            if current_date == end_dt.date():
+                end_time_str = end_dt.strftime('%H:%M:%S')
+            else:
+                end_time_str = '23:59:59'
             
-            if time_window and line_type:
-                if time_window not in time_series:
-                    time_series[time_window] = {"added": 0, "removed": 0}
-                time_series[time_window][line_type] = total
+            # Query METRICS for window data which includes lines
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq(f'METRICS#{date_str}') & 
+                                     Key('sk').between(f'{start_time_str}#WINDOW#SUMMARY', 
+                                                       f'{end_time_str}#WINDOW#SUMMARY~'),
+                ProjectionExpression='sk, lines_added, lines_removed'
+            )
+            
+            # Process results
+            for item in response.get('Items', []):
+                # Extract time from sort key
+                sk_parts = item.get('sk', '').split('#')
+                if len(sk_parts) >= 3 and sk_parts[1] == 'WINDOW':
+                    time_str = sk_parts[0]
+                    
+                    # Create full timestamp
+                    dt = datetime.strptime(f'{date_str} {time_str}', '%Y-%m-%d %H:%M:%S')
+                    timestamp_key = dt.isoformat()
+                    
+                    time_series[timestamp_key] = {
+                        "added": float(item.get('lines_added', 0)),
+                        "removed": float(item.get('lines_removed', 0))
+                    }
+            
+            # Move to next day
+            current_date += timedelta(days=1)
 
         # Sort by timestamp
         sorted_times = sorted(time_series.keys())
@@ -165,7 +167,7 @@ def lambda_handler(event, context):
         for i in range(0, len(sorted_times), label_interval):
             x = (i / (len(sorted_times) - 1)) * chart_width if len(sorted_times) > 1 else chart_width / 2
             # Parse timestamp and format
-            dt = datetime.fromisoformat(sorted_times[i].replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(sorted_times[i])
             time_label = dt.strftime('%H:%M')
             x_labels.append(
                 f'<text x="{x}" y="{chart_height + 15}" text-anchor="middle" fill="#9ca3af" font-size="9">{time_label}</text>'
@@ -183,6 +185,7 @@ def lambda_handler(event, context):
             background: white;
             border-radius: 8px;
             box-sizing: border-box;
+            overflow: hidden;
         ">
             <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; gap: 20px;">
@@ -200,7 +203,7 @@ def lambda_handler(event, context):
                 </span>
             </div>
             
-            <svg width="{width - 40}" height="{height - 60}" style="overflow: visible;">
+            <svg width="{width - 40}" height="{height - 60}" style="overflow: hidden;">
                 <!-- Grid lines -->
                 <g stroke="#e5e7eb" stroke-width="0.5">
                     <line x1="0" y1="0" x2="0" y2="{chart_height}" />
@@ -240,12 +243,14 @@ def lambda_handler(event, context):
             border-radius: 8px;
             padding: 10px;
             font-family: 'Amazon Ember', -apple-system, sans-serif;
+            overflow: hidden;
+            box-sizing: border-box;
         ">
-            <div style="text-align: center;">
+            <div style="text-align: center; width: 100%; overflow: hidden;">
                 <div style="color: #991b1b; font-weight: 600; font-size: 14px;">
                     Data Unavailable
                 </div>
-                <div style="color: #7f1d1d; font-size: 10px; margin-top: 4px;">
+                <div style="color: #7f1d1d; font-size: 10px; margin-top: 4px; word-wrap: break-word; overflow: hidden; text-overflow: ellipsis;">
                     {error_msg[:100]}
                 </div>
             </div>

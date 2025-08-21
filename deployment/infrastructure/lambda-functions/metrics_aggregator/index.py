@@ -61,10 +61,13 @@ def lambda_handler(event, context):
                 'Timestamp': end_time
             })
         
-        # Write to DynamoDB
-        write_to_dynamodb(end_time, total_tokens, active_users_count, user_details)
+        # 3. Lines of Code Added/Removed
+        lines_added, lines_removed = aggregate_lines_of_code(start_ms, end_ms)
         
-        # 3. Tokens and Requests by Model
+        # Write to DynamoDB
+        write_to_dynamodb(end_time, total_tokens, active_users_count, user_details, lines_added, lines_removed)
+        
+        # 4. Tokens and Requests by Model
         model_metrics = aggregate_model_metrics(start_ms, end_ms)
         for metric in model_metrics:
             metrics_to_publish.append(metric)
@@ -494,18 +497,53 @@ def aggregate_commits(start_ms, end_ms):
     return 0
 
 
-def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
+def aggregate_lines_of_code(start_ms, end_ms):
     """
-    Write aggregated metrics to DynamoDB for improved querying.
+    Aggregate lines of code added and removed.
+    """
+    query = """
+    fields @message
+    | filter @message like /claude_code.lines_of_code.count/
+    | parse @message /"type":"(?<type>[^"]*)"/
+    | parse @message /"claude_code.lines_of_code.count":(?<lines>[0-9.]+)/
+    | stats sum(lines) as total by type
+    """
+    
+    lines_added = 0
+    lines_removed = 0
+    
+    results = run_query(query, start_ms, end_ms)
+    for result in results:
+        line_type = None
+        total = 0
+        for field in result:
+            if field['field'] == 'type':
+                line_type = field['value'].lower()
+            elif field['field'] == 'total':
+                total = float(field['value'])
+        
+        if line_type == 'added':
+            lines_added = total
+        elif line_type == 'removed':
+            lines_removed = total
+    
+    return lines_added, lines_removed
+
+
+def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details, lines_added, lines_removed):
+    """
+    Write aggregated metrics to DynamoDB using proper single-table design.
+    Schema: PK=METRICS#YYYY-MM-DD, SK=HH:MM:SS#TYPE#DETAIL
     """
     try:
-        # Format timestamp for DynamoDB
-        ts_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
+        # Format timestamps
         date_str = timestamp.strftime('%Y-%m-%d')
+        time_str = timestamp.strftime('%H:%M:%S')
+        month_str = timestamp.strftime('%Y-%m')
+        day_str = timestamp.strftime('%d')
         ttl = int((timestamp + timedelta(days=30)).timestamp())  # 30 day retention
         
-        # Write window summary
-        # Convert user details to ensure all numeric values are Decimal
+        # Convert user details to Decimal
         top_users_decimal = []
         for user in (user_details[:10] if user_details else []):
             top_users_decimal.append({
@@ -514,60 +552,90 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
                 'requests': Decimal(str(user.get('requests', 0)))
             })
         
-        window_item = {
-            'pk': f'WINDOW#{ts_str}',
-            'sk': 'SUMMARY',
-            'timestamp': ts_str,
-            'unique_users': unique_users,
-            'total_tokens': Decimal(str(total_tokens)) if total_tokens else Decimal(0),
-            'top_users': top_users_decimal,
-            'ttl': ttl
-        }
-        table.put_item(Item=window_item)
-        print(f"Wrote window summary to DynamoDB: {unique_users} users, {total_tokens} tokens")
-        
-        # Write individual user activity records
         with table.batch_writer() as batch:
+            # 1. Write 5-minute window aggregate
+            window_item = {
+                'pk': f'METRICS#{date_str}',
+                'sk': f'{time_str}#WINDOW#SUMMARY',
+                'unique_users': unique_users,
+                'total_tokens': Decimal(str(total_tokens)) if total_tokens else Decimal(0),
+                'top_users': top_users_decimal,
+                'lines_added': Decimal(str(lines_added)) if lines_added else Decimal(0),
+                'lines_removed': Decimal(str(lines_removed)) if lines_removed else Decimal(0),
+                # GSI attributes for alternative access patterns
+                'gsi1pk': f'TYPE#WINDOW',
+                'gsi1sk': f'{date_str}#{time_str}',
+                'gsi3pk': f'MONTH#{month_str}',
+                'gsi3sk': f'{day_str}#{time_str}',
+                'ttl': ttl
+            }
+            batch.put_item(Item=window_item)
+            
+            # 2. Write lines of code metrics
+            if lines_added > 0 or lines_removed > 0:
+                lines_item = {
+                    'pk': f'METRICS#{date_str}',
+                    'sk': f'{time_str}#LINES#SUMMARY',
+                    'lines_added': Decimal(str(lines_added)),
+                    'lines_removed': Decimal(str(lines_removed)),
+                    'gsi2pk': f'TYPE#LINES',
+                    'gsi2sk': f'{date_str}#{time_str}',
+                    'gsi3pk': f'MONTH#{month_str}',
+                    'gsi3sk': f'{day_str}#{time_str}#LINES',
+                    'ttl': ttl
+                }
+                batch.put_item(Item=lines_item)
+            
+            # 3. Write individual user metrics for this window
             for user in user_details:
                 user_item = {
-                    'pk': f'USER#{user["email"]}#{date_str}',
-                    'sk': f'TS#{timestamp.strftime("%H:%M:%S")}',
-                    'timestamp': ts_str,
+                    'pk': f'METRICS#{date_str}',
+                    'sk': f'{time_str}#USER#{user["email"]}',
                     'tokens': Decimal(str(user.get('tokens', 0))),
                     'requests': Decimal(str(user.get('requests', 0))),
+                    # GSI for user-centric queries
+                    'gsi1pk': f'USER#{user["email"]}',
+                    'gsi1sk': f'{date_str}#{time_str}',
+                    'gsi3pk': f'MONTH#{month_str}',
+                    'gsi3sk': f'{day_str}#{time_str}#USER#{user["email"]}',
                     'ttl': ttl
                 }
                 batch.put_item(Item=user_item)
         
-        print(f"Wrote {len(user_details)} user records to DynamoDB")
+        print(f"Wrote window summary, lines metrics, and {len(user_details)} user records to DynamoDB")
         
-        # Update daily aggregate
+        # 4. Update daily aggregate (separate operation for atomic update)
         daily_key = {
-            'pk': f'DAILY#{date_str}',
-            'sk': 'USERS'
+            'pk': f'DAILY#{month_str}',
+            'sk': f'{day_str}#SUMMARY'
         }
         
         try:
             # Get existing daily record
             response = table.get_item(Key=daily_key)
-            existing_users = set(response.get('Item', {}).get('unique_users', []))
+            existing_item = response.get('Item', {})
+            existing_users = set(existing_item.get('unique_users', []))
+            daily_tokens = Decimal(str(existing_item.get('total_tokens', 0)))
             
-            # Add new users
+            # Add new data
             for user in user_details:
                 existing_users.add(user['email'])
+            daily_tokens += Decimal(str(total_tokens)) if total_tokens else Decimal(0)
             
             # Update daily record
             table.put_item(Item={
                 **daily_key,
                 'unique_users': list(existing_users),
-                'count': len(existing_users),
+                'unique_user_count': len(existing_users),
+                'total_tokens': daily_tokens,
+                'gsi2pk': f'TYPE#DAILY',
+                'gsi2sk': f'{month_str}-{day_str}',
                 'ttl': ttl
             })
-            print(f"Updated daily aggregate: {len(existing_users)} unique users")
+            print(f"Updated daily aggregate: {len(existing_users)} unique users, {daily_tokens} tokens")
+            
         except Exception as e:
             print(f"Error updating daily aggregate: {str(e)}")
             
     except Exception as e:
         print(f"Error writing to DynamoDB: {str(e)}")
-        # Don't fail the entire aggregation if DynamoDB write fails
-        pass

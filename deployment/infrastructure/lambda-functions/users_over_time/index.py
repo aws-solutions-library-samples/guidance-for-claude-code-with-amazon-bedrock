@@ -4,7 +4,7 @@
 import json
 import boto3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from boto3.dynamodb.conditions import Key
 
 def lambda_handler(event, context):
@@ -38,33 +38,54 @@ def lambda_handler(event, context):
 
         print(f"Querying users over time from {start_dt} to {end_dt}")
 
-        # Query WINDOW records for time series data
-        response = table.query(
-            IndexName='TimestampIndex',
-            ProjectionExpression='#ts, unique_users, sk',
-            ExpressionAttributeNames={'#ts': 'timestamp'},
-            KeyConditionExpression=Key('timestamp').between(
-                start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                end_dt.strftime('%Y-%m-%dT%H:%M:%S')
-            )
-        )
-
-        # Process data points
         data_points = []
-        for item in response.get('Items', []):
-            if item.get('sk') == 'SUMMARY':
-                timestamp = item.get('timestamp')
-                users = item.get('unique_users', 0)
+        
+        # Query each day in the range
+        current_date = start_dt.date()
+        end_date = end_dt.date()
+        
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
+            
+            # Determine time boundaries for this day
+            if current_date == start_dt.date():
+                start_time = start_dt.strftime('%H:%M:%S')
+            else:
+                start_time = '00:00:00'
                 
-                # Parse timestamp for display
-                dt = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S')
-                
-                data_points.append({
-                    'timestamp': timestamp,
-                    'time': dt.strftime('%H:%M'),
-                    'date': dt.strftime('%Y-%m-%d'),
-                    'users': users
-                })
+            if current_date == end_dt.date():
+                end_time = end_dt.strftime('%H:%M:%S')
+            else:
+                end_time = '23:59:59'
+            
+            # Query METRICS for this day with time range
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq(f'METRICS#{date_str}') & 
+                                     Key('sk').between(f'{start_time}#WINDOW#SUMMARY', 
+                                                       f'{end_time}#WINDOW#SUMMARY~'),
+                ProjectionExpression='sk, unique_users, total_tokens'
+            )
+            
+            # Process results
+            for item in response.get('Items', []):
+                # Extract time from sort key
+                sk_parts = item.get('sk', '').split('#')
+                if len(sk_parts) >= 3 and sk_parts[1] == 'WINDOW':
+                    time_str = sk_parts[0]
+                    users = item.get('unique_users', 0)
+                    
+                    # Create full timestamp
+                    dt = datetime.strptime(f'{date_str} {time_str}', '%Y-%m-%d %H:%M:%S')
+                    
+                    data_points.append({
+                        'timestamp': dt.isoformat(),
+                        'time': dt.strftime('%H:%M'),
+                        'date': date_str,
+                        'users': users
+                    })
+            
+            # Move to next day
+            current_date += timedelta(days=1)
 
         # Sort by timestamp
         data_points.sort(key=lambda x: x['timestamp'])
@@ -144,6 +165,7 @@ def lambda_handler(event, context):
             background: white;
             border-radius: 8px;
             box-sizing: border-box;
+            overflow: hidden;
         ">
             <div style="margin-bottom: 10px;">
                 <span style="font-size: 14px; font-weight: 600; color: #374151;">
@@ -203,12 +225,14 @@ def lambda_handler(event, context):
             border-radius: 8px;
             padding: 10px;
             font-family: 'Amazon Ember', -apple-system, sans-serif;
+            overflow: hidden;
+            box-sizing: border-box;
         ">
-            <div style="text-align: center;">
+            <div style="text-align: center; width: 100%; overflow: hidden;">
                 <div style="color: #991b1b; font-weight: 600; font-size: 14px;">
                     Data Unavailable
                 </div>
-                <div style="color: #7f1d1d; font-size: 10px; margin-top: 4px;">
+                <div style="color: #7f1d1d; font-size: 10px; margin-top: 4px; word-wrap: break-word; overflow: hidden; text-overflow: ellipsis;">
                     {error_msg[:100]}
                 </div>
             </div>
