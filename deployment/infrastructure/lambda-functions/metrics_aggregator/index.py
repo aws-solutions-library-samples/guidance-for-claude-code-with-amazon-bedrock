@@ -11,11 +11,16 @@ from collections import defaultdict
 # Initialize clients
 logs_client = boto3.client('logs')
 cloudwatch_client = boto3.client('cloudwatch')
+dynamodb = boto3.resource('dynamodb')
 
 # Configuration
 NAMESPACE = 'ClaudeCode'
 LOG_GROUP = os.environ.get('METRICS_LOG_GROUP', '/aws/lambda/bedrock-claude-logs')
+METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 AGGREGATION_WINDOW = 5  # minutes
+
+# DynamoDB table
+table = dynamodb.Table(METRICS_TABLE)
 
 def lambda_handler(event, context):
     """
@@ -45,15 +50,18 @@ def lambda_handler(event, context):
                 'Timestamp': end_time
             })
         
-        # 2. Active Users
-        active_users = aggregate_active_users(start_ms, end_ms)
-        if active_users is not None:
+        # 2. Active Users (now returns count and details)
+        active_users_count, user_details = aggregate_active_users(start_ms, end_ms)
+        if active_users_count is not None:
             metrics_to_publish.append({
                 'MetricName': 'ActiveUsers',
-                'Value': active_users,
+                'Value': active_users_count,
                 'Unit': 'Count',
                 'Timestamp': end_time
             })
+        
+        # Write to DynamoDB
+        write_to_dynamodb(end_time, total_tokens, active_users_count, user_details)
         
         # 3. Tokens and Requests by Model
         model_metrics = aggregate_model_metrics(start_ms, end_ms)
@@ -169,21 +177,55 @@ def aggregate_total_tokens(start_ms, end_ms):
 
 def aggregate_active_users(start_ms, end_ms):
     """
-    Count distinct active users.
+    Count distinct active users and return user details.
     """
-    query = """
+    # First get unique count for CloudWatch metric
+    query_count = """
     fields @message
     | filter @message like /user.email/
     | parse @message /"user.email":"(?<user>[^"]*)"/
     | stats count_distinct(user) as active_users
     """
     
-    results = run_query(query, start_ms, end_ms)
+    unique_count = 0
+    results = run_query(query_count, start_ms, end_ms)
     if results and len(results) > 0:
         for field in results[0]:
             if field['field'] == 'active_users':
-                return int(float(field['value']))
-    return 0
+                unique_count = int(float(field['value']))
+    
+    # Now get user details for DynamoDB
+    query_details = """
+    fields @message
+    | filter @message like /user.email/
+    | parse @message /"user.email":"(?<user>[^"]*)"/
+    | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+    | stats sum(tokens) as total_tokens, count() as requests by user
+    | sort total_tokens desc
+    """
+    
+    user_details = []
+    results = run_query(query_details, start_ms, end_ms)
+    for result in results:
+        user_email = None
+        tokens = 0
+        requests = 0
+        for field in result:
+            if field['field'] == 'user':
+                user_email = field['value']
+            elif field['field'] == 'total_tokens':
+                tokens = float(field['value'])
+            elif field['field'] == 'requests':
+                requests = int(float(field['value']))
+        
+        if user_email:
+            user_details.append({
+                'email': user_email,
+                'tokens': tokens,
+                'requests': requests
+            })
+    
+    return unique_count, user_details
 
 
 def aggregate_model_metrics(start_ms, end_ms):
@@ -449,3 +491,73 @@ def aggregate_commits(start_ms, end_ms):
             if field['field'] == 'total_commits':
                 return int(float(field['value']))
     return 0
+
+
+def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details):
+    """
+    Write aggregated metrics to DynamoDB for improved querying.
+    """
+    try:
+        # Format timestamp for DynamoDB
+        ts_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
+        date_str = timestamp.strftime('%Y-%m-%d')
+        ttl = int((timestamp + timedelta(days=30)).timestamp())  # 30 day retention
+        
+        # Write window summary
+        window_item = {
+            'pk': f'WINDOW#{ts_str}',
+            'sk': 'SUMMARY',
+            'timestamp': ts_str,
+            'unique_users': unique_users,
+            'total_tokens': total_tokens if total_tokens else 0,
+            'top_users': user_details[:10] if user_details else [],  # Top 10 users
+            'ttl': ttl
+        }
+        table.put_item(Item=window_item)
+        print(f"Wrote window summary to DynamoDB: {unique_users} users, {total_tokens} tokens")
+        
+        # Write individual user activity records
+        with table.batch_writer() as batch:
+            for user in user_details:
+                user_item = {
+                    'pk': f'USER#{user["email"]}#{date_str}',
+                    'sk': f'TS#{timestamp.strftime("%H:%M:%S")}',
+                    'timestamp': ts_str,
+                    'tokens': int(user['tokens']),
+                    'requests': user['requests'],
+                    'ttl': ttl
+                }
+                batch.put_item(Item=user_item)
+        
+        print(f"Wrote {len(user_details)} user records to DynamoDB")
+        
+        # Update daily aggregate
+        daily_key = {
+            'pk': f'DAILY#{date_str}',
+            'sk': 'USERS'
+        }
+        
+        try:
+            # Get existing daily record
+            response = table.get_item(Key=daily_key)
+            existing_users = set(response.get('Item', {}).get('unique_users', []))
+            
+            # Add new users
+            for user in user_details:
+                existing_users.add(user['email'])
+            
+            # Update daily record
+            table.put_item(Item={
+                **daily_key,
+                'unique_users': list(existing_users),
+                'count': len(existing_users),
+                'ttl': ttl
+            })
+            print(f"Updated daily aggregate: {len(existing_users)} unique users")
+        except Exception as e:
+            print(f"Error updating daily aggregate: {str(e)}")
+            
+    except Exception as e:
+        print(f"Error writing to DynamoDB: {str(e)}")
+        # Don't fail the entire aggregation if DynamoDB write fails
+        pass

@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import sys
+from boto3.dynamodb.conditions import Key, Attr
 sys.path.append('/opt')
 from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
 try:
@@ -20,6 +21,7 @@ def lambda_handler(event, context):
     log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
     METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
+    METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -29,6 +31,8 @@ def lambda_handler(event, context):
 
     logs_client = boto3.client("logs", region_name=region)
     cloudwatch_client = boto3.client("cloudwatch", region_name=region)
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table(METRICS_TABLE)
     
     # Check if we should use metrics only mode
     if METRICS_ONLY:
@@ -70,31 +74,91 @@ def lambda_handler(event, context):
         
         user_count = None
         
-        # Try to get data from metrics first
-        if use_metrics:
-            try:
-                print("Fetching active users from CloudWatch Metrics")
-                datapoints = get_metric_statistics(
-                    cloudwatch_client,
-                    'ActiveUsers',
-                    start_time,
-                    end_time,
-                    None,  # No dimensions
-                    'Maximum',  # Get max active users in period
-                    300  # 5-minute periods
+        # Try to get data from DynamoDB first (most accurate)
+        try:
+            print("Fetching active users from DynamoDB")
+            
+            # Convert timestamps to datetime for comparison
+            start_dt = datetime.fromtimestamp(start_time / 1000)
+            end_dt = datetime.fromtimestamp(end_time / 1000)
+            
+            # Query for daily aggregates in the time range
+            unique_users = set()
+            current_date = start_dt.date()
+            end_date = end_dt.date()
+            
+            while current_date <= end_date:
+                date_str = current_date.strftime('%Y-%m-%d')
+                try:
+                    response = table.get_item(
+                        Key={
+                            'pk': f'DAILY#{date_str}',
+                            'sk': 'USERS'
+                        }
+                    )
+                    if 'Item' in response:
+                        daily_users = response['Item'].get('unique_users', [])
+                        unique_users.update(daily_users)
+                        print(f"Found {len(daily_users)} users for {date_str}")
+                except Exception as e:
+                    print(f"Error querying daily aggregate for {date_str}: {str(e)}")
+                
+                current_date += timedelta(days=1)
+            
+            if unique_users:
+                user_count = len(unique_users)
+                print(f"Retrieved {user_count} unique users from DynamoDB")
+            else:
+                # Fall back to window summaries if no daily aggregates
+                print("No daily aggregates found, querying window summaries")
+                
+                # Query WINDOW records
+                response = table.query(
+                    IndexName='TimestampIndex',
+                    KeyConditionExpression=Key('timestamp').between(
+                        start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                        end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                    )
                 )
                 
-                if datapoints:
-                    # Get the maximum active users across all periods
-                    user_count = int(max(point.get('Maximum', 0) for point in datapoints))
-                    print(f"Retrieved active users from metrics: {user_count}")
-                elif METRICS_ONLY:
-                    # In metrics-only mode, don't fall back
-                    print("No metrics data available in METRICS_ONLY mode")
-                    user_count = 0
-                else:
-                    print("No active users data in metrics, falling back to logs")
-                    use_metrics = False  # Fall back to logs
+                # Collect unique users from all windows
+                window_users = set()
+                for item in response.get('Items', []):
+                    if item.get('sk') == 'SUMMARY':
+                        top_users = item.get('top_users', [])
+                        for user in top_users:
+                            window_users.add(user.get('email'))
+                
+                if window_users:
+                    user_count = len(window_users)
+                    print(f"Retrieved {user_count} unique users from window summaries")
+                
+        except Exception as e:
+            print(f"Error querying DynamoDB: {str(e)}")
+            
+            # Fall back to CloudWatch Metrics if DynamoDB fails
+            if use_metrics:
+                try:
+                    print("Falling back to CloudWatch Metrics")
+                    datapoints = get_metric_statistics(
+                        cloudwatch_client,
+                        'ActiveUsers',
+                        start_time,
+                        end_time,
+                        None,
+                        'Maximum',
+                        300
+                    )
+                    
+                    if datapoints:
+                        user_count = int(max(point.get('Maximum', 0) for point in datapoints))
+                        print(f"Retrieved active users from metrics: {user_count}")
+                    elif METRICS_ONLY:
+                        print("No metrics data available in METRICS_ONLY mode")
+                        user_count = 0
+                    else:
+                        print("No active users data in metrics, falling back to logs")
+                        use_metrics = False
             except Exception as e:
                 if METRICS_ONLY:
                     # In metrics-only mode, return error instead of falling back

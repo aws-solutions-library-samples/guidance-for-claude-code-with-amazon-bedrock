@@ -18,6 +18,42 @@ Parameters:
     Description: Region where metrics log group exists
 
 Resources:
+  # DynamoDB Table for Metrics Storage
+  MetricsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ClaudeCodeMetrics
+      BillingMode: PAY_PER_REQUEST  # On-demand scaling
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: TimestampIndex
+          KeySchema:
+            - AttributeName: timestamp
+              KeyType: HASH
+            - AttributeName: pk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: ClaudeCodeMetrics
+        - Key: Purpose
+          Value: Dashboard metrics storage
+
   QueryUtilsLayer:
     Type: AWS::Lambda::LayerVersion
     Properties:
@@ -83,6 +119,19 @@ Resources:
                   - cloudwatch:GetMetricData
                   - cloudwatch:ListMetrics
                 Resource: '*'
+        - PolicyName: DynamoDBReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt MetricsTable.Arn
+                  - !Sub '${MetricsTable.Arn}/index/*'
 
   MetricsAggregatorRole:
     Type: AWS::IAM::Role
@@ -117,6 +166,16 @@ Resources:
                 Action:
                   - cloudwatch:PutMetricData
                 Resource: '*'
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt MetricsTable.Arn
 
   MetricsAggregatorFunction:
     Type: AWS::Lambda::Function
@@ -132,6 +191,7 @@ Resources:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
+          METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/metrics_aggregator/
 
   MetricsAggregatorScheduleRule:
@@ -206,6 +266,7 @@ Resources:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
           METRICS_ONLY: 'true'
+          METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/active_users/
 
   TokenByModelWidget:
@@ -259,6 +320,7 @@ Resources:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
           METRICS_ONLY: 'true'
+          METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/top_users/
 
   OperationsByTypeWidget:
@@ -396,6 +458,7 @@ Resources:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !Ref MetricsRegion
           METRICS_ONLY: 'true'
+          METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/model_quota_usage/
 
   # CloudWatch Dashboard
