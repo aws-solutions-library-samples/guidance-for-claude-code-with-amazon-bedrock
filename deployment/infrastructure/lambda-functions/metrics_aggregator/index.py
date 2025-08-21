@@ -222,8 +222,8 @@ def aggregate_active_users(start_ms, end_ms):
         if user_email:
             user_details.append({
                 'email': user_email,
-                'tokens': tokens,
-                'requests': requests
+                'tokens': Decimal(str(tokens)),
+                'requests': Decimal(str(requests))
             })
     
     return unique_count, user_details
