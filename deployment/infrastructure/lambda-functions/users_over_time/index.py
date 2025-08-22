@@ -1,5 +1,5 @@
 # ABOUTME: Lambda function to display active users over time as a line chart
-# ABOUTME: Queries DynamoDB for time series data of user activity
+# ABOUTME: Queries DynamoDB using single-partition schema for user activity trends
 
 import json
 import boto3
@@ -38,54 +38,68 @@ def lambda_handler(event, context):
 
         print(f"Querying users over time from {start_dt} to {end_dt}")
 
+        # Convert to ISO format for queries
+        start_iso = start_dt.isoformat() + 'Z'
+        end_iso = end_dt.isoformat() + 'Z'
+        
         data_points = []
         
-        # Query each day in the range
-        current_date = start_dt.date()
-        end_date = end_dt.date()
+        # Single query for all WINDOW summaries in time range
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                 Key('sk').between(f'{start_iso}#WINDOW#SUMMARY', 
+                                                   f'{end_iso}#WINDOW#SUMMARY~'),
+            ProjectionExpression='sk, timestamp, unique_users, total_tokens'
+        )
         
-        while current_date <= end_date:
-            date_str = current_date.strftime('%Y-%m-%d')
-            
-            # Determine time boundaries for this day
-            if current_date == start_dt.date():
-                start_time = start_dt.strftime('%H:%M:%S')
-            else:
-                start_time = '00:00:00'
+        # Process results
+        for item in response.get('Items', []):
+            # Extract timestamp from sort key (ISO format)
+            sk_parts = item.get('sk', '').split('#')
+            if len(sk_parts) >= 3 and sk_parts[1] == 'WINDOW':
+                iso_timestamp = sk_parts[0]
+                users = float(item.get('unique_users', 0))
                 
-            if current_date == end_dt.date():
-                end_time = end_dt.strftime('%H:%M:%S')
-            else:
-                end_time = '23:59:59'
-            
-            # Query METRICS for this day with time range
-            response = table.query(
-                KeyConditionExpression=Key('pk').eq(f'METRICS#{date_str}') & 
-                                     Key('sk').between(f'{start_time}#WINDOW#SUMMARY', 
-                                                       f'{end_time}#WINDOW#SUMMARY~'),
-                ProjectionExpression='sk, unique_users, total_tokens'
-            )
-            
-            # Process results
-            for item in response.get('Items', []):
-                # Extract time from sort key
-                sk_parts = item.get('sk', '').split('#')
-                if len(sk_parts) >= 3 and sk_parts[1] == 'WINDOW':
-                    time_str = sk_parts[0]
-                    users = item.get('unique_users', 0)
-                    
-                    # Create full timestamp
-                    dt = datetime.strptime(f'{date_str} {time_str}', '%Y-%m-%d %H:%M:%S')
+                # Parse timestamp
+                try:
+                    dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
                     
                     data_points.append({
                         'timestamp': dt.isoformat(),
                         'time': dt.strftime('%H:%M'),
-                        'date': date_str,
+                        'date': dt.strftime('%Y-%m-%d'),
                         'users': users
                     })
+                except:
+                    pass
+        
+        # Handle pagination if needed
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                     Key('sk').between(f'{start_iso}#WINDOW#SUMMARY', 
+                                                       f'{end_iso}#WINDOW#SUMMARY~'),
+                ProjectionExpression='sk, timestamp, unique_users, total_tokens',
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
             
-            # Move to next day
-            current_date += timedelta(days=1)
+            for item in response.get('Items', []):
+                sk_parts = item.get('sk', '').split('#')
+                if len(sk_parts) >= 3 and sk_parts[1] == 'WINDOW':
+                    iso_timestamp = sk_parts[0]
+                    users = float(item.get('unique_users', 0))
+                    
+                    try:
+                        dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
+                        
+                        data_points.append({
+                            'timestamp': dt.isoformat(),
+                            'time': dt.strftime('%H:%M'),
+                            'date': dt.strftime('%Y-%m-%d'),
+                            'users': users
+                        })
+                    except:
+                        pass
 
         # Sort by timestamp
         data_points.sort(key=lambda x: x['timestamp'])
@@ -130,12 +144,14 @@ def lambda_handler(event, context):
         # Create area path (filled area under line)
         area_path = path + f" L {chart_width},{chart_height} L 0,{chart_height} Z" if path else ""
         
-        # Generate Y-axis labels
+        # Generate Y-axis labels (0 to max, 5 labels total)
         y_labels = []
         for i in range(5):
             value = int(max_users * (i / 4))
             y_pos = chart_height - (i * chart_height / 4)
-            y_labels.append(f'<text x="-5" y="{y_pos + 4}" text-anchor="end" fill="#9ca3af" font-size="10">{value}</text>')
+            # Only add label if it's not a duplicate
+            if i == 0 or value != int(max_users * ((i-1) / 4)):
+                y_labels.append(f'<text x="-5" y="{y_pos + 4}" text-anchor="end" fill="#6b7280" font-size="11">{value}</text>')
         
         # Generate X-axis labels (show every Nth point to avoid crowding)
         x_labels = []
@@ -153,7 +169,7 @@ def lambda_handler(event, context):
                 x = (i / (len(data_points) - 1)) * chart_width if len(data_points) > 1 else chart_width / 2
                 y = chart_height - (point['users'] / max_users * chart_height) if max_users > 0 else chart_height
                 dots.append(
-                    f'<circle cx="{x}" cy="{y}" r="3" fill="#667eea" />'
+                    f'<circle cx="{x}" cy="{y}" r="3" fill="#1f77b4" />'
                     f'<title>{point["time"]}: {point["users"]} users</title>'
                 )
 
@@ -181,7 +197,7 @@ def lambda_handler(event, context):
                 <g stroke="#e5e7eb" stroke-width="0.5">
                     <line x1="0" y1="0" x2="0" y2="{chart_height}" />
                     <line x1="0" y1="{chart_height}" x2="{chart_width}" y2="{chart_height}" />
-                    {"".join([f'<line x1="0" y1="{i * chart_height / 4}" x2="{chart_width}" y2="{i * chart_height / 4}" stroke-dasharray="2,2" />' for i in range(1, 4)])}
+                    {"".join([f'<line x1="0" y1="{i * chart_height / 4}" x2="{chart_width}" y2="{i * chart_height / 4}" stroke-dasharray="2,2" opacity="0.5" />' for i in range(1, 4)])}
                 </g>
                 
                 <!-- Chart -->
@@ -190,7 +206,7 @@ def lambda_handler(event, context):
                     <path d="{area_path}" fill="url(#gradient)" opacity="0.3" />
                     
                     <!-- Line -->
-                    <path d="{path}" fill="none" stroke="#667eea" stroke-width="2" />
+                    <path d="{path}" fill="none" stroke="#1f77b4" stroke-width="2" />
                     
                     <!-- Data points -->
                     {"".join(dots)}
@@ -205,8 +221,8 @@ def lambda_handler(event, context):
                 <!-- Gradient definition -->
                 <defs>
                     <linearGradient id="gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#667eea;stop-opacity:0.8" />
-                        <stop offset="100%" style="stop-color:#667eea;stop-opacity:0.1" />
+                        <stop offset="0%" style="stop-color:#1f77b4;stop-opacity:0.8" />
+                        <stop offset="100%" style="stop-color:#1f77b4;stop-opacity:0.1" />
                     </linearGradient>
                 </defs>
             </svg>

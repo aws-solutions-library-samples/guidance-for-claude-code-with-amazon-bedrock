@@ -277,23 +277,6 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/operations_count/
 
-  UsersOverTimeWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-UsersOverTime
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
-          METRICS_TABLE: !Ref MetricsTable
-      Code: ./lambda-functions/users_over_time/
 
   ActiveUsersWidget:
     Type: AWS::Lambda::Function
@@ -436,22 +419,6 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/lines_of_code/
 
-  LinesOverTimeWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-LinesOverTime
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
-      Code: ./lambda-functions/lines_over_time/
 
   CommitsWidget:
     Type: AWS::Lambda::Function
@@ -596,35 +563,52 @@ Resources:
               }
             },
             {
-              "type": "custom",
+              "type": "metric",
               "x": 0,
               "y": 6,
               "width": 12,
               "height": 6,
               "properties": {
-                "endpoint": "${UsersOverTimeWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Active Users Over Time"
+                "metrics": [
+                  [ "ClaudeCode", "ActiveUsers", { "stat": "Sum" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Active Users Over Time",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
               }
             },
             {
-              "type": "custom",
+              "type": "metric",
               "x": 12,
               "y": 6,
               "width": 12,
               "height": 6,
               "properties": {
-                "endpoint": "${LinesOverTimeWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
+                "metrics": [
+                  [ "ClaudeCode", "LinesAdded", { "stat": "Sum", "label": "Lines Added" } ],
+                  [ ".", "LinesRemoved", { "stat": "Sum", "label": "Lines Removed" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lines Added/Removed Over Time",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
                 },
-                "title": "Lines Added/Removed Over Time"
+                "colors": [
+                  "#10b981",
+                  "#ef4444"
+                ]
               }
             },
             {

@@ -3,6 +3,7 @@
 This guide walks you through setting up Okta from scratch to work with the AWS Cognito Identity Pool for Bedrock access.
 
 ## Table of Contents
+
 1. [Create Okta Developer Account](#1-create-okta-developer-account)
 2. [Access Admin Console](#2-access-admin-console)
 3. [Create OIDC Application](#3-create-oidc-application)
@@ -56,27 +57,34 @@ If you don't have an Okta account:
 Fill in the following settings:
 
 #### General Settings
+
 - **App integration name**: `Amazon Bedrock CLI Access` (or your preferred name)
 - **Logo**: Optional - you can skip this
 
 #### Grant Type
+
 Make sure these are checked:
+
 - ✅ **Authorization Code**
 - ✅ **Refresh Token**
 - ✅ **Resource Owner Password** (optional, for testing)
 
 #### Sign-in Redirect URIs
+
 Add this exact URI:
+
 ```
 http://localhost:8400/callback
 ```
 
 #### Sign-out Redirect URIs (optional)
+
 ```
 http://localhost:8400/logout
 ```
 
 #### Controlled Access
+
 - Select **Allow everyone in your organization to access**
 - Or select **Limit access to selected groups** if you want to restrict access
 
@@ -88,6 +96,7 @@ http://localhost:8400/logout
 ### Step 3.4: Note the Client ID
 
 After saving, you'll see:
+
 - **Client ID**: Something like `0oa1234567890abcde`
 - **Okta domain**: Your domain like `dev-12345678.okta.com`
 
@@ -105,6 +114,7 @@ After saving, you'll see:
 ### Step 4.2: Create a Test User
 
 Fill in the form:
+
 - **First name**: Test
 - **Last name**: User
 - **Username**: testuser@example.com (must be email format)
@@ -118,6 +128,7 @@ Click **Save**
 ### Step 4.3: Create Additional Users (Optional)
 
 Repeat the process to create more test users:
+
 - `developer1@example.com`
 - `developer2@example.com`
 - etc.
@@ -153,10 +164,10 @@ Repeat the process to create more test users:
 
 You now have everything needed for the CloudFormation deployment:
 
-| Parameter | Your Value | Example |
-|-----------|------------|---------|
-| **OktaDomain** | Your Okta domain | `dev-12345678.okta.com` |
-| **OktaClientId** | Your Client ID | `0oa1234567890abcde` |
+| Parameter        | Your Value       | Example                 |
+| ---------------- | ---------------- | ----------------------- |
+| **OktaDomain**   | Your Okta domain | `dev-12345678.okta.com` |
+| **OktaClientId** | Your Client ID   | `0oa1234567890abcde`    |
 
 ### Use the values with ccwb init
 
@@ -238,15 +249,18 @@ If you want to add department or group information:
 ## Troubleshooting
 
 ### "Invalid redirect URI" Error
+
 - Ensure the redirect URI is exactly: `http://localhost:8400/callback`
 - Check for trailing slashes or typos
 
 ### User Can't Sign In
+
 - Verify the user is assigned to the application
 - Check if the user's account is active
 - Ensure password meets Okta's policy requirements
 
 ### Can't Find Client ID
+
 1. Go to **Applications** → **Applications**
 2. Click on your application
 3. The Client ID is on the **General** tab under "Client Credentials"
@@ -259,7 +273,7 @@ Once you've completed this Okta setup:
 
 1. Clone the repository:
    ```bash
-   git clone https://gitlab.aws.dev/schuettc/claude-code-setup.git
+   git clone https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock.git
    cd claude-code-setup
    poetry install
    ```
@@ -273,12 +287,14 @@ Once you've completed this Okta setup:
 ## Security Best Practices
 
 1. **Production Considerations**:
+
    - Use groups to manage access at scale
    - Enable MFA for all users
    - Set appropriate session timeouts
    - Monitor the System Log regularly
 
 2. **Token Settings**:
+
    - Enable refresh token rotation
    - Set reasonable token lifetimes
    - Use PKCE (enabled by default for native apps)

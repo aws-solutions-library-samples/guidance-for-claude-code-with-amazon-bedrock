@@ -1,11 +1,12 @@
+# ABOUTME: Lambda function to display count of lines added/removed
+# ABOUTME: Queries DynamoDB using single-partition schema for line change events
+
 import json
 import boto3
 import os
 from datetime import datetime, timedelta
-import time
-import sys
-sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+from decimal import Decimal
+from boto3.dynamodb.conditions import Key
 
 
 def format_number(num):
@@ -23,16 +24,17 @@ def lambda_handler(event, context):
     if event.get("describe", False):
         return {"markdown": "# Lines of Code\nShows lines added and removed"}
 
-    log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
+    METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
 
-    logs_client = boto3.client("logs", region_name=region)
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table(METRICS_TABLE)
 
     try:
-        # Always use dashboard time range
+        # Get time range from dashboard
         if "start" in time_range and "end" in time_range:
             start_time = time_range["start"]
             end_time = time_range["end"]
@@ -41,87 +43,48 @@ def lambda_handler(event, context):
             end_time = int(datetime.now().timestamp() * 1000)
             start_time = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
 
-        # Validate time range (max 7 days)
-
-
-        is_valid, range_days, error_html = validate_time_range(start_time, end_time)
-
-
-        if not is_valid:
-
-
-            return error_html
-
-
+        # Convert to datetime and ISO format
+        start_dt = datetime.fromtimestamp(start_time / 1000)
+        end_dt = datetime.fromtimestamp(end_time / 1000)
+        start_iso = start_dt.isoformat() + 'Z'
+        end_iso = end_dt.isoformat() + 'Z'
         
-
-
-        query = """
-        fields @message
-        | filter @message like /claude_code.lines_of_code.count/
-        | parse @message /"type":"(?<type>[^"]*)"/
-        | parse @message /"claude_code.lines_of_code.count":(?<lines>[0-9.]+)/
-        | stats sum(lines) as total by type
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
-        query_status = response.get("status", "Unknown")
         line_stats = {"added": 0, "removed": 0}
-
-        if query_status == "Complete":
-            if response.get("results") and len(response["results"]) > 0:
-                for result in response["results"]:
-                    line_type = ""
-                    total = 0
-                    for field in result:
-                        if field["field"] == "type":
-                            line_type = field["value"]
-                        elif field["field"] == "total":
-                            total = float(field["value"])
-                    
-                    if line_type and total:
-                        if line_type.lower() == "added":
-                            line_stats["added"] += total
-                        elif line_type.lower() == "removed":
-                            line_stats["removed"] += total
-        elif query_status == "Failed":
-            raise Exception(
-                f"Query failed: {response.get('statusReason', 'Unknown reason')}"
-            )
-        elif query_status == "Cancelled":
-            raise Exception("Query was cancelled")
-        elif query_status in ["Running", "Scheduled"]:
-            raise Exception(f"Query timed out: {query_status}")
-
-        # If no data, show empty state
-        if line_stats["added"] == 0 and line_stats["removed"] == 0:
-            # Try simpler query for total lines
-            query2 = """
-            fields @message
-            | filter @message like /claude_code.lines_of_code.count/
-            | parse @message /"claude_code.lines_of_code.count":(?<lines>[0-9.]+)/
-            | stats sum(lines) as total_lines
-            """
+        
+        # Single query for all LINE events in time range
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                 Key('sk').between(f'{start_iso}#LINES#EVENT#', 
+                                                   f'{end_iso}#LINES#EVENT#~')
+        )
+        
+        # Sum up all events
+        for item in response.get('Items', []):
+            event_type = item.get('type', '').lower()
+            count = float(item.get('count', Decimal(0)))
             
-            response2 = rate_limited_start_query(logs_client, log_group, start_time, end_time, query2,
+            if event_type == 'added':
+                line_stats["added"] += count
+            elif event_type == 'removed':
+                line_stats["removed"] += count
+        
+        # Handle pagination if needed
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                     Key('sk').between(f'{start_iso}#LINES#EVENT#', 
+                                                       f'{end_iso}#LINES#EVENT#~'),
+                ExclusiveStartKey=response['LastEvaluatedKey']
             )
             
-            query_id2 = response2["queryId"]
-            time.sleep(1.0)
-            
-            response2 = wait_for_query_results(logs_client, query_id2)
-            if response2.get("status") == "Complete" and response2.get("results"):
-                for field in response2["results"][0]:
-                    if field["field"] == "total_lines":
-                        line_stats["added"] = float(field["value"])
-                        break
+            for item in response.get('Items', []):
+                event_type = item.get('type', '').lower()
+                count = float(item.get('count', Decimal(0)))
+                
+                if event_type == 'added':
+                    line_stats["added"] += count
+                elif event_type == 'removed':
+                    line_stats["removed"] += count
 
         # Build the display
         items = [

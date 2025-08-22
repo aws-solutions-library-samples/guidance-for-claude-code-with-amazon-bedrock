@@ -3,6 +3,7 @@
 This guide walks you through setting up Microsoft Entra ID from scratch to work with the AWS Cognito Identity Pool for Bedrock access.
 
 ## Table of Contents
+
 1. [Create Azure Account](#1-create-azure-account)
 2. [Access Azure Portal](#2-access-azure-portal)
 3. [Create App Registration](#3-create-app-registration)
@@ -47,6 +48,7 @@ If you don't have an Azure account:
 ### Step 3.2: Configure Application
 
 Fill in the following:
+
 - **Name**: `Amazon Bedrock CLI Access`
 - **Supported account types**: Select based on your needs
   - For enterprise: **Accounts in this organizational directory only**
@@ -58,6 +60,7 @@ Click **Register**
 ### Step 3.3: Note Your IDs
 
 After registration, save these values:
+
 - **Application (client) ID**: `12345678-1234-1234-1234-123456789012`
 - **Directory (tenant) ID**: `87654321-4321-4321-4321-210987654321`
 
@@ -99,6 +102,7 @@ The default `User.Read` permission is sufficient. No changes needed.
 ### Step 5.2: Create a Test User
 
 Fill in:
+
 - **User principal name**: `testuser@yourdomain.onmicrosoft.com`
 - **Display name**: `Test User`
 - **Password**: Let me create the password (note it down)
@@ -131,10 +135,10 @@ Repeat for more test users if needed.
 
 You now have everything needed for deployment:
 
-| Parameter | Your Value | Example |
-|-----------|------------|---------|
-| **Provider Domain** | Your tenant URL | `login.microsoftonline.com/{tenant-id}/v2.0` |
-| **Client ID** | Your Application ID | `12345678-1234-1234-1234-123456789012` |
+| Parameter           | Your Value          | Example                                      |
+| ------------------- | ------------------- | -------------------------------------------- |
+| **Provider Domain** | Your tenant URL     | `login.microsoftonline.com/{tenant-id}/v2.0` |
+| **Client ID**       | Your Application ID | `12345678-1234-1234-1234-123456789012`       |
 
 ### Use the values with ccwb init
 
@@ -176,24 +180,25 @@ Should return a JSON response with OIDC configuration.
 
 ---
 
-
 ## Troubleshooting
 
 ### "Reply URL does not match" Error
+
 - Ensure redirect URI is exactly: `http://localhost:8400/callback`
 - Check for trailing slashes or typos
 
-### "User not assigned" Error  
+### "User not assigned" Error
+
 - Check user assignment in Enterprise Applications
 - Verify the user account is active
 
 ### Can't Find Client ID
+
 1. Go to **Applications** → **App registrations**
 2. Click on your application
 3. The Client ID is on the overview page
 
 ---
-
 
 ## Next Steps
 
@@ -201,11 +206,11 @@ Once you've completed this setup:
 
 1. Clone the repository:
    ```bash
-   git clone https://gitlab.aws.dev/schuettc/claude-code-setup.git
+   git clone https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock.git
    cd claude-code-setup
    poetry install
    ```
-2. Run the setup wizard: `poetry run ccwb init`  
+2. Run the setup wizard: `poetry run ccwb init`
 3. Create a distribution package: `poetry run ccwb package`
 4. Test the deployment: `poetry run ccwb test --api`
 5. Distribute the `dist/` folder to your users
@@ -215,6 +220,7 @@ Once you've completed this setup:
 ## Security Best Practices
 
 1. **Production Considerations**:
+
    - Use your specific tenant ID (not "common")
    - Enable MFA for all users
    - Set appropriate session timeouts
@@ -223,7 +229,6 @@ Once you've completed this setup:
 2. **Token Settings**:
    - PKCE is enabled by default for native apps
    - Public client flows must be enabled
-   
 3. **User Management**:
    - Use groups to manage access at scale
    - Regular access reviews

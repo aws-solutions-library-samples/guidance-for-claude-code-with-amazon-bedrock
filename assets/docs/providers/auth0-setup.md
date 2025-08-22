@@ -3,6 +3,7 @@
 This guide walks you through setting up Auth0 from scratch to work with the AWS Cognito Identity Pool for Bedrock access.
 
 ## Table of Contents
+
 1. [Create Auth0 Account](#1-create-auth0-account)
 2. [Access Dashboard](#2-access-dashboard)
 3. [Create Native Application](#3-create-native-application)
@@ -60,6 +61,7 @@ If you don't have an Auth0 account:
 ### Step 4.1: Note the Client ID
 
 After creation, you'll see:
+
 - **Client ID**: Something like `aBcDeFgHiJkLmNoPqRsTuVwXyZ123456`
 - **Domain**: Your tenant domain like `your-name.auth0.com`
 
@@ -106,6 +108,7 @@ Click **Save Changes** at the bottom of the page
 ### Step 5.2: Create a Test User
 
 Fill in the form:
+
 - **Email**: `testuser@example.com`
 - **Password**: Enter a secure password
 - **Repeat Password**: Confirm the password
@@ -116,6 +119,7 @@ Click **Create**
 ### Step 5.3: Create Additional Users (Optional)
 
 Repeat to create more test users:
+
 - `developer1@example.com`
 - `developer2@example.com`
 
@@ -136,6 +140,7 @@ By default, all users have access to all applications in Auth0. To restrict acce
 ### Step 6.2: Enable Organizations (Optional)
 
 For enterprise deployments:
+
 1. Go to **Organizations**
 2. Create an organization
 3. Add users to the organization
@@ -147,10 +152,10 @@ For enterprise deployments:
 
 You now have everything needed for deployment:
 
-| Parameter | Your Value | Example |
-|-----------|------------|---------|
-| **Auth0Domain** | Your Auth0 domain | `your-name.auth0.com` |
-| **Auth0ClientId** | Your Client ID | `aBcDeFgHiJkLmNoPqRsTuVwXyZ123456` |
+| Parameter         | Your Value        | Example                            |
+| ----------------- | ----------------- | ---------------------------------- |
+| **Auth0Domain**   | Your Auth0 domain | `your-name.auth0.com`              |
+| **Auth0ClientId** | Your Client ID    | `aBcDeFgHiJkLmNoPqRsTuVwXyZ123456` |
 
 ### Use the values with ccwb init
 
@@ -202,20 +207,24 @@ Should return a JSON response with OIDC endpoints.
 ## Troubleshooting
 
 ### "Invalid redirect URI" Error
+
 - Ensure the callback URL is exactly: `http://localhost:8400/callback`
 - No trailing slashes or HTTPS
 
 ### "Unauthorized" Error
+
 - Check if user exists and password is correct
 - Verify application is active
 - Check for any Rules or Actions blocking access
 
 ### Can't Find Client ID
+
 1. Go to **Applications** → **Applications**
 2. Click on your application
 3. Client ID is at the top of the Settings tab
 
 ### Token Issues
+
 - Ensure Authorization Code grant type is enabled
 - Check that PKCE is not explicitly disabled
 - Verify refresh token settings
@@ -228,7 +237,7 @@ Once you've completed this Auth0 setup:
 
 1. Clone the repository:
    ```bash
-   git clone https://gitlab.aws.dev/schuettc/claude-code-setup.git
+   git clone https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock.git
    cd claude-code-setup
    poetry install
    ```
@@ -242,12 +251,14 @@ Once you've completed this Auth0 setup:
 ## Security Best Practices
 
 1. **Production Considerations**:
+
    - Enable MFA for all users
    - Use Auth0 Organizations for enterprise deployments
    - Set appropriate session and token lifetimes
    - Monitor logs regularly
 
 2. **Token Settings**:
+
    - Enable refresh token rotation
    - Set token expiration to 8 hours or less
    - PKCE is automatically enabled for native apps
@@ -265,6 +276,7 @@ Once you've completed this Auth0 setup:
 ### Custom Domain
 
 For production environments:
+
 1. Go to **Settings** → **Custom Domains**
 2. Add your domain (e.g., `auth.company.com`)
 3. Verify DNS settings
@@ -273,19 +285,24 @@ For production environments:
 ### Add Custom Claims
 
 To include user metadata in tokens:
+
 1. Go to **Actions** → **Flows** → **Login**
 2. Create a custom Action
 3. Add claims to the ID token:
    ```javascript
    exports.onExecutePostLogin = async (event, api) => {
      api.idToken.setCustomClaim('email', event.user.email);
-     api.idToken.setCustomClaim('department', event.user.user_metadata.department);
+     api.idToken.setCustomClaim(
+       'department',
+       event.user.user_metadata.department,
+     );
    };
    ```
 
 ### Enable Enterprise Connections
 
 For SSO with corporate identity providers:
+
 1. Go to **Authentication** → **Enterprise**
 2. Choose your connection type (SAML, OIDC, etc.)
 3. Configure according to your IdP requirements

@@ -1,11 +1,10 @@
+# ABOUTME: Lambda function to display token usage breakdown by type
+# ABOUTME: Queries CloudWatch Metrics for token distribution across input, output, and cache types
+
 import json
 import boto3
 import os
 from datetime import datetime, timedelta
-import time
-import sys
-sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
 
 
 def format_number(num):
@@ -23,90 +22,56 @@ def lambda_handler(event, context):
     if event.get("describe", False):
         return {"markdown": "# Token Usage by Type\nDistribution of tokens by operation type"}
 
-    log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
 
-    logs_client = boto3.client("logs", region_name=region)
+    cloudwatch_client = boto3.client("cloudwatch", region_name=region)
 
     try:
-        # Always use dashboard time range
+        # Use dashboard time range if available
         if "start" in time_range and "end" in time_range:
             start_time = time_range["start"]
             end_time = time_range["end"]
         else:
-            # Fallback if no time range provided
+            # Fallback to last 7 days only if no time range provided
             end_time = int(datetime.now().timestamp() * 1000)
-            start_time = int((datetime.now() - timedelta(hours=1)).timestamp() * 1000)
+            start_time = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
 
-        # Validate time range (max 7 days)
+        # Convert to datetime for CloudWatch API
+        start_dt = datetime.fromtimestamp(start_time / 1000)
+        end_dt = datetime.fromtimestamp(end_time / 1000)
 
-
-        is_valid, range_days, error_html = validate_time_range(start_time, end_time)
-
-
-        if not is_valid:
-
-
-            return error_html
-
-
+        # Define the metrics to query
+        token_metrics = [
+            ('InputTokens', 'Input Tokens'),
+            ('OutputTokens', 'Output Tokens'),
+            ('CacheCreationTokens', 'Cache Creation'),
+            ('CacheReadTokens', 'Cache Read')
+        ]
         
-
-
-        query = """
-        fields @message
-        | filter @message like /type/ and @message like /claude_code.token.usage/
-        | parse @message /"type":"(?<type>[^"]*)"/
-        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-        | filter type in ['input', 'output', 'cacheCreation', 'cacheRead']
-        | stats sum(tokens) as total by type
-        """
-
-        response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-        )
-
-        query_id = response['queryId']
-        
-        # Wait for results with optimized polling
-        response = wait_for_query_results(logs_client, query_id)
-
-        query_status = response.get("status", "Unknown")
         token_types = []
-
-        if query_status == "Complete":
-            if response.get("results") and len(response["results"]) > 0:
-                for result in response["results"]:
-                    type_name = ""
-                    tokens = 0
-                    for field in result:
-                        if field["field"] == "type":
-                            type_name = field["value"]
-                        elif field["field"] == "total":
-                            tokens = float(field["value"])
-                    
-                    if type_name and tokens:
-                        # Format type names for display
-                        display_names = {
-                            "input": "Input Tokens",
-                            "output": "Output Tokens",
-                            "cacheCreation": "Cache Creation",
-                            "cacheRead": "Cache Read"
-                        }
-                        token_types.append({
-                            "type": display_names.get(type_name, type_name),
-                            "tokens": tokens
-                        })
-        elif query_status == "Failed":
-            raise Exception(
-                f"Query failed: {response.get('statusReason', 'Unknown reason')}"
+        
+        # Query each metric type
+        for metric_name, display_name in token_metrics:
+            response = cloudwatch_client.get_metric_statistics(
+                Namespace='ClaudeCode',
+                MetricName=metric_name,
+                StartTime=start_dt,
+                EndTime=end_dt,
+                Period=300,  # 5-minute periods
+                Statistics=['Sum']
             )
-        elif query_status == "Cancelled":
-            raise Exception("Query was cancelled")
-        elif query_status in ["Running", "Scheduled"]:
-            raise Exception(f"Query timed out: {query_status}")
+            
+            # Sum all data points
+            total_tokens = sum(point.get('Sum', 0) for point in response.get('Datapoints', []))
+            
+            if total_tokens > 0:
+                token_types.append({
+                    "type": display_name,
+                    "tokens": total_tokens
+                })
 
         if not token_types:
             return f"""
@@ -120,6 +85,7 @@ def lambda_handler(event, context):
                 background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
                 border-radius: 8px;
                 padding: 20px;
+                box-sizing: border-box;
             ">
                 <div style="color: white; font-size: 16px; font-weight: 600;">No Token Data</div>
                 <div style="color: rgba(255,255,255,0.8); font-size: 12px; margin-top: 8px;">No token usage data available for this period</div>
@@ -218,6 +184,7 @@ def lambda_handler(event, context):
             background: white;
             border-radius: 8px;
             box-sizing: border-box;
+            overflow-y: auto;
         ">
             {legend_html}
         </div>

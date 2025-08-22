@@ -371,84 +371,39 @@ Resources:
             resource_to_telemetry_conversion:
               enabled: true
             metric_declarations:
-              # Core user dimensions
-              - dimensions: [[user.id, aws.account_id, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Team and organization dimensions
-              - dimensions: [[department, team.id, cost_center, organization, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[department, team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[cost_center, organization, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # User + team combinations for filtering
-              - dimensions: [[user.id, department, team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[user.id, cost_center, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Model and session tracking
-              - dimensions: [[model, department, team.id, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage", "claude_code.cost.usage"]
-              - dimensions: [[session.id, user.id, OTelLib]]
-                metric_name_selectors: ["claude_code.active_time.*"]
-
-              # Aggregated active time for dashboard widget
-              - dimensions: [[OTelLib]]
-                metric_name_selectors: ["claude_code.active_time.*"]
-
-              # Cost tracking dimensions
-              - dimensions: [[cost_center, aws.account_id, OTelLib]]
-                metric_name_selectors: ["claude_code.cost.usage"]
-              - dimensions: [[department, cost_center, model, OTelLib]]
-                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
-
-              # Location and role based
-              - dimensions: [[location, department, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[role, team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Environment tracking
-              - dimensions: [[deployment.environment, organization, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Minimal dimension for overall metrics
+              # Overall metrics
               - dimensions: [[OTelLib]]
                 metric_name_selectors: [".*"]
 
-              # Decision tracking for code acceptance
-              - dimensions: [[decision, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
-
-              # Type dimensions for token and lines_of_code metrics
-              - dimensions: [[type, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
-
-              # Tool usage tracking
-              - dimensions: [[tool_name, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-
-              # Programming language tracking
-              - dimensions: [[language, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-
-              # User email for attribution
-              - dimensions: [[user.email, OTelLib]]
+              # Department and team aggregates
+              - dimensions: [[department, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[team.id, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[organization, OTelLib]]
                 metric_name_selectors: [".*"]
 
-              # Model tracking expanded
+              # Model usage tracking
               - dimensions: [[model, OTelLib]]
                 metric_name_selectors: [".*"]
 
-              # Combined dimensions for detailed analysis
-              - dimensions: [[decision, tool_name, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+              # Cost center tracking
+              - dimensions: [[cost_center, OTelLib]]
+                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
 
-              - dimensions: [[type, model, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage"]
+              # Token and line types
+              - dimensions: [[type, OTelLib]]
+                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+
+              # Tool and language usage
+              - dimensions: [[tool_name, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+              - dimensions: [[language, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+
+              # Code decision tracking
+              - dimensions: [[decision, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
         service:
           extensions: [health_check]

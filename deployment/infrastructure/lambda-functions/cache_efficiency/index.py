@@ -76,10 +76,10 @@ def lambda_handler(event, context):
             try:
                 print("Fetching cache efficiency from CloudWatch Metrics")
                 
-                # Get cache hits
+                # Get cache read tokens
                 hits_datapoints = get_metric_statistics(
                     cloudwatch_client,
-                    'CacheHits',
+                    'CacheReadTokens',
                     start_time,
                     end_time,
                     None,
@@ -90,10 +90,10 @@ def lambda_handler(event, context):
                 if hits_datapoints:
                     cache_reads = sum(point.get('Sum', 0) for point in hits_datapoints)
                 
-                # Get cache misses
+                # Get cache creation tokens
                 misses_datapoints = get_metric_statistics(
                     cloudwatch_client,
-                    'CacheMisses',
+                    'CacheCreationTokens',
                     start_time,
                     end_time,
                     None,
@@ -105,7 +105,7 @@ def lambda_handler(event, context):
                     cache_creations = sum(point.get('Sum', 0) for point in misses_datapoints)
                 
                 if hits_datapoints or misses_datapoints:
-                    print(f"Retrieved cache metrics - Hits: {cache_reads}, Misses: {cache_creations}")
+                    print(f"Retrieved cache metrics - Reads: {cache_reads}, Creations: {cache_creations}")
                 elif METRICS_ONLY:
                     # In metrics-only mode, don't fall back
                     print("No cache data available in METRICS_ONLY mode")
@@ -274,7 +274,7 @@ def lambda_handler(event, context):
                 font-size: 10px;
                 color: rgba(255,255,255,0.8);
                 line-height: 1;
-            ">{int(cache_reads):,} cached / {int(total):,} tokens</div>
+            ">{int(cache_reads):,} reads / {int(total):,} cache ops</div>
         </div>
         """
 

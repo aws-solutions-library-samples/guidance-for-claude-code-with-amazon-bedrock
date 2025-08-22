@@ -4,7 +4,7 @@
 import json
 import boto3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 from collections import defaultdict
 from decimal import Decimal
@@ -30,7 +30,7 @@ def lambda_handler(event, context):
     print(f"Starting metrics aggregation for log group: {LOG_GROUP}")
     
     # Calculate time window
-    end_time = datetime.now()
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(minutes=AGGREGATION_WINDOW)
     
     # Convert to milliseconds for CloudWatch Logs
@@ -62,15 +62,28 @@ def lambda_handler(event, context):
             })
         
         # 3. Lines of Code Added/Removed
-        lines_added, lines_removed = aggregate_lines_of_code(start_ms, end_ms)
+        line_events, lines_added, lines_removed = aggregate_lines_of_code(start_ms, end_ms)
+        
+        # 3b. Model Rate Metrics (per-minute TPM/RPM)
+        model_rate_metrics = aggregate_model_rate_metrics(start_ms, end_ms)
         
         # Write to DynamoDB
-        write_to_dynamodb(end_time, total_tokens, active_users_count, user_details, lines_added, lines_removed)
+        write_to_dynamodb(end_time, total_tokens, active_users_count, user_details, lines_added, lines_removed, line_events, model_rate_metrics)
         
-        # 4. Tokens and Requests by Model
-        model_metrics = aggregate_model_metrics(start_ms, end_ms)
-        for metric in model_metrics:
-            metrics_to_publish.append(metric)
+        # Always publish lines metrics to CloudWatch (even if 0)
+        metrics_to_publish.append({
+            'MetricName': 'LinesAdded',
+            'Value': lines_added,
+            'Unit': 'Count',
+            'Timestamp': end_time
+        })
+        
+        metrics_to_publish.append({
+            'MetricName': 'LinesRemoved',
+            'Value': lines_removed,
+            'Unit': 'Count',
+            'Timestamp': end_time
+        })
         
         # 4. Cache Metrics
         cache_metrics = aggregate_cache_metrics(start_ms, end_ms)
@@ -232,125 +245,77 @@ def aggregate_active_users(start_ms, end_ms):
     return unique_count, user_details
 
 
-def aggregate_model_metrics(start_ms, end_ms):
-    """
-    Aggregate tokens and requests by model.
-    """
-    metrics = []
-    timestamp = datetime.now()
-    
-    # Tokens by model
-    query_tokens = """
-    fields @message
-    | filter @message like /claude_code.token.usage/
-    | parse @message /"model":"(?<model>[^"]*)"/
-    | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-    | stats sum(tokens) as total_tokens by model
-    """
-    
-    results = run_query(query_tokens, start_ms, end_ms)
-    for result in results:
-        model = None
-        tokens = 0
-        for field in result:
-            if field['field'] == 'model':
-                model = field['value']
-            elif field['field'] == 'total_tokens':
-                tokens = float(field['value'])
-        
-        if model and tokens > 0:
-            metrics.append({
-                'MetricName': 'TokensPerMinute',
-                'Dimensions': [{'Name': 'Model', 'Value': model}],
-                'Value': tokens / AGGREGATION_WINDOW,  # Convert to per-minute rate
-                'Unit': 'Count',
-                'Timestamp': timestamp
-            })
-    
-    # Requests by model
-    query_requests = """
-    fields @message
-    | filter @message like /type":"input/
-    | parse @message /"model":"(?<model>[^"]*)"/
-    | stats count() as requests by model
-    """
-    
-    results = run_query(query_requests, start_ms, end_ms)
-    for result in results:
-        model = None
-        requests = 0
-        for field in result:
-            if field['field'] == 'model':
-                model = field['value']
-            elif field['field'] == 'requests':
-                requests = float(field['value'])
-        
-        if model and requests > 0:
-            metrics.append({
-                'MetricName': 'RequestsPerMinute',
-                'Dimensions': [{'Name': 'Model', 'Value': model}],
-                'Value': requests / AGGREGATION_WINDOW,  # Convert to per-minute rate
-                'Unit': 'Count',
-                'Timestamp': timestamp
-            })
-    
-    return metrics
-
-
 def aggregate_cache_metrics(start_ms, end_ms):
     """
-    Aggregate cache hit/miss metrics.
+    Aggregate cache hit/miss metrics and token type metrics.
     """
     metrics = []
-    timestamp = datetime.now()
+    timestamp = datetime.now(timezone.utc)
     
+    # Query for all token types including input, output, cache
     query = """
     fields @message
     | filter @message like /claude_code.token.usage/
-    | parse @message /"type":"(?<cache_type>[^"]*)"/
-    | filter cache_type in ["cacheRead", "cacheCreation"]
+    | parse @message /"type":"(?<token_type>[^"]*)"/
+    | filter token_type in ["input", "output", "cacheRead", "cacheCreation"]
     | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-    | stats sum(tokens) as total by cache_type
+    | stats sum(tokens) as total by token_type
     """
     
     results = run_query(query, start_ms, end_ms)
-    cache_reads = 0
-    cache_creations = 0
     
     for result in results:
-        cache_type = None
+        token_type = None
         total = 0
         for field in result:
-            if field['field'] == 'cache_type':
-                cache_type = field['value']
+            if field['field'] == 'token_type':
+                token_type = field['value']
             elif field['field'] == 'total':
                 total = float(field['value'])
         
-        if cache_type == 'cacheRead':
-            cache_reads = total
-        elif cache_type == 'cacheCreation':
-            cache_creations = total
+        if token_type and total > 0:
+            # Map token types to metric names
+            if token_type == 'input':
+                metrics.append({
+                    'MetricName': 'InputTokens',
+                    'Value': total,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                })
+            elif token_type == 'output':
+                metrics.append({
+                    'MetricName': 'OutputTokens',
+                    'Value': total,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                })
+            elif token_type == 'cacheRead':
+                metrics.append({
+                    'MetricName': 'CacheReadTokens',
+                    'Value': total,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                })
+            elif token_type == 'cacheCreation':
+                metrics.append({
+                    'MetricName': 'CacheCreationTokens',
+                    'Value': total,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                })
     
-    if cache_reads > 0:
-        metrics.append({
-            'MetricName': 'CacheHits',
-            'Value': cache_reads,
-            'Unit': 'Count',
-            'Timestamp': timestamp
-        })
+    # Calculate cache efficiency if we have cache metrics
+    cache_read_tokens = 0
+    cache_creation_tokens = 0
+    for metric in metrics:
+        if metric['MetricName'] == 'CacheReadTokens':
+            cache_read_tokens = metric['Value']
+        elif metric['MetricName'] == 'CacheCreationTokens':
+            cache_creation_tokens = metric['Value']
     
-    if cache_creations > 0:
-        metrics.append({
-            'MetricName': 'CacheMisses',
-            'Value': cache_creations,
-            'Unit': 'Count',
-            'Timestamp': timestamp
-        })
-    
-    # Calculate and store efficiency
-    total_cache = cache_reads + cache_creations
+    total_cache = cache_read_tokens + cache_creation_tokens
     if total_cache > 0:
-        efficiency = (cache_reads / total_cache) * 100
+        efficiency = (cache_read_tokens / total_cache) * 100
         metrics.append({
             'MetricName': 'CacheEfficiency',
             'Value': efficiency,
@@ -366,7 +331,7 @@ def aggregate_top_users(start_ms, end_ms):
     Aggregate top 10 users by token usage.
     """
     metrics = []
-    timestamp = datetime.now()
+    timestamp = datetime.now(timezone.utc)
     
     query = """
     fields @message
@@ -410,7 +375,7 @@ def aggregate_operations(start_ms, end_ms):
     Aggregate operations by type.
     """
     metrics = []
-    timestamp = datetime.now()
+    timestamp = datetime.now(timezone.utc)
     
     query = """
     fields @message
@@ -447,7 +412,7 @@ def aggregate_code_languages(start_ms, end_ms):
     Aggregate code generation by language.
     """
     metrics = []
-    timestamp = datetime.now()
+    timestamp = datetime.now(timezone.utc)
     
     query = """
     fields @message
@@ -499,48 +464,113 @@ def aggregate_commits(start_ms, end_ms):
 
 def aggregate_lines_of_code(start_ms, end_ms):
     """
-    Aggregate lines of code added and removed.
+    Get individual line change events (not aggregated).
+    Returns list of events with timestamp, type, and count.
     """
     query = """
-    fields @message
+    fields @timestamp, @message
     | filter @message like /claude_code.lines_of_code.count/
     | parse @message /"type":"(?<type>[^"]*)"/
     | parse @message /"claude_code.lines_of_code.count":(?<lines>[0-9.]+)/
-    | stats sum(lines) as total by type
+    | sort @timestamp asc
     """
     
-    lines_added = 0
-    lines_removed = 0
+    events = []
+    lines_added_total = 0
+    lines_removed_total = 0
     
     results = run_query(query, start_ms, end_ms)
     for result in results:
+        timestamp = None
         line_type = None
-        total = 0
-        for field in result:
-            if field['field'] == 'type':
-                line_type = field['value'].lower()
-            elif field['field'] == 'total':
-                total = float(field['value'])
+        lines = 0
         
-        if line_type == 'added':
-            lines_added = total
-        elif line_type == 'removed':
-            lines_removed = total
+        for field in result:
+            if field['field'] == '@timestamp':
+                timestamp = field['value']
+            elif field['field'] == 'type':
+                line_type = field['value'].lower()
+            elif field['field'] == 'lines':
+                lines = float(field['value'])
+        
+        if timestamp and line_type and lines >= 0:
+            events.append({
+                'timestamp': timestamp,
+                'type': line_type,
+                'count': lines
+            })
+            
+            if line_type == 'added':
+                lines_added_total += lines
+            elif line_type == 'removed':
+                lines_removed_total += lines
     
-    return lines_added, lines_removed
+    return events, lines_added_total, lines_removed_total
 
 
-def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details, lines_added, lines_removed):
+def aggregate_model_rate_metrics(start_ms, end_ms):
     """
-    Write aggregated metrics to DynamoDB using proper single-table design.
-    Schema: PK=METRICS#YYYY-MM-DD, SK=HH:MM:SS#TYPE#DETAIL
+    Query logs and bucket token/request counts by model and minute.
+    Returns dict of model -> minute -> {tokens, requests} for DynamoDB storage.
+    """
+    # Query for all token usage with timestamps and models
+    query = """
+    fields @timestamp, @message
+    | filter @message like /claude_code.token.usage/
+    | parse @message /"model":"(?<model>[^"]*)"/
+    | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+    | parse @message /"type":"(?<token_type>[^"]*)"/
+    | sort @timestamp asc
+    """
+    
+    model_metrics = defaultdict(lambda: defaultdict(lambda: {'tokens': 0, 'requests': 0}))
+    
+    results = run_query(query, start_ms, end_ms)
+    for result in results:
+        timestamp = None
+        model = None
+        tokens = 0
+        token_type = None
+        
+        for field in result:
+            if field['field'] == '@timestamp':
+                timestamp = field['value']
+            elif field['field'] == 'model':
+                model = field['value']
+            elif field['field'] == 'tokens':
+                tokens = float(field['value'])
+            elif field['field'] == 'token_type':
+                token_type = field['value']
+        
+        if timestamp and model and tokens > 0:
+            # Parse timestamp and bucket by minute
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                # Round down to minute
+                minute_dt = dt.replace(second=0, microsecond=0)
+                minute_str = minute_dt.strftime('%H:%M:%S')
+                
+                # Add tokens to the minute bucket for this model
+                model_metrics[model][minute_str]['tokens'] += tokens
+                
+                # Count requests (only for input tokens to avoid double counting)
+                if token_type == 'input':
+                    model_metrics[model][minute_str]['requests'] += 1
+            except Exception as e:
+                print(f"Error parsing timestamp {timestamp}: {str(e)}")
+    
+    return model_metrics
+
+
+def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details, lines_added, lines_removed, line_events=None, model_rate_metrics=None):
+    """
+    Write aggregated metrics to DynamoDB using single-partition design.
+    Schema: PK=METRICS, SK=ISO_TIMESTAMP#TYPE#DETAIL
+    Stores window summaries, user metrics, line events, and per-model rate metrics.
     """
     try:
         # Format timestamps
-        date_str = timestamp.strftime('%Y-%m-%d')
-        time_str = timestamp.strftime('%H:%M:%S')
-        month_str = timestamp.strftime('%Y-%m')
-        day_str = timestamp.strftime('%d')
+        iso_timestamp = timestamp.isoformat().replace('+00:00', 'Z')
         ttl = int((timestamp + timedelta(days=30)).timestamp())  # 30 day retention
         
         # Convert user details to Decimal
@@ -555,87 +585,86 @@ def write_to_dynamodb(timestamp, total_tokens, unique_users, user_details, lines
         with table.batch_writer() as batch:
             # 1. Write 5-minute window aggregate
             window_item = {
-                'pk': f'METRICS#{date_str}',
-                'sk': f'{time_str}#WINDOW#SUMMARY',
+                'pk': 'METRICS',
+                'sk': f'{iso_timestamp}#WINDOW#SUMMARY',
                 'unique_users': unique_users,
                 'total_tokens': Decimal(str(total_tokens)) if total_tokens else Decimal(0),
                 'top_users': top_users_decimal,
                 'lines_added': Decimal(str(lines_added)) if lines_added else Decimal(0),
                 'lines_removed': Decimal(str(lines_removed)) if lines_removed else Decimal(0),
-                # GSI attributes for alternative access patterns
-                'gsi1pk': f'TYPE#WINDOW',
-                'gsi1sk': f'{date_str}#{time_str}',
-                'gsi3pk': f'MONTH#{month_str}',
-                'gsi3sk': f'{day_str}#{time_str}',
+                'timestamp': iso_timestamp,
                 'ttl': ttl
             }
             batch.put_item(Item=window_item)
             
-            # 2. Write lines of code metrics
+            # 2. Write lines of code summary
             if lines_added > 0 or lines_removed > 0:
                 lines_item = {
-                    'pk': f'METRICS#{date_str}',
-                    'sk': f'{time_str}#LINES#SUMMARY',
+                    'pk': 'METRICS',
+                    'sk': f'{iso_timestamp}#LINES#SUMMARY',
                     'lines_added': Decimal(str(lines_added)),
                     'lines_removed': Decimal(str(lines_removed)),
-                    'gsi2pk': f'TYPE#LINES',
-                    'gsi2sk': f'{date_str}#{time_str}',
-                    'gsi3pk': f'MONTH#{month_str}',
-                    'gsi3sk': f'{day_str}#{time_str}#LINES',
+                    'timestamp': iso_timestamp,
                     'ttl': ttl
                 }
                 batch.put_item(Item=lines_item)
             
+            # 2b. Write individual line change events
+            if line_events:
+                for event in line_events:
+                    # Parse event timestamp to get ISO format
+                    event_dt = datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00'))
+                    event_iso = event_dt.isoformat() + 'Z'
+                    
+                    # Use timestamp + type as unique identifier
+                    event_id = f"{event['type'].upper()}#{event_dt.timestamp()}"
+                    
+                    line_event_item = {
+                        'pk': 'METRICS',
+                        'sk': f'{event_iso}#LINES#EVENT#{event_id}',
+                        'type': event['type'],
+                        'count': Decimal(str(event['count'])),
+                        'timestamp': event_iso,
+                        'ttl': ttl
+                    }
+                    batch.put_item(Item=line_event_item)
+            
             # 3. Write individual user metrics for this window
             for user in user_details:
                 user_item = {
-                    'pk': f'METRICS#{date_str}',
-                    'sk': f'{time_str}#USER#{user["email"]}',
+                    'pk': 'METRICS',
+                    'sk': f'{iso_timestamp}#USER#{user["email"]}',
                     'tokens': Decimal(str(user.get('tokens', 0))),
                     'requests': Decimal(str(user.get('requests', 0))),
-                    # GSI for user-centric queries
-                    'gsi1pk': f'USER#{user["email"]}',
-                    'gsi1sk': f'{date_str}#{time_str}',
-                    'gsi3pk': f'MONTH#{month_str}',
-                    'gsi3sk': f'{day_str}#{time_str}#USER#{user["email"]}',
+                    'email': user['email'],
+                    'timestamp': iso_timestamp,
                     'ttl': ttl
                 }
                 batch.put_item(Item=user_item)
-        
-        print(f"Wrote window summary, lines metrics, and {len(user_details)} user records to DynamoDB")
-        
-        # 4. Update daily aggregate (separate operation for atomic update)
-        daily_key = {
-            'pk': f'DAILY#{month_str}',
-            'sk': f'{day_str}#SUMMARY'
-        }
-        
-        try:
-            # Get existing daily record
-            response = table.get_item(Key=daily_key)
-            existing_item = response.get('Item', {})
-            existing_users = set(existing_item.get('unique_users', []))
-            daily_tokens = Decimal(str(existing_item.get('total_tokens', 0)))
             
-            # Add new data
-            for user in user_details:
-                existing_users.add(user['email'])
-            daily_tokens += Decimal(str(total_tokens)) if total_tokens else Decimal(0)
-            
-            # Update daily record
-            table.put_item(Item={
-                **daily_key,
-                'unique_users': list(existing_users),
-                'unique_user_count': len(existing_users),
-                'total_tokens': daily_tokens,
-                'gsi2pk': f'TYPE#DAILY',
-                'gsi2sk': f'{month_str}-{day_str}',
-                'ttl': ttl
-            })
-            print(f"Updated daily aggregate: {len(existing_users)} unique users, {daily_tokens} tokens")
-            
-        except Exception as e:
-            print(f"Error updating daily aggregate: {str(e)}")
+            # 4. Write per-model, per-minute rate metrics
+            if model_rate_metrics:
+                for model_id, minute_data in model_rate_metrics.items():
+                    for minute_time, metrics in minute_data.items():
+                        # Parse the minute time to get the full timestamp
+                        # minute_time is in format HH:MM:SS, combine with date from main timestamp
+                        minute_dt = datetime.combine(timestamp.date(), datetime.strptime(minute_time, '%H:%M:%S').time(), tzinfo=timezone.utc)
+                        minute_iso = minute_dt.isoformat().replace('+00:00', 'Z')
+                        
+                        model_rate_item = {
+                            'pk': 'METRICS',
+                            'sk': f'{minute_iso}#MODEL_RATE#{model_id}',
+                            'model': model_id,
+                            'tpm': Decimal(str(metrics['tokens'])),
+                            'rpm': Decimal(str(metrics['requests'])),
+                            'timestamp': minute_iso,
+                            'ttl': ttl
+                        }
+                        batch.put_item(Item=model_rate_item)
+        
+        line_events_count = len(line_events) if line_events else 0
+        model_rate_count = sum(len(minutes) for minutes in model_rate_metrics.values()) if model_rate_metrics else 0
+        print(f"Wrote window summary, {line_events_count} line events, {model_rate_count} model rate metrics, and {len(user_details)} user records to DynamoDB")
             
     except Exception as e:
         print(f"Error writing to DynamoDB: {str(e)}")

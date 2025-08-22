@@ -1,19 +1,16 @@
 # ABOUTME: Lambda function to display model TPM/RPM usage vs quotas
-# ABOUTME: Queries Service Quotas API and shows usage percentages with progress bars
+# ABOUTME: Queries DynamoDB using single-partition schema for real-time rate tracking
 
 import json
 import boto3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import sys
+from boto3.dynamodb.conditions import Key, Attr
+from decimal import Decimal
 sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
-try:
-    from metrics_utils import get_metric_statistics, get_latest_metric_value, check_metrics_available
-except ImportError:
-    # Metrics utils not available, will fall back to logs
-    pass
+from query_utils import validate_time_range
 
 # Quota code mappings for each model
 QUOTA_MAPPINGS = {
@@ -83,6 +80,18 @@ def format_number(num):
         return f"{num:.0f}"
 
 
+def format_compact_number(num):
+    """Ultra compact number formatting for tight spaces."""
+    if num >= 1_000_000:
+        return f"{num/1_000_000:.0f}M"  # No decimal for millions
+    elif num >= 10_000:
+        return f"{num/1_000:.0f}K"  # No decimal for 10K+
+    elif num >= 1_000:
+        return f"{num/1_000:.1f}K"  # One decimal for 1-10K
+    else:
+        return f"{num:.0f}"
+
+
 def format_timestamp(timestamp_ms):
     """Format timestamp to readable time with UTC indicator."""
     if timestamp_ms is None:
@@ -91,14 +100,39 @@ def format_timestamp(timestamp_ms):
     return dt.strftime("%-I:%M %p UTC")
 
 
-def get_progress_bar_html(percentage, height=20):
+def format_compact_time(timestamp_ms):
+    """Compact time format for tight spaces."""
+    if timestamp_ms is None:
+        return ""
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%-I:%M%p UTC")  # 3:25AM UTC
+
+
+def get_progress_bar_html(percentage, height=20, show_text=True):
     """Generate an HTML progress bar."""
+    text_html = f"""
+        <div style="
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: {min(11, height-4)}px;
+            font-weight: 600;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        ">{percentage:.0f}%</div>
+    """ if show_text else ""
+    
     return f"""
     <div style="
         width: 100%;
         height: {height}px;
         background: rgba(0,0,0,0.1);
-        border-radius: 10px;
+        border-radius: {min(10, height//2)}px;
         overflow: hidden;
         position: relative;
     ">
@@ -110,22 +144,18 @@ def get_progress_bar_html(percentage, height=20):
                 {get_status_color(percentage)}dd 100%);
             transition: width 0.3s ease;
         "></div>
-        <div style="
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 11px;
-            font-weight: 600;
-            color: white;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-        ">{percentage:.0f}%</div>
+        {text_html}
     </div>
     """
+
+
+def get_micro_progress_bar(percentage, width_chars=8):
+    """Text-based micro progress bar for ultra-compact mode."""
+    filled = int(width_chars * min(percentage, 100) / 100)
+    empty = width_chars - filled
+    blocks = "█" * filled + "░" * empty
+    color = get_status_color(percentage)
+    return f'<span style="color: {color}; font-size: 10px; font-family: monospace;">[{blocks}]</span>'
 
 
 
@@ -182,222 +212,161 @@ def get_service_quota(quota_code, region='us-east-1', quota_name=''):
         return defaults.get(quota_code, 100000 if 'tpm' in quota_name.lower() else 200)
 
 
-def get_usage_metrics_from_cloudwatch(cloudwatch_client, model_id, start_time, end_time):
-    """Get current and peak TPM/RPM from CloudWatch Metrics."""
+def get_model_rates_from_dynamodb(table, model_id, start_time, end_time):
+    """
+    Query DynamoDB for per-minute TPM/RPM data for a specific model.
+    Returns: recent_peak_tpm, recent_peak_rpm, avg_5min_tpm, avg_5min_rpm,
+             overall_peak_tpm, overall_peak_rpm, overall_peak_tpm_time, overall_peak_rpm_time
+    """
     try:
-        # Get TPM from metrics
-        tpm_dimensions = [{'Name': 'Model', 'Value': model_id}]
+        # Convert timestamps to datetime objects (timezone-aware)
+        start_dt = datetime.fromtimestamp(start_time / 1000, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(end_time / 1000, tz=timezone.utc)
+        current_dt = datetime.now(timezone.utc)
         
-        # Get current TPM (most recent data point)
-        tpm_current = get_latest_metric_value(
-            cloudwatch_client,
-            'TokensPerMinute',
-            tpm_dimensions,
-            'Sum',
-            lookback_minutes=10
-        ) or 0
+        # Convert to ISO format for queries
+        start_iso = start_dt.isoformat() + 'Z'
+        end_iso = end_dt.isoformat() + 'Z'
         
-        # Get peak TPM over the time range
-        tpm_datapoints = get_metric_statistics(
-            cloudwatch_client,
-            'TokensPerMinute',
-            start_time,
-            end_time,
-            tpm_dimensions,
-            'Maximum',
-            300  # 5-minute periods
+        # Get the last 10 minutes for recent metrics (wider window for better activity detection)
+        recent_start_dt = current_dt - timedelta(minutes=10)
+        
+        all_metrics = []
+        
+        # Single query for all MODEL_RATE items for this model in time range
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                 Key('sk').between(f'{start_iso}#MODEL_RATE#{model_id}',
+                                                   f'{end_iso}#MODEL_RATE#{model_id}~')
         )
         
-        tpm_peak = tpm_current
-        tpm_peak_time = None
-        if tpm_datapoints:
-            max_point = max(tpm_datapoints, key=lambda x: x.get('Maximum', 0))
-            tpm_peak = max_point.get('Maximum', tpm_current)
-            tpm_peak_time = int(max_point['Timestamp'].timestamp() * 1000) if 'Timestamp' in max_point else None
+        for item in response.get('Items', []):
+            # Extract model from SK and verify it matches what we're looking for
+            sk = item.get('sk', '')
+            sk_parts = sk.split('#')
+            if len(sk_parts) >= 3 and sk_parts[1] == 'MODEL_RATE':
+                item_model = '#'.join(sk_parts[2:])  # Handle model IDs with # in them
+                
+                # Only process if this is the model we're looking for
+                if item_model == model_id:
+                    # Parse timestamp from item
+                    timestamp_str = item.get('timestamp', '')
+                    if timestamp_str:
+                        try:
+                            metric_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            all_metrics.append({
+                                'datetime': metric_dt,
+                                'tpm': float(item.get('tpm', 0)),
+                                'rpm': float(item.get('rpm', 0))
+                            })
+                        except:
+                            pass
         
-        # Get RPM from metrics
-        rpm_current = get_latest_metric_value(
-            cloudwatch_client,
-            'RequestsPerMinute',
-            tpm_dimensions,
-            'Sum',
-            lookback_minutes=10
-        ) or 0
+        # Handle pagination if needed
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                     Key('sk').between(f'{start_iso}#MODEL_RATE#{model_id}',
+                                                       f'{end_iso}#MODEL_RATE#{model_id}~'),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            
+            for item in response.get('Items', []):
+                # Extract model from SK and verify it matches what we're looking for
+                sk = item.get('sk', '')
+                sk_parts = sk.split('#')
+                if len(sk_parts) >= 3 and sk_parts[1] == 'MODEL_RATE':
+                    item_model = '#'.join(sk_parts[2:])  # Handle model IDs with # in them
+                    
+                    # Only process if this is the model we're looking for
+                    if item_model == model_id:
+                        timestamp_str = item.get('timestamp', '')
+                        if timestamp_str:
+                            try:
+                                metric_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                all_metrics.append({
+                                    'datetime': metric_dt,
+                                    'tpm': float(item.get('tpm', 0)),
+                                    'rpm': float(item.get('rpm', 0))
+                                })
+                            except:
+                                pass
         
-        # Get peak RPM over the time range
-        rpm_datapoints = get_metric_statistics(
-            cloudwatch_client,
-            'RequestsPerMinute',
-            start_time,
-            end_time,
-            tpm_dimensions,
-            'Maximum',
-            300
-        )
+        # Calculate metrics
+        if not all_metrics:
+            return 0, 0, 0, 0, 0, 0, None, None
         
-        rpm_peak = rpm_current
-        rpm_peak_time = None
-        if rpm_datapoints:
-            max_point = max(rpm_datapoints, key=lambda x: x.get('Maximum', 0))
-            rpm_peak = max_point.get('Maximum', rpm_current)
-            rpm_peak_time = int(max_point['Timestamp'].timestamp() * 1000) if 'Timestamp' in max_point else None
+        # Sort by datetime
+        all_metrics.sort(key=lambda x: x['datetime'])
         
-        return tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time
+        # Get recent metrics (last 10 minutes)
+        recent_metrics = [m for m in all_metrics if m['datetime'] >= recent_start_dt]
+        
+        # Calculate recent peak (last 10 minutes)
+        if recent_metrics:
+            recent_peak_tpm = max(m['tpm'] for m in recent_metrics)
+            recent_peak_rpm = max(m['rpm'] for m in recent_metrics)
+            # Still calculate 5-minute average for display (using last 5 minutes of data)
+            five_min_start = current_dt - timedelta(minutes=5)
+            five_min_metrics = [m for m in all_metrics if m['datetime'] >= five_min_start]
+            avg_5min_tpm = sum(m['tpm'] for m in five_min_metrics) / len(five_min_metrics) if five_min_metrics else 0
+            avg_5min_rpm = sum(m['rpm'] for m in five_min_metrics) / len(five_min_metrics) if five_min_metrics else 0
+            
+            # If no data in last 5 minutes, model should be considered inactive
+            # even if there was data in the 6-10 minute window
+            if not five_min_metrics:
+                recent_peak_tpm = 0
+                recent_peak_rpm = 0
+        else:
+            # If no recent data, set to 0 to indicate inactive
+            recent_peak_tpm = 0
+            recent_peak_rpm = 0
+            avg_5min_tpm = 0
+            avg_5min_rpm = 0
+        
+        # Calculate overall peaks
+        overall_peak_tpm = max(m['tpm'] for m in all_metrics)
+        overall_peak_rpm = max(m['rpm'] for m in all_metrics)
+        
+        # Find when peaks occurred
+        tpm_peak_metric = max(all_metrics, key=lambda x: x['tpm'])
+        rpm_peak_metric = max(all_metrics, key=lambda x: x['rpm'])
+        
+        overall_peak_tpm_time = int(tpm_peak_metric['datetime'].timestamp() * 1000)
+        overall_peak_rpm_time = int(rpm_peak_metric['datetime'].timestamp() * 1000)
+        
+        return (recent_peak_tpm, recent_peak_rpm, avg_5min_tpm, avg_5min_rpm,
+                overall_peak_tpm, overall_peak_rpm, overall_peak_tpm_time, overall_peak_rpm_time)
         
     except Exception as e:
-        print(f"Error getting metrics for {model_id}: {str(e)}")
-        return None  # Signal to fall back to logs
+        print(f"Error getting DynamoDB metrics for {model_id}: {str(e)}")
+        return 0, 0, 0, 0, 0, 0, None, None
 
 
-def get_usage_metrics(logs_client, log_group, model_id, start_time, end_time, region):
-    """Get current and peak TPM/RPM for a specific model."""
-    
-    # Current TPM Query - get last minute's tokens
-    tpm_current_query = f"""
-    fields @timestamp, @message
-    | filter @message like /claude_code.token.usage/
-    | filter @message like /{model_id}/
-    | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-    | stats sum(tokens) as total_tokens by bin(1m) as time
-    | sort time desc
-    | limit 1
-    """
-    
-    # Peak TPM Query - get maximum tokens per minute in time range with timestamp
-    tpm_peak_query = f"""
-    fields @timestamp, @message
-    | filter @message like /claude_code.token.usage/
-    | filter @message like /{model_id}/
-    | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-    | stats sum(tokens) as total_tokens by bin(1m) as time
-    | sort total_tokens desc
-    | limit 1
-    """
-    
-    # Current RPM Query - get last minute's requests
-    rpm_current_query = f"""
-    fields @timestamp, @message
-    | filter @message like /type":"input/
-    | filter @message like /{model_id}/
-    | stats count() as requests by bin(1m) as time
-    | sort time desc
-    | limit 1
-    """
-    
-    # Peak RPM Query - get maximum requests per minute in time range with timestamp
-    rpm_peak_query = f"""
-    fields @timestamp, @message
-    | filter @message like /type":"input/
-    | filter @message like /{model_id}/
-    | stats count() as requests by bin(1m) as time
-    | sort requests desc
-    | limit 1
-    """
-    
-    try:
-        # Run current TPM query
-        tpm_current_response = rate_limited_start_query(
-            logs_client, log_group, start_time, end_time, tpm_current_query
-        )
-        tpm_current_result = wait_for_query_results(logs_client, tpm_current_response['queryId'])
-        
-        tpm_current = 0
-        if tpm_current_result.get('status') == 'Complete' and tpm_current_result.get('results'):
-            for field in tpm_current_result['results'][0]:
-                if field['field'] == 'total_tokens':
-                    tpm_current = float(field['value'])
-        
-        # Run peak TPM query
-        tpm_peak_response = rate_limited_start_query(
-            logs_client, log_group, start_time, end_time, tpm_peak_query
-        )
-        tpm_peak_result = wait_for_query_results(logs_client, tpm_peak_response['queryId'])
-        
-        tpm_peak = tpm_current  # Default to current if no peak found
-        tpm_peak_time = None
-        if tpm_peak_result.get('status') == 'Complete' and tpm_peak_result.get('results'):
-            for field in tpm_peak_result['results'][0]:
-                if field['field'] == 'total_tokens':
-                    tpm_peak = float(field['value'])
-                elif field['field'] == 'time':
-                    # Parse timestamp string to milliseconds
-                    try:
-                        dt = datetime.strptime(field['value'], '%Y-%m-%d %H:%M:%S.%f')
-                        tpm_peak_time = int(dt.timestamp() * 1000)
-                    except:
-                        tpm_peak_time = None
-        
-        # Run current RPM query
-        rpm_current_response = rate_limited_start_query(
-            logs_client, log_group, start_time, end_time, rpm_current_query
-        )
-        rpm_current_result = wait_for_query_results(logs_client, rpm_current_response['queryId'])
-        
-        rpm_current = 0
-        if rpm_current_result.get('status') == 'Complete' and rpm_current_result.get('results'):
-            for field in rpm_current_result['results'][0]:
-                if field['field'] == 'requests':
-                    rpm_current = float(field['value'])
-        
-        # Run peak RPM query
-        rpm_peak_response = rate_limited_start_query(
-            logs_client, log_group, start_time, end_time, rpm_peak_query
-        )
-        rpm_peak_result = wait_for_query_results(logs_client, rpm_peak_response['queryId'])
-        
-        rpm_peak = rpm_current  # Default to current if no peak found
-        rpm_peak_time = None
-        if rpm_peak_result.get('status') == 'Complete' and rpm_peak_result.get('results'):
-            for field in rpm_peak_result['results'][0]:
-                if field['field'] == 'requests':
-                    rpm_peak = float(field['value'])
-                elif field['field'] == 'time':
-                    # Parse timestamp string to milliseconds  
-                    try:
-                        dt = datetime.strptime(field['value'], '%Y-%m-%d %H:%M:%S.%f')
-                        rpm_peak_time = int(dt.timestamp() * 1000)
-                    except:
-                        rpm_peak_time = None
-        
-        return tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time
-        
-    except Exception as e:
-        print(f"Error getting usage for {model_id}: {str(e)}")
-        return 0, 0, None, 0, 0, None
+# Removed - no longer needed since we're using DynamoDB
 
 
 def lambda_handler(event, context):
     if event.get("describe", False):
         return {"markdown": "# Model Quota Usage\nTPM and RPM usage vs service quotas for each model"}
 
-    log_group = os.environ["METRICS_LOG_GROUP"]
     metrics_region = os.environ["METRICS_REGION"]
-    METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
+    metrics_table_name = os.environ.get("METRICS_TABLE", "ClaudeCodeMetrics")
     
-    print(f"Starting Model Quota Usage widget - Log Group: {log_group}, Region: {metrics_region}, METRICS_ONLY: {METRICS_ONLY}")
+    print(f"Starting Model Quota Usage widget - Region: {metrics_region}, Table: {metrics_table_name}")
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
-
-    logs_client = boto3.client("logs", region_name=metrics_region)
-    cloudwatch_client = boto3.client("cloudwatch", region_name=metrics_region)
     
-    # Check if we should use metrics only mode
-    if METRICS_ONLY:
-        print("METRICS_ONLY mode enabled - using CloudWatch Metrics directly")
-        use_metrics = True
-    else:
-        # Check if metrics are available for fallback mode
-        use_metrics = False
-        try:
-            if 'metrics_utils' in sys.modules:
-                use_metrics = check_metrics_available(cloudwatch_client)
-                if use_metrics:
-                    print("Using CloudWatch Metrics for model quota data")
-                else:
-                    print("CloudWatch Metrics not available, falling back to logs")
-        except:
-            print("Metrics utils not available, using logs")
+    # Get widget dimensions
+    widget_size = widget_context.get("size", {})
+    width = widget_size.get("width", 600)
+    height = widget_size.get("height", 300)
+    print(f"Widget dimensions: {width}x{height}")
+
+    # Connect to DynamoDB
+    dynamodb = boto3.resource('dynamodb', region_name=metrics_region)
+    table = dynamodb.Table(metrics_table_name)
 
     try:
         # Use dashboard time range
@@ -413,9 +382,9 @@ def lambda_handler(event, context):
         if not is_valid:
             return error_html
 
-        # Build HTML for display
-        models_html = ""
-        models_processed = 0
+        # First pass: Collect all models with usage
+        models_with_usage = []
+        current_time = datetime.now(timezone.utc)
         
         print(f"Processing {len(QUOTA_MAPPINGS)} models...")
         
@@ -428,235 +397,363 @@ def lambda_handler(event, context):
             tpm_quota = get_service_quota(config['tpm_quota_code'], quota_region, f"{config['name']} TPM")
             rpm_quota = get_service_quota(config['rpm_quota_code'], quota_region, f"{config['name']} RPM")
             
-            # Get current and peak usage - try metrics first, fall back to logs
-            if use_metrics:
-                result = get_usage_metrics_from_cloudwatch(
-                    cloudwatch_client, model_id, start_time, end_time
-                )
-                if result is not None:
-                    tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = result
-                elif METRICS_ONLY:
-                    # In metrics-only mode, don't fall back - use zeros
-                    print(f"No metrics data for {model_id} in METRICS_ONLY mode")
-                    tpm_current, tpm_peak, tpm_peak_time = 0, 0, None
-                    rpm_current, rpm_peak, rpm_peak_time = 0, 0, None
-                else:
-                    # Fall back to logs if metrics failed
-                    tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
-                        logs_client, log_group, model_id, start_time, end_time, metrics_region
-                    )
-            elif not METRICS_ONLY:
-                # Use logs directly (only if not in METRICS_ONLY mode)
-                tpm_current, tpm_peak, tpm_peak_time, rpm_current, rpm_peak, rpm_peak_time = get_usage_metrics(
-                    logs_client, log_group, model_id, start_time, end_time, metrics_region
-                )
-            else:
-                # METRICS_ONLY mode but no metrics available
-                print(f"METRICS_ONLY mode but metrics not available for {model_id}")
-                tpm_current, tpm_peak, tpm_peak_time = 0, 0, None
-                rpm_current, rpm_peak, rpm_peak_time = 0, 0, None
+            # Get usage metrics from DynamoDB
+            (recent_peak_tpm, recent_peak_rpm, avg_5min_tpm, avg_5min_rpm,
+             overall_peak_tpm, overall_peak_rpm, overall_peak_tpm_time, overall_peak_rpm_time) = \
+                get_model_rates_from_dynamodb(table, model_id, start_time, end_time)
             
-            # Skip models with no usage
-            if tpm_current == 0 and tpm_peak == 0 and rpm_current == 0 and rpm_peak == 0:
+            # Skip models with absolutely no usage in the time range
+            if overall_peak_tpm == 0 and overall_peak_rpm == 0:
                 continue
             
-            # Calculate percentages based on CURRENT values for display
-            tpm_percentage = (tpm_current / tpm_quota * 100) if tpm_quota > 0 else 0
-            rpm_percentage = (rpm_current / rpm_quota * 100) if rpm_quota > 0 else 0
+            # Determine if model is currently active (has usage in last 10 minutes)
+            is_active = recent_peak_tpm > 0 or recent_peak_rpm > 0
             
-            # Calculate peak percentages
-            tpm_peak_percentage = (tpm_peak / tpm_quota * 100) if tpm_quota > 0 else 0
-            rpm_peak_percentage = (rpm_peak / rpm_quota * 100) if rpm_quota > 0 else 0
+            # Calculate how long ago the model was last active
+            last_active_text = "Active now" if is_active else "No recent activity"
+            if not is_active and (overall_peak_tpm_time or overall_peak_rpm_time):
+                # Use the most recent peak time
+                last_peak_time = max(filter(None, [overall_peak_tpm_time, overall_peak_rpm_time]))
+                last_peak_dt = datetime.fromtimestamp(last_peak_time / 1000, tz=timezone.utc)
+                minutes_ago = int((current_time - last_peak_dt).total_seconds() / 60)
+                if minutes_ago < 60:
+                    last_active_text = f"Last active {minutes_ago}m ago"
+                elif minutes_ago < 1440:
+                    hours_ago = minutes_ago // 60
+                    last_active_text = f"Last active {hours_ago}h ago"
+                else:
+                    last_active_text = "Inactive"
             
-            # Get max percentage to determine overall status color (use peaks for gradient)
-            max_percentage = max(tpm_peak_percentage, rpm_peak_percentage)
+            # Calculate percentages based on recent peak values for display
+            tpm_percentage = (recent_peak_tpm / tpm_quota * 100) if tpm_quota > 0 else 0
+            rpm_percentage = (recent_peak_rpm / rpm_quota * 100) if rpm_quota > 0 else 0
             
-            # Determine gradient color based on peak usage
-            if max_percentage >= 90:
-                gradient = "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"  # Red
-            elif max_percentage >= 70:
-                gradient = "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"  # Yellow
-            else:
-                gradient = "linear-gradient(135deg, #10b981 0%, #059669 100%)"  # Green
+            # Calculate overall peak percentages
+            tpm_peak_percentage = (overall_peak_tpm / tpm_quota * 100) if tpm_quota > 0 else 0
+            rpm_peak_percentage = (overall_peak_rpm / rpm_quota * 100) if rpm_quota > 0 else 0
             
-            # Determine individual metric colors based on CURRENT usage
-            tpm_color = get_status_color(tpm_percentage)
-            rpm_color = get_status_color(rpm_percentage)
-            
-            # Determine individual background colors (lighter versions)
-            tpm_bg_color = tpm_color if tpm_percentage >= 70 else "transparent"
-            rpm_bg_color = rpm_color if rpm_percentage >= 70 else "transparent"
-            
-            # Format peak times with percentage
-            tpm_peak_str = f"{format_number(tpm_peak)} @ {format_timestamp(tpm_peak_time)}" if tpm_peak_time else format_number(tpm_peak)
-            rpm_peak_str = f"{rpm_peak:.0f} @ {format_timestamp(rpm_peak_time)}" if rpm_peak_time else f"{rpm_peak:.0f}"
-            
-            # Build HTML for this model  
-            models_html += f"""
+            # Store model data for rendering
+            models_with_usage.append({
+                'model_id': model_id,
+                'name': config['name'],
+                'is_active': is_active,
+                'last_active_text': last_active_text,
+                'tpm': {
+                    'recent_peak': recent_peak_tpm,
+                    'avg_5min': avg_5min_tpm,
+                    'overall_peak': overall_peak_tpm,
+                    'overall_peak_time': overall_peak_tpm_time,
+                    'quota': tpm_quota,
+                    'percentage': tpm_percentage,
+                    'peak_percentage': tpm_peak_percentage
+                },
+                'rpm': {
+                    'recent_peak': recent_peak_rpm,
+                    'avg_5min': avg_5min_rpm,
+                    'overall_peak': overall_peak_rpm,
+                    'overall_peak_time': overall_peak_rpm_time,
+                    'quota': rpm_quota,
+                    'percentage': rpm_percentage,
+                    'peak_percentage': rpm_peak_percentage
+                }
+            })
+        
+        # Sort models: active first, then by name
+        models_with_usage.sort(key=lambda x: (not x['is_active'], x['name']))
+        
+        # Determine layout based on model count and available space
+        model_count = len(models_with_usage)
+        print(f"Rendering {model_count} models with usage")
+        
+        if model_count == 0:
+            # Clean empty state matching other widgets
+            return """
             <div style="
-                margin-bottom: 15px;
-                background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                background: white;
                 border-radius: 8px;
-                padding: 15px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                font-family: 'Amazon Ember', -apple-system, sans-serif;
             ">
                 <div style="
-                    color: white;
-                    font-size: 16px;
-                    font-weight: 600;
-                    margin-bottom: 12px;
-                    text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-                ">{config['name']}</div>
-                
-                <div style="
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 15px;
-                ">
-                    <!-- TPM Section -->
-                    <div style="
-                        background: linear-gradient(135deg, {tpm_color}44, {tpm_color}22);
-                        border-radius: 6px;
-                        padding: 10px;
-                        border: 2px solid {tpm_color};
-                    ">
-                        <div style="
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            margin-bottom: 8px;
-                        ">
-                            <div>
-                                <span style="
-                                    color: white;
-                                    font-size: 11px;
-                                    text-transform: uppercase;
-                                    letter-spacing: 0.5px;
-                                    display: block;
-                                ">TPM</span>
-                                <span style="
-                                    color: rgba(255,255,255,0.8);
-                                    font-size: 9px;
-                                ">Tokens/Min</span>
-                            </div>
-                            <div style="text-align: right;">
-                                <span style="
-                                    color: white;
-                                    font-size: 32px;
-                                    font-weight: 700;
-                                    display: block;
-                                    line-height: 1;
-                                ">{format_number(tpm_current)}</span>
-                                <span style="
-                                    color: rgba(255,255,255,0.8);
-                                    font-size: 10px;
-                                ">Current</span>
-                            </div>
-                        </div>
-                        
-                        {get_progress_bar_html(tpm_percentage, 22)}
-                        
-                        <div style="
-                            margin-top: 8px;
-                            padding-top: 8px;
-                            border-top: 1px solid rgba(255,255,255,0.1);
-                        ">
-                            <div style="
-                                font-size: 12px;
-                                color: white;
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 2px;
-                            ">
-                                <span style="font-weight: 600;">Peak: {tpm_peak_str}</span>
-                                <span style="opacity: 0.8;">Quota: {format_number(tpm_quota)}</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- RPM Section -->
-                    <div style="
-                        background: linear-gradient(135deg, {rpm_color}44, {rpm_color}22);
-                        border-radius: 6px;
-                        padding: 10px;
-                        border: 2px solid {rpm_color};
-                    ">
-                        <div style="
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            margin-bottom: 8px;
-                        ">
-                            <div>
-                                <span style="
-                                    color: white;
-                                    font-size: 11px;
-                                    text-transform: uppercase;
-                                    letter-spacing: 0.5px;
-                                    display: block;
-                                ">RPM</span>
-                                <span style="
-                                    color: rgba(255,255,255,0.8);
-                                    font-size: 9px;
-                                ">Requests/Min</span>
-                            </div>
-                            <div style="text-align: right;">
-                                <span style="
-                                    color: white;
-                                    font-size: 32px;
-                                    font-weight: 700;
-                                    display: block;
-                                    line-height: 1;
-                                ">{rpm_current:.0f}</span>
-                                <span style="
-                                    color: rgba(255,255,255,0.8);
-                                    font-size: 10px;
-                                ">Current</span>
-                            </div>
-                        </div>
-                        
-                        {get_progress_bar_html(rpm_percentage, 22)}
-                        
-                        <div style="
-                            margin-top: 8px;
-                            padding-top: 8px;
-                            border-top: 1px solid rgba(255,255,255,0.1);
-                        ">
-                            <div style="
-                                font-size: 12px;
-                                color: white;
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 2px;
-                            ">
-                                <span style="font-weight: 600;">Peak: {rpm_peak_str}</span>
-                                <span style="opacity: 0.8;">Quota: {rpm_quota:.0f}</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                    color: #9ca3af;
+                    font-size: 14px;
+                ">No model usage detected in the selected time range</div>
             </div>
             """
-        
-        if not models_html:
-            models_html = """
-            <div style="
-                text-align: center;
-                padding: 40px;
-                color: #9ca3af;
-                font-size: 14px;
-            ">No model usage detected in the selected time range</div>
-            """
+        else:
+            # Calculate available space per model
+            space_per_model = height / model_count if model_count > 0 else height
+            
+            # Dynamic sizing based on model count and available space
+            if model_count == 1 and space_per_model > 200:
+                # Single model with plenty of space - detailed view
+                layout_type = "detailed"
+                container_padding = 12
+            elif model_count == 2 and space_per_model > 120:
+                # Two models - enhanced readable view
+                layout_type = "enhanced"
+                container_padding = 10
+            elif model_count <= 3 and space_per_model > 80:
+                # 2-3 models - balanced view
+                layout_type = "balanced"
+                container_padding = 8
+            elif model_count <= 4:
+                # 3-4 models - compact but readable
+                layout_type = "compact"
+                container_padding = 6
+            else:
+                # 5+ models - dense layout
+                layout_type = "dense"
+                container_padding = 4
+            
+            # Build HTML based on layout type
+            models_html = ""
+            
+            for idx, model in enumerate(models_with_usage):
+                # Determine colors based on usage (use peak percentage for inactive models)
+                tpm_color = get_status_color(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage'])
+                rpm_color = get_status_color(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage'])
+                
+                # Apply fade effect for inactive models
+                opacity = "1" if model['is_active'] else "0.6"
+                bg_opacity = "100%" if model['is_active'] else "60%"
+                
+                # Add margin between models
+                margin_bottom = 8 if idx < model_count - 1 else 0
+                
+                if layout_type == "detailed":
+                    # Single model - detailed view with all metrics clearly visible
+                    tpm_value = format_number(model['tpm']['recent_peak']) if model['is_active'] else "—"
+                    rpm_value = f"{model['rpm']['recent_peak']:.0f}" if model['is_active'] else "—"
+                    
+                    models_html += f"""
+                    <div style="
+                        background: linear-gradient(135deg, #1f2937 0%, #111827 {bg_opacity});
+                        border-radius: 8px;
+                        padding: 16px;
+                        margin-bottom: {margin_bottom}px;
+                        opacity: {opacity};
+                        transition: opacity 0.3s ease;
+                    ">
+                        <div style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 12px;
+                        ">
+                            <div style="color: white; font-size: 16px; font-weight: 600;">{model['name']}</div>
+                            <div style="color: {'#10b981' if model['is_active'] else '#9ca3af'}; font-size: 12px;">
+                                {model['last_active_text']}
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <!-- TPM -->
+                            <div style="
+                                background: {tpm_color}22;
+                                border: 1px solid {tpm_color}44;
+                                border-radius: 6px;
+                                padding: 12px;
+                            ">
+                                <div style="color: white; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    Tokens Per Minute (TPM)
+                                </div>
+                                <div style="color: white; font-size: 28px; font-weight: bold; margin-bottom: 8px;">{tpm_value}</div>
+                                <div style="font-size: 12px; color: rgba(255,255,255,0.9); line-height: 1.4;">
+                                    <div>5m Avg: {format_number(model['tpm']['avg_5min']) if model['is_active'] else '—'}</div>
+                                    <div>Peak: {format_number(model['tpm']['overall_peak'])} @ {format_compact_time(model['tpm']['overall_peak_time'])}</div>
+                                    <div>Quota: {format_number(model['tpm']['quota'])}</div>
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    {get_progress_bar_html(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage'], 16)}
+                                </div>
+                            </div>
+                            
+                            <!-- RPM -->
+                            <div style="
+                                background: {rpm_color}22;
+                                border: 1px solid {rpm_color}44;
+                                border-radius: 6px;
+                                padding: 12px;
+                            ">
+                                <div style="color: white; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    Requests Per Minute (RPM)
+                                </div>
+                                <div style="color: white; font-size: 28px; font-weight: bold; margin-bottom: 8px;">{rpm_value}</div>
+                                <div style="font-size: 12px; color: rgba(255,255,255,0.9); line-height: 1.4;">
+                                    <div>5m Avg: {f"{model['rpm']['avg_5min']:.0f}" if model['is_active'] else '—'}</div>
+                                    <div>Peak: {model['rpm']['overall_peak']:.0f} @ {format_compact_time(model['rpm']['overall_peak_time'])}</div>
+                                    <div>Quota: {model['rpm']['quota']:.0f}</div>
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    {get_progress_bar_html(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage'], 16)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                    
+                elif layout_type == "enhanced":
+                    # 2 models - enhanced readable view with clear labels
+                    tpm_current = format_number(model['tpm']['recent_peak']) if model['is_active'] else "—"
+                    rpm_current = f"{model['rpm']['recent_peak']:.0f}" if model['is_active'] else "—"
+                    
+                    models_html += f"""
+                    <div style="
+                        background: linear-gradient(135deg, #1f2937 0%, #111827 {bg_opacity});
+                        border-radius: 6px;
+                        padding: 12px;
+                        margin-bottom: {margin_bottom}px;
+                        opacity: {opacity};
+                        transition: opacity 0.3s ease;
+                    ">
+                        <div style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 8px;
+                        ">
+                            <div style="color: white; font-size: 14px; font-weight: 600;">{model['name']}</div>
+                            <div style="color: {'#10b981' if model['is_active'] else '#9ca3af'}; font-size: 11px;">
+                                {model['last_active_text']}
+                            </div>
+                        </div>
+                        
+                        <!-- TPM Row -->
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            margin-bottom: 6px;
+                            padding: 6px;
+                            background: {tpm_color}11;
+                            border-radius: 4px;
+                        ">
+                            <span style="color: {tpm_color}; width: 45px; font-size: 12px; font-weight: 600;">TPM</span>
+                            <div style="flex: 1; display: flex; align-items: center; gap: 12px; color: white; font-size: 12px;">
+                                <span><b>Now:</b> {tpm_current}</span>
+                                <span style="color: rgba(255,255,255,0.8);"><b>Avg:</b> {format_number(model['tpm']['avg_5min']) if model['is_active'] else '—'}</span>
+                                <span style="color: rgba(255,255,255,0.8);"><b>Peak:</b> {format_number(model['tpm']['overall_peak'])} @ {format_compact_time(model['tpm']['overall_peak_time'])}</span>
+                                <span style="color: rgba(255,255,255,0.7);"><b>Limit:</b> {format_number(model['tpm']['quota'])}</span>
+                            </div>
+                            <div style="width: 100px; margin: 0 8px;">
+                                {get_progress_bar_html(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage'], 12, False)}
+                            </div>
+                            <span style="color: {tpm_color}; font-weight: bold; font-size: 12px; width: 40px; text-align: right;">
+                                {(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage']):.0f}%
+                            </span>
+                        </div>
+                        
+                        <!-- RPM Row -->
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            padding: 6px;
+                            background: {rpm_color}11;
+                            border-radius: 4px;
+                        ">
+                            <span style="color: {rpm_color}; width: 45px; font-size: 12px; font-weight: 600;">RPM</span>
+                            <div style="flex: 1; display: flex; align-items: center; gap: 12px; color: white; font-size: 12px;">
+                                <span><b>Now:</b> {rpm_current}</span>
+                                <span style="color: rgba(255,255,255,0.8);"><b>Avg:</b> {f"{model['rpm']['avg_5min']:.0f}" if model['is_active'] else '—'}</span>
+                                <span style="color: rgba(255,255,255,0.8);"><b>Peak:</b> {model['rpm']['overall_peak']:.0f} @ {format_compact_time(model['rpm']['overall_peak_time'])}</span>
+                                <span style="color: rgba(255,255,255,0.7);"><b>Limit:</b> {model['rpm']['quota']:.0f}</span>
+                            </div>
+                            <div style="width: 100px; margin: 0 8px;">
+                                {get_progress_bar_html(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage'], 12, False)}
+                            </div>
+                            <span style="color: {rpm_color}; font-weight: bold; font-size: 12px; width: 40px; text-align: right;">
+                                {(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage']):.0f}%
+                            </span>
+                        </div>
+                    </div>
+                    """
+                    
+                elif layout_type in ["balanced", "compact", "dense"]:
+                    # 3+ models - compact but readable view
+                    font_size = 12 if layout_type == "balanced" else 11
+                    padding = 8 if layout_type == "balanced" else 6
+                    
+                    tpm_current = format_compact_number(model['tpm']['recent_peak']) if model['is_active'] else "—"
+                    rpm_current = f"{model['rpm']['recent_peak']:.0f}" if model['is_active'] else "—"
+                    
+                    models_html += f"""
+                    <div style="
+                        background: linear-gradient(135deg, #1f2937 0%, #111827 {bg_opacity});
+                        border-radius: 4px;
+                        padding: {padding}px;
+                        margin-bottom: {margin_bottom}px;
+                        opacity: {opacity};
+                        transition: opacity 0.3s ease;
+                    ">
+                        <div style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 4px;
+                        ">
+                            <div style="color: white; font-size: {font_size}px; font-weight: 600;">{model['name']}</div>
+                            <div style="color: {'#10b981' if model['is_active'] else '#9ca3af'}; font-size: 10px;">
+                                {model['last_active_text']}
+                            </div>
+                        </div>
+                        
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            font-size: {font_size - 1}px;
+                            gap: 2px;
+                        ">
+                            <!-- TPM Section -->
+                            <span style="color: {tpm_color}; font-weight: 600; margin-right: 6px;">TPM:</span>
+                            <span style="color: white;">{tpm_current}</span>
+                            <span style="color: #6b7280; margin: 0 4px;">|</span>
+                            <span style="color: rgba(255,255,255,0.7); font-size: {font_size - 2}px;">
+                                Peak: {format_compact_number(model['tpm']['overall_peak'])}@{format_compact_time(model['tpm']['overall_peak_time'])}
+                            </span>
+                            <span style="color: #6b7280; margin: 0 4px;">|</span>
+                            <span style="color: rgba(255,255,255,0.6); font-size: {font_size - 2}px;">
+                                Limit: {format_compact_number(model['tpm']['quota'])}
+                            </span>
+                            <div style="width: 60px; margin: 0 6px;">
+                                {get_progress_bar_html(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage'], 8, False)}
+                            </div>
+                            <span style="color: {tpm_color}; font-weight: bold; margin-right: 12px;">
+                                {(model['tpm']['percentage'] if model['is_active'] else model['tpm']['peak_percentage']):.0f}%
+                            </span>
+                            
+                            <!-- RPM Section -->
+                            <span style="color: {rpm_color}; font-weight: 600; margin-right: 6px;">RPM:</span>
+                            <span style="color: white;">{rpm_current}</span>
+                            <span style="color: #6b7280; margin: 0 4px;">|</span>
+                            <span style="color: rgba(255,255,255,0.7); font-size: {font_size - 2}px;">
+                                Peak: {model['rpm']['overall_peak']:.0f}@{format_compact_time(model['rpm']['overall_peak_time'])}
+                            </span>
+                            <span style="color: #6b7280; margin: 0 4px;">|</span>
+                            <span style="color: rgba(255,255,255,0.6); font-size: {font_size - 2}px;">
+                                Limit: {model['rpm']['quota']:.0f}
+                            </span>
+                            <div style="width: 60px; margin: 0 6px;">
+                                {get_progress_bar_html(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage'], 8, False)}
+                            </div>
+                            <span style="color: {rpm_color}; font-weight: bold;">
+                                {(model['rpm']['percentage'] if model['is_active'] else model['rpm']['peak_percentage']):.0f}%
+                            </span>
+                        </div>
+                    </div>
+                    """
         
         # Build final HTML
         html = f"""
         <div style="
-            padding: 12px;
+            padding: {container_padding}px;
             height: 100%;
             font-family: 'Amazon Ember', -apple-system, sans-serif;
             background: #f9fafb;
             box-sizing: border-box;
-            overflow-y: auto;
+            overflow: hidden;
         ">
             {models_html}
         </div>

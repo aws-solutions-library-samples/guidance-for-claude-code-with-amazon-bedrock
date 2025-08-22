@@ -1,16 +1,13 @@
+# ABOUTME: Lambda function to display top users by token usage
+# ABOUTME: Queries DynamoDB using single-partition schema for accurate time filtering
+
 import json
 import boto3
 import os
 from datetime import datetime, timedelta
-import time
-import sys
-sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
-try:
-    from metrics_utils import get_top_n_metrics, check_metrics_available
-except ImportError:
-    # Metrics utils not available, will fall back to logs
-    pass
+from decimal import Decimal
+from boto3.dynamodb.conditions import Key
+from collections import defaultdict
 
 
 def format_number(num):
@@ -28,9 +25,8 @@ def lambda_handler(event, context):
     if event.get("describe", False):
         return {"markdown": "# Top Users\nTop users by token consumption"}
 
-    log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
-    METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
+    METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -38,28 +34,11 @@ def lambda_handler(event, context):
     width = widget_size.get("width", 300)
     height = widget_size.get("height", 200)
 
-    logs_client = boto3.client("logs", region_name=region)
-    cloudwatch_client = boto3.client("cloudwatch", region_name=region)
-    
-    # Check if we should use metrics only mode
-    if METRICS_ONLY:
-        print("METRICS_ONLY mode enabled - using CloudWatch Metrics directly")
-        use_metrics = True
-    else:
-        # Check if metrics are available for fallback mode
-        use_metrics = False
-        try:
-            if 'metrics_utils' in sys.modules:
-                use_metrics = check_metrics_available(cloudwatch_client)
-                if use_metrics:
-                    print("Using CloudWatch Metrics for top users data")
-                else:
-                    print("CloudWatch Metrics not available, falling back to logs")
-        except:
-            print("Metrics utils not available, using logs")
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table(METRICS_TABLE)
 
     try:
-        # Always use dashboard time range
+        # Get time range from dashboard
         if "start" in time_range and "end" in time_range:
             start_time = time_range["start"]
             end_time = time_range["end"]
@@ -68,223 +47,143 @@ def lambda_handler(event, context):
             end_time = int(datetime.now().timestamp() * 1000)
             start_time = int((datetime.now() - timedelta(hours=1)).timestamp() * 1000)
 
-        # Validate time range (max 7 days)
-
-
-        is_valid, range_days, error_html = validate_time_range(start_time, end_time)
-
-
-        if not is_valid:
-
-
-            return error_html
-
-
+        # Convert to datetime and ISO format
+        start_dt = datetime.fromtimestamp(start_time / 1000)
+        end_dt = datetime.fromtimestamp(end_time / 1000)
+        start_iso = start_dt.isoformat() + 'Z'
+        end_iso = end_dt.isoformat() + 'Z'
+        
+        # Aggregate tokens by user across entire time range
+        user_tokens = defaultdict(float)
+        
+        # Single query for all USER records in the time range
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                 Key('sk').between(f'{start_iso}#USER#', 
+                                                   f'{end_iso}#USER#~')
+        )
+        
+        # Aggregate tokens by user
+        for item in response.get('Items', []):
+            # Extract user email from sort key
+            # SK format is: ISO_TIMESTAMP#USER#email
+            sk_parts = item.get('sk', '').split('#')
+            if len(sk_parts) >= 3 and sk_parts[1] == 'USER':
+                user_email = '#'.join(sk_parts[2:])  # Handle emails with # if any
+                tokens = float(item.get('tokens', Decimal(0)))
+                user_tokens[user_email] += tokens
+        
+        # Handle pagination if needed
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=Key('pk').eq('METRICS') & 
+                                     Key('sk').between(f'{start_iso}#USER#', 
+                                                       f'{end_iso}#USER#~'),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            
+            for item in response.get('Items', []):
+                sk_parts = item.get('sk', '').split('#')
+                if len(sk_parts) >= 3 and sk_parts[1] == 'USER':
+                    user_email = '#'.join(sk_parts[2:])
+                    tokens = float(item.get('tokens', Decimal(0)))
+                    user_tokens[user_email] += tokens
+        
+        # Sort users by total tokens and take top 10
+        sorted_users = sorted(user_tokens.items(), key=lambda x: x[1], reverse=True)[:10]
         
         users = []
+        for user_email, total in sorted_users:
+            if total > 0:
+                users.append({
+                    'user': user_email,
+                    'tokens': total
+                })
         
-        # Try to get data from metrics first
-        if use_metrics:
-            try:
-                print("Fetching top users from CloudWatch Metrics")
-                top_users_metrics = get_top_n_metrics(
-                    cloudwatch_client,
-                    'TopUserTokens',
-                    'User',
-                    10,
-                    start_time,
-                    end_time
-                )
-                
-                if top_users_metrics:
-                    for metric in top_users_metrics:
-                        users.append({
-                            "email": metric['dimension'],
-                            "tokens": metric['value']
-                        })
-                    print(f"Retrieved {len(users)} top users from metrics")
-                elif METRICS_ONLY:
-                    # In metrics-only mode, don't fall back
-                    print("No top users data in METRICS_ONLY mode")
-                    users = []  # Empty list, will show "No top users data"
-                else:
-                    print("No top users data in metrics, falling back to logs")
-                    use_metrics = False  # Fall back to logs
-            except Exception as e:
-                if METRICS_ONLY:
-                    # In metrics-only mode, return error instead of falling back
-                    print(f"Metrics error in METRICS_ONLY mode: {str(e)}")
-                    return f"""
-                    <div style="
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        height: 100%;
-                        background: #fef2f2;
-                        border-radius: 8px;
-                        padding: 10px;
-                        box-sizing: border-box;
-                        overflow: hidden;
-                        font-family: 'Amazon Ember', -apple-system, sans-serif;
-                    ">
-                        <div style="text-align: center; width: 100%; overflow: hidden;">
-                            <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Metrics Unavailable</div>
-                            <div style="color: #7f1d1d; font-size: 10px;">{str(e)[:100]}</div>
-                            <div style="color: #7f1d1d; font-size: 9px; margin-top: 4px;">METRICS_ONLY mode - no fallback</div>
-                        </div>
-                    </div>
-                    """
-                else:
-                    print(f"Error getting top users from metrics: {str(e)}")
-                    use_metrics = False  # Fall back to logs
+        # Calculate total tokens for percentage
+        total_all_users = sum(u['tokens'] for u in users)
         
-        # Fall back to logs if metrics not available or failed (and not in METRICS_ONLY mode)
-        if not use_metrics and not METRICS_ONLY:
-            query = """
-            fields @message
-            | filter @message like /user.email/
-            | parse @message /"user.email":"(?<user>[^"]*)"/
-            | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-            | stats sum(tokens) as total_tokens by user
-            | sort total_tokens desc
-            | limit 10
-            """
-
-            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
-            )
-
-            query_id = response['queryId']
+        # Build the display
+        items_html = ""
+        for i, user in enumerate(users):
+            percentage = (user['tokens'] / total_all_users * 100) if total_all_users > 0 else 0
+            # Format the username
+            username = user['user'].split('@')[0][:20]  # First part of email, truncated
             
-            # Wait for results with optimized polling
-            response = wait_for_query_results(logs_client, query_id)
-
-            query_status = response.get("status", "Unknown")
-
-            if query_status == "Complete":
-                if response.get("results") and len(response["results"]) > 0:
-                    for result in response["results"]:
-                        user_email = ""
-                        tokens = 0
-                        for field in result:
-                            if field["field"] == "user":
-                                user_email = field["value"]
-                            elif field["field"] == "total_tokens":
-                                tokens = float(field["value"])
-
-                        if user_email and tokens:
-                            users.append({"email": user_email, "tokens": tokens})
-            elif query_status == "Failed":
-                raise Exception(
-                    f"Query failed: {response.get('statusReason', 'Unknown reason')}"
-                )
-            elif query_status == "Cancelled":
-                raise Exception("Query was cancelled")
-            elif query_status in ["Running", "Scheduled"]:
-                raise Exception(f"Query timed out: {query_status}")
-            else:
-                raise Exception(f"Query status: {query_status}")
-
-        # Calculate total and percentages
-        total_tokens = sum(u["tokens"] for u in users)
-        colors = [
-            "#667eea",
-            "#764ba2",
-            "#f59e0b",
-            "#10b981",
-            "#ef4444",
-            "#06b6d4",
-            "#ec4899",
-            "#8b5cf6",
-        ]
-
-        # Build ultra compact bar chart HTML with text on bars
-        users_html = ""
-        max_tokens = users[0]["tokens"] if users else 1  # For scaling bars
-        
-        for i, user in enumerate(users[:10]):  # Can fit more with ultra compact design
-            percentage = (
-                (user["tokens"] / total_tokens * 100) if total_tokens > 0 else 0
-            )
-            bar_width = (user["tokens"] / max_tokens * 100) if max_tokens > 0 else 0
-            username = user["email"].split("@")[0]
-            
-            users_html += f"""
+            items_html += f"""
             <div style="
                 display: flex;
                 align-items: center;
                 width: 100%;
-                height: 22px;
-                margin-bottom: 5px;
+                height: 24px;
+                margin-bottom: 8px;
                 font-family: 'Amazon Ember', -apple-system, sans-serif;
             ">
                 <div style="
                     width: 120px;
-                    padding-right: 8px;
-                    font-size: 11px;
+                    padding-right: 12px;
+                    font-size: 12px;
                     font-weight: 600;
                     color: #374151;
                     text-align: right;
-                    flex-shrink: 0;
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
+                    flex-shrink: 0;
                 ">{username}</div>
                 <div style="
                     flex: 1;
                     position: relative;
-                    height: 18px;
+                    height: 20px;
                     background: #f3f4f6;
-                    border-radius: 3px;
+                    border-radius: 4px;
                     overflow: hidden;
                 ">
                     <div style="
-                        width: {bar_width}%;
+                        width: {percentage}%;
                         height: 100%;
-                        background: {colors[i % len(colors)]};
+                        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
                         transition: width 0.3s ease;
                     "></div>
                 </div>
                 <div style="
-                    width: 100px;
-                    padding-left: 8px;
-                    font-size: 10px;
+                    padding-left: 12px;
+                    font-size: 11px;
                     font-weight: 600;
                     color: #374151;
-                    text-align: left;
+                    text-align: right;
+                    min-width: 120px;
                     flex-shrink: 0;
                 ">{percentage:.1f}% • {format_number(user['tokens'])}</div>
             </div>
             """
-
+        
+        # If no users found
         if not users:
-            return f"""
+            items_html = """
             <div style="
                 display: flex;
-                flex-direction: column;
                 align-items: center;
                 justify-content: center;
                 height: 100%;
-                font-family: 'Amazon Ember', -apple-system, sans-serif;
-                background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
-                border-radius: 8px;
-                padding: 20px;
+                color: #9ca3af;
+                font-size: 14px;
             ">
-                <div style="color: white; font-size: 16px; font-weight: 600;">No User Data</div>
-                <div style="color: rgba(255,255,255,0.8); font-size: 12px; margin-top: 8px;">No token usage data available</div>
+                No user data available for this time range
             </div>
             """
-
+        
         return f"""
         <div style="
-            padding: 12px;
+            padding: 16px;
             height: 100%;
-            font-family: 'Amazon Ember', -apple-system, sans-serif;
             background: white;
+            font-family: 'Amazon Ember', -apple-system, sans-serif;
             border-radius: 8px;
             box-sizing: border-box;
             overflow-y: auto;
         ">
-            {users_html}
+            {items_html}
         </div>
         """
 
@@ -298,13 +197,12 @@ def lambda_handler(event, context):
             height: 100%;
             background: #fef2f2;
             border-radius: 8px;
-            padding: 10px;
-            box-sizing: border-box;
+            padding: 20px;
             font-family: 'Amazon Ember', -apple-system, sans-serif;
         ">
             <div style="text-align: center;">
-                <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Data Unavailable</div>
-                <div style="color: #7f1d1d; font-size: 10px;">{error_msg[:100]}</div>
+                <div style="color: #991b1b; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Error Loading Top Users</div>
+                <div style="color: #7f1d1d; font-size: 12px;">{error_msg[:100]}</div>
             </div>
         </div>
         """
