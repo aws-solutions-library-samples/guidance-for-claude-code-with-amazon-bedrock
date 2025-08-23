@@ -87,7 +87,7 @@ This guidance implements an Enterprise Authentication Pattern that enables organ
 - **Temporary AWS Credentials**: Eliminates long-lived credentials by providing session-based access to Amazon Bedrock
 - **Centralized Access Control**: Manage Claude Code access through your existing identity provider groups and policies
 - **Comprehensive Audit Logging**: Full CloudTrail integration for compliance and security monitoring
-- **Optional Usage Monitoring**: CloudWatch dashboards and metrics for tracking Claude Code usage across your organization
+- **Optional Usage Monitoring**: CloudWatch dashboards with metrics for tracking Claude Code usage, costs, and performance across your organization
 
 Step-by-step flow for end-users:
 
@@ -172,6 +172,7 @@ The guidance can be deployed in any AWS region that supports:
 ### Cross-Region Inference
 
 Claude Code uses Amazon Bedrock's cross-region inference for optimal performance and availability. During setup, you can:
+
 - Select your preferred Claude model (Opus, Sonnet, Haiku)
 - Choose a cross-region profile (US, Europe, APAC) for optimal regional routing
 - Select a specific source region within your profile for model inference
@@ -220,10 +221,12 @@ This creates the following AWS resources:
 - ECS Fargate cluster running OpenTelemetry collector
 - Application Load Balancer for OTLP ingestion
 - CloudWatch Log Groups and Metrics
-- CloudWatch Dashboard with usage analytics
-- Kinesis Data Firehose for streaming metrics to S3
-- Amazon Athena for SQL analytics on collected metrics
-- S3 bucket for long-term metrics storage
+- CloudWatch Dashboard with comprehensive usage analytics
+- DynamoDB table for metrics aggregation and storage
+- Lambda functions for custom dashboard widgets
+- Kinesis Data Firehose for streaming metrics to S3 (if analytics enabled)
+- Amazon Athena for SQL analytics on collected metrics (if analytics enabled)
+- S3 bucket for long-term metrics storage (if analytics enabled)
 
 ### Step 3: Create Distribution Package
 
@@ -326,10 +329,11 @@ Claude Code will automatically use your organization's authentication to access 
 
 The optional CloudWatch dashboard provides:
 
-- **Usage Metrics**: Requests per user, model, and region
-- **Token Consumption**: Input/output tokens with cost estimation
-- **Performance Metrics**: Response times and error rates
-- **User Activity**: Active users and authentication patterns
+- **Token Consumption**: Input, output, and cache tokens tracked by user, model, and type
+- **Code Activity**: Lines of code written vs accepted, showing Claude Code effectiveness
+- **User Activity**: Active users, top consumers, and usage patterns throughout the day
+- **Cache Performance**: Cache hit rates and token savings from prompt caching
+- **Operations Breakdown**: Distribution of Claude Code operations (file edits, searches, reads, etc.)
 
 ## Troubleshooting
 
@@ -374,13 +378,6 @@ The guidance includes a comprehensive CLI tool (`ccwb`) for deployment and manag
 - [Monitoring and Telemetry Guide](/assets/docs/MONITORING.md) - Guide to deploying and using Claude Code Telemetry with OpenTelemetry
 - [Analytics Guide](/assets/docs/ANALYTICS.md) - Advanced analytics with Kinesis Firehose, S3 data lake, and Athena SQL queries
 
-**OIDC Provider Setup Guides:**
-
-- [Okta Setup](/assets/docs/providers/okta-setup.md)
-- [Microsoft Entra ID (Azure AD) Setup](/assets/docs/providers/microsoft-entra-id-setup.md)
-- [Auth0 Setup](/assets/docs/providers/auth0-setup.md)
-- [Cognito User Pool Setup](/assets/docs/providers/cognito-user-pool-setup.md)
-
 ### Supported OIDC Providers
 
 Detailed setup guides are available for:
@@ -408,11 +405,13 @@ poetry run pre-commit install
 #### How It Works
 
 When you commit changes, the following validations run automatically:
+
 - **YAML validation** checks syntax in all `.yaml` files
 - **CloudFormation validation** checks template structure and properties
 - **AWS CLI validation** validates templates against AWS specifications (if credentials are configured)
 
 The validation automatically catches:
+
 - YAML syntax errors that would cause deployment failures
 - CloudFormation template structure problems
 - Missing required parameters or invalid resource configurations
@@ -420,6 +419,7 @@ The validation automatically catches:
 #### Manual Validation (Optional)
 
 To run validation without committing:
+
 ```bash
 cd source
 poetry run pre-commit run --all-files

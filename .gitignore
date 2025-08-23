@@ -51,3 +51,6 @@ source/.ccwb-config/
 guidance-submission/
 tests/
 assets/docs/planning
+
+.pytest_cache/
+.ruff_cache/

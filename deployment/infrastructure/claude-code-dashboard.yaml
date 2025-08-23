@@ -23,7 +23,7 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: ClaudeCodeMetrics
-      BillingMode: PAY_PER_REQUEST  # On-demand scaling
+      BillingMode: PAY_PER_REQUEST # On-demand scaling
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -277,7 +277,6 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/operations_count/
 
-
   ActiveUsersWidget:
     Type: AWS::Lambda::Function
     Properties:
@@ -419,7 +418,6 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/lines_of_code/
 
-
   CommitsWidget:
     Type: AWS::Lambda::Function
     Properties:
@@ -471,24 +469,24 @@ Resources:
           METRICS_REGION: !Ref MetricsRegion
       Code: ./lambda-functions/active_hours/
 
-  ModelQuotaUsageWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-ModelQuotaUsage
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
-          METRICS_ONLY: 'true'
-          METRICS_TABLE: !Ref MetricsTable
-      Code: ./lambda-functions/model_quota_usage/
+  # ModelQuotaUsageWidget:
+  #   Type: AWS::Lambda::Function
+  #   Properties:
+  #     FunctionName: ClaudeCode-Widget-ModelQuotaUsage
+  #     Runtime: python3.11
+  #     Handler: index.lambda_handler
+  #     Role: !GetAtt CustomWidgetRole.Arn
+  #     Timeout: 60
+  #     Layers:
+  #       - !Ref QueryUtilsLayer
+  #       - !Ref MetricsUtilsLayer
+  #     Environment:
+  #       Variables:
+  #         METRICS_LOG_GROUP: !Ref MetricsLogGroup
+  #         METRICS_REGION: !Ref MetricsRegion
+  #         METRICS_ONLY: 'true'
+  #         METRICS_TABLE: !Ref MetricsTable
+  #     Code: ./lambda-functions/model_quota_usage/
 
   # CloudWatch Dashboard
   Dashboard:
@@ -796,20 +794,9 @@ Resources:
               }
             },
             {
-              "type": "text",
-              "x": 0,
-              "y": 36,
-              "width": 24,
-              "height": 1,
-              "properties": {
-                "markdown": "## Performance Metrics",
-                "background": "transparent"
-              }
-            },
-            {
               "type": "metric",
               "x": 0,
-              "y": 45,
+              "y": 36,
               "width": 12,
               "height": 4,
               "properties": {
@@ -838,25 +825,9 @@ Resources:
               }
             },
             {
-              "type": "custom",
-              "x": 0,
-              "y": 37,
-              "width": 24,
-              "height": 8,
-              "properties": {
-                "endpoint": "${ModelQuotaUsageWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Model Quota Usage"
-              }
-            },
-            {
               "type": "metric",
               "x": 12,
-              "y": 45,
+              "y": 36,
               "width": 12,
               "height": 4,
               "properties": {

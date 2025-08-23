@@ -4,41 +4,29 @@
 import json
 import boto3
 import os
-from datetime import datetime, timedelta
-
-
-def format_number(num):
-    if num >= 1_000_000_000:
-        return f"{num / 1_000_000_000:.1f}B"
-    elif num >= 1_000_000:
-        return f"{num / 1_000_000:.1f}M"
-    elif num >= 10_000:
-        return f"{num / 1_000:.0f}K"
-    else:
-        return f"{num:,.0f}"
+import sys
+from datetime import datetime
+sys.path.append('/opt')
+from widget_utils import parse_widget_context, get_time_range, check_describe_mode
+from html_utils import generate_error_html, generate_no_data_html
+from format_utils import format_number, format_percentage
 
 
 def lambda_handler(event, context):
-    if event.get("describe", False):
+    if check_describe_mode(event):
         return {"markdown": "# Token Usage by Type\nDistribution of tokens by operation type"}
 
     region = os.environ["METRICS_REGION"]
 
-    widget_context = event.get("widgetContext", {})
-    time_range = widget_context.get("timeRange", {})
+    widget_ctx = parse_widget_context(event)
+    time_range = widget_ctx['time_range']
 
     cloudwatch_client = boto3.client("cloudwatch", region_name=region)
 
     try:
-        # Use dashboard time range if available
-        if "start" in time_range and "end" in time_range:
-            start_time = time_range["start"]
-            end_time = time_range["end"]
-        else:
-            # Fallback to last 7 days only if no time range provided
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
-
+        # Get time range 
+        start_time, end_time = get_time_range(time_range, default_hours=7*24)
+        
         # Convert to datetime for CloudWatch API
         start_dt = datetime.fromtimestamp(start_time / 1000)
         end_dt = datetime.fromtimestamp(end_time / 1000)
@@ -74,23 +62,10 @@ def lambda_handler(event, context):
                 })
 
         if not token_types:
-            return f"""
-            <div style="
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100%;
-                font-family: 'Amazon Ember', -apple-system, sans-serif;
-                background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
-                border-radius: 8px;
-                padding: 20px;
-                box-sizing: border-box;
-            ">
-                <div style="color: white; font-size: 16px; font-weight: 600;">No Token Data</div>
-                <div style="color: rgba(255,255,255,0.8); font-size: 12px; margin-top: 8px;">No token usage data available for this period</div>
-            </div>
-            """
+            return generate_no_data_html(
+                "No Token Data",
+                "No token usage data available for this period"
+            )
 
         # Calculate total and percentages
         total_tokens = sum(t["tokens"] for t in token_types)
@@ -156,7 +131,7 @@ def lambda_handler(event, context):
                     color: #374151;
                     text-align: left;
                     flex-shrink: 0;
-                ">{percentage:.1f}% • {format_number(item['tokens'])}</div>
+                ">{format_percentage(item['tokens'], total_tokens)} • {format_number(item['tokens'])}</div>
             </div>
             """
 
@@ -191,22 +166,4 @@ def lambda_handler(event, context):
         """
 
     except Exception as e:
-        error_msg = str(e)
-        return f"""
-        <div style="
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            background: #fef2f2;
-            border-radius: 8px;
-            padding: 10px;
-            box-sizing: border-box;
-            font-family: 'Amazon Ember', -apple-system, sans-serif;
-        ">
-            <div style="text-align: center;">
-                <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Data Unavailable</div>
-                <div style="color: #7f1d1d; font-size: 10px;">{error_msg[:100]}</div>
-            </div>
-        </div>
-        """
+        return generate_error_html(str(e))

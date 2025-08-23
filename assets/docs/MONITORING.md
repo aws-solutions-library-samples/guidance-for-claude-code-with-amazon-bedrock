@@ -8,8 +8,6 @@ When you enable monitoring during deployment, the system creates infrastructure 
 
 The monitoring system consists of several components working together. Claude Code sends metrics using the OpenTelemetry Protocol (OTLP) to an Application Load Balancer. The ALB forwards these metrics to an OTEL Collector running on ECS Fargate. The collector then converts the metrics to CloudWatch's Embedded Metric Format (EMF) and sends them to CloudWatch Metrics and Logs. Finally, a CloudWatch Dashboard visualizes these metrics.
 
-The OTEL Collector serves as a critical bridge because CloudWatch doesn't support OTLP metrics directly. Claude Code uses the industry-standard OTLP format, while CloudWatch requires its proprietary EMF format. The collector handles this translation, ensuring metrics flow smoothly from Claude Code to your CloudWatch dashboards.
-
 ## Implementation Details
 
 The monitoring infrastructure deploys several AWS resources to handle metric collection and visualization.
@@ -18,7 +16,7 @@ The core component runs as an ECS Fargate service using the AWS Distro for OpenT
 
 An Application Load Balancer sits in front of the ECS service, receiving OTLP metrics on port 4318. The ALB supports both HTTP and HTTPS protocols. When you provide a custom domain name during deployment, the system automatically creates an ACM certificate and configures HTTPS. Health checks monitor the collector's availability through the root endpoint.
 
-The CloudWatch Dashboard provides comprehensive visualization of your Claude Code usage. It displays metrics by user, tracks token consumption for both input and output, shows request counts broken down by model, monitors error rates and latency, and includes cost estimation widgets to help track spending.
+The CloudWatch Dashboard provides comprehensive visualization of your Claude Code usage. The dashboard uses Lambda functions and DynamoDB for efficient metrics collection and display, presenting real-time and historical usage data through custom widgets.
 
 ### Configuration
 
@@ -55,14 +53,6 @@ When prompted about monitoring, answering yes triggers additional configuration 
 The deployment creates the complete monitoring infrastructure: a VPC with public and private subnets (if not using an existing VPC), an ECS cluster and task definition for the OTEL Collector, the collector service itself, an Application Load Balancer to receive metrics, and CloudWatch log groups for storing logs and metrics.
 
 If you provide a custom domain name and hosted zone ID during setup, the system automatically provisions an ACM certificate and configures HTTPS. This ensures encrypted transmission of metrics from Claude Code to your collector.
-
-After deployment completes, the package command handles all the configuration needed for end users:
-
-```bash
-poetry run ccwb package
-```
-
-This creates a distribution folder containing the credential process executable, configuration files, installation script, Claude Code telemetry settings, and platform-specific OTEL helper binaries that extract user attributes from authentication tokens.
 
 ## Claude Code Configuration
 
@@ -105,13 +95,8 @@ Organizational dimensions provide additional context. The `department` field gro
 
 The CloudWatch Dashboard named `ClaudeCodeMonitoring` provides comprehensive visualization of your Claude Code metrics.
 
-The dashboard displays token usage metrics in multiple formats. Total token usage appears as time series graphs showing 5-minute and hourly intervals. Token breakdown by type (input, output, cache creation, cache read) helps you understand usage patterns. The dashboard includes pie charts showing token distribution over 30-day periods and stacked time series for analyzing trends.
-
-Cost tracking features estimate expenses based on token consumption. The dashboard calculates hourly costs using the configurable token price parameter (default $15 per million tokens). Single value widgets show today's cost, this week's cost, and this month's total cost. Time series graphs track cost trends with budget threshold annotations.
-
-Session and activity metrics track active sessions per hour, helping you understand usage patterns throughout the day. The dashboard also monitors Bedrock API calls broken down by model (Sonnet, Haiku, Opus), showing which models your users prefer.
-
-For detailed user analytics, the dashboard includes a section that directs you to AWS Athena. While the dashboard shows aggregate metrics, Athena queries enable user-specific analysis including top users by token consumption, usage by department or team, and cost allocation by user. The system stores pre-built queries in SSM Parameter Store for common analytics tasks.
+![Claude Code Monitoring Dashboard](/assets/images/ClaudeCodeDashboard.png)
+_Full dashboard view showing all metrics_
 
 ## End User Experience
 
@@ -130,17 +115,6 @@ The authentication stack can optionally track Bedrock API calls through AWS Clou
 CloudTrail tracking captures every Bedrock model invocation, storing detailed logs in S3 with 90-day retention. These events also stream to CloudWatch Logs at `/aws/bedrock/cognito-access` for real-time analysis. This creates a complete audit trail of who accessed which models and when.
 
 The monitoring dashboard includes several cost-related features. A separate Bedrock cost dashboard tracks AWS Billing charges for the Bedrock service. The main dashboard estimates costs based on token usage with configurable pricing (default $15 per million tokens). Real-time cost widgets show today's cost, this week's cost, and this month's total spending.
-
-The system includes pre-configured CloudWatch alarms for cost control:
-
-- **High Token Usage**: Alerts when usage exceeds 10 million tokens per hour
-- **Daily Token Threshold**: Triggers when daily usage exceeds approximately $1000 worth of tokens (66.7 million tokens at default pricing)
-- **High Bedrock Usage**: Alerts when Bedrock API calls exceed 1000 per hour
-- **Unusual Model Usage**: Monitors expensive model usage, alerting when it exceeds 50 million tokens per hour
-
-Bedrock tracking is enabled by default in the authentication stack. To disable it during deployment, set the CloudFormation parameter `EnableBedrockTracking` to false.
-
-The monitoring system tracks costs through multiple mechanisms. Token-based estimation provides immediate feedback on usage costs. The Bedrock cost dashboard shows actual AWS Billing charges for the Bedrock service. CloudWatch alarms help prevent unexpected spending by alerting on unusual usage patterns.
 
 ### Data Privacy
 

@@ -4,37 +4,28 @@
 import json
 import boto3
 import os
-from datetime import datetime, timedelta
+import sys
 from boto3.dynamodb.conditions import Key
+sys.path.append('/opt')
+from widget_utils import parse_widget_context, get_time_range_iso, check_describe_mode
+from html_utils import generate_error_html, generate_metric_card
 
 def lambda_handler(event, context):
-    if event.get("describe", False):
+    if check_describe_mode(event):
         return {"markdown": "# Active Users\nUnique users in the time range"}
 
     region = os.environ["METRICS_REGION"]
     METRICS_TABLE = os.environ.get('METRICS_TABLE', 'ClaudeCodeMetrics')
 
-    widget_context = event.get("widgetContext", {})
-    time_range = widget_context.get("timeRange", {})
+    widget_ctx = parse_widget_context(event)
+    time_range = widget_ctx['time_range']
 
     dynamodb = boto3.resource("dynamodb", region_name=region)
     table = dynamodb.Table(METRICS_TABLE)
 
     try:
-        # Get time range from dashboard
-        if "start" in time_range and "end" in time_range:
-            start_time = time_range["start"]
-            end_time = time_range["end"]
-        else:
-            # Default to last 24 hours if no time range provided
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = int((datetime.now() - timedelta(hours=24)).timestamp() * 1000)
-
-        # Convert to datetime and ISO format for queries
-        start_dt = datetime.fromtimestamp(start_time / 1000)
-        end_dt = datetime.fromtimestamp(end_time / 1000)
-        start_iso = start_dt.isoformat() + 'Z'
-        end_iso = end_dt.isoformat() + 'Z'
+        # Get time range in ISO format for DynamoDB queries
+        start_iso, end_iso = get_time_range_iso(time_range, default_hours=24)
         
         # Query for unique users across the time range
         unique_users = set()
@@ -73,62 +64,12 @@ def lambda_handler(event, context):
         active_users_count = len(unique_users)
         print(f"Total unique users in range: {active_users_count}")
         
-        # Build the widget display
-        return f"""
-        <div style="
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            font-family: 'Amazon Ember', -apple-system, sans-serif;
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-            border-radius: 8px;
-            padding: 10px;
-            box-sizing: border-box;
-            overflow: hidden;
-        ">
-            <div style="
-                font-size: 30px;
-                font-weight: 700;
-                color: white;
-                text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                margin-bottom: 4px;
-                line-height: 1;
-            ">{active_users_count}</div>
-            <div style="
-                font-size: 12px;
-                color: rgba(255,255,255,0.9);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                font-weight: 500;
-                line-height: 1;
-            ">Active Users</div>
-        </div>
-        """
+        # Build the widget display using shared utility
+        return generate_metric_card(
+            value=str(active_users_count),
+            label="Active Users",
+            color="#f59e0b"  # Orange
+        )
 
     except Exception as e:
-        error_msg = str(e)
-        return f"""
-        <div style="
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            background: #fef2f2;
-            border-radius: 8px;
-            padding: 10px;
-            font-family: 'Amazon Ember', -apple-system, sans-serif;
-            overflow: hidden;
-            box-sizing: border-box;
-        ">
-            <div style="text-align: center; width: 100%; overflow: hidden;">
-                <div style="color: #991b1b; font-weight: 600; font-size: 14px;">
-                    Data Unavailable
-                </div>
-                <div style="color: #7f1d1d; font-size: 10px; margin-top: 4px; word-wrap: break-word; overflow: hidden; text-overflow: ellipsis;">
-                    {error_msg[:100]}
-                </div>
-            </div>
-        </div>
-        """
+        return generate_error_html(str(e))

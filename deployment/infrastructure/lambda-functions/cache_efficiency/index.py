@@ -4,8 +4,14 @@ import os
 from datetime import datetime, timedelta
 import time
 import sys
-sys.path.append('/opt')
-from query_utils import rate_limited_start_query, wait_for_query_results, validate_time_range
+
+sys.path.append("/opt")
+from query_utils import (
+    rate_limited_start_query,
+    wait_for_query_results,
+    validate_time_range,
+)
+
 try:
     from metrics_utils import get_metric_statistics, check_metrics_available
 except ImportError:
@@ -19,7 +25,7 @@ def lambda_handler(event, context):
 
     log_group = os.environ["METRICS_LOG_GROUP"]
     region = os.environ["METRICS_REGION"]
-    METRICS_ONLY = os.environ.get('METRICS_ONLY', 'false').lower() == 'true'
+    METRICS_ONLY = os.environ.get("METRICS_ONLY", "false").lower() == "true"
 
     widget_context = event.get("widgetContext", {})
     time_range = widget_context.get("timeRange", {})
@@ -29,7 +35,7 @@ def lambda_handler(event, context):
 
     logs_client = boto3.client("logs", region_name=region)
     cloudwatch_client = boto3.client("cloudwatch", region_name=region)
-    
+
     # Check if we should use metrics only mode
     if METRICS_ONLY:
         print("METRICS_ONLY mode enabled - using CloudWatch Metrics directly")
@@ -38,7 +44,7 @@ def lambda_handler(event, context):
         # Check if metrics are available for fallback mode
         use_metrics = False
         try:
-            if 'metrics_utils' in sys.modules:
+            if "metrics_utils" in sys.modules:
                 use_metrics = check_metrics_available(cloudwatch_client)
                 if use_metrics:
                     print("Using CloudWatch Metrics for cache efficiency")
@@ -57,55 +63,54 @@ def lambda_handler(event, context):
 
         # Validate time range (max 7 days)
 
-
         is_valid, range_days, error_html = validate_time_range(start_time, end_time)
-
 
         if not is_valid:
 
-
             return error_html
 
-
-        
         cache_reads = 0
         cache_creations = 0
-        
+
         # Try to get data from metrics first
         if use_metrics:
             try:
                 print("Fetching cache efficiency from CloudWatch Metrics")
-                
+
                 # Get cache read tokens
                 hits_datapoints = get_metric_statistics(
                     cloudwatch_client,
-                    'CacheReadTokens',
+                    "CacheReadTokens",
                     start_time,
                     end_time,
                     None,
-                    'Sum',
-                    300
+                    "Sum",
+                    300,
                 )
-                
+
                 if hits_datapoints:
-                    cache_reads = sum(point.get('Sum', 0) for point in hits_datapoints)
-                
+                    cache_reads = sum(point.get("Sum", 0) for point in hits_datapoints)
+
                 # Get cache creation tokens
                 misses_datapoints = get_metric_statistics(
                     cloudwatch_client,
-                    'CacheCreationTokens',
+                    "CacheCreationTokens",
                     start_time,
                     end_time,
                     None,
-                    'Sum',
-                    300
+                    "Sum",
+                    300,
                 )
-                
+
                 if misses_datapoints:
-                    cache_creations = sum(point.get('Sum', 0) for point in misses_datapoints)
-                
+                    cache_creations = sum(
+                        point.get("Sum", 0) for point in misses_datapoints
+                    )
+
                 if hits_datapoints or misses_datapoints:
-                    print(f"Retrieved cache metrics - Reads: {cache_reads}, Creations: {cache_creations}")
+                    print(
+                        f"Retrieved cache metrics - Reads: {cache_reads}, Creations: {cache_creations}"
+                    )
                 elif METRICS_ONLY:
                     # In metrics-only mode, don't fall back
                     print("No cache data available in METRICS_ONLY mode")
@@ -140,7 +145,7 @@ def lambda_handler(event, context):
                 else:
                     print(f"Error getting cache metrics: {str(e)}")
                     use_metrics = False  # Fall back to logs
-        
+
         # Fall back to logs if metrics not available or failed (and not in METRICS_ONLY mode)
         if not use_metrics and not METRICS_ONLY:
             query = """
@@ -152,11 +157,16 @@ def lambda_handler(event, context):
             | stats sum(tokens) as total by cache_type
             """
 
-            response = rate_limited_start_query(logs_client, log_group, start_time, end_time, query,
+            response = rate_limited_start_query(
+                logs_client,
+                log_group,
+                start_time,
+                end_time,
+                query,
             )
 
-            query_id = response['queryId']
-            
+            query_id = response["queryId"]
+
             # Wait for results with optimized polling
             response = wait_for_query_results(logs_client, query_id)
 
@@ -260,7 +270,7 @@ def lambda_handler(event, context):
                 text-shadow: 0 2px 4px rgba(0,0,0,0.2);
                 margin-bottom: 4px;
                 line-height: 1;
-            ">{efficiency:.0f}% {status}</div>
+            ">{efficiency:.0f}%</div>
             <div style="
                 font-size: 12px;
                 color: rgba(255,255,255,0.9);

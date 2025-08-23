@@ -11,6 +11,8 @@ from boto3.dynamodb.conditions import Key, Attr
 from decimal import Decimal
 sys.path.append('/opt')
 from query_utils import validate_time_range
+from widget_utils import parse_widget_context, check_describe_mode, get_time_range
+from html_utils import generate_error_html, get_status_color
 
 # Quota code mappings for each model
 QUOTA_MAPPINGS = {
@@ -160,14 +162,7 @@ def get_micro_progress_bar(percentage, width_chars=8):
 
 
 
-def get_status_color(percentage):
-    """Get color based on usage percentage."""
-    if percentage >= 90:
-        return "#ef4444"  # Red
-    elif percentage >= 70:
-        return "#f59e0b"  # Yellow
-    else:
-        return "#10b981"  # Green
+# get_status_color is now imported from html_utils
 
 
 def get_service_quota(quota_code, region='us-east-1', quota_name=''):
@@ -347,7 +342,7 @@ def get_model_rates_from_dynamodb(table, model_id, start_time, end_time):
 
 
 def lambda_handler(event, context):
-    if event.get("describe", False):
+    if check_describe_mode(event):
         return {"markdown": "# Model Quota Usage\nTPM and RPM usage vs service quotas for each model"}
 
     metrics_region = os.environ["METRICS_REGION"]
@@ -355,13 +350,10 @@ def lambda_handler(event, context):
     
     print(f"Starting Model Quota Usage widget - Region: {metrics_region}, Table: {metrics_table_name}")
 
-    widget_context = event.get("widgetContext", {})
-    time_range = widget_context.get("timeRange", {})
-    
-    # Get widget dimensions
-    widget_size = widget_context.get("size", {})
-    width = widget_size.get("width", 600)
-    height = widget_size.get("height", 300)
+    widget_ctx = parse_widget_context(event)
+    width = widget_ctx['width']
+    height = widget_ctx['height']
+    time_range = widget_ctx['time_range']
     print(f"Widget dimensions: {width}x{height}")
 
     # Connect to DynamoDB
@@ -369,13 +361,8 @@ def lambda_handler(event, context):
     table = dynamodb.Table(metrics_table_name)
 
     try:
-        # Use dashboard time range
-        if "start" in time_range and "end" in time_range:
-            start_time = time_range["start"]
-            end_time = time_range["end"]
-        else:
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = int((datetime.now() - timedelta(hours=1)).timestamp() * 1000)
+        # Get time range
+        start_time, end_time = get_time_range(time_range, default_hours=1)
 
         # Validate time range (max 7 days)
         is_valid, range_days, error_html = validate_time_range(start_time, end_time)
@@ -762,22 +749,4 @@ def lambda_handler(event, context):
         return html
 
     except Exception as e:
-        error_msg = str(e)
-        return f"""
-        <div style="
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            background: #fef2f2;
-            border-radius: 8px;
-            padding: 10px;
-            box-sizing: border-box;
-            font-family: 'Amazon Ember', -apple-system, sans-serif;
-        ">
-            <div style="text-align: center;">
-                <div style="color: #991b1b; font-weight: 600; margin-bottom: 4px; font-size: 14px;">Data Unavailable</div>
-                <div style="color: #7f1d1d; font-size: 10px;">{error_msg[:100]}</div>
-            </div>
-        </div>
-        """
+        return generate_error_html(str(e))
