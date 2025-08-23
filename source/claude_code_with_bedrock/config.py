@@ -70,15 +70,34 @@ class Profile:
 
         # Auto-detect provider type if not set
         if 'provider_type' not in data and 'provider_domain' in data:
-            domain = data['provider_domain'].lower()
-            if 'okta.com' in domain:
-                data['provider_type'] = 'okta'
-            elif 'auth0.com' in domain:
-                data['provider_type'] = 'auth0'
-            elif 'microsoftonline.com' in domain or 'windows.net' in domain:
-                data['provider_type'] = 'azure'
-            elif 'amazoncognito.com' in domain:
-                data['provider_type'] = 'cognito'
+            domain = data['provider_domain']
+            # Secure provider detection using proper URL parsing
+            if domain:
+                # Handle both full URLs and domain-only inputs
+                url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
+                
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url_to_parse)
+                    hostname = parsed.hostname
+                    
+                    if hostname:
+                        hostname_lower = hostname.lower()
+                        
+                        # Check for exact domain match or subdomain match
+                        # Using endswith with leading dot prevents bypass attacks
+                        if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                            data['provider_type'] = 'okta'
+                        elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                            data['provider_type'] = 'auth0'
+                        elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                            data['provider_type'] = 'azure'
+                        elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+                            data['provider_type'] = 'azure'
+                        elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+                            data['provider_type'] = 'cognito'
+                except Exception:
+                    pass  # Leave provider_type unset if parsing fails
 
         # Set default cross-region profile if not present
         if 'cross_region_profile' not in data:

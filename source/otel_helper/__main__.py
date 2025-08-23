@@ -116,12 +116,30 @@ def extract_user_info(payload):
     # Extract organization - derive from issuer or provider
     org_id = "amazon-internal"  # Default for internal deployment
     if payload.get("iss"):
-        if "okta.com" in payload["iss"]:
-            org_id = "okta"
-        elif "auth0.com" in payload["iss"]:
-            org_id = "auth0"
-        elif "microsoftonline.com" in payload["iss"]:
-            org_id = "azure"
+        from urllib.parse import urlparse
+        
+        # Secure provider detection using proper URL parsing
+        issuer = payload["iss"]
+        # Handle both full URLs and domain-only inputs
+        url_to_parse = issuer if issuer.startswith(('http://', 'https://')) else f"https://{issuer}"
+        
+        try:
+            parsed = urlparse(url_to_parse)
+            hostname = parsed.hostname
+            
+            if hostname:
+                hostname_lower = hostname.lower()
+                
+                # Check for exact domain match or subdomain match
+                # Using endswith with leading dot prevents bypass attacks
+                if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                    org_id = "okta"
+                elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                    org_id = "auth0"
+                elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                    org_id = "azure"
+        except Exception:
+            pass  # Keep default org_id if parsing fails
 
     # Extract team/department information - these fields vary by IdP
     # Provide defaults for consistent metric dimensions

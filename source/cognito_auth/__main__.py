@@ -153,22 +153,58 @@ class MultiProviderAuth:
         if provider_type != "auto":
             return provider_type
 
-        # Otherwise, auto-detect based on domain
-        if "okta.com" in domain:
-            return "okta"
-        elif "auth0.com" in domain:
-            return "auth0"
-        elif "microsoftonline.com" in domain or "windows.net" in domain:
-            return "azure"
-        elif "amazoncognito.com" in domain:
-            # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
-            return "cognito"
-        else:
+        # Secure provider detection using proper URL parsing
+        if not domain:
             # Fail with clear error for unknown providers
             raise ValueError(
-                f"Unable to auto-detect provider type for domain '{domain}'. "
+                f"Unable to auto-detect provider type for empty domain. "
                 f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                 f"Please check your provider domain configuration."
+            )
+        
+        # Handle both full URLs and domain-only inputs
+        url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
+        
+        try:
+            parsed = urlparse(url_to_parse)
+            hostname = parsed.hostname
+            
+            if not hostname:
+                # Fail with clear error for unknown providers
+                raise ValueError(
+                    f"Unable to auto-detect provider type for domain '{domain}'. "
+                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
+                    f"Please check your provider domain configuration."
+                )
+            
+            hostname_lower = hostname.lower()
+            
+            # Check for exact domain match or subdomain match
+            # Using endswith with leading dot prevents bypass attacks
+            if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                return "okta"
+            elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                return "auth0"
+            elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                return "azure"
+            elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+                return "azure"
+            elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+                # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
+                return "cognito"
+            else:
+                # Fail with clear error for unknown providers
+                raise ValueError(
+                    f"Unable to auto-detect provider type for domain '{domain}'. "
+                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
+                    f"Please check your provider domain configuration."
+                )
+        except ValueError:
+            raise
+        except Exception as e:
+            # Fail with clear error for unknown providers
+            raise ValueError(
+                f"Unable to auto-detect provider type for domain '{domain}': {e}"
             )
 
     def _init_credential_storage(self):
@@ -749,7 +785,8 @@ class MultiProviderAuth:
             # Check cache first
             cached = self.get_cached_credentials()
             if cached:
-                print(json.dumps(cached))
+                # Output cached credentials (intended behavior for AWS CLI)
+                print(json.dumps(cached))  # noqa: S105
                 return 0
 
             # Try to acquire port lock by testing if we can bind to it
@@ -781,7 +818,8 @@ class MultiProviderAuth:
             # Check cache again (another process might have just finished)
             cached = self.get_cached_credentials()
             if cached:
-                print(json.dumps(cached))
+                # Output cached credentials (intended behavior for AWS CLI)
+                print(json.dumps(cached))  # noqa: S105
                 return 0
 
             # Authenticate with OIDC provider
@@ -799,7 +837,11 @@ class MultiProviderAuth:
             self.save_monitoring_token(id_token, token_claims)
 
             # Output credentials
-            print(json.dumps(credentials))
+            # CodeQL: This is not a security issue - this is an AWS credential provider
+            # that must output credentials to stdout for AWS CLI to consume them.
+            # This is the intended behavior and required for the tool to function.
+            # nosec - Not logging, but outputting credentials as designed
+            print(json.dumps(credentials))  # noqa: S105
             return 0
 
         except KeyboardInterrupt:

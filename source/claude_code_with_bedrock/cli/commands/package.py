@@ -554,17 +554,39 @@ RUN pyinstaller \\
 
     def _detect_provider_type(self, domain: str) -> str:
         """Auto-detect provider type from domain."""
-        domain_lower = domain.lower()
-        if "okta.com" in domain_lower:
-            return "okta"
-        elif "auth0.com" in domain_lower:
-            return "auth0"
-        elif "microsoftonline.com" in domain_lower or "windows.net" in domain_lower:
-            return "azure"
-        elif "amazoncognito.com" in domain_lower:
-            return "cognito"
-        else:
-            return "oidc"  # Default to generic OIDC
+        from urllib.parse import urlparse
+        
+        if not domain:
+            return "oidc"
+        
+        # Handle both full URLs and domain-only inputs
+        url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
+        
+        try:
+            parsed = urlparse(url_to_parse)
+            hostname = parsed.hostname
+            
+            if not hostname:
+                return "oidc"
+            
+            hostname_lower = hostname.lower()
+            
+            # Check for exact domain match or subdomain match
+            # Using endswith with leading dot prevents bypass attacks
+            if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                return "okta"
+            elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                return "auth0"
+            elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                return "azure"
+            elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+                return "azure"
+            elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+                return "cognito"
+            else:
+                return "oidc"  # Default to generic OIDC
+        except Exception:
+            return "oidc"  # Default to generic OIDC on parsing error
 
     def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
         """Create simple installer script."""
