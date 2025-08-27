@@ -473,6 +473,19 @@ class InitCommand(Command):
             # Save progress
             progress.save_step("monitoring_complete", config)
 
+        # Windows build support via CodeBuild
+        console.print("\n[cyan]Windows Build Support[/cyan]")
+        console.print("CodeBuild can be used to build Windows binaries (~$0.10 per build)")
+        enable_codebuild = questionary.confirm(
+            "Enable Windows build support via AWS CodeBuild?",
+            default=config.get("codebuild", {}).get("enabled", False)
+        ).ask()
+        
+        config["codebuild"] = {"enabled": enable_codebuild}
+        
+        if enable_codebuild:
+            console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
+
         # Bedrock model and cross-region configuration
         if not skip_bedrock:
             console.print("\n[bold blue]Step 3: Bedrock Model Selection[/bold blue]")
@@ -857,6 +870,7 @@ class InitCommand(Command):
             selected_source_region=config_data["aws"].get("selected_source_region"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+            enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
         )
 
         config.add_profile(profile)

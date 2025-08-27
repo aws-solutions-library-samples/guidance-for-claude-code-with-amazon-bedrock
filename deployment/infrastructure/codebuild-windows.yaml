@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CodeBuild project for building Windows binaries with Nuitka for Claude Code with Bedrock'
+
+Parameters:
+  ProjectNamePrefix:
+    Type: String
+    Default: claude-code
+    Description: Prefix for the CodeBuild project name
+
+Resources:
+  # S3 Bucket for access logs
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: AccessLogs
+
+  # S3 Bucket for source and artifacts
+  BuildBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: package-downloads/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBuilds
+            Status: Enabled
+            ExpirationInDays: 7
+            NoncurrentVersionExpirationInDays: 1
+          - Id: DeleteOldPackages
+            Status: Enabled
+            Prefix: packages/
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 7
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: WindowsBuildArtifacts
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: CodeBuildS3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub '${BuildBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt BuildBucket.Arn
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # Log Group for CodeBuild
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectNamePrefix}-windows-build'
+      RetentionInDays: 7
+
+  # CodeBuild Project
+  WindowsBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectNamePrefix}-windows-build'
+      Description: Build Windows binaries for Claude Code with Nuitka
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Ref BuildBucket
+        Name: windows-binaries.zip
+        Packaging: ZIP
+        OverrideArtifactName: false
+      Environment:
+        Type: WINDOWS_SERVER_2022_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/windows-base:2022-1.0
+        PrivilegedMode: false
+      Source:
+        Type: S3
+        Location: !Sub '${BuildBucket}/source.zip'
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            install:
+              commands:
+                - echo Starting Windows build environment setup...
+                - echo Installing Python 3.12...
+                - choco install python312 -y --no-progress
+                - echo Checking Python version...
+                - C:\Python312\python.exe --version
+                - echo Checking pip version...
+                - C:\Python312\python.exe -m pip --version
+
+            pre_build:
+              commands:
+                - echo Installing build dependencies...
+                - C:\Python312\python.exe -m pip install --upgrade pip
+                - C:\Python312\python.exe -m pip install nuitka==2.7.12 ordered-set zstandard
+                - echo Installing application dependencies...
+                - C:\Python312\python.exe -m pip install boto3 requests PyJWT cryptography
+                - C:\Python312\python.exe -m pip install keyring pywin32
+                - C:\Python312\python.exe -m pip install questionary rich cleo pydantic pyyaml
+
+            build:
+              commands:
+                - echo Building Windows executables sequentially...
+                - echo Building credential-process Windows executable...
+                - C:\Python312\python.exe -m nuitka --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code Credential Process" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="AWS Credential Process for Claude Code" --include-package=keyring.backends --output-filename=credential-process-windows.exe --output-dir=. --remove-output source/cognito_auth/__main__.py
+                - echo Building otel-helper Windows executable...
+                - C:\Python312\python.exe -m nuitka --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code OTEL Helper" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="OpenTelemetry Helper for Claude Code" --output-filename=otel-helper-windows.exe --output-dir=. --remove-output source/otel_helper/__main__.py
+            post_build:
+              commands:
+                - echo Build completed successfully
+                - Get-ChildItem *.exe
+                - echo Checking file sizes...
+                - Get-ChildItem *.exe | ForEach-Object { Write-Host "$($_.Name) - $($_.Length) bytes" }
+
+          artifacts:
+            files:
+              - credential-process-windows.exe
+              - otel-helper-windows.exe
+            name: windows-binaries
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref CodeBuildLogGroup
+      TimeoutInMinutes: 30
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: WindowsBinaryBuild
+
+Outputs:
+  BuildBucket:
+    Description: S3 bucket for build source and artifacts
+    Value: !Ref BuildBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BuildBucket'
+
+  BuildBucketArn:
+    Description: ARN of the build bucket
+    Value: !GetAtt BuildBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BuildBucketArn'
+
+  ProjectName:
+    Description: CodeBuild project name
+    Value: !Ref WindowsBuildProject
+    Export:
+      Name: !Sub '${AWS::StackName}-ProjectName'
+
+  ProjectArn:
+    Description: CodeBuild project ARN
+    Value: !GetAtt WindowsBuildProject.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ProjectArn'
+
+  ServiceRoleArn:
+    Description: CodeBuild service role ARN
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceRoleArn'

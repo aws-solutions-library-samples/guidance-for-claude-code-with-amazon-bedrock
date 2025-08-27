@@ -196,8 +196,12 @@ def get_token_via_credential_process():
     """Get monitoring token via credential-process to avoid direct keychain access"""
     logger.info("Getting token via credential-process...")
     
-    # Path to credential process
-    credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process")
+    # Path to credential process - add .exe extension on Windows
+    import platform
+    if platform.system() == "Windows":
+        credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process.exe")
+    else:
+        credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process")
     
     # Check if credential process exists
     if not os.path.exists(credential_process):

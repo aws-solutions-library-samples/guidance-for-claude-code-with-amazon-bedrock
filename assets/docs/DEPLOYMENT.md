@@ -50,15 +50,61 @@ This single command orchestrates the creation of multiple AWS resources. A Cogni
 
 With infrastructure deployed, you're ready to create the package that end users will install.
 
-Run the package command:
+### Multi-Platform Build Support
+
+Claude Code supports building for all major platforms:
 
 ```bash
-poetry run ccwb package
+# Build for all platforms (recommended)
+poetry run ccwb package --target-platform=all
+
+# Build for specific platforms
+poetry run ccwb package --target-platform=windows    # Windows via CodeBuild
+poetry run ccwb package --target-platform=macos      # Current macOS architecture
+poetry run ccwb package --target-platform=linux      # Linux via Docker
 ```
 
-This command performs several operations. First, it retrieves the Cognito Identity Pool ID from your deployed CloudFormation stack. Then it uses PyInstaller to compile the Python authentication code into standalone executables for both macOS and Linux. Your organization's configuration - provider domain, client ID, and infrastructure details - gets written to a config.json file that the executables read at runtime.
+**Platform Build Methods:**
+- **Windows**: Uses AWS CodeBuild for automated builds (~$0.10 per build)
+- **macOS ARM64**: Native build on Apple Silicon Macs
+- **macOS Intel**: Native build on Intel Macs, or via Rosetta 2 on ARM Macs
+  - Note: Building Intel binaries on ARM Macs requires Rosetta 2 installed
+  - Install with: `softwareupdate --install-rosetta`
+- **Linux x64/ARM64**: Built using Docker containers (requires Docker installed)
+  - Automatically builds both architectures when Docker is available
 
-The resulting `dist/` folder contains everything users need. Platform-specific executables handle the OAuth2 authentication flow. The configuration file includes all necessary settings. An intelligent installer script detects the user's operating system and sets up their AWS profile automatically. If you enabled monitoring, it also includes Claude Code telemetry settings that point to your OpenTelemetry collector.
+This command performs several operations. First, it retrieves the Cognito Identity Pool ID from your deployed CloudFormation stack. Then it uses Nuitka to compile the Python authentication code into standalone executables for each platform. Your organization's configuration - provider domain, client ID, and infrastructure details - gets written to a config.json file that the executables read at runtime.
+
+The resulting `dist/` folder contains everything users need:
+- Platform-specific executables (`credential-process-<platform>`) handle the OAuth2 authentication flow
+- The configuration file includes all necessary settings
+- Intelligent installer scripts (`install.sh` for Unix, `install.bat` for Windows) detect the user's architecture and set up their AWS profile automatically
+- If you enabled monitoring, OTEL helper executables and Claude Code telemetry settings that point to your OpenTelemetry collector
+
+### Windows Build System (Optional)
+
+For Windows binary builds, Claude Code uses AWS CodeBuild. To enable Windows builds:
+
+1. Deploy the CodeBuild stack (one-time setup):
+```bash
+aws cloudformation create-stack \
+  --stack-name claude-code-windows-build \
+  --template-body file://deployment/infrastructure/codebuild-windows.yaml \
+  --capabilities CAPABILITY_IAM \
+  --region us-east-1
+```
+
+2. Windows builds will automatically trigger when you run:
+```bash
+poetry run ccwb package --target-platform=all
+```
+
+3. Monitor build progress:
+```bash
+poetry run ccwb builds
+```
+
+Windows builds typically take 12-15 minutes and cost approximately $0.10 per build.
 
 ## Phase 4: Testing Your Deployment
 
@@ -78,8 +124,35 @@ poetry run ccwb test --api
 
 ## Phase 5: Distributing to Your Users
 
-With a tested package in hand, you're ready for the final phase: getting the authentication system to your users. The distribution method you choose depends on your organization's size, technical sophistication, and existing IT processes.
+With a tested package in hand, you're ready for the final phase: getting the authentication system to your users. Claude Code offers two distribution methods:
 
-Share the `dist/` folder through your normal software distribution channels - perhaps a shared drive, internal website, or artifact repository. Users simply run the installer script, and within seconds they're authenticated and ready to use Claude Code.
+### Option 1: Secure URL Distribution (Recommended)
 
-Regardless of distribution method, the user experience remains simple. They receive the package, run `./install.sh`, and they're done. The installer configures their AWS profile, sets up the credential process, and handles all the complex authentication machinery invisibly. When they run Claude Code with `AWS_PROFILE=ClaudeCode`, authentication happens automatically in the background.
+Generate a presigned URL for easy, secure distribution without requiring AWS credentials:
+
+```bash
+# Create distribution with 48-hour expiration
+poetry run ccwb distribute
+
+# Or specify custom expiration (up to 7 days)
+poetry run ccwb distribute --expires-hours=72
+```
+
+The command uploads your package to S3 and generates a secure, time-limited URL. Share this URL with developers via email, Slack, or your internal wiki. Users download and run the installer - no AWS credentials required.
+
+### Option 2: Manual Distribution
+
+Share the `dist/` folder through your normal software distribution channels - perhaps a shared drive, internal website, or artifact repository. 
+
+**Installation by Platform:**
+- **Windows**: Users run `install.bat`
+- **macOS/Linux**: Users run `./install.sh`
+
+Regardless of distribution method, the user experience remains simple. They receive the package, run the installer for their platform, and they're done. The installer:
+- Detects their operating system and architecture
+- Installs the appropriate binary
+- Configures their AWS profile
+- Sets up the credential process
+- Handles all the complex authentication machinery invisibly
+
+When they run Claude Code with `AWS_PROFILE=ClaudeCode`, authentication happens automatically in the background. On first use, users will see a browser window open for authentication with your organization's identity provider.

@@ -8,8 +8,10 @@ from cleo.application import Application
 from .commands.cleanup import CleanupCommand
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
+from .commands.distribute import DistributeCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
+from .commands.builds import BuildsCommand
 from .commands.status import StatusCommand
 from .commands.test import TestCommand
 
@@ -29,6 +31,8 @@ def create_application() -> Application:
     application.add(StatusCommand())
     application.add(TestCommand())
     application.add(PackageCommand())
+    application.add(BuildsCommand())
+    application.add(DistributeCommand())
     application.add(DestroyCommand())
     application.add(CleanupCommand())
     # application.add(TokenCommand())  # Temporarily disabled

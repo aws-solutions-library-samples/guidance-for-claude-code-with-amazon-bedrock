@@ -12,6 +12,7 @@ This guidance enables organizations to provide secure, centralized access to Cla
 - **Comprehensive Audit Trail**: Full CloudTrail logging of all Bedrock access
 - **Usage Monitoring**: Optional CloudWatch dashboards for tracking usage and costs
 - **Multi-Region Support**: Configure which AWS regions users can access Bedrock in
+- **Multi-Platform Support**: Windows, macOS (ARM & Intel), and Linux distributions
 
 ### For End Users
 
@@ -20,6 +21,7 @@ This guidance enables organizations to provide secure, centralized access to Cla
 - **AWS CLI/SDK Integration**: Works with any AWS tool or SDK
 - **Secure Credential Storage**: Choice of OS keyring or session-based storage
 - **Multi-Profile Support**: Manage multiple authentication profiles
+- **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## Table of Contents
 
@@ -58,18 +60,31 @@ poetry run ccwb init
 # Deploy infrastructure
 poetry run ccwb deploy
 
-# Create distribution package for users
-poetry run ccwb package
+# Create distribution package for users (all platforms)
+poetry run ccwb package --target-platform=all
+
+# Create and distribute package via secure URL
+poetry run ccwb distribute
 ```
 
 2. Test package locally to verify end-user installation and access to Amazon Bedrock.
 
-```
+```bash
 # Test package locally
 poetry run ccwb test
 ```
 
-3. [Distribute](#end-user-experience) package to end-users.
+3. Distribute package to end-users.
+
+```bash
+# Generate secure distribution URL (expires in 48 hours)
+poetry run ccwb distribute
+
+# Or specify custom expiration
+poetry run ccwb distribute --expires-hours=72
+```
+
+4. Share the generated URL with developers - no AWS credentials required for download.
 
 ### Cleanup
 
@@ -179,6 +194,23 @@ Claude Code uses Amazon Bedrock's cross-region inference for optimal performance
 
 This automatically routes requests across multiple AWS regions to ensure the best response times and highest availability. Modern Claude models (3.7+) require cross-region inference for access.
 
+### Platform Support
+
+The authentication tools support all major platforms:
+
+| Platform | Architecture | Build Method | Installation |
+|----------|-------------|--------------|--------------|
+| Windows | x64 | AWS CodeBuild | install.bat |
+| macOS | ARM64 (Apple Silicon) | Native/Nuitka | install.sh |
+| macOS | Intel (x86_64) | Native/Rosetta | install.sh |
+| Linux | x86_64 | Docker/Nuitka | install.sh |
+
+**Build Requirements:**
+- **Windows**: AWS CodeBuild (automated, ~$0.10 per build)
+- **macOS**: Xcode Command Line Tools, Python 3.10-3.12
+  - Intel builds on ARM Macs require Rosetta 2: `softwareupdate --install-rosetta`
+- **Linux**: Docker (for building on non-Linux hosts)
+
 ## Implementation
 
 ### Step 1: Initialize Configuration
@@ -233,19 +265,36 @@ This creates the following AWS resources:
 Build the package for end users:
 
 ```bash
-poetry run ccwb package
+# Build all platforms (starts Windows build in background)
+poetry run ccwb package --target-platform all
+
+# Check Windows build status (optional)
+poetry run ccwb builds
+
+# When ready, create distribution URL
+poetry run ccwb distribute
 ```
 
-This creates a `dist/` folder containing:
+**Package Workflow:**
 
-- `credential-process-macos` - Authentication executable for macOS
-- `credential-process-linux` - Authentication executable for Linux
+1. **Local builds**: macOS/Linux executables are built locally using Nuitka
+2. **Windows builds**: Trigger AWS CodeBuild for Windows executables (12-15 minutes)
+3. **Check status**: Monitor build progress with `poetry run ccwb builds`
+4. **Download artifacts**: Running `package` again will download completed Windows builds
+5. **Create distribution**: Use `distribute` to upload and generate presigned URLs
+
+The `dist/` folder will contain:
+
+- `credential-process-macos-arm64` - Authentication executable for macOS ARM64
+- `credential-process-macos-intel` - Authentication executable for macOS Intel (if built)
+- `credential-process-windows.exe` - Authentication executable for Windows
+- `credential-process-linux` - Authentication executable for Linux (if built on Linux)
 - `config.json` - Embedded configuration
-- `install.sh` - Installation script (auto-detects platform)
+- `install.sh` - Installation script for Unix systems
+- `install.bat` - Installation script for Windows
 - `README.md` - User instructions
 - `.claude/settings.json` - Claude Code telemetry settings (if monitoring enabled)
-- `otel-helper-macos` - OTEL helper executable for macOS (if monitoring enabled)
-- `otel-helper-linux` - OTEL helper executable for Linux (if monitoring enabled)
+- `otel-helper-*` - OTEL helper executables for each platform (if monitoring enabled)
 
 The package builder:
 

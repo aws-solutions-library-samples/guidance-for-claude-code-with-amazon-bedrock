@@ -111,9 +111,15 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "codebuild":
+                if profile.enable_codebuild:
+                    stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+                else:
+                    console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
+                    return 1
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics")
+                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, codebuild")
                 return 1
         else:
             # Deploy all configured stacks
@@ -125,6 +131,9 @@ class DeployCommand(Command):
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, 'analytics_enabled', True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+            # Check if CodeBuild is enabled
+            if getattr(profile, 'enable_codebuild', False):
+                stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
         # Show deployment plan
         console.print("\n[bold]Deployment Plan:[/bold]")
@@ -380,6 +389,26 @@ class DeployCommand(Command):
                 console.print(f"    {param} \\")
             console.print("")
 
+        elif stack_type == "codebuild":
+            template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
+            stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+
+            # Build parameters for CodeBuild stack
+            params = [
+                f"ParameterKey=ProjectNamePrefix,ParameterValue={profile.identity_pool_name}"
+            ]
+
+            console.print("[dim]# Deploy CodeBuild for Windows builds[/dim]")
+            console.print("aws cloudformation deploy \\")
+            console.print(f"  --template-file {template} \\")
+            console.print(f"  --stack-name {stack_name} \\")
+            console.print("  --capabilities CAPABILITY_IAM \\")
+            console.print(f"  --region {profile.aws_region} \\")
+            console.print("  --parameter-overrides \\")
+            for param in params:
+                console.print(f"    {param} \\")
+            console.print("")
+
     def _deploy_stack(self, stack_type: str, profile, console: Console) -> int:
         """Deploy a CloudFormation stack."""
         # The infrastructure files are at the repository root, not in source
@@ -544,6 +573,26 @@ class DeployCommand(Command):
                     f"DataRetentionDays={profile.data_retention_days}",
                     f"FirehoseBufferInterval={profile.firehose_buffer_interval}",
                     f"DebugMode={str(profile.analytics_debug_mode).lower()}"
+                ]
+
+                cmd = [
+                    "aws", "cloudformation", "deploy",
+                    "--template-file", str(template),
+                    "--stack-name", stack_name,
+                    "--capabilities", "CAPABILITY_IAM",
+                    "--region", profile.aws_region,
+                    "--parameter-overrides"
+                ] + params
+
+            elif stack_type == "codebuild":
+                task = progress.add_task("Deploying CodeBuild for Windows builds...", total=None)
+
+                template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
+                stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+
+                # Build parameters for CodeBuild stack
+                params = [
+                    f"ProjectNamePrefix={profile.identity_pool_name}"
                 ]
 
                 cmd = [

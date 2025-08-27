@@ -13,6 +13,8 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`deploy` - Deploy Infrastructure](#deploy---deploy-infrastructure)
     - [`test` - Test Package](#test---test-package)
     - [`package` - Create Distribution](#package---create-distribution)
+    - [`builds` - List and Manage CodeBuild Builds](#builds---list-and-manage-codebuild-builds)
+    - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
     - [`destroy` - Remove Infrastructure](#destroy---remove-infrastructure)
@@ -135,19 +137,57 @@ poetry run ccwb package [options]
 
 **Options:**
 
-- `--target-platform <platform>` - Target platform for binary: macos, linux, or all (default: "all")
+- `--target-platform <platform>` - Target platform for binary (default: "all")
+  - `macos` - Build for current macOS architecture
+  - `macos-arm64` - Build for Apple Silicon Macs
+  - `macos-intel` - Build for Intel Macs (uses Rosetta on ARM Macs)
+  - `linux` - Build for Linux (native, current architecture)
+  - `linux-x64` - Build for Linux x64 using Docker
+  - `linux-arm64` - Build for Linux ARM64 using Docker
+  - `windows` - Build for Windows (uses CodeBuild)
+  - `all` - Build for all available platforms
+- `--distribute` - Upload package and generate distribution URL
+- `--expires-hours <hours>` - Distribution URL expiration in hours (with --distribute) [default: "48"]
+- `--profile <name>` - Configuration profile to use [default: "default"]
 
 **What it does:**
 
-- Builds PyInstaller executable from authentication code
+- Builds Nuitka executable from authentication code
 - Creates configuration file with:
   - OIDC provider settings
   - Identity Pool ID from deployed stack
   - Credential storage method (keyring or session)
   - Selected Claude model and cross-region profile
   - Source region for model inference
-- Generates installer script
+- Generates installer script (install.sh for Unix, install.bat for Windows)
 - Creates user documentation
+- Optionally uploads to S3 and generates presigned URL (with --distribute)
+
+**Platform Support:**
+
+- **macOS**: Builds native ARM64 and Intel binaries
+  - ARM64: Native build on Apple Silicon Macs
+  - Intel: Native build on Intel Macs; on ARM Macs requires x86_64 Python installed separately
+    - Note: Building Intel binaries on ARM Macs is challenging due to architecture differences
+    - Options: Install x86_64 Python via Rosetta, use an Intel Mac, or skip Intel builds
+- **Linux**: Builds using Docker containers
+  - x64: Uses linux/amd64 Docker platform with Rosetta on ARM Macs
+  - ARM64: Uses linux/arm64 Docker platform
+- **Windows**: Builds using AWS CodeBuild (~12-15 minutes, ~$0.10 per build)
+
+**Output files:**
+
+- `credential-process-<platform>` - Authentication executable
+  - `credential-process-macos-arm64` - macOS Apple Silicon
+  - `credential-process-macos-intel` - macOS Intel
+  - `credential-process-linux-x64` - Linux x64
+  - `credential-process-linux-arm64` - Linux ARM64
+  - `credential-process-windows.exe` - Windows x64
+- `otel-helper-<platform>` - OTEL helper (if monitoring enabled)
+- `config.json` - Configuration
+- `install.sh` - Unix installer script (auto-detects architecture)
+- `install.bat` - Windows installer script
+- `README.md` - Installation instructions
 - Includes Claude Code telemetry settings (if monitoring enabled)
 - Configures environment variables for model selection (ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL)
 
@@ -155,15 +195,96 @@ poetry run ccwb package [options]
 
 ```
 dist/
-├── credential-process-macos    # macOS authentication executable
-├── credential-process-linux    # Linux authentication executable
-├── otel-helper-macos          # macOS OTEL helper (if monitoring enabled)
-├── otel-helper-linux          # Linux OTEL helper (if monitoring enabled)
-├── config.json                # Configuration
-├── install.sh                 # Installation script (auto-detects platform)
-├── README.md                  # User instructions
+├── credential-process-macos-arm64     # macOS ARM64 executable
+├── credential-process-macos-intel     # macOS Intel executable
+├── credential-process-linux-x64       # Linux x64 executable
+├── credential-process-linux-arm64     # Linux ARM64 executable
+├── credential-process-windows.exe     # Windows x64 executable
+├── otel-helper-macos-arm64           # macOS ARM64 OTEL helper
+├── otel-helper-macos-intel           # macOS Intel OTEL helper
+├── otel-helper-linux-x64             # Linux x64 OTEL helper
+├── otel-helper-linux-arm64           # Linux ARM64 OTEL helper
+├── otel-helper-windows.exe           # Windows OTEL helper
+├── config.json                       # Configuration
+├── install.sh                        # Unix installer (auto-detects architecture)
+├── install.bat                       # Windows installer
+├── README.md                         # User instructions
 └── .claude/
-    └── settings.json          # Telemetry settings (optional)
+    └── settings.json                 # Telemetry settings (optional)
+```
+
+### `builds` - List and Manage CodeBuild Builds
+
+Shows recent Windows binary builds and their status.
+
+```bash
+poetry run ccwb builds [options]
+```
+
+**Options:**
+
+- `--limit <n>` - Number of builds to show (default: "10")
+- `--project <name>` - CodeBuild project name (default: auto-detect)
+- `--status <id>` - Check status of a specific build by ID
+
+**What it does:**
+
+- Lists recent CodeBuild builds for Windows binaries
+- Shows build status, duration, and completion time
+- Provides console links to view full build logs
+- Monitors in-progress builds
+
+**Example output:**
+
+```
+Recent Windows Builds
+
+| Build ID | Status | Started | Duration |
+|----------|--------|---------|----------|
+| project:abc123 | SUCCEEDED | 2024-08-26 10:15 | 12m 34s |
+| project:def456 | IN_PROGRESS | 2024-08-26 10:30 | - |
+```
+
+### `distribute` - Create Distribution URLs
+
+Creates secure presigned URLs for package distribution.
+
+```bash
+poetry run ccwb distribute [options]
+```
+
+**Options:**
+
+- `--expires-hours <hours>` - URL expiration time in hours (1-168) [default: "48"]
+- `--get-latest` - Retrieve the latest distribution URL
+- `--profile <name>` - Configuration profile to use [default: "default"]
+
+**What it does:**
+
+- Uploads built packages to S3
+- Generates presigned URLs for secure distribution
+- Stores URLs in Parameter Store for team access
+- No AWS credentials required for end users
+
+**Distribution workflow:**
+
+1. Build packages: `poetry run ccwb package --target-platform=all`
+2. Create distribution: `poetry run ccwb distribute`
+3. Share the generated URL with developers
+4. Developers download and run installer without AWS access
+
+**Example:**
+
+```bash
+# Build and distribute
+poetry run ccwb package --target-platform=all --distribute
+
+# Or separately
+poetry run ccwb package --target-platform=all
+poetry run ccwb distribute --expires-hours=72
+
+# Get existing URL
+poetry run ccwb distribute --get-latest
 ```
 
 ### `status` - Check Deployment Status

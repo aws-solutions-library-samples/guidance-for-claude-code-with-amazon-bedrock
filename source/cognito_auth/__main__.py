@@ -222,13 +222,36 @@ class MultiProviderAuth:
         """Retrieve valid credentials from configured storage"""
         if self.credential_storage == "keyring":
             try:
-                # Retrieve from keyring
-                creds_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials")
-
-                if not creds_json:
-                    return None
-
-                creds = json.loads(creds_json)
+                # On Windows, credentials are split into multiple entries due to size limits
+                if platform.system() == "Windows":
+                    # Retrieve split credentials
+                    keys_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-keys")
+                    token1 = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-token1")
+                    token2 = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-token2")
+                    meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-meta")
+                    
+                    if not all([keys_json, token1, token2, meta_json]):
+                        return None
+                    
+                    # Reconstruct credentials
+                    keys = json.loads(keys_json)
+                    meta = json.loads(meta_json)
+                    
+                    creds = {
+                        "Version": meta["Version"],
+                        "AccessKeyId": keys["AccessKeyId"],
+                        "SecretAccessKey": keys["SecretAccessKey"],
+                        "SessionToken": token1 + token2,
+                        "Expiration": meta["Expiration"]
+                    }
+                else:
+                    # Non-Windows: single entry storage
+                    creds_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials")
+                    
+                    if not creds_json:
+                        return None
+                    
+                    creds = json.loads(creds_json)
                 
                 # Check for dummy/cleared credentials first
                 # These are set when credentials are cleared to maintain keychain permissions
@@ -288,8 +311,43 @@ class MultiProviderAuth:
         """Save credentials to configured storage"""
         if self.credential_storage == "keyring":
             try:
-                # Store in keyring as JSON string
-                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", json.dumps(credentials))
+                # On Windows, split credentials into multiple entries due to size limits
+                # Windows Credential Manager has a 2560 byte limit, but uses UTF-16LE encoding
+                if platform.system() == "Windows":
+                    # Split the SessionToken in half
+                    token = credentials["SessionToken"]
+                    mid = len(token) // 2
+                    
+                    # Store as 4 separate entries
+                    keyring.set_password(
+                        "claude-code-with-bedrock", 
+                        f"{self.profile}-keys",
+                        json.dumps({
+                            "AccessKeyId": credentials["AccessKeyId"],
+                            "SecretAccessKey": credentials["SecretAccessKey"]
+                        })
+                    )
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-token1",
+                        token[:mid]
+                    )
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-token2",
+                        token[mid:]
+                    )
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-meta",
+                        json.dumps({
+                            "Version": credentials["Version"],
+                            "Expiration": credentials["Expiration"]
+                        })
+                    )
+                else:
+                    # Non-Windows: store as single entry
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", json.dumps(credentials))
             except Exception as e:
                 self._debug_print(f"Error saving credentials to keyring: {e}")
                 raise Exception(f"Failed to save credentials to keyring: {str(e)}")
@@ -315,18 +373,50 @@ class MultiProviderAuth:
         # Clear from keyring by replacing with expired credentials
         # This maintains keychain access permissions on macOS
         try:
-            if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials"):
-                # Replace with expired dummy credential instead of deleting
-                # This prevents macOS from asking for "Always Allow" again
-                expired_credential = json.dumps({
-                    "Version": 1,
-                    "AccessKeyId": "EXPIRED",
-                    "SecretAccessKey": "EXPIRED",
-                    "SessionToken": "EXPIRED",
-                    "Expiration": "2000-01-01T00:00:00Z"  # Far past date
-                })
-                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", expired_credential)
-                cleared_items.append("keyring credentials")
+            if platform.system() == "Windows":
+                # On Windows, we have 4 separate entries to clear
+                entries_to_clear = [
+                    f"{self.profile}-keys",
+                    f"{self.profile}-token1", 
+                    f"{self.profile}-token2",
+                    f"{self.profile}-meta"
+                ]
+                
+                for entry in entries_to_clear:
+                    if keyring.get_password("claude-code-with-bedrock", entry):
+                        # Replace with expired dummy data
+                        if "keys" in entry:
+                            expired_data = json.dumps({
+                                "AccessKeyId": "EXPIRED",
+                                "SecretAccessKey": "EXPIRED"
+                            })
+                        elif "token" in entry:
+                            expired_data = "EXPIRED"
+                        elif "meta" in entry:
+                            expired_data = json.dumps({
+                                "Version": 1,
+                                "Expiration": "2000-01-01T00:00:00Z"
+                            })
+                        else:
+                            expired_data = "EXPIRED"
+                        
+                        keyring.set_password("claude-code-with-bedrock", entry, expired_data)
+                
+                cleared_items.append("keyring credentials (Windows)")
+            else:
+                # Non-Windows: single entry storage
+                if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials"):
+                    # Replace with expired dummy credential instead of deleting
+                    # This prevents macOS from asking for "Always Allow" again
+                    expired_credential = json.dumps({
+                        "Version": 1,
+                        "AccessKeyId": "EXPIRED",
+                        "SecretAccessKey": "EXPIRED",
+                        "SessionToken": "EXPIRED",
+                        "Expiration": "2000-01-01T00:00:00Z"  # Far past date
+                    })
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", expired_credential)
+                    cleared_items.append("keyring credentials")
         except Exception as e:
             self._debug_print(f"Could not clear keyring credentials: {e}")
         
@@ -779,6 +869,60 @@ class MultiProviderAuth:
 
         return None
 
+    def authenticate_for_monitoring(self):
+        """Authenticate specifically for monitoring token (no AWS credential output)"""
+        try:
+            # Try to acquire port lock by testing if we can bind to it
+            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                test_socket.bind(("127.0.0.1", self.redirect_port))
+                test_socket.close()
+                # We got the port, we can proceed with authentication
+                self._debug_print("Port available, proceeding with monitoring authentication")
+            except OSError as e:
+                if e.errno == errno.EADDRINUSE:
+                    # Port in use, another auth is in progress
+                    self._debug_print("Another authentication is in progress, waiting...")
+                    test_socket.close()
+                    
+                    # Wait for the other process to complete
+                    # After waiting, check if we now have a monitoring token
+                    self._wait_for_auth_completion()
+                    token = self.get_monitoring_token()
+                    if token:
+                        return token
+                    else:
+                        self._debug_print("Authentication timeout or failed in another process")
+                        return None
+                else:
+                    test_socket.close()
+                    raise
+            
+            # Authenticate with OIDC provider
+            self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
+            id_token, token_claims = self.authenticate_oidc()
+            
+            # Get AWS credentials (we need them but won't output them)
+            self._debug_print("Exchanging token for AWS credentials...")
+            credentials = self.get_aws_credentials(id_token, token_claims)
+            
+            # Cache credentials for future use
+            self.save_credentials(credentials)
+            
+            # Save monitoring token
+            self.save_monitoring_token(id_token, token_claims)
+            
+            # Return just the monitoring token
+            return id_token
+            
+        except KeyboardInterrupt:
+            # User cancelled
+            self._debug_print("Authentication cancelled by user")
+            return None
+        except Exception as e:
+            self._debug_print(f"Error during monitoring authentication: {e}")
+            return None
+
     def run(self):
         """Main execution flow"""
         try:
@@ -910,22 +1054,16 @@ def main():
         else:
             # No cached token, trigger authentication to get one
             auth._debug_print("No valid monitoring token found, triggering authentication...")
-            try:
-                # Run the normal authentication flow
-                exit_code = auth.run()
-                if exit_code == 0:
-                    # Authentication succeeded, try to get the token again
-                    token = auth.get_monitoring_token()
-                    if token:
-                        print(token)
-                        sys.exit(0)
-            except Exception as e:
-                auth._debug_print(f"Authentication failed: {e}")
-            
-            # If we get here, couldn't get a token even after auth attempt
-            # Return failure exit code so OTEL helper knows auth failed
-            # This prevents OTEL helper from using default/unknown values
-            sys.exit(1)
+            # Use the new monitoring-specific authentication method
+            token = auth.authenticate_for_monitoring()
+            if token:
+                print(token)
+                sys.exit(0)
+            else:
+                # Authentication failed or was cancelled
+                # Return failure exit code so OTEL helper knows auth failed
+                # This prevents OTEL helper from using default/unknown values
+                sys.exit(1)
 
     # Normal AWS credential flow
     sys.exit(auth.run())
