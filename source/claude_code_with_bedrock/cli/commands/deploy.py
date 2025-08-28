@@ -111,6 +111,13 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "distribution":
+                if profile.enable_distribution:
+                    stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+                else:
+                    console.print("[yellow]Distribution features not enabled in profile.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and enable distribution features.")
+                    return 1
             elif stack_arg == "codebuild":
                 if profile.enable_codebuild:
                     stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -119,11 +126,13 @@ class DeployCommand(Command):
                     return 1
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, codebuild")
+                console.print("Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, codebuild")
                 return 1
         else:
             # Deploy all configured stacks
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
+            if profile.enable_distribution:
+                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
             if profile.monitoring_enabled:
                 stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
@@ -452,6 +461,25 @@ class DeployCommand(Command):
                     f"EnableMonitoring={str(profile.monitoring_enabled).lower()}"
                 ])
 
+                cmd = [
+                    "aws", "cloudformation", "deploy",
+                    "--template-file", str(template),
+                    "--stack-name", stack_name,
+                    "--capabilities", "CAPABILITY_NAMED_IAM",
+                    "--region", profile.aws_region,
+                    "--parameter-overrides"
+                ] + params
+
+            elif stack_type == "distribution":
+                task = progress.add_task("Deploying distribution stack...", total=None)
+                
+                template = project_root / "deployment" / "infrastructure" / "distribution.yaml"
+                stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+                
+                params = [
+                    f"IdentityPoolName={profile.identity_pool_name}"
+                ]
+                
                 cmd = [
                     "aws", "cloudformation", "deploy",
                     "--template-file", str(template),

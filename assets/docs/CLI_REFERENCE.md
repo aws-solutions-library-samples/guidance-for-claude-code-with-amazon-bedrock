@@ -65,6 +65,7 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
+- Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 
 **Note:** This command only creates configuration. Use `deploy` to create AWS resources.
@@ -101,6 +102,7 @@ poetry run ccwb deploy [stack] [options]
 3. **monitoring** - OpenTelemetry collector on ECS Fargate (optional)
 4. **dashboard** - CloudWatch dashboard for usage metrics (optional)
 5. **analytics** - Kinesis Firehose and Athena for analytics (optional)
+6. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
 
 ### `test` - Test Package
 
@@ -144,7 +146,7 @@ poetry run ccwb package [options]
   - `linux` - Build for Linux (native, current architecture)
   - `linux-x64` - Build for Linux x64 using Docker
   - `linux-arm64` - Build for Linux ARM64 using Docker
-  - `windows` - Build for Windows (uses CodeBuild)
+  - `windows` - Build for Windows (uses CodeBuild - requires enabling during init)
   - `all` - Build for all available platforms
 - `--distribute` - Upload package and generate distribution URL
 - `--expires-hours <hours>` - Distribution URL expiration in hours (with --distribute) [default: "48"]
@@ -163,17 +165,56 @@ poetry run ccwb package [options]
 - Creates user documentation
 - Optionally uploads to S3 and generates presigned URL (with --distribute)
 
-**Platform Support:**
+**Platform Support (Hybrid Build System):**
 
-- **macOS**: Builds native ARM64 and Intel binaries
-  - ARM64: Native build on Apple Silicon Macs
-  - Intel: Native build on Intel Macs; on ARM Macs requires x86_64 Python installed separately
-    - Note: Building Intel binaries on ARM Macs is challenging due to architecture differences
-    - Options: Install x86_64 Python via Rosetta, use an Intel Mac, or skip Intel builds
-- **Linux**: Builds using Docker containers
-  - x64: Uses linux/amd64 Docker platform with Rosetta on ARM Macs
+- **macOS**: Uses PyInstaller with architecture-specific builds
+  - ARM64: Native build on Apple Silicon Macs (works on all Macs)
+  - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
+  - Universal: Requires both architectures' Python libraries (not currently automated)
+- **Linux**: Uses PyInstaller in Docker containers
+  - x64: Uses linux/amd64 Docker platform
   - ARM64: Uses linux/arm64 Docker platform
-- **Windows**: Builds using AWS CodeBuild (~12-15 minutes, ~$0.10 per build)
+  - Docker Desktop handles architecture emulation automatically
+- **Windows**: Uses Nuitka via AWS CodeBuild (if enabled during init)
+  - Automated builds take 12-15 minutes
+  - Requires CodeBuild to be enabled during `init`
+  - Will be skipped if CodeBuild is not enabled
+
+**Intel Mac Build Setup (Optional):**
+
+To enable Intel builds on Apple Silicon Macs (optional):
+
+```bash
+# Step 1: Install x86_64 Homebrew (if not already installed)
+arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Step 2: Install x86_64 Python
+arch -x86_64 /usr/local/bin/brew install python@3.12
+
+# Step 3: Create x86_64 virtual environment
+arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+
+# Step 4: Install required packages
+arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
+```
+
+**Behavior when Intel environment is not set up:**
+
+- For `--target-platform=all`: Skips Intel builds with a note, builds all other platforms
+- For `--target-platform=macos-intel`: Shows instructions for optional setup, skips the build
+- The package process continues successfully without Intel binaries
+- ARM64 binaries can be distributed to all Mac users (Intel and Apple Silicon)
+
+**Graceful Fallback Behavior:**
+
+The package command is designed to handle missing optional components gracefully:
+
+- **Intel Mac builds**: Skipped if x86_64 Python environment is not available on ARM Macs
+- **Windows builds**: Skipped if CodeBuild was not enabled during `init`
+- **Linux builds**: Skipped if Docker is not available
+- **At least one platform must build successfully** for the package command to succeed
+
+This ensures that packaging always works, even if some optional platforms are not available.
 
 **Output files:**
 
@@ -233,6 +274,8 @@ poetry run ccwb builds [options]
 - Shows build status, duration, and completion time
 - Provides console links to view full build logs
 - Monitors in-progress builds
+
+**Note:** This command requires CodeBuild to be enabled during the `init` process. If CodeBuild was not enabled, you'll need to re-run `init` and enable Windows build support.
 
 **Example output:**
 

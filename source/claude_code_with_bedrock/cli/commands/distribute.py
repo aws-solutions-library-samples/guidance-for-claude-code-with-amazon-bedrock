@@ -7,21 +7,47 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 from cleo.commands.command import Command
 from cleo.helpers import option
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, DownloadColumn, TimeRemainingColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.config import Config
+
+
+class S3UploadProgress:
+    """Track S3 upload progress."""
+    
+    def __init__(self, filename, size, progress_bar):
+        self._filename = filename
+        self._size = size
+        self._seen_so_far = 0
+        self._progress_bar = progress_bar
+        self._lock = threading.Lock()
+        self._task_id = None
+    
+    def set_task_id(self, task_id):
+        """Set the progress bar task ID."""
+        self._task_id = task_id
+    
+    def __call__(self, bytes_amount):
+        """Called by boto3 during upload."""
+        with self._lock:
+            self._seen_so_far += bytes_amount
+            if self._task_id is not None:
+                self._progress_bar.update(self._task_id, completed=self._seen_so_far)
 
 
 class DistributeCommand(Command):
@@ -92,17 +118,32 @@ class DistributeCommand(Command):
             console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
             return 1
         
-        # Check if CodeBuild stack exists (which includes our S3 bucket)
-        if not profile.enable_codebuild:
-            console.print("[yellow]Warning: CodeBuild is not enabled.[/yellow]")
-            console.print("To enable distribution features:")
-            console.print("  1. Run: poetry run ccwb init")
-            console.print("  2. Enable CodeBuild when prompted")
-            console.print("  3. Run: poetry run ccwb deploy codebuild")
-            return 1
+        # Check if distribution is enabled and stack is deployed
+        if profile.enable_distribution:
+            dist_stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+            try:
+                dist_outputs = get_stack_outputs(dist_stack_name, profile.aws_region)
+                if not dist_outputs:
+                    console.print("[red]Distribution stack not deployed.[/red]")
+                    console.print("Deploy the distribution stack first:")
+                    console.print("  poetry run ccwb deploy distribution")
+                    return 1
+            except Exception:
+                console.print("[red]Distribution stack not deployed.[/red]")
+                console.print("Deploy the distribution stack first:")
+                console.print("  poetry run ccwb deploy distribution")
+                return 1
+        else:
+            # Distribution not enabled - show info message
+            console.print("[yellow]Note: Distribution features not enabled.[/yellow]")
+            console.print("Package will be created locally without S3 upload or presigned URL.")
         
-        # Get latest URL if requested
+        # Get latest URL if requested (only if distribution is enabled)
         if self.option("get-latest"):
+            if not profile.enable_distribution:
+                console.print("[red]Distribution features not enabled.[/red]")
+                console.print("Enable distribution in profile configuration to use this feature.")
+                return 1
             return self._get_latest_url(profile, console)
         
         # Otherwise, create new distribution
@@ -154,7 +195,7 @@ class DistributeCommand(Command):
             console.print("1. Download (copy entire line):")
             print(f'   Invoke-WebRequest -Uri "{data["url"]}" -OutFile "{filename}"')
             console.print("2. Extract and install:")
-            console.print(f'   Expand-Archive -Path "{filename}" -DestinationPath "claude-code-package"')
+            console.print(f'   Expand-Archive -Path "{filename}" -DestinationPath "."')
             console.print('   cd claude-code-package')
             console.print('   .\\install.bat')
             
@@ -367,11 +408,12 @@ class DistributeCommand(Command):
         
         console.print(f"\n[green]Ready to distribute for: {', '.join(found_platforms)}[/green]")
         
-        # Validate expiration hours
+        # Validate expiration hours (max 7 days for IAM user presigned URLs)
         try:
             expires_hours = int(self.option("expires-hours"))
             if not 1 <= expires_hours <= 168:
-                console.print("[red]Expiration must be between 1 and 168 hours.[/red]")
+                console.print("[red]Expiration must be between 1 and 168 hours (7 days).[/red]")
+                console.print("[dim]Note: Presigned URLs have a maximum lifetime of 7 days when using IAM user credentials.[/dim]")
                 return 1
         except ValueError:
             console.print("[red]Invalid expiration hours.[/red]")
@@ -391,43 +433,91 @@ class DistributeCommand(Command):
             progress.update(task, description="Calculating checksum...")
             checksum = self._calculate_checksum(archive_path)
             
-            # Get S3 bucket from stack outputs
-            progress.update(task, description="Getting S3 bucket information...")
-            stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
-            try:
-                stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
-                bucket_name = stack_outputs.get('BuildBucket')
-                if not bucket_name:
-                    console.print("[red]S3 bucket not found in stack outputs.[/red]")
-                    return 1
-            except Exception as e:
-                console.print(f"[red]Error getting stack outputs: {e}[/red]")
-                console.print("Deploy the CodeBuild stack first: poetry run ccwb deploy codebuild")
-                return 1
-            
-            # Upload to S3
-            progress.update(task, description="Uploading to S3...")
+            # Prepare filename
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             filename = f"claude-code-package-{timestamp}.zip"
-            package_key = f"packages/{timestamp}/{filename}"
             
-            s3 = boto3.client('s3', region_name=profile.aws_region)
-            try:
-                s3.upload_file(
-                    str(archive_path),
-                    bucket_name,
-                    package_key,
-                    ExtraArgs={
-                        'Metadata': {
-                            'checksum': checksum,
-                            'created': datetime.now().isoformat(),
-                            'profile': profile.name
-                        }
-                    }
+            # Only do S3 operations if distribution is enabled
+            if profile.enable_distribution:
+                # Get S3 bucket from distribution stack outputs
+                progress.update(task, description="Getting S3 bucket information...")
+                dist_stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+                try:
+                    stack_outputs = get_stack_outputs(dist_stack_name, profile.aws_region)
+                    bucket_name = stack_outputs.get('DistributionBucket')
+                    if not bucket_name:
+                        console.print("[red]S3 bucket not found in distribution stack outputs.[/red]")
+                        return 1
+                except Exception as e:
+                    console.print(f"[red]Error getting distribution stack outputs: {e}[/red]")
+                    console.print("Deploy the distribution stack first: poetry run ccwb deploy distribution")
+                    return 1
+                
+                # Upload to S3 with progress tracking
+                progress.update(task, description="Preparing upload...")
+                package_key = f"packages/{timestamp}/{filename}"
+                
+                # Get file size for progress tracking
+                file_size = archive_path.stat().st_size
+                
+                # Configure multipart upload for better performance
+                config = TransferConfig(
+                    multipart_threshold=1024 * 25,  # 25MB
+                    max_concurrency=10,
+                    multipart_chunksize=1024 * 25,
+                    use_threads=True
                 )
-            except ClientError as e:
-                console.print(f"[red]Failed to upload package: {e}[/red]")
-                return 1
+                
+                # Create S3 client
+                s3 = boto3.client('s3', region_name=profile.aws_region)
+                
+                # Close the spinner progress and create a new one with upload progress
+                progress.stop()
+                
+                # Create progress bar for upload
+                with Progress(
+                    TextColumn("[bold blue]Uploading to S3"),
+                    BarColumn(),
+                    "[progress.percentage]{task.percentage:>3.1f}%",
+                    "•",
+                    DownloadColumn(),
+                    "•",
+                    TimeRemainingColumn(),
+                    console=console
+                ) as upload_progress:
+                    upload_task = upload_progress.add_task("upload", total=file_size)
+                    
+                    # Create callback
+                    callback = S3UploadProgress(filename, file_size, upload_progress)
+                    callback.set_task_id(upload_task)
+                    
+                    try:
+                        s3.upload_file(
+                            str(archive_path),
+                            bucket_name,
+                            package_key,
+                            ExtraArgs={
+                                'Metadata': {
+                                    'checksum': checksum,
+                                    'created': datetime.now().isoformat(),
+                                    'profile': profile.name
+                                }
+                            },
+                            Config=config,
+                            Callback=callback
+                        )
+                    except ClientError as e:
+                        console.print(f"[red]Failed to upload package: {e}[/red]")
+                        return 1
+                
+                # Restart the spinner progress for remaining tasks
+                progress = Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+                )
+                progress.start()
+                task = progress.add_task("Processing...", total=None)
             
             # Generate presigned URL
             progress.update(task, description="Generating presigned URL...")
@@ -473,66 +563,154 @@ class DistributeCommand(Command):
             except ClientError as e:
                 console.print(f"[yellow]Warning: Failed to store in Parameter Store: {e}[/yellow]")
             
+                # Get file size before cleanup
+                file_size = archive_path.stat().st_size if archive_path.exists() else 0
+            else:
+                # Distribution not enabled - save locally
+                progress.update(task, description="Saving package locally...")
+                local_dir = Path("dist")
+                local_dir.mkdir(exist_ok=True)
+                local_path = local_dir / filename
+                
+                import shutil
+                shutil.copy2(archive_path, local_path)
+                
+                # Get file size
+                file_size = archive_path.stat().st_size if archive_path.exists() else 0
+            
             # Clean up temp file
             archive_path.unlink()
             
-            progress.update(task, completed=True)
+            # Stop progress if it's still running
+            if 'progress' in locals() and hasattr(progress, 'stop'):
+                progress.stop()
         
-        # Display results
-        console.print("\n[bold green]✓ Distribution package created successfully![/bold green]")
-        console.print(f"\n[bold]Distribution URL[/bold] (expires in {expires_hours} hours):")
+        # Display results based on distribution mode
+        if profile.enable_distribution:
+            console.print("\n[bold green]✓ Distribution package created successfully![/bold green]")
+            console.print(f"\n[bold]Distribution URL[/bold] (expires in {expires_hours} hours):")
+        else:
+            console.print("\n[bold green]✓ Package created successfully![/bold green]")
+            console.print(f"\n[bold]Package saved locally:[/bold] dist/{filename}")
         
-        if allowed_ips:
-            console.print(f"[dim]Restricted to IPs: {allowed_ips}[/dim]")
-        
-        console.print(f"\n[cyan]{url}[/cyan]")
-        
-        console.print(f"\n[bold]Package Details:[/bold]")
-        console.print(f"  Filename: {filename}")
-        console.print(f"  SHA256: {checksum}")
-        console.print(f"  Expires: {expiration.strftime('%Y-%m-%d %H:%M:%S')}")
-        console.print(f"  Size: {self._format_size(archive_path.stat().st_size if archive_path.exists() else 0)}")
-        
-        # Show QR code if requested
-        if self.option("show-qr"):
-            self._display_qr_code(url, console)
-        
-        console.print("\n[bold]Share this URL with developers to download the package.[/bold]")
-        
-        # Output download commands for different platforms
-        console.print("\n[bold]Download and Installation Instructions:[/bold]")
-        
-        console.print("\n[cyan]For macOS/Linux:[/cyan]")
-        console.print("1. Download (copy entire line):")
-        # Use regular print to avoid Rich console line wrapping
-        print(f'   curl -L -o "{filename}" "{url}"')
-        console.print("2. Extract and install:")
-        console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
-        
-        console.print("\n[cyan]For Windows PowerShell:[/cyan]")
-        console.print("1. Download (copy entire line):")
-        print(f'   Invoke-WebRequest -Uri "{url}" -OutFile "{filename}"')
-        console.print("2. Extract and install:")
-        console.print(f'   Expand-Archive -Path "{filename}" -DestinationPath "claude-code-package"')
-        console.print('   cd claude-code-package')
-        console.print('   .\\install.bat')
-        
-        console.print(f"\n[dim]Verify download with: sha256sum {filename} (or Get-FileHash on Windows)[/dim]")
+        if profile.enable_distribution:
+            # Show distribution-specific details
+            if allowed_ips:
+                console.print(f"[dim]Restricted to IPs: {allowed_ips}[/dim]")
+            
+            console.print(f"\n[cyan]{url}[/cyan]")
+            
+            console.print(f"\n[bold]Package Details:[/bold]")
+            console.print(f"  Filename: {filename}")
+            console.print(f"  SHA256: {checksum}")
+            console.print(f"  Expires: {expiration.strftime('%Y-%m-%d %H:%M:%S')}")
+            console.print(f"  Size: {self._format_size(file_size)}")
+            
+            # Show QR code if requested
+            if self.option("show-qr"):
+                self._display_qr_code(url, console)
+            
+            console.print("\n[bold]Share this URL with developers to download the package.[/bold]")
+            
+            # Output download commands for different platforms
+            console.print("\n[bold]Download and Installation Instructions:[/bold]")
+            
+            console.print("\n[cyan]For macOS/Linux:[/cyan]")
+            console.print("1. Download (copy entire line):")
+            # Use regular print to avoid Rich console line wrapping
+            print(f'   curl -L -o "{filename}" "{url}"')
+            console.print("2. Extract and install:")
+            console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
+            
+            console.print("\n[cyan]For Windows PowerShell:[/cyan]")
+            console.print("1. Download (copy entire line):")
+            print(f'   Invoke-WebRequest -Uri "{url}" -OutFile "{filename}"')
+            console.print("2. Extract and install:")
+            console.print(f'   Expand-Archive -Path "{filename}" -DestinationPath "."')
+            console.print('   cd claude-code-package')
+            console.print('   .\\install.bat')
+            
+            console.print(f"\n[dim]Verify download with: sha256sum {filename} (or Get-FileHash on Windows)[/dim]")
+        else:
+            # Show local package details
+            console.print(f"\n[bold]Package Details:[/bold]")
+            console.print(f"  Filename: {filename}")
+            console.print(f"  SHA256: {checksum}")
+            console.print(f"  Size: {self._format_size(file_size)}")
+            
+            console.print("\n[bold]Installation Instructions:[/bold]")
+            console.print("1. Extract the package:")
+            console.print(f"   unzip dist/{filename}")
+            console.print("2. Install:")
+            console.print("   cd claude-code-package")
+            console.print("   ./install.sh  (macOS/Linux)")
+            console.print("   .\\install.bat  (Windows)")
+            
+            console.print("\n[dim]To enable distribution features:[/dim]")
+            console.print("  1. Run: poetry run ccwb init")
+            console.print("  2. Enable distribution when prompted")
+            console.print("  3. Run: poetry run ccwb deploy distribution")
         
         return 0
     
     def _create_archive(self, package_path: Path) -> Path:
         """Create a zip archive of the package directory."""
-        # Create temp file for archive
+        import zipfile
+        
+        # Create temp directory for archive
         temp_dir = Path(tempfile.mkdtemp())
         archive_path = temp_dir / "claude-code-package.zip"
         
-        # Create zip archive
-        shutil.make_archive(
-            str(archive_path.with_suffix('')),
-            'zip',
-            package_path
-        )
+        # Create a clean package directory with only necessary files
+        package_temp_dir = temp_dir / "claude-code-package"
+        package_temp_dir.mkdir(exist_ok=True)
+        
+        # Files to include in the package
+        required_files = [
+            # Executables for each platform
+            "credential-process-macos-arm64",
+            "credential-process-macos-intel", 
+            "credential-process-linux-x64",
+            "credential-process-linux-arm64",
+            "credential-process-windows.exe",
+            # OTEL helpers
+            "otel-helper-macos-arm64",
+            "otel-helper-macos-intel",
+            "otel-helper-linux-x64", 
+            "otel-helper-linux-arm64",
+            "otel-helper-windows.exe",
+            # Installation scripts
+            "install.sh",
+            "install.bat",
+            # Configuration
+            "config.json",
+            "README.md"
+        ]
+        
+        # Also include claude-settings directory if it exists
+        settings_dir = package_path / "claude-settings"
+        if settings_dir.exists() and settings_dir.is_dir():
+            shutil.copytree(settings_dir, package_temp_dir / "claude-settings")
+        
+        # Copy only the required files
+        for filename in required_files:
+            source_file = package_path / filename
+            if source_file.exists():
+                shutil.copy2(source_file, package_temp_dir / filename)
+        
+        # Create zip archive with contents at root level
+        # When extracted, it will create claude-code-package/ with files directly inside
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add all files from the package directory
+            for file in package_temp_dir.rglob('*'):
+                if file.is_file():
+                    # Get relative path from package_temp_dir (not temp_dir) to avoid nested directories
+                    # This creates paths like "config.json", "install.sh" instead of "claude-code-package/config.json"
+                    arcname = f"claude-code-package/{file.relative_to(package_temp_dir)}"
+                    zf.write(file, arcname)
+        
+        # Clean up temp package directory
+        shutil.rmtree(package_temp_dir)
         
         return archive_path
     
@@ -623,21 +801,34 @@ class DistributeCommand(Command):
         from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
         
         try:
-            # Get bucket name from stack outputs
-            stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
-            bucket_name = stack_outputs.get('BuildBucket')
+            # Windows artifacts are always in the CodeBuild bucket
+            if not profile.enable_codebuild:
+                console.print("[red]CodeBuild is not enabled for this profile[/red]")
+                return False
+                
+            codebuild_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+            codebuild_outputs = get_stack_outputs(codebuild_stack_name, profile.aws_region)
             
-            if not bucket_name:
-                console.print("[red]Could not get S3 bucket from stack outputs[/red]")
+            if not codebuild_outputs:
+                console.print("[red]CodeBuild stack not found[/red]")
+                return False
+                
+            bucket_name = codebuild_outputs.get('BuildBucket')
+            project_name = codebuild_outputs.get('ProjectName')
+            
+            if not bucket_name or not project_name:
+                console.print("[red]Could not get CodeBuild bucket or project name from stack outputs[/red]")
                 return False
             
             # Download from S3
-            s3 = boto3.client('s3', region_name='us-east-1')
+            s3 = boto3.client('s3', region_name=profile.aws_region)
             zip_path = package_path / 'windows-binaries.zip'
             
+            # CodeBuild stores artifacts at root of bucket
+            artifact_key = "windows-binaries.zip"
+            
             try:
-                s3.download_file(bucket_name, 'windows-binaries.zip', str(zip_path))
+                s3.download_file(bucket_name, artifact_key, str(zip_path))
                 
                 # Extract binaries
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -649,6 +840,7 @@ class DistributeCommand(Command):
                 
             except ClientError as e:
                 console.print(f"[red]Failed to download artifacts: {e}[/red]")
+                console.print(f"[dim]Tried: s3://{bucket_name}/{artifact_key}[/dim]")
                 return False
                 
         except Exception as e:

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CodeBuild project for building Windows binaries with Nuitka for Claude Code with Bedrock'
+Description: 'CodeBuild for Windows binaries with Nuitka - Claude Code w/ Bedrock'
 
 Parameters:
   ProjectNamePrefix:
@@ -44,7 +44,7 @@ Resources:
         Status: Enabled
       LoggingConfiguration:
         DestinationBucketName: !Ref LoggingBucket
-        LogFilePrefix: package-downloads/
+        LogFilePrefix: build-logs/
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -56,11 +56,6 @@ Resources:
             Status: Enabled
             ExpirationInDays: 7
             NoncurrentVersionExpirationInDays: 1
-          - Id: DeleteOldPackages
-            Status: Enabled
-            Prefix: packages/
-            ExpirationInDays: 30
-            NoncurrentVersionExpirationInDays: 7
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock
@@ -90,11 +85,13 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:PutObject
-                Resource: !Sub '${BuildBucket.Arn}/*'
+                Resource:
+                  - !Sub '${BuildBucket.Arn}/*'
               - Effect: Allow
                 Action:
                   - s3:ListBucket
-                Resource: !GetAtt BuildBucket.Arn
+                Resource:
+                  - !GetAtt BuildBucket.Arn
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock

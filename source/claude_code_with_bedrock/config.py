@@ -36,6 +36,7 @@ class Profile:
     provider_type: Optional[str] = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
     cognito_user_pool_id: Optional[str] = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
+    enable_distribution: bool = False  # Enable package distribution features (S3 + presigned URLs)
 
     # Legacy field support
     @property

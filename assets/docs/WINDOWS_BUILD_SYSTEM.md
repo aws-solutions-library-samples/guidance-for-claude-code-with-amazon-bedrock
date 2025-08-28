@@ -1,6 +1,7 @@
 # Windows Build System Documentation
 
 ## Table of Contents
+
 1. [Overview](#overview)
 2. [Architecture](#architecture)
 3. [Prerequisites](#prerequisites)
@@ -16,6 +17,7 @@
 The Windows build system enables IT administrators to create native Windows executables for Claude Code authentication tools. Due to Nuitka's requirement for native compilation on target platforms, Windows binaries must be built on Windows systems. This is accomplished using AWS CodeBuild with Windows Server 2022 containers.
 
 ### Key Features
+
 - **Cross-platform support**: Builds Windows, macOS, and Linux binaries
 - **Asynchronous builds**: Non-blocking build process with status tracking
 - **Secure distribution**: Time-limited presigned URLs for package distribution
@@ -32,22 +34,22 @@ graph TB
         CLI[Claude Code CLI<br/>poetry run ccwb]
         LOCAL[Local Build<br/>macOS/Linux]
     end
-    
+
     subgraph "AWS Cloud"
         subgraph "CodeBuild"
             CB[Windows Build Project<br/>Windows Server 2022<br/>BUILD_GENERAL1_LARGE]
         end
-        
+
         subgraph "Storage"
             S3[S3 Bucket<br/>Build Artifacts]
             PS[Parameter Store<br/>Distribution URLs]
         end
-        
+
         subgraph "Infrastructure"
             CF[CloudFormation<br/>Stack Management]
         end
     end
-    
+
     CLI -->|1. Start Build| CB
     CB -->|2. Compile Binaries| CB
     CB -->|3. Upload Artifacts| S3
@@ -67,22 +69,22 @@ sequenceDiagram
     participant CodeBuild
     participant S3
     participant PS as Parameter Store
-    
+
     User->>CLI: poetry run ccwb package
     CLI->>CLI: Build macOS binaries locally
     CLI->>CodeBuild: Start Windows build (async)
     CodeBuild-->>CLI: Return build ID immediately
     CLI-->>User: Build started (ID: xxx)
-    
-    Note over CodeBuild: Building (12-15 min)
-    
+
+    Note over CodeBuild: Building (20+ mins)
+
     User->>CLI: poetry run ccwb package --status latest
     CLI->>CodeBuild: Check build status
     CodeBuild-->>CLI: Status: IN_PROGRESS/SUCCEEDED
     CLI-->>User: Build status
-    
+
     CodeBuild->>S3: Upload artifacts
-    
+
     User->>CLI: poetry run ccwb distribute
     CLI->>S3: Create package
     S3->>S3: Generate presigned URL
@@ -93,12 +95,14 @@ sequenceDiagram
 ## Prerequisites
 
 ### Local Requirements
+
 - Python 3.10, 3.11, or 3.12 (not 3.13+)
 - Poetry package manager
 - AWS CLI v2 configured
 - Git
 
 ### AWS Requirements
+
 - AWS account with appropriate IAM permissions
 - Ability to create CloudFormation stacks
 - Permissions for:
@@ -110,22 +114,26 @@ sequenceDiagram
 ## Initial Setup
 
 ### 1. Clone Repository
+
 ```bash
 git clone <repository-url>
 cd guidance-for-claude-code-with-amazon-bedrock/source
 ```
 
 ### 2. Install Dependencies
+
 ```bash
 poetry install
 ```
 
 ### 3. Initialize Configuration
+
 ```bash
 poetry run ccwb init
 ```
 
 During initialization, you'll be prompted for:
+
 - Identity provider domain (e.g., `us-east-1xxxxx.auth.us-east-1.amazoncognito.com`)
 - Client ID from your identity provider
 - AWS region for deployment
@@ -134,11 +142,13 @@ During initialization, you'll be prompted for:
 - Monitoring preferences
 
 ### 4. Deploy Infrastructure
+
 ```bash
 poetry run ccwb deploy
 ```
 
 This creates the following CloudFormation stacks:
+
 - **Authentication stack**: IAM roles, identity pool
 - **Networking stack**: VPC and subnets (if monitoring enabled)
 - **Monitoring stack**: OpenTelemetry collector (optional)
@@ -147,11 +157,13 @@ This creates the following CloudFormation stacks:
 - **Analytics stack**: Athena and Kinesis (optional)
 
 ### 5. Verify CodeBuild Deployment
+
 ```bash
 poetry run ccwb status
 ```
 
 Verify CodeBuild is deployed:
+
 ```
 CodeBuild Stack:
 • Status: CREATE_COMPLETE
@@ -170,6 +182,7 @@ poetry run ccwb package
 ```
 
 Output:
+
 ```
 Fetching deployment information...
 ╭─────────────────────────────────────────────────────────────╮
@@ -212,16 +225,19 @@ To view logs in AWS Console:
 ### Checking Build Status
 
 Check the latest build:
+
 ```bash
 poetry run ccwb package --status latest
 ```
 
 Check a specific build:
+
 ```bash
 poetry run ccwb package --status claude-code-auth-windows-build:abc123-def456-789
 ```
 
 Status outputs:
+
 ```
 ⏳ Build in progress
 Phase: BUILD
@@ -243,8 +259,9 @@ poetry run ccwb builds
 ```
 
 Output:
+
 ```
-               Recent Builds for claude-code-auth-windows-build               
+               Recent Builds for claude-code-auth-windows-build
 ┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
 ┃ Build ID ┃ Status         ┃ Started          ┃ Duration ┃ Phase     ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
@@ -259,6 +276,7 @@ Output:
 ### Package Command
 
 **Basic usage:**
+
 ```bash
 poetry run ccwb package [options]
 ```
@@ -275,16 +293,19 @@ poetry run ccwb package [options]
 **Examples:**
 
 Build all platforms (returns immediately for Windows):
+
 ```bash
 poetry run ccwb package
 ```
 
 Build and distribute:
+
 ```bash
 poetry run ccwb package --distribute
 ```
 
 Check status:
+
 ```bash
 poetry run ccwb package --status latest
 ```
@@ -292,6 +313,7 @@ poetry run ccwb package --status latest
 ### Builds Command
 
 **Basic usage:**
+
 ```bash
 poetry run ccwb builds [options]
 ```
@@ -305,6 +327,7 @@ poetry run ccwb builds [options]
 ### Distribute Command
 
 **Basic usage:**
+
 ```bash
 poetry run ccwb distribute [options]
 ```
@@ -321,11 +344,13 @@ poetry run ccwb distribute [options]
 **Examples:**
 
 Create new distribution:
+
 ```bash
 poetry run ccwb distribute
 ```
 
 Get existing URL:
+
 ```bash
 poetry run ccwb distribute --get-latest
 ```
@@ -353,6 +378,7 @@ dist/
 ### End User Installation
 
 **Windows:**
+
 ```batch
 REM Download the package
 curl -L -o claude-code-package.zip "<presigned-url>"
@@ -366,6 +392,7 @@ install.bat
 ```
 
 **macOS/Linux:**
+
 ```bash
 # Download the package
 curl -L -o claude-code-package.zip "<presigned-url>"
@@ -379,6 +406,7 @@ cd dist
 ```
 
 The installer will:
+
 1. Create `~/claude-code-with-bedrock/` directory
 2. Copy binaries to the directory
 3. Configure AWS CLI profile named `ClaudeCode`
@@ -389,27 +417,33 @@ The installer will:
 ### Common Build Issues
 
 #### 1. Build Fails Immediately
+
 **Error:** "The Python version '3.12' is not supported by Nuitka '2.0'"
 **Solution:** This has been fixed - we now use Nuitka 2.7.12 which supports Python 3.12
 
 #### 2. Build Times Out
+
 **Error:** "Build timed out after 20 minutes"
 **Solution:** Normal build time is 12-15 minutes. Check CodeBuild logs for compilation errors.
 
 #### 3. No Artifacts Found
+
 **Error:** "no matching artifact paths found"
 **Solution:** Check that the build phase completed successfully:
+
 ```bash
 aws logs tail /aws/codebuild/claude-code-auth-windows-build --region us-east-1 --since 30m
 ```
 
 #### 4. PowerShell Syntax Errors
+
 **Error:** "The term 'SET' is not recognized"
 **Solution:** CodeBuild uses PowerShell, not CMD. The buildspec has been updated to use PowerShell syntax.
 
 ### Checking Build Logs
 
 **Via AWS CLI:**
+
 ```bash
 # Get recent logs
 aws logs tail /aws/codebuild/claude-code-auth-windows-build \
@@ -431,6 +465,7 @@ The package command provides a direct link to the AWS Console for each build.
 ### Windows Build Environment
 
 **CodeBuild Configuration:**
+
 - **Environment Type:** `WINDOWS_SERVER_2022_CONTAINER`
 - **Compute Type:** `BUILD_GENERAL1_LARGE` (4 vCPUs, 8 GB memory)
 - **Base Image:** `aws/codebuild/windows-base:2022-1.0`
@@ -440,12 +475,14 @@ The package command provides a direct link to the AWS Console for each build.
 ### Software Versions
 
 **Build Environment:**
+
 - Windows Server 2022
 - Python 3.12.10 (installed via Chocolatey)
 - Nuitka 2.7.12
 - pip 24.x
 
 **Dependencies installed during build:**
+
 - nuitka==2.7.12
 - ordered-set
 - zstandard
@@ -482,6 +519,7 @@ C:\Python312\python.exe -m nuitka \
 ### Build Performance
 
 **Typical build times:**
+
 - macOS ARM64 (local): ~30 seconds
 - Windows (CodeBuild): 12-15 minutes
   - Install phase: ~1 minute
@@ -490,6 +528,7 @@ C:\Python312\python.exe -m nuitka \
   - Post-build: ~30 seconds
 
 **Optimization history:**
+
 1. Initial: PyInstaller, MEDIUM instance → 16+ minutes
 2. Nuitka 2.0.0, MEDIUM instance → Failed (Python 3.12 incompatible)
 3. Nuitka 2.7.12, LARGE instance → 12-13 minutes (current)
@@ -498,16 +537,19 @@ C:\Python312\python.exe -m nuitka \
 ### Security
 
 **S3 Bucket:**
+
 - Private bucket with versioning enabled
 - Server-side encryption (SSE-S3)
 - Lifecycle rules for old packages (90 days)
 
 **Presigned URLs:**
+
 - Default expiration: 48 hours
 - Maximum expiration: 168 hours (7 days)
 - Optional IP restrictions via bucket policy
 
 **IAM Permissions Required:**
+
 ```json
 {
   "Version": "2012-10-17",
@@ -523,11 +565,7 @@ C:\Python312\python.exe -m nuitka \
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:ListBucket"
-      ],
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
       "Resource": [
         "arn:aws:s3:::claude-code-auth-codebuild-buildbucket-*",
         "arn:aws:s3:::claude-code-auth-codebuild-buildbucket-*/*"
@@ -535,10 +573,7 @@ C:\Python312\python.exe -m nuitka \
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "ssm:PutParameter",
-        "ssm:GetParameter"
-      ],
+      "Action": ["ssm:PutParameter", "ssm:GetParameter"],
       "Resource": "arn:aws:ssm:*:*:parameter/claude-code/*"
     }
   ]
@@ -548,11 +583,13 @@ C:\Python312\python.exe -m nuitka \
 ### Cost Analysis
 
 **Per build:**
+
 - CodeBuild: ~$0.10 (13 minutes × $0.005/minute for LARGE instance)
 - S3 storage: ~$0.01 (100 MB stored)
 - Data transfer: Varies by downloads
 
 **Monthly estimate (daily builds):**
+
 - 30 builds × $0.10 = $3.00 CodeBuild
 - Storage: ~$0.50
 - **Total: ~$3.50/month**
@@ -560,6 +597,7 @@ C:\Python312\python.exe -m nuitka \
 ### File System Locations
 
 **Source files:**
+
 ```
 /source/
 ├── cognito_auth/
@@ -578,6 +616,7 @@ C:\Python312\python.exe -m nuitka \
 ```
 
 **Build artifacts:**
+
 ```
 ~/.claude-code/
 └── latest-build.json         # Latest build metadata
@@ -600,26 +639,26 @@ S3: claude-code-auth-codebuild-buildbucket-xxxxx/
 flowchart TD
     Start([User runs: poetry run ccwb package])
     Start --> CheckPlatform{Target platform?}
-    
+
     CheckPlatform -->|macOS/Linux| LocalBuild[Build locally with Nuitka]
     CheckPlatform -->|Windows/All| StartCodeBuild[Start CodeBuild project]
-    
+
     LocalBuild --> LocalSuccess[✓ Local binaries created]
-    
+
     StartCodeBuild --> ReturnID[Return build ID immediately]
     ReturnID --> UserWait[User continues working]
-    
+
     StartCodeBuild --> CBInstall[CodeBuild: Install Python 3.12]
     CBInstall --> CBDeps[CodeBuild: Install dependencies]
     CBDeps --> CBNuitka[CodeBuild: Run Nuitka compilation]
     CBNuitka --> CBUpload[CodeBuild: Upload to S3]
-    
+
     UserWait --> CheckStatus([User runs: package --status])
     CheckStatus --> ShowStatus{Build status?}
     ShowStatus -->|In Progress| StillBuilding[Show progress]
     ShowStatus -->|Succeeded| ReadyDist[Ready for distribution]
     ShowStatus -->|Failed| ShowError[Show error details]
-    
+
     LocalSuccess --> Distribute([User runs: distribute])
     ReadyDist --> Distribute
     Distribute --> CreateZip[Create distribution package]
@@ -651,5 +690,5 @@ poetry run ccwb distribute --expires-hours 168
 
 ---
 
-*Last updated: August 2024*
-*Version: 1.0.0*
+_Last updated: August 2024_
+_Version: 1.0.0_

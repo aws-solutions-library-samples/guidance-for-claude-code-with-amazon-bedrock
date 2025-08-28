@@ -56,7 +56,7 @@ If you provide a custom domain name and hosted zone ID during setup, the system 
 
 ## Claude Code Configuration
 
-The package command generates a `.claude/settings.json` file that configures Claude Code for telemetry collection. This file gets installed to the user's home directory and contains all the settings needed for monitoring.
+The package command generates a `claude-settings/settings.json` file in the distribution package that configures Claude Code for telemetry collection. During installation, this file gets copied to `~/.claude/settings.json` in the user's home directory and contains all the settings needed for monitoring.
 
 ```json
 {

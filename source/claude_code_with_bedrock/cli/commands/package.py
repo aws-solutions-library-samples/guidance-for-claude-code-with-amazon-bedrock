@@ -5,10 +5,12 @@
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from cleo.commands.command import Command
 from cleo.helpers import option
@@ -39,24 +41,15 @@ class PackageCommand(Command):
         option(
             "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
         ),
-        option(
-            "distribute", description="Upload package and generate distribution URL", flag=True
-        ),
-        option(
-            "expires-hours", description="Distribution URL expiration in hours (with --distribute)", flag=False, default="48"
-        ),
-        option(
-            "profile", description="Configuration profile to use", flag=False, default="default"
-        ),
-        option(
-            "status", description="Check status of a build by ID", flag=False
-        ),
+        option("profile", description="Configuration profile to use", flag=False, default="default"),
+        option("status", description="Check status of a build by ID", flag=False),
     ]
 
     def handle(self) -> int:
         """Execute the package command."""
         import platform
         import subprocess
+
         console = Console()
 
         # Check if this is a status check (deprecated - moved to builds command)
@@ -133,6 +126,26 @@ class PackageCommand(Command):
         # Build package
         console.print("\n[bold]Building package...[/bold]")
 
+        # Pre-flight check for Intel builds on ARM Macs
+        if platform.system().lower() == "darwin" and platform.machine().lower() == "arm64":
+            if target_platform in ["macos-intel", "all"]:
+                x86_venv_path = Path.home() / "venv-x86"
+                if not (x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists()):
+                    if target_platform == "macos-intel":
+                        console.print("\n[yellow]⚠️  Intel Mac build environment not found[/yellow]")
+                        console.print("[dim]Intel builds require an x86_64 Python environment on Apple Silicon.[/dim]")
+                        console.print("[dim]ARM64 binaries work on Intel Macs via Rosetta, so this is optional.[/dim]")
+                        console.print("\n[dim]To set up Intel builds (optional):[/dim]")
+                        console.print("[dim]1. Install x86_64 Homebrew:[/dim]")
+                        console.print(
+                            '[dim]   arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"[/dim]'
+                        )
+                        console.print("[dim]2. Install Python and create environment:[/dim]")
+                        console.print("[dim]   arch -x86_64 /usr/local/bin/brew install python@3.12[/dim]")
+                        console.print("[dim]   arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86[/dim]")
+                        console.print("[dim]   arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring[/dim]")
+                        console.print()
+
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
         ) as progress:
@@ -143,29 +156,36 @@ class PackageCommand(Command):
                 platforms_to_build = []
                 current_os = platform.system().lower()
                 current_machine = platform.machine().lower()
-                
+
                 if current_os == "darwin":
                     # On macOS, build for current architecture
                     if current_machine == "arm64":
                         platforms_to_build.append("macos-arm64")
-                        # Also try Intel build via Rosetta if available
-                        rosetta_check = subprocess.run(["arch", "-x86_64", "true"], capture_output=True)
-                        if rosetta_check.returncode == 0:
+                        # Check if x86_64 environment is available for Intel builds
+                        x86_venv_path = Path.home() / "venv-x86"
+                        if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
                             platforms_to_build.append("macos-intel")
+                        else:
+                            # Check if Rosetta is available (for informational message)
+                            rosetta_check = subprocess.run(["arch", "-x86_64", "true"], capture_output=True)
+                            if rosetta_check.returncode == 0:
+                                console.print(
+                                    "[dim]Note: Intel Mac builds available with optional setup. See docs for details.[/dim]"
+                                )
                     else:
                         platforms_to_build.append("macos-intel")
-                    
+
                     # Check if Docker is available for Linux builds
                     docker_check = subprocess.run(["docker", "--version"], capture_output=True)
                     if docker_check.returncode == 0:
                         platforms_to_build.append("linux-x64")
                         platforms_to_build.append("linux-arm64")
-                        
+
                 elif current_os == "linux":
                     platforms_to_build.append("linux")
                 elif current_os == "windows":
                     platforms_to_build.append("windows")
-                
+
                 # Always try Windows via CodeBuild if not on Windows
                 if current_os != "windows" and profile and profile.enable_codebuild:
                     platforms_to_build.append("windows")
@@ -179,11 +199,12 @@ class PackageCommand(Command):
                 task = progress.add_task(f"Building credential process for {platform}...", total=None)
                 try:
                     executable_path = self._build_executable(output_dir, platform)
-                    # Check if this was an async Windows build that returned early
-                    if executable_path == 0:
-                        # Async build started, exit early
-                        return 0
-                    built_executables.append((platform, executable_path))
+                    # Check if this was an async Windows build
+                    if executable_path is None:
+                        # Windows build started in CodeBuild, continue without local binary
+                        console.print(f"[dim]Windows binaries will be built in CodeBuild[/dim]")
+                    else:
+                        built_executables.append((platform, executable_path))
                     progress.update(task, completed=True)
                 except Exception as e:
                     console.print(f"[yellow]Warning: Could not build credential process for {platform}: {e}[/yellow]")
@@ -191,14 +212,18 @@ class PackageCommand(Command):
 
                 # Build OTEL helper if monitoring is enabled
                 if profile.monitoring_enabled:
-                    task = progress.add_task(f"Building OTEL helper for {platform}...", total=None)
-                    try:
-                        otel_helper_path = self._build_otel_helper(output_dir, platform)
-                        built_otel_helpers.append((platform, otel_helper_path))
-                        progress.update(task, completed=True)
-                    except Exception as e:
-                        console.print(f"[yellow]Warning: Could not build OTEL helper for {platform}: {e}[/yellow]")
-                        progress.update(task, completed=True)
+                    # Skip OTEL helper for Windows if being built in CodeBuild
+                    if platform == "windows" and executable_path is None:
+                        console.print(f"[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
+                    else:
+                        task = progress.add_task(f"Building OTEL helper for {platform}...", total=None)
+                        try:
+                            otel_helper_path = self._build_otel_helper(output_dir, platform)
+                            built_otel_helpers.append((platform, otel_helper_path))
+                            progress.update(task, completed=True)
+                        except Exception as e:
+                            console.print(f"[yellow]Warning: Could not build OTEL helper for {platform}: {e}[/yellow]")
+                            progress.update(task, completed=True)
 
             # Check if any binaries were built
             if not built_executables:
@@ -221,11 +246,10 @@ class PackageCommand(Command):
             self._create_documentation(output_dir, profile, timestamp)
             progress.update(task, completed=True)
 
-            # Create Claude Code settings if monitoring is enabled
-            if profile.monitoring_enabled:
-                task = progress.add_task("Creating Claude Code settings...", total=None)
-                self._create_claude_settings(output_dir, profile)
-                progress.update(task, completed=True)
+            # Always create Claude Code settings (required for Bedrock configuration)
+            task = progress.add_task("Creating Claude Code settings...", total=None)
+            self._create_claude_settings(output_dir, profile)
+            progress.update(task, completed=True)
 
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
@@ -243,8 +267,8 @@ class PackageCommand(Command):
         if (output_dir / "install.bat").exists():
             console.print("  • install.bat - Installation script for Windows")
         console.print("  • README.md - Installation instructions")
-        if profile.monitoring_enabled and (output_dir / ".claude" / "settings.json").exists():
-            console.print("  • .claude/settings.json - Claude Code telemetry settings")
+        if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
+            console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform}")
 
@@ -258,32 +282,9 @@ class PackageCommand(Command):
         console.print(f"cd {output_dir}")
         console.print("./install.sh")
 
-        # Handle distribution if requested
-        if self.option("distribute"):
-            console.print("\n[bold]Creating distribution...[/bold]")
-            
-            # Import and use subprocess to call distribute command
-            import subprocess
-            import sys
-            
-            # Build the command
-            dist_cmd = [
-                "poetry", "run", "ccwb", "distribute",
-                "--package-path", str(output_dir),
-                "--expires-hours", self.option("expires-hours"),
-                "--profile", self.option("profile")
-            ]
-            
-            # Execute distribution command
-            try:
-                result = subprocess.run(dist_cmd, capture_output=False, text=True, cwd=Path(__file__).parents[4] / "source")
-                if result.returncode != 0:
-                    console.print("[red]Distribution failed. Package was built but not distributed.[/red]")
-                    return 0  # Don't fail the whole command if distribution fails
-            except Exception as e:
-                console.print(f"[red]Distribution error: {e}[/red]")
-                console.print("[yellow]Package was built successfully but distribution failed.[/yellow]")
-                return 0  # Don't fail the whole command if distribution fails
+        # Show next steps
+        console.print("\n[bold]Next steps:[/bold]")
+        console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
 
         return 0
 
@@ -292,41 +293,42 @@ class PackageCommand(Command):
         import boto3
         import json
         from pathlib import Path
-        
+
         try:
             # If no build ID provided, check for latest
             if not build_id or build_id == "latest":
-                build_info_file = Path.home() / '.claude-code' / 'latest-build.json'
+                build_info_file = Path.home() / ".claude-code" / "latest-build.json"
                 if not build_info_file.exists():
                     console.print("[red]No recent builds found. Start a build with 'poetry run ccwb package'[/red]")
                     return 1
-                
+
                 with open(build_info_file) as f:
                     build_info = json.load(f)
-                    build_id = build_info['build_id']
+                    build_id = build_info["build_id"]
                     console.print(f"[dim]Checking latest build: {build_id}[/dim]")
-            
+
             # Get build status from CodeBuild
-            codebuild = boto3.client('codebuild', region_name='us-east-1')  # Windows builds are in us-east-1
+            codebuild = boto3.client("codebuild", region_name="us-east-1")  # Windows builds are in us-east-1
             response = codebuild.batch_get_builds(ids=[build_id])
-            
-            if not response.get('builds'):
+
+            if not response.get("builds"):
                 console.print(f"[red]Build not found: {build_id}[/red]")
                 return 1
-            
-            build = response['builds'][0]
-            status = build['buildStatus']
-            
+
+            build = response["builds"][0]
+            status = build["buildStatus"]
+
             # Display status
-            if status == 'IN_PROGRESS':
+            if status == "IN_PROGRESS":
                 console.print(f"[yellow]⏳ Build in progress[/yellow]")
                 console.print(f"Phase: {build.get('currentPhase', 'Unknown')}")
-                if 'startTime' in build:
+                if "startTime" in build:
                     from datetime import datetime
-                    start_time = build['startTime']
+
+                    start_time = build["startTime"]
                     elapsed = datetime.now(start_time.tzinfo) - start_time
                     console.print(f"Elapsed: {int(elapsed.total_seconds() / 60)} minutes")
-            elif status == 'SUCCEEDED':
+            elif status == "SUCCEEDED":
                 console.print(f"[green]✓ Build succeeded![/green]")
                 console.print(f"Duration: {build.get('buildDurationInMinutes', 'Unknown')} minutes")
                 console.print("\n[bold]Windows build artifacts are ready![/bold]")
@@ -337,75 +339,75 @@ class PackageCommand(Command):
                 console.print("     (This will create the distribution URL)")
             else:
                 console.print(f"[red]✗ Build {status.lower()}[/red]")
-                if 'phases' in build:
-                    for phase in build['phases']:
-                        if phase.get('phaseStatus') == 'FAILED':
+                if "phases" in build:
+                    for phase in build["phases"]:
+                        if phase.get("phaseStatus") == "FAILED":
                             console.print(f"[red]Failed in phase: {phase.get('phaseType')}[/red]")
-            
+
             # Show console link
-            project_name = build_id.split(':')[0]
-            build_uuid = build_id.split(':')[1]
-            console.print(f"\n[dim]View logs: https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_uuid}[/dim]")
-            
+            project_name = build_id.split(":")[0]
+            build_uuid = build_id.split(":")[1]
+            console.print(
+                f"\n[dim]View logs: https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_uuid}[/dim]"
+            )
+
             return 0
-            
+
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
-        """Build executable using Nuitka compiler for target platform."""
+        """Build executable for target platform using appropriate tool."""
         import platform
 
         current_system = platform.system().lower()
         current_machine = platform.machine().lower()
-        
-        # Handle special platform variants
-        if target_platform == "macos-arm64":
-            # Build ARM64 binary on ARM Mac
-            os.environ.pop("CCWB_MACOS_VARIANT", None)  # Ensure we build for ARM64
-            return self._build_native_executable(output_dir, "macos")
-        elif target_platform == "macos-intel":
-            # Build Intel binary - use Docker on ARM Macs, native on Intel Macs
-            import platform
-            current_machine = platform.machine().lower()
-            current_system = platform.system().lower()
-            
-            if current_system == "darwin" and current_machine == "arm64":
-                # On ARM Mac, use Docker with x86_64 emulation
-                console = Console()
-                console.print("[yellow]Building Intel Mac binary via Docker (x86_64 emulation)...[/yellow]")
-                return self._build_macos_intel_via_docker(output_dir)
-            else:
-                # Native Intel Mac build
-                os.environ["CCWB_MACOS_VARIANT"] = "intel"
-                return self._build_native_executable(output_dir, "macos")
-        elif target_platform == "linux-x64":
-            # Build Linux x64 binary via Docker
-            return self._build_linux_via_docker(output_dir, "x64")
-        elif target_platform == "linux-arm64":
-            # Build Linux ARM64 binary via Docker
-            return self._build_linux_via_docker(output_dir, "arm64")
-        
-        # Handle Windows builds via CodeBuild
+
+        # Windows builds use Nuitka via CodeBuild
         if target_platform == "windows":
             if current_system == "windows":
-                # Native Windows build
-                binary_name = "credential-process-windows.exe"
+                # Native Windows build with Nuitka
+                return self._build_native_executable_nuitka(output_dir, "windows")
             else:
                 # Use CodeBuild for Windows builds on non-Windows platforms
-                return self._build_windows_via_codebuild(output_dir)
-        
-        # For regular platform names, use the native build method
-        return self._build_native_executable(output_dir, target_platform)
-    
-    def _build_native_executable(self, output_dir: Path, target_platform: str) -> Path:
-        """Build executable using native Nuitka compiler."""
+                # Don't return - just start the build and continue
+                self._build_windows_via_codebuild(output_dir)
+                return None  # No local binary created
+
+        # macOS builds use PyInstaller for cross-architecture support
+        if target_platform == "macos-arm64":
+            return self._build_macos_pyinstaller(output_dir, "arm64")
+        elif target_platform == "macos-intel":
+            return self._build_macos_pyinstaller(output_dir, "x86_64")
+        elif target_platform == "macos-universal":
+            return self._build_macos_pyinstaller(output_dir, "universal2")
+        elif target_platform == "linux-x64":
+            # Build Linux x64 binary via Docker with PyInstaller
+            return self._build_linux_via_docker(output_dir, "x64")
+        elif target_platform == "linux-arm64":
+            # Build Linux ARM64 binary via Docker with PyInstaller
+            return self._build_linux_via_docker(output_dir, "arm64")
+        elif target_platform == "linux":
+            # Native Linux build with PyInstaller
+            return self._build_linux_pyinstaller(output_dir)
+        elif target_platform == "macos":
+            # Default macOS build for current architecture
+            if current_machine == "arm64":
+                return self._build_macos_pyinstaller(output_dir, "arm64")
+            else:
+                return self._build_macos_pyinstaller(output_dir, "x86_64")
+
+        # Fallback - shouldn't reach here
+        raise ValueError(f"Unsupported target platform: {target_platform}")
+
+    def _build_native_executable_nuitka(self, output_dir: Path, target_platform: str) -> Path:
+        """Build executable using native Nuitka compiler (for Windows only)."""
         import platform
-        
+
         current_system = platform.system().lower()
         current_machine = platform.machine().lower()
-        
+
         # Platform compatibility matrix for Nuitka (no cross-compilation)
         PLATFORM_COMPATIBILITY = {
             "macos": {
@@ -417,15 +419,15 @@ class PackageCommand(Command):
             },
             "windows": {
                 "x86_64": ["windows-amd64"],
-            }
+            },
         }
-        
+
         # Determine the specific platform variant
         if target_platform == "macos":
             # On macOS, determine if we're building for ARM64 or Intel
             # Check if user requested a specific variant via environment variable
             macos_variant = os.environ.get("CCWB_MACOS_VARIANT", "").lower()
-            
+
             if macos_variant == "intel":
                 # Force Intel build (useful on ARM Macs with Rosetta)
                 platform_variant = "intel"
@@ -450,14 +452,18 @@ class PackageCommand(Command):
             # binary_name already set above
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
-        
+
         # Check platform compatibility
         current_platform_str = f"{current_system}-{current_machine}"
         compatible_platforms = PLATFORM_COMPATIBILITY.get(target_platform, {}).get(platform_variant, [])
-        
+
         # Special case: Allow Intel builds on ARM Macs via Rosetta
-        if (target_platform == "macos" and platform_variant == "intel" and 
-            current_system == "darwin" and current_machine == "arm64"):
+        if (
+            target_platform == "macos"
+            and platform_variant == "intel"
+            and current_system == "darwin"
+            and current_machine == "arm64"
+        ):
             # Check if Rosetta is available
             result = subprocess.run(["arch", "-x86_64", "true"], capture_output=True)
             if result.returncode == 0:
@@ -478,7 +484,9 @@ class PackageCommand(Command):
 
         # Check if Nuitka is available (through Poetry)
         source_dir = Path(__file__).parent.parent.parent.parent
-        nuitka_check = subprocess.run(["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir)
+        nuitka_check = subprocess.run(
+            ["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir
+        )
         if nuitka_check.returncode != 0:
             raise RuntimeError(
                 "Nuitka not found. Please install it:\n"
@@ -494,40 +502,55 @@ class PackageCommand(Command):
 
         # Build Nuitka command (use poetry run to ensure correct Python version)
         # If building Intel binary on ARM Mac, use Rosetta
-        if (target_platform == "macos" and platform_variant == "intel" and 
-            current_system == "darwin" and current_machine == "arm64"):
+        if (
+            target_platform == "macos"
+            and platform_variant == "intel"
+            and current_system == "darwin"
+            and current_machine == "arm64"
+        ):
             cmd = [
-                "arch", "-x86_64",  # Run under Rosetta
-                "poetry", "run", "nuitka",
+                "arch",
+                "-x86_64",  # Run under Rosetta
+                "poetry",
+                "run",
+                "nuitka",
             ]
         else:
             cmd = [
-                "poetry", "run", "nuitka",
+                "poetry",
+                "run",
+                "nuitka",
             ]
-        
+
         # Add common Nuitka flags
-        cmd.extend([
-            "--standalone",
-            "--onefile",
-            "--assume-yes-for-downloads",
-            f"--output-filename={binary_name}",
-            f"--output-dir={str(output_dir)}",
-            "--quiet",
-            "--remove-output",  # Clean up build artifacts
-            "--python-flag=no_site",  # Don't include site packages
-        ])
+        cmd.extend(
+            [
+                "--standalone",
+                "--onefile",
+                "--assume-yes-for-downloads",
+                f"--output-filename={binary_name}",
+                f"--output-dir={str(output_dir)}",
+                "--quiet",
+                "--remove-output",  # Clean up build artifacts
+                "--python-flag=no_site",  # Don't include site packages
+            ]
+        )
 
         # Add platform-specific flags
         if target_platform == "macos":
-            cmd.extend([
-                "--macos-create-app-bundle",
-                "--macos-app-name=Claude Code Credential Process",
-                "--disable-console",  # GUI app on macOS
-            ])
+            cmd.extend(
+                [
+                    "--macos-create-app-bundle",
+                    "--macos-app-name=Claude Code Credential Process",
+                    "--disable-console",  # GUI app on macOS
+                ]
+            )
         elif target_platform == "linux":
-            cmd.extend([
-                "--linux-onefile-icon=NONE",  # No icon for Linux
-            ])
+            cmd.extend(
+                [
+                    "--linux-onefile-icon=NONE",  # No icon for Linux
+                ]
+            )
 
         # Add the source file
         cmd.append(str(src_file))
@@ -540,153 +563,167 @@ class PackageCommand(Command):
 
         return output_dir / binary_name
 
-    def _build_macos_intel_via_docker(self, output_dir: Path) -> Path:
-        """Build Intel Mac binary using Docker with x86_64 Python and host Nuitka.
-        
-        This approach uses Docker to get x86_64 Python, then runs Nuitka on the host
-        to build a proper macOS binary with the x86_64 architecture.
-        """
-        import tempfile
-        import shutil
-        
+    def _build_macos_pyinstaller(self, output_dir: Path, arch: str) -> Path:
+        """Build macOS executable using PyInstaller with target architecture."""
         console = Console()
-        
-        # Check if Docker is available
-        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
-        if docker_check.returncode != 0:
-            raise RuntimeError(
-                "Docker is not available. Please install Docker Desktop to build Intel Mac binaries on ARM Mac.\n"
-                "Visit: https://docs.docker.com/get-docker/"
-            )
-        
-        # Check if Nuitka is available on host
-        nuitka_check = subprocess.run(["which", "nuitka"], capture_output=True)
-        if nuitka_check.returncode != 0:
-            # Try with poetry
-            nuitka_check = subprocess.run(["poetry", "run", "which", "nuitka"], capture_output=True, cwd=Path(__file__).parent.parent.parent.parent)
-            if nuitka_check.returncode != 0:
-                console.print("[yellow]Nuitka not found on host, installing...[/yellow]")
-                install_result = subprocess.run(
-                    ["pip3", "install", "nuitka==2.7.12", "ordered-set", "zstandard"],
-                    capture_output=True
+
+        # Determine binary name based on architecture
+        if arch == "arm64":
+            binary_name = "credential-process-macos-arm64"
+        elif arch == "x86_64":
+            binary_name = "credential-process-macos-intel"
+        elif arch == "universal2":
+            binary_name = "credential-process-macos-universal"
+        else:
+            raise ValueError(f"Unsupported macOS architecture: {arch}")
+
+        # Find the source file
+        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
+        if not src_file.exists():
+            raise FileNotFoundError(f"Source file not found: {src_file}")
+
+        console.print(f"[yellow]Building macOS {arch} binary with PyInstaller...[/yellow]")
+
+        # Check if we need to use x86_64 Python for Intel builds
+        use_x86_python = False
+        x86_venv_path = Path.home() / "venv-x86"
+
+        if arch == "x86_64" and platform.machine().lower() == "arm64":
+            # On ARM Mac building Intel binary - check for x86_64 environment
+            if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
+                use_x86_python = True
+                console.print("[dim]Using x86_64 Python environment for Intel build[/dim]")
+            else:
+                console.print("\n[yellow]⚠️  Intel Mac build skipped (optional)[/yellow]")
+                console.print("[dim]Intel binaries are optional. ARM64 binaries work on Intel Macs via Rosetta.[/dim]")
+                console.print("[dim]To enable Intel builds on Apple Silicon, see:[/dim]")
+                console.print(
+                    "[dim]https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock#optional-intel-mac-builds[/dim]\n"
                 )
-                if install_result.returncode != 0:
-                    raise RuntimeError("Failed to install Nuitka on host")
-        
-        console.print("[yellow]Building Intel Mac binary using Docker + host Nuitka...[/yellow]")
-        console.print("[dim]Step 1: Creating x86_64 Python environment in Docker[/dim]")
-        
-        # Create a temporary directory for the build
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            source_dir = Path(__file__).parent.parent.parent.parent
-            
-            # Copy source to temp directory
-            shutil.copytree(source_dir / "cognito_auth", temp_path / "cognito_auth")
-            
-            # Create a script to prepare the Python environment
-            prep_script = """#!/bin/bash
-set -e
+                # Return dummy path - the main loop will handle this gracefully
+                return output_dir / binary_name
 
-# Install dependencies in x86_64 Python
-pip install --target /deps \
-    boto3 \
-    requests \
-    PyJWT \
-    cryptography \
-    keyring \
-    questionary \
-    rich \
-    cleo \
-    pydantic \
-    pyyaml
-
-echo "Dependencies installed to /deps"
-"""
-            (temp_path / "prep.sh").write_text(prep_script)
-            (temp_path / "prep.sh").chmod(0o755)
-            
-            # Run Docker to prepare x86_64 Python dependencies
-            docker_cmd = [
-                "docker", "run",
-                "--rm",
-                "--platform", "linux/amd64",
-                "-v", f"{str(temp_path)}:/work ",
-                "-w", "/work",
-                "python:3.12-slim",
-                "/work/prep.sh"
+        # Build PyInstaller command
+        if use_x86_python:
+            # Use x86_64 Python environment
+            cmd = [
+                "arch",
+                "-x86_64",
+                str(x86_venv_path / "bin" / "pyinstaller"),
+                "--onefile",
+                "--clean",
+                "--noconfirm",
+                f"--name={binary_name}",
+                f"--distpath={str(output_dir)}",
+                "--workpath=/tmp/pyinstaller-x86",
+                "--specpath=/tmp/pyinstaller-x86",
+                "--log-level=WARN",
+                # Hidden imports for our dependencies
+                "--hidden-import=keyring.backends.macOS",
+                "--hidden-import=keyring.backends.SecretService",
+                "--hidden-import=keyring.backends.Windows",
+                "--hidden-import=keyring.backends.chainer",
+                str(src_file),
             ]
-            
-            prep_result = subprocess.run(docker_cmd, capture_output=True, text=True)
-            
-            if prep_result.returncode != 0:
-                console.print(f"[yellow]Docker prep failed: {prep_result.stderr}[/yellow]")
-                console.print("[yellow]Falling back to native build with arch command[/yellow]")
-                
-                # Fallback: Try to use arch command directly
-                os.environ["CCWB_MACOS_VARIANT"] = "intel"
-                
-                # Try building with arch -x86_64 directly (not through poetry)
-                src_file = source_dir / "cognito_auth" / "__main__.py"
-                binary_name = "credential-process-macos-intel"
-                
-                # Build command using arch to force x86_64
-                cmd = [
-                    "arch", "-x86_64",
-                    "python3", "-m", "nuitka",
-                    "--standalone",
-                    "--onefile",
-                    "--assume-yes-for-downloads",
-                    f"--output-filename={binary_name}",
-                    f"--output-dir={str(output_dir)}",
-                    "--quiet",
-                    "--remove-output",
-                    "--python-flag=no_site",
-                    "--macos-create-app-bundle",
-                    "--macos-app-name=Claude Code Credential Process",
-                    "--disable-console",
-                    str(src_file)
-                ]
-                
-                console.print("[dim]Step 2: Building macOS Intel binary with arch -x86_64[/dim]")
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    console.print(f"[red]Build failed: {result.stderr}[/red]")
-                    console.print("[yellow]Intel Mac builds on ARM Macs require additional setup[/yellow]")
-                    console.print("[yellow]Options:[/yellow]")
-                    console.print("  1. Install x86_64 Python via Rosetta")
-                    console.print("  2. Use an Intel Mac for building")
-                    console.print("  3. Use the Windows-style CodeBuild approach")
-                    raise RuntimeError("Cannot build Intel Mac binary on ARM Mac with current setup")
-                
-                binary_path = output_dir / binary_name
-                if binary_path.exists():
-                    console.print("[green]✓ Intel Mac binary built successfully[/green]")
-                    return binary_path
-                else:
-                    raise RuntimeError("Intel Mac binary was not created")
-            
-            # If Docker prep succeeded, use host Nuitka with the prepared environment
-            console.print("[dim]Step 2: Building macOS binary with host Nuitka[/dim]")
-            
-            # This won't work as intended because the deps are Linux x86_64, not macOS
-            # The real solution requires x86_64 Python installed on the Mac itself
-            console.print("[yellow]Note: Cross-architecture builds require x86_64 Python on host[/yellow]")
-            raise RuntimeError(
-                "Building Intel Mac binaries on ARM Mac requires:\n"
-                "1. x86_64 Python installed via Rosetta (/usr/local/bin/python3)\n"
-                "2. Or use an Intel Mac for building\n"
-                "3. Or set up CodeBuild for macOS (like Windows builds)"
-            )
+        else:
+            # Use regular Poetry environment
+            cmd = [
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
+                f"--target-arch={arch}",
+                f"--name={binary_name}",
+                f"--distpath={str(output_dir)}",
+                "--workpath=/tmp/pyinstaller",
+                "--specpath=/tmp/pyinstaller",
+                "--log-level=WARN",
+                # Hidden imports for our dependencies
+                "--hidden-import=keyring.backends.macOS",
+                "--hidden-import=keyring.backends.SecretService",
+                "--hidden-import=keyring.backends.Windows",
+                "--hidden-import=keyring.backends.chainer",
+                str(src_file),
+            ]
+
+        # Run PyInstaller from source directory
+        source_dir = Path(__file__).parent.parent.parent.parent
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=source_dir)
+
+        if result.returncode != 0:
+            console.print(f"[red]PyInstaller build failed: {result.stderr}[/red]")
+            raise RuntimeError(f"PyInstaller build failed: {result.stderr}")
+
+        binary_path = output_dir / binary_name
+        if binary_path.exists():
+            binary_path.chmod(0o755)
+            console.print(f"[green]✓ macOS {arch} binary built successfully with PyInstaller[/green]")
+            return binary_path
+        else:
+            raise RuntimeError(f"Binary not created: {binary_path}")
+
+    def _build_linux_pyinstaller(self, output_dir: Path) -> Path:
+        """Build Linux executable using PyInstaller."""
+        console = Console()
+        binary_name = "credential-process-linux"
+
+        # Find the source file
+        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
+        if not src_file.exists():
+            raise FileNotFoundError(f"Source file not found: {src_file}")
+
+        console.print("[yellow]Building Linux binary with PyInstaller...[/yellow]")
+
+        # Build PyInstaller command
+        cmd = [
+            "poetry",
+            "run",
+            "pyinstaller",
+            "--onefile",
+            "--clean",
+            "--noconfirm",
+            f"--name={binary_name}",
+            f"--distpath={str(output_dir)}",
+            "--workpath=/tmp/pyinstaller",
+            "--specpath=/tmp/pyinstaller",
+            "--log-level=WARN",
+            # Hidden imports for our dependencies
+            "--hidden-import=keyring.backends.SecretService",
+            "--hidden-import=keyring.backends.chainer",
+            "--hidden-import=six",
+            "--hidden-import=six.moves",
+            "--hidden-import=six.moves._thread",
+            "--hidden-import=six.moves.urllib",
+            "--hidden-import=six.moves.urllib.parse",
+            "--hidden-import=dateutil",
+            str(src_file),
+        ]
+
+        # Run PyInstaller from source directory
+        source_dir = Path(__file__).parent.parent.parent.parent
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=source_dir)
+
+        if result.returncode != 0:
+            console.print(f"[red]PyInstaller build failed: {result.stderr}[/red]")
+            raise RuntimeError(f"PyInstaller build failed: {result.stderr}")
+
+        binary_path = output_dir / binary_name
+        if binary_path.exists():
+            binary_path.chmod(0o755)
+            console.print(f"[green]✓ Linux binary built successfully with PyInstaller[/green]")
+            return binary_path
+        else:
+            raise RuntimeError(f"Binary not created: {binary_path}")
 
     def _build_linux_via_docker(self, output_dir: Path, arch: str = "x64") -> Path:
-        """Build Linux binaries using Docker."""
+        """Build Linux binaries using Docker with PyInstaller."""
         import tempfile
         import shutil
-        
+
         console = Console()
-        
+
         # Determine platform and binary name
         if arch == "arm64":
             docker_platform = "linux/arm64"
@@ -694,7 +731,7 @@ echo "Dependencies installed to /deps"
         else:
             docker_platform = "linux/amd64"
             binary_name = "credential-process-linux-x64"
-        
+
         # Check if Docker is available
         docker_check = subprocess.run(["docker", "--version"], capture_output=True)
         if docker_check.returncode != 0:
@@ -702,29 +739,41 @@ echo "Dependencies installed to /deps"
                 "Docker is not available. Please install Docker to build Linux binaries.\n"
                 "Visit: https://docs.docker.com/get-docker/"
             )
-        
+
         # Create a temporary directory for the Docker build
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            
+
             # Copy source files to temp directory
             source_dir = Path(__file__).parent.parent.parent.parent
             shutil.copytree(source_dir / "cognito_auth", temp_path / "cognito_auth")
-            
-            # Create Dockerfile
-            dockerfile_content = f"""FROM --platform={docker_platform} python:3.12-slim
 
-# Install build dependencies
+            # Create Dockerfile with PyInstaller
+            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:20.04
+
+# Set non-interactive to avoid tzdata prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install Python 3.12 and build dependencies
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
     build-essential \
-    patchelf \
+    binutils \
+    curl \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y python3.12 python3.12-dev python3.12-venv \
+    && python3.12 -m ensurepip \
+    && python3.12 -m pip install --upgrade pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Set Python 3.12 as default python3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
 # Install Python packages
-RUN pip install --no-cache-dir \
-    nuitka==2.7.12 \
-    ordered-set \
-    zstandard \
+RUN python3 -m pip install --no-cache-dir \
+    pyinstaller==6.3.0 \
     boto3 \
     requests \
     PyJWT \
@@ -735,7 +784,9 @@ RUN pip install --no-cache-dir \
     rich \
     cleo \
     pydantic \
-    pyyaml
+    pyyaml \
+    six==1.16.0 \
+    python-dateutil
 
 # Set working directory
 WORKDIR /build
@@ -743,80 +794,89 @@ WORKDIR /build
 # Copy source code
 COPY cognito_auth /build/cognito_auth
 
-# Build the binary
-RUN python -m nuitka \
-    --standalone \
+# Build the binary with PyInstaller
+RUN pyinstaller \
     --onefile \
-    --assume-yes-for-downloads \
-    --output-filename={binary_name} \
-    --output-dir=/output \
-    --remove-output \
-    --python-flag=no_site \
+    --clean \
+    --noconfirm \
+    --name {binary_name} \
+    --distpath /output \
+    --workpath /tmp/build \
+    --specpath /tmp \
+    --log-level WARN \
+    --hidden-import keyring.backends.SecretService \
+    --hidden-import keyring.backends.chainer \
+    --hidden-import six \
+    --hidden-import six.moves \
+    --hidden-import six.moves._thread \
+    --hidden-import six.moves.urllib \
+    --hidden-import six.moves.urllib.parse \
+    --hidden-import dateutil \
     cognito_auth/__main__.py
 
 # The binary will be in /output/{binary_name}
 """
-            
+
             (temp_path / "Dockerfile").write_text(dockerfile_content)
-            
+
             # Build Docker image
             console.print(f"[yellow]Building Linux {arch} binary via Docker (this may take a few minutes)...[/yellow]")
             build_result = subprocess.run(
                 ["docker", "buildx", "build", "--platform", docker_platform, "-t", f"ccwb-linux-{arch}-builder", "."],
                 cwd=temp_path,
                 capture_output=True,
-                text=True
+                text=True,
             )
-            
+
             if build_result.returncode != 0:
                 raise RuntimeError(f"Docker build failed: {build_result.stderr}")
-            
+
             # Run container and copy binary out
             container_name = f"ccwb-extract-{os.getpid()}"
-            
+
             # Create container
             run_result = subprocess.run(
                 ["docker", "create", "--name", container_name, f"ccwb-linux-{arch}-builder"],
                 capture_output=True,
-                text=True
+                text=True,
             )
-            
+
             if run_result.returncode != 0:
                 raise RuntimeError(f"Failed to create container: {run_result.stderr}")
-            
+
             try:
                 # Copy binary from container
                 copy_result = subprocess.run(
                     ["docker", "cp", f"{container_name}:/output/{binary_name}", str(output_dir)],
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
-                
+
                 if copy_result.returncode != 0:
                     raise RuntimeError(f"Failed to copy binary from container: {copy_result.stderr}")
-                
+
                 # Verify the binary was created
                 binary_path = output_dir / binary_name
                 if not binary_path.exists():
                     raise RuntimeError(f"Linux {arch} binary was not created successfully")
-                
+
                 # Make it executable
                 binary_path.chmod(0o755)
-                
+
                 console.print(f"[green]✓ Linux {arch} binary built successfully via Docker[/green]")
                 return binary_path
-                
+
             finally:
                 # Clean up container
                 subprocess.run(["docker", "rm", container_name], capture_output=True)
-    
+
     def _build_linux_otel_helper_via_docker(self, output_dir: Path, arch: str = "x64") -> Path:
-        """Build Linux OTEL helper binary using Docker."""
+        """Build Linux OTEL helper binary using Docker with PyInstaller."""
         import tempfile
         import shutil
-        
+
         console = Console()
-        
+
         # Determine platform and binary name
         if arch == "arm64":
             docker_platform = "linux/arm64"
@@ -824,31 +884,44 @@ RUN python -m nuitka \
         else:
             docker_platform = "linux/amd64"
             binary_name = "otel-helper-linux-x64"
-        
+
         # Create a temporary directory for the Docker build
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            
+
             # Copy source files to temp directory
             source_dir = Path(__file__).parent.parent.parent.parent
             shutil.copytree(source_dir / "otel_helper", temp_path / "otel_helper")
-            
-            # Create Dockerfile for OTEL helper
-            dockerfile_content = f"""FROM --platform={docker_platform} python:3.12-slim
 
-# Install build dependencies
+            # Create Dockerfile for OTEL helper with PyInstaller
+            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:20.04
+
+# Set non-interactive to avoid tzdata prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install Python 3.12 and build dependencies
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
     build-essential \
-    patchelf \
+    binutils \
+    curl \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y python3.12 python3.12-dev python3.12-venv \
+    && python3.12 -m ensurepip \
+    && python3.12 -m pip install --upgrade pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Set Python 3.12 as default python3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
 # Install Python packages
-RUN pip install --no-cache-dir \
-    nuitka==2.7.12 \
-    ordered-set \
-    zstandard \
+RUN python3 -m pip install --no-cache-dir \
+    pyinstaller==6.3.0 \
     PyJWT \
-    cryptography
+    cryptography \
+    six
 
 # Set working directory
 WORKDIR /build
@@ -856,69 +929,72 @@ WORKDIR /build
 # Copy source code
 COPY otel_helper /build/otel_helper
 
-# Build the binary
-RUN python -m nuitka \
-    --standalone \
+# Build the binary with PyInstaller
+RUN pyinstaller \
     --onefile \
-    --assume-yes-for-downloads \
-    --output-filename={binary_name} \
-    --output-dir=/output \
-    --remove-output \
-    --python-flag=no_site \
+    --clean \
+    --noconfirm \
+    --name {binary_name} \
+    --distpath /output \
+    --workpath /tmp/build \
+    --specpath /tmp \
+    --log-level WARN \
+    --hidden-import six \
+    --hidden-import six.moves \
     otel_helper/__main__.py
 
 # The binary will be in /output/{binary_name}
 """
-            
+
             (temp_path / "Dockerfile").write_text(dockerfile_content)
-            
+
             # Build Docker image
             console.print(f"[yellow]Building Linux {arch} OTEL helper via Docker...[/yellow]")
             build_result = subprocess.run(
                 ["docker", "buildx", "build", "--platform", docker_platform, "-t", f"ccwb-otel-{arch}-builder", "."],
                 cwd=temp_path,
                 capture_output=True,
-                text=True
+                text=True,
             )
-            
+
             if build_result.returncode != 0:
                 raise RuntimeError(f"Docker build failed for OTEL helper: {build_result.stderr}")
-            
+
             # Run container and copy binary out
             container_name = f"ccwb-otel-extract-{os.getpid()}"
-            
+
             # Create container
             run_result = subprocess.run(
                 ["docker", "create", "--name", container_name, f"ccwb-otel-{arch}-builder"],
                 capture_output=True,
-                text=True
+                text=True,
             )
-            
+
             if run_result.returncode != 0:
                 raise RuntimeError(f"Failed to create container: {run_result.stderr}")
-            
+
             try:
                 # Copy binary from container
                 copy_result = subprocess.run(
                     ["docker", "cp", f"{container_name}:/output/{binary_name}", str(output_dir)],
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
-                
+
                 if copy_result.returncode != 0:
                     raise RuntimeError(f"Failed to copy OTEL binary from container: {copy_result.stderr}")
-                
+
                 # Verify the binary was created
                 binary_path = output_dir / binary_name
                 if not binary_path.exists():
                     raise RuntimeError(f"Linux {arch} OTEL helper binary was not created successfully")
-                
+
                 # Make it executable
                 binary_path.chmod(0o755)
-                
+
                 console.print(f"[green]✓ Linux {arch} OTEL helper built successfully via Docker[/green]")
                 return binary_path
-                
+
             finally:
                 # Clean up container
                 subprocess.run(["docker", "rm", container_name], capture_output=True)
@@ -929,44 +1005,43 @@ RUN python -m nuitka \
         import tempfile
         import boto3
         from botocore.exceptions import ClientError
-        
+
         console = Console()
-        
+
         # Check for in-progress builds only (not completed ones)
         try:
             config = Config.load()
             profile_name = self.option("profile")
             profile = config.get_profile(profile_name)
-            
+
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client('codebuild', region_name='us-east-1')
-                
+                codebuild = boto3.client("codebuild", region_name="us-east-1")
+
                 # List recent builds
-                response = codebuild.list_builds_for_project(
-                    projectName=project_name,
-                    sortOrder='DESCENDING'
-                )
-                
-                if response.get('ids'):
+                response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
+
+                if response.get("ids"):
                     # Check only the most recent builds
-                    build_ids = response['ids'][:3]
+                    build_ids = response["ids"][:3]
                     builds_response = codebuild.batch_get_builds(ids=build_ids)
-                    
-                    for build in builds_response.get('builds', []):
-                        if build['buildStatus'] == 'IN_PROGRESS':
-                            console.print(f"[yellow]Windows build already in progress (started {build['startTime'].strftime('%Y-%m-%d %H:%M')})[/yellow]")
+
+                    for build in builds_response.get("builds", []):
+                        if build["buildStatus"] == "IN_PROGRESS":
+                            console.print(
+                                f"[yellow]Windows build already in progress (started {build['startTime'].strftime('%Y-%m-%d %H:%M')})[/yellow]"
+                            )
                             console.print(f"Check status: [cyan]poetry run ccwb builds[/cyan]")
-                            console.print(f"Create distribution when ready: [cyan]poetry run ccwb distribute[/cyan]")
-                            return 0  # Return early, build in progress
+                            console.print(f"[dim]Note: Package will be created without Windows binaries[/dim]")
+                            # Don't return early - continue to create package with available binaries
         except Exception as e:
             console.print(f"[dim]Could not check for recent builds: {e}[/dim]")
-        
+
         # Load profile to get CodeBuild configuration
         config = Config.load()
         profile_name = self.option("profile")
         profile = config.get_profile(profile_name)
-        
+
         if not profile or not profile.enable_codebuild:
             console.print("[red]CodeBuild is not enabled for this profile.[/red]")
             console.print("To enable CodeBuild for Windows builds:")
@@ -974,7 +1049,7 @@ RUN python -m nuitka \
             console.print("  2. Answer 'Yes' when asked about Windows build support")
             console.print("  3. Run: poetry run ccwb deploy codebuild")
             raise RuntimeError("CodeBuild not enabled")
-        
+
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
@@ -983,126 +1058,109 @@ RUN python -m nuitka \
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
             raise RuntimeError("CodeBuild stack not deployed")
-        
-        bucket_name = stack_outputs.get('BuildBucket')
-        project_name = stack_outputs.get('ProjectName')
-        
+
+        bucket_name = stack_outputs.get("BuildBucket")
+        project_name = stack_outputs.get("ProjectName")
+
         if not bucket_name or not project_name:
             console.print("[red]CodeBuild stack outputs not found[/red]")
             raise RuntimeError("Invalid CodeBuild stack")
-        
+
         with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
         ) as progress:
             # Package source code
             task = progress.add_task("Packaging source code for CodeBuild...", total=None)
             source_zip = self._package_source_for_codebuild()
-            
+
             # Upload to S3
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client('s3', region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=profile.aws_region)
             try:
-                s3.upload_file(str(source_zip), bucket_name, 'source.zip')
+                s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
                 console.print(f"[red]Failed to upload source: {e}[/red]")
                 raise
-            
+
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client('codebuild', region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
             try:
                 response = codebuild.start_build(projectName=project_name)
-                build_id = response['build']['id']
+                build_id = response["build"]["id"]
             except ClientError as e:
                 console.print(f"[red]Failed to start build: {e}[/red]")
                 raise
-            
+
             # Monitor build
-            progress.update(task, description="Building Windows binaries (5-10 minutes)...")
+            progress.update(task, description="Building Windows binaries (20+ minutes)...")
             console.print(f"[dim]Build ID: {build_id}[/dim]")
-            console.print("[dim]Estimated cost: ~$0.10[/dim]")
-            
+
             # Store build ID for later retrieval
             import json
             from pathlib import Path
-            build_info_file = Path.home() / '.claude-code' / 'latest-build.json'
+
+            build_info_file = Path.home() / ".claude-code" / "latest-build.json"
             build_info_file.parent.mkdir(exist_ok=True)
-            with open(build_info_file, 'w') as f:
-                json.dump({
-                    'build_id': build_id,
-                    'started_at': datetime.now().isoformat(),
-                    'project': project_name,
-                    'bucket': bucket_name
-                }, f)
-            
+            with open(build_info_file, "w") as f:
+                json.dump(
+                    {
+                        "build_id": build_id,
+                        "started_at": datetime.now().isoformat(),
+                        "project": project_name,
+                        "bucket": bucket_name,
+                    },
+                    f,
+                )
+
             # Clean up source zip
             source_zip.unlink()
             progress.update(task, completed=True)
-        
+
         # Don't wait - return build info immediately
         console.print("\n[bold yellow]Windows build started![/bold yellow]")
         console.print(f"[dim]Build ID: {build_id}[/dim]")
-        console.print(f"Build will take approximately 12-15 minutes to complete.")
+        console.print(f"Build will take approximately 20+ minutes to complete.")
         console.print(f"\nTo check status:")
         console.print(f"  [cyan]poetry run ccwb builds[/cyan]")
         console.print(f"\nWhen ready, create distribution:")
         console.print(f"  [cyan]poetry run ccwb distribute[/cyan]")
         console.print(f"\n[dim]View logs in AWS Console:[/dim]")
-        console.print(f"  [dim]https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id.split(':')[1]}[/dim]")
-        
-        return 0  # Exit early for async builds
-    
+        console.print(
+            f"  [dim]https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id.split(':')[1]}[/dim]"
+        )
+
+        # Return None since we don't have a local binary path
+        return None
+
     def _package_source_for_codebuild(self) -> Path:
         """Package source code for CodeBuild."""
         import tempfile
         import zipfile
-        
+
         # Create a temporary zip file
         temp_dir = Path(tempfile.mkdtemp())
         source_zip = temp_dir / "source.zip"
-        
+
         # Get the source directory (parent of package.py)
         source_dir = Path(__file__).parents[3]  # Go up to source/ directory
-        
-        with zipfile.ZipFile(source_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+
+        with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             # Add all Python files from source directory
-            for py_file in source_dir.rglob('*.py'):
+            for py_file in source_dir.rglob("*.py"):
                 arcname = str(py_file.relative_to(source_dir.parent))
                 zf.write(py_file, arcname)
-            
+
             # Add pyproject.toml for dependencies
-            pyproject_file = source_dir / 'pyproject.toml'
+            pyproject_file = source_dir / "pyproject.toml"
             if pyproject_file.exists():
-                zf.write(pyproject_file, 'pyproject.toml')
-        
+                zf.write(pyproject_file, "pyproject.toml")
+
         return source_zip
 
     def _build_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
-        """Build executable for OTEL helper script using Nuitka."""
-        import platform
-
-        current_system = platform.system().lower()
-        current_machine = platform.machine().lower()
-        
-        # Handle special platform variants
-        if target_platform == "macos-arm64":
-            # Build ARM64 binary on ARM Mac
-            os.environ.pop("CCWB_MACOS_VARIANT", None)  # Ensure we build for ARM64
-            return self._build_native_otel_helper(output_dir, "macos")
-        elif target_platform == "macos-intel":
-            # Build Intel binary using Rosetta on ARM Mac
-            os.environ["CCWB_MACOS_VARIANT"] = "intel"
-            return self._build_native_otel_helper(output_dir, "macos")
-        elif target_platform == "linux-x64":
-            # Build Linux x64 binary via Docker
-            return self._build_linux_otel_helper_via_docker(output_dir, "x64")
-        elif target_platform == "linux-arm64":
-            # Build Linux ARM64 binary via Docker
-            return self._build_linux_otel_helper_via_docker(output_dir, "arm64")
-        
-        # For Windows, the otel-helper is built together with credential-process by CodeBuild
+        """Build executable for OTEL helper script."""
+        # Windows uses Nuitka via CodeBuild
         if target_platform == "windows":
             # Check if the Windows binary already exists (built by _build_executable)
             windows_binary = output_dir / "otel-helper-windows.exe"
@@ -1111,22 +1169,141 @@ RUN python -m nuitka \
             else:
                 # If not, we need to build via CodeBuild (but this should have been done already)
                 raise RuntimeError("Windows otel-helper should have been built with credential-process")
-        
-        # For regular platform names, use the native build method
-        return self._build_native_otel_helper(output_dir, target_platform)
-    
+
+        # macOS builds use PyInstaller
+        if target_platform == "macos-arm64":
+            return self._build_otel_helper_pyinstaller(output_dir, "macos", "arm64")
+        elif target_platform == "macos-intel":
+            return self._build_otel_helper_pyinstaller(output_dir, "macos", "x86_64")
+        elif target_platform == "macos-universal":
+            return self._build_otel_helper_pyinstaller(output_dir, "macos", "universal2")
+        elif target_platform == "macos":
+            import platform
+
+            current_machine = platform.machine().lower()
+            if current_machine == "arm64":
+                return self._build_otel_helper_pyinstaller(output_dir, "macos", "arm64")
+            else:
+                return self._build_otel_helper_pyinstaller(output_dir, "macos", "x86_64")
+
+        # Linux builds use PyInstaller via Docker
+        elif target_platform == "linux-x64":
+            return self._build_linux_otel_helper_via_docker(output_dir, "x64")
+        elif target_platform == "linux-arm64":
+            return self._build_linux_otel_helper_via_docker(output_dir, "arm64")
+        elif target_platform == "linux":
+            return self._build_otel_helper_pyinstaller(output_dir, "linux", None)
+
+        # Fallback
+        raise ValueError(f"Unsupported target platform for OTEL helper: {target_platform}")
+
+    def _build_otel_helper_pyinstaller(self, output_dir: Path, platform_name: str, arch: Optional[str]) -> Path:
+        """Build OTEL helper using PyInstaller."""
+        console = Console()
+
+        # Determine binary name
+        if platform_name == "macos":
+            if arch == "arm64":
+                binary_name = "otel-helper-macos-arm64"
+            elif arch == "x86_64":
+                binary_name = "otel-helper-macos-intel"
+            elif arch == "universal2":
+                binary_name = "otel-helper-macos-universal"
+            else:
+                binary_name = "otel-helper-macos"
+        elif platform_name == "linux":
+            binary_name = "otel-helper-linux"
+        else:
+            raise ValueError(f"Unsupported platform for OTEL helper: {platform_name}")
+
+        # Find the source file
+        src_file = Path(__file__).parent.parent.parent.parent / "otel_helper" / "__main__.py"
+        if not src_file.exists():
+            raise FileNotFoundError(f"OTEL helper source not found: {src_file}")
+
+        console.print(f"[yellow]Building OTEL helper for {platform_name} {arch or ''} with PyInstaller...[/yellow]")
+
+        # Check if we need to use x86_64 Python for Intel builds on macOS
+        use_x86_python = False
+        x86_venv_path = Path.home() / "venv-x86"
+
+        if platform_name == "macos" and arch == "x86_64" and platform.machine().lower() == "arm64":
+            # On ARM Mac building Intel binary - check for x86_64 environment
+            if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
+                use_x86_python = True
+                console.print("[dim]Using x86_64 Python environment for Intel OTEL helper build[/dim]")
+            else:
+                console.print("[yellow]Warning: x86_64 Python environment not found at ~/venv-x86[/yellow]")
+                console.print("[yellow]Skipping Intel OTEL helper build[/yellow]")
+                # For OTEL helper, we can skip if not available (it's optional)
+                return output_dir / binary_name  # Return expected path even if not built
+
+        # Build PyInstaller command
+        if use_x86_python:
+            # Use x86_64 Python environment
+            cmd = [
+                "arch",
+                "-x86_64",
+                str(x86_venv_path / "bin" / "pyinstaller"),
+                "--onefile",
+                "--clean",
+                "--noconfirm",
+                f"--name={binary_name}",
+                f"--distpath={str(output_dir)}",
+                "--workpath=/tmp/pyinstaller-x86",
+                "--specpath=/tmp/pyinstaller-x86",
+                "--log-level=WARN",
+                str(src_file),
+            ]
+        else:
+            # Use regular Poetry environment
+            cmd = [
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
+                f"--name={binary_name}",
+                f"--distpath={str(output_dir)}",
+                "--workpath=/tmp/pyinstaller",
+                "--specpath=/tmp/pyinstaller",
+                "--log-level=WARN",
+                str(src_file),
+            ]
+
+        # Add target architecture for macOS (only for regular Poetry environment)
+        if not use_x86_python and platform_name == "macos" and arch:
+            cmd.insert(5, f"--target-arch={arch}")
+
+        # Run PyInstaller from source directory
+        source_dir = Path(__file__).parent.parent.parent.parent
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=source_dir)
+
+        if result.returncode != 0:
+            console.print(f"[red]PyInstaller build failed for OTEL helper: {result.stderr}[/red]")
+            raise RuntimeError(f"PyInstaller build failed: {result.stderr}")
+
+        binary_path = output_dir / binary_name
+        if binary_path.exists():
+            binary_path.chmod(0o755)
+            console.print(f"[green]✓ OTEL helper built successfully with PyInstaller[/green]")
+            return binary_path
+        else:
+            raise RuntimeError(f"OTEL helper binary not created: {binary_path}")
+
     def _build_native_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
         """Build OTEL helper using native Nuitka compiler."""
         import platform
 
         current_system = platform.system().lower()
         current_machine = platform.machine().lower()
-        
+
         # Determine the binary name based on platform and architecture
         if target_platform == "macos":
             # Check if user requested a specific variant via environment variable
             macos_variant = os.environ.get("CCWB_MACOS_VARIANT", "").lower()
-            
+
             if macos_variant == "intel":
                 platform_variant = "intel"
                 binary_name = "otel-helper-macos-intel"
@@ -1144,7 +1321,7 @@ RUN python -m nuitka \
             binary_name = "otel-helper-linux"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
-        
+
         # Check platform compatibility (same as credential-process)
         current_platform_str = f"{current_system}-{current_machine}"
         if target_platform == "macos" and current_system != "darwin":
@@ -1160,40 +1337,55 @@ RUN python -m nuitka \
 
         # Build Nuitka command (use poetry run to ensure correct Python version)
         # If building Intel binary on ARM Mac, use Rosetta
-        if (target_platform == "macos" and platform_variant == "intel" and 
-            current_system == "darwin" and current_machine == "arm64"):
+        if (
+            target_platform == "macos"
+            and platform_variant == "intel"
+            and current_system == "darwin"
+            and current_machine == "arm64"
+        ):
             cmd = [
-                "arch", "-x86_64",  # Run under Rosetta
-                "poetry", "run", "nuitka",
+                "arch",
+                "-x86_64",  # Run under Rosetta
+                "poetry",
+                "run",
+                "nuitka",
             ]
         else:
             cmd = [
-                "poetry", "run", "nuitka",
+                "poetry",
+                "run",
+                "nuitka",
             ]
-        
+
         # Add common Nuitka flags
-        cmd.extend([
-            "--standalone",
-            "--onefile",
-            "--assume-yes-for-downloads",
-            f"--output-filename={binary_name}",
-            f"--output-dir={str(output_dir)}",
-            "--quiet",
-            "--remove-output",
-            "--python-flag=no_site",
-        ])
+        cmd.extend(
+            [
+                "--standalone",
+                "--onefile",
+                "--assume-yes-for-downloads",
+                f"--output-filename={binary_name}",
+                f"--output-dir={str(output_dir)}",
+                "--quiet",
+                "--remove-output",
+                "--python-flag=no_site",
+            ]
+        )
 
         # Add platform-specific flags
         if target_platform == "macos":
-            cmd.extend([
-                "--macos-create-app-bundle",
-                "--macos-app-name=Claude Code OTEL Helper",
-                "--disable-console",
-            ])
+            cmd.extend(
+                [
+                    "--macos-create-app-bundle",
+                    "--macos-app-name=Claude Code OTEL Helper",
+                    "--disable-console",
+                ]
+            )
         elif target_platform == "linux":
-            cmd.extend([
-                "--linux-onefile-icon=NONE",
-            ])
+            cmd.extend(
+                [
+                    "--linux-onefile-icon=NONE",
+                ]
+            )
 
         # Add the source file
         cmd.append(str(src_file))
@@ -1240,33 +1432,33 @@ RUN python -m nuitka \
     def _detect_provider_type(self, domain: str) -> str:
         """Auto-detect provider type from domain."""
         from urllib.parse import urlparse
-        
+
         if not domain:
             return "oidc"
-        
+
         # Handle both full URLs and domain-only inputs
-        url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
-        
+        url_to_parse = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+
         try:
             parsed = urlparse(url_to_parse)
             hostname = parsed.hostname
-            
+
             if not hostname:
                 return "oidc"
-            
+
             hostname_lower = hostname.lower()
-            
+
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
-            if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+            if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
                 return "okta"
-            elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+            elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
-            elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+            elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                 return "azure"
-            elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+            elif hostname_lower.endswith(".windows.net") or hostname_lower == "windows.net":
                 return "azure"
-            elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+            elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 return "cognito"
             else:
                 return "oidc"  # Default to generic OIDC
@@ -1369,12 +1561,18 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 fi
 
 # Copy Claude Code settings if present
-if [ -d ".claude" ]; then
+if [ -d "claude-settings" ]; then
     echo
     echo "Installing Claude Code settings..."
     mkdir -p ~/.claude
-    cp -f .claude/settings.json ~/.claude/settings.json 2>/dev/null || true
-    echo "✓ Claude Code telemetry configured"
+    
+    # Copy settings and replace placeholder with platform-specific path
+    if [ -f "claude-settings/settings.json" ]; then
+        # Use sed to replace the placeholder with the actual path
+        sed 's|__OTEL_HELPER_PATH__|~/claude-code-with-bedrock/otel-helper|g' \
+            "claude-settings/settings.json" > ~/.claude/settings.json
+        echo "✓ Claude Code telemetry configured"
+    fi
 fi
 
 # Copy OTEL helper executable if present
@@ -1401,8 +1599,12 @@ mkdir -p ~/.aws
 # Remove old profile if exists
 sed -i.bak '/\\[profile ClaudeCode\\]/,/^$/d' ~/.aws/config 2>/dev/null || true
 
-# Get region from settings (for Bedrock calls, not infrastructure)
-REGION=$(python3 -c "import json; print(json.load(open('.claude/settings.json'))['env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+# Get region from package settings (for Bedrock calls, not infrastructure)
+if [ -f "claude-settings/settings.json" ]; then
+    REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+else
+    REGION="{profile.aws_region}"
+fi
 
 # Add new profile
 cat >> ~/.aws/config << EOF
@@ -1429,17 +1631,15 @@ echo
             f.write(installer_content)
         installer_path.chmod(0o755)
 
-        # Also create Windows installer if Windows binaries exist
-        # Check if Windows executables are present (either just built or from previous build)
-        windows_exe = output_dir / "credential-process-windows.exe"
-        if "windows" in platforms_built or windows_exe.exists():
+        # Create Windows installer only if Windows builds are enabled (CodeBuild)
+        if "windows" in platforms_built or (hasattr(profile, 'enable_codebuild') and profile.enable_codebuild):
             self._create_windows_installer(output_dir, profile)
 
         return installer_path
-    
+
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
-        
+
         installer_content = f"""@echo off
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
@@ -1490,10 +1690,16 @@ echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
 
 REM Copy Claude Code settings if they exist
-if exist ".claude" (
+if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
-    if not exist "%USERPROFILE%\\claude-code-with-bedrock\\.claude" mkdir "%USERPROFILE%\\claude-code-with-bedrock\\.claude"
-    xcopy /Y /E ".claude" "%USERPROFILE%\\claude-code-with-bedrock\\.claude\\" >nul
+    if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
+    
+    REM Copy settings and replace placeholder with Windows-specific path
+    if exist "claude-settings\\settings.json" (
+        REM Use PowerShell to replace the placeholder with forward slashes for Windows compatibility
+        powershell -Command "$path = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $path | Set-Content '%USERPROFILE%\\.claude\\settings.json'"
+        echo OK Claude Code telemetry configured
+    )
 )
 
 REM Configure AWS profile
@@ -1537,11 +1743,11 @@ echo Note: Authentication will automatically open your browser when needed.
 echo.
 pause
 """
-        
+
         installer_path = output_dir / "install.bat"
         with open(installer_path, "w", encoding="utf-8") as f:
             f.write(installer_content)
-        
+
         # Note: chmod not needed on Windows batch files
         return installer_path
 
@@ -1711,68 +1917,21 @@ Available metrics include:
             f.write(readme_content)
 
     def _create_claude_settings(self, output_dir: Path, profile):
-        """Create Claude Code settings.json with monitoring configuration."""
+        """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
 
         try:
-            # Get monitoring stack outputs directly
-            monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
-            cmd = [
-                "aws",
-                "cloudformation",
-                "describe-stacks",
-                "--stack-name",
-                monitoring_stack,
-                "--region",
-                profile.aws_region,
-                "--query",
-                "Stacks[0].Outputs",
-                "--output",
-                "json",
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                console.print("[yellow]Warning: Could not fetch monitoring stack outputs[/yellow]")
-                return
-
-            outputs = json.loads(result.stdout)
-            endpoint = None
-
-            for output in outputs:
-                if output["OutputKey"] == "CollectorEndpoint":
-                    endpoint = output["OutputValue"]
-                    break
-
-            if not endpoint:
-                console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
-                return
-
-            # Create .claude directory
-            claude_dir = output_dir / ".claude"
+            # Create claude-settings directory (visible, not hidden)
+            claude_dir = output_dir / "claude-settings"
             claude_dir.mkdir(exist_ok=True)
 
-            # Determine if we're using HTTPS
-            is_https = endpoint.startswith("https://")
-
-            # Check if token authentication is required
-            is_secured = is_https
-
-            # Create settings.json
+            # Start with basic settings required for Bedrock
             settings = {
                 "env": {
-                    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-                    "OTEL_METRICS_EXPORTER": "otlp",
-                    "OTEL_LOGS_EXPORTER": "otlp",
-                    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-                    "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                     # Set AWS_REGION based on cross-region profile for correct Bedrock endpoint
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     "CLAUDE_CODE_USE_BEDROCK": "1",
                     "AWS_PROFILE": "ClaudeCode",
-                    # Add basic OTEL resource attributes for multi-team support
-                    # These can be overridden by environment variables
-                    "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
                 }
             }
 
@@ -1790,27 +1949,69 @@ Available metrics include:
                     # For other models, use same model as small/fast (or could use Haiku)
                     settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = profile.selected_model
 
-            # Add the helper executable for generating OTEL headers with user attributes
-            # The helper extracts user info from JWT and sends as HTTP headers
-            # The OTEL collector will extract these headers to resource attributes
-            # Use platform-appropriate path format (don't expand on build machine)
-            # Check if Windows executables exist in the package to determine target platform
-            if (output_dir / "credential-process-windows.exe").exists():
-                # Windows package - use Windows path format with .exe
-                settings["otelHeadersHelper"] = "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe"
-            else:
-                # Unix package - use Unix path format
-                settings["otelHeadersHelper"] = "~/claude-code-with-bedrock/otel-helper"
+            # If monitoring is enabled, add telemetry configuration
+            if profile.monitoring_enabled:
+                # Get monitoring stack outputs
+                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
+                cmd = [
+                    "aws",
+                    "cloudformation",
+                    "describe-stacks",
+                    "--stack-name",
+                    monitoring_stack,
+                    "--region",
+                    profile.aws_region,
+                    "--query",
+                    "Stacks[0].Outputs",
+                    "--output",
+                    "json",
+                ]
 
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    outputs = json.loads(result.stdout)
+                    endpoint = None
+
+                    for output in outputs:
+                        if output["OutputKey"] == "CollectorEndpoint":
+                            endpoint = output["OutputValue"]
+                            break
+
+                    if endpoint:
+                        # Add monitoring configuration
+                        settings["env"].update({
+                            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                            "OTEL_METRICS_EXPORTER": "otlp",
+                            "OTEL_LOGS_EXPORTER": "otlp",
+                            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                            "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+                            # Add basic OTEL resource attributes for multi-team support
+                            "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
+                        })
+
+                        # Add the helper executable for generating OTEL headers with user attributes
+                        # Use a placeholder that will be replaced by the installer script based on platform
+                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+
+                        is_https = endpoint.startswith("https://")
+                        console.print(
+                            f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]"
+                        )
+                        if not is_https:
+                            console.print("[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]")
+                    else:
+                        console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
+                else:
+                    console.print("[yellow]Warning: Could not fetch monitoring stack outputs[/yellow]")
+
+            # Save settings.json
             settings_path = claude_dir / "settings.json"
             with open(settings_path, "w") as f:
                 json.dump(settings, f, indent=2)
 
             console.print(
-                f"[dim]Created Claude Code settings with {'HTTPS' if is_https else 'HTTP'} monitoring endpoint[/dim]"
+                f"[dim]Created Claude Code settings for Bedrock configuration[/dim]"
             )
-            if not is_https:
-                console.print("[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]")
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")

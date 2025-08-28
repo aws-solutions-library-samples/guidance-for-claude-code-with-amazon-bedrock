@@ -266,7 +266,9 @@ class InitCommand(Command):
             from urllib.parse import urlparse
 
             # Handle both full URLs and domain-only inputs
-            url_to_parse = provider_domain if provider_domain.startswith(('http://', 'https://')) else f"https://{provider_domain}"
+            url_to_parse = (
+                provider_domain if provider_domain.startswith(("http://", "https://")) else f"https://{provider_domain}"
+            )
 
             try:
                 parsed = urlparse(url_to_parse)
@@ -277,15 +279,15 @@ class InitCommand(Command):
 
                     # Check for exact domain match or subdomain match
                     # Using endswith with leading dot prevents bypass attacks
-                    if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                    if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
                         provider_type = "okta"
-                    elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                    elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                         provider_type = "auth0"
-                    elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                    elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                         provider_type = "azure"
-                    elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+                    elif hostname_lower.endswith(".windows.net") or hostname_lower == "windows.net":
                         provider_type = "azure"
-                    elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+                    elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                         provider_type = "cognito"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
@@ -410,10 +412,16 @@ class InitCommand(Command):
             # Save progress
             progress.save_step("aws_complete", config)
 
-        # Monitoring
+        # Optional Features Configuration
         if not skip_monitoring:
+            console.print("\n[bold cyan]Optional Features Configuration[/bold cyan]")
+            console.print("─" * 40)
+
+            # Monitoring
+            console.print("\n[bold]Monitoring and Usage Dashboards[/bold]")
+            console.print("Track Claude Code usage, costs, and performance metrics in CloudWatch")
             enable_monitoring = questionary.confirm(
-                "Enable monitoring and usage dashboards?", default=config.get("monitoring", {}).get("enabled", True)
+                "Enable monitoring?", default=config.get("monitoring", {}).get("enabled", True)
             ).ask()
 
             config["monitoring"] = {"enabled": enable_monitoring}
@@ -457,11 +465,9 @@ class InitCommand(Command):
 
                 # Analytics configuration (only if monitoring is enabled)
                 console.print("\n[bold]Analytics Pipeline[/bold]")
-                console.print("The analytics pipeline enables advanced user metrics and reporting through AWS Athena.")
-                console.print("This allows you to track user-specific token usage without hard-coding user IDs.")
-
+                console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
                 enable_analytics = questionary.confirm(
-                    "Enable analytics pipeline (Kinesis Firehose + Athena)?",
+                    "Enable analytics?",
                     default=config.get("analytics", {}).get("enabled", True),
                 ).ask()
 
@@ -470,21 +476,32 @@ class InitCommand(Command):
                 if enable_analytics:
                     console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
 
-            # Save progress
+            # Save monitoring progress
             progress.save_step("monitoring_complete", config)
 
-        # Windows build support via CodeBuild
-        console.print("\n[cyan]Windows Build Support[/cyan]")
-        console.print("CodeBuild can be used to build Windows binaries (~$0.10 per build)")
+        # Additional optional features
+        console.print("\n[bold]Windows Build Support[/bold]")
+        console.print("Build Windows binaries using AWS CodeBuild")
         enable_codebuild = questionary.confirm(
-            "Enable Windows build support via AWS CodeBuild?",
-            default=config.get("codebuild", {}).get("enabled", False)
+            "Enable Windows builds?", default=config.get("codebuild", {}).get("enabled", False)
         ).ask()
-        
+
         config["codebuild"] = {"enabled": enable_codebuild}
-        
+
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
+
+        # Package distribution support
+        console.print("\n[bold]Package Distribution[/bold]")
+        console.print("Share packages via presigned URLs (S3 storage costs apply)")
+        enable_distribution = questionary.confirm(
+            "Enable distribution?", default=config.get("distribution", {}).get("enabled", False)
+        ).ask()
+
+        config["distribution"] = {"enabled": enable_distribution}
+
+        if enable_distribution:
+            console.print("[green]✓[/green] Distribution infrastructure will be deployed")
 
         # Bedrock model and cross-region configuration
         if not skip_bedrock:
@@ -741,9 +758,21 @@ class InitCommand(Command):
         console.print("\n[bold yellow]Resources to be created:[/bold yellow]")
         console.print("• Cognito Identity Pool for authentication")
         console.print("• IAM roles and policies for Bedrock access")
-        if config["monitoring"]["enabled"]:
+        if config.get("monitoring", {}).get("enabled"):
             console.print("• CloudWatch dashboards for usage monitoring")
-            console.print("• OpenTelemetry collector for metrics")
+            console.print("• OpenTelemetry collector for metrics aggregation")
+            console.print("• ECS cluster and load balancer for collector")
+            if config.get("analytics", {}).get("enabled", True):
+                console.print("• Kinesis Firehose for analytics data streaming")
+                console.print("• S3 bucket for analytics data storage")
+                console.print("• Glue catalog and Athena tables for analytics")
+        if config.get("codebuild", {}).get("enabled", False):
+            console.print("• CodeBuild project for Windows binary builds")
+            console.print("• S3 bucket for build artifacts")
+        if config.get("distribution", {}).get("enabled", False):
+            console.print("• S3 bucket for package distribution")
+            console.print("• IAM user for presigned URL generation")
+            console.print("• Secrets Manager secret for credentials")
 
         return True
 
@@ -871,6 +900,7 @@ class InitCommand(Command):
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
+            enable_distribution=config_data.get("distribution", {}).get("enabled", False),
         )
 
         config.add_profile(profile)
