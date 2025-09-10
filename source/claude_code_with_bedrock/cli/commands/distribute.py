@@ -259,7 +259,7 @@ class DistributeCommand(Command):
             try:
                 # Get CodeBuild project name from profile
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client('codebuild', region_name='us-east-1')
+                codebuild = boto3.client('codebuild', region_name=profile.aws_region)
                 
                 # List recent builds
                 response = codebuild.list_builds_for_project(
@@ -296,7 +296,7 @@ class DistributeCommand(Command):
             # First check for any completed builds
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client('codebuild', region_name='us-east-1')
+                codebuild = boto3.client('codebuild', region_name=profile.aws_region)
                 
                 # List recent builds
                 response = codebuild.list_builds_for_project(
@@ -338,7 +338,7 @@ class DistributeCommand(Command):
                     
                     # Check build status
                     try:
-                        codebuild = boto3.client('codebuild', region_name='us-east-1')
+                        codebuild = boto3.client('codebuild', region_name=profile.aws_region)
                         response = codebuild.batch_get_builds(ids=[build_info['build_id']])
                         if response.get('builds'):
                             build = response['builds'][0]

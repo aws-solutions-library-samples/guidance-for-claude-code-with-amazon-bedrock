@@ -308,7 +308,15 @@ class PackageCommand(Command):
                     console.print(f"[dim]Checking latest build: {build_id}[/dim]")
 
             # Get build status from CodeBuild
-            codebuild = boto3.client("codebuild", region_name="us-east-1")  # Windows builds are in us-east-1
+            # Load profile to get the correct region
+            config = Config.load()
+            profile_name = self.option("profile")
+            profile = config.get_profile(profile_name)
+            if not profile:
+                console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
+                return 1
+            
+            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -1023,7 +1031,7 @@ RUN pyinstaller \
 
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name="us-east-1")
+                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")

@@ -62,7 +62,7 @@ class BuildsCommand(Command):
                     return 1
             
             # Get builds from CodeBuild
-            codebuild = boto3.client('codebuild', region_name='us-east-1')
+            codebuild = boto3.client('codebuild', region_name=profile.aws_region)
             limit = int(self.option("limit"))
             
             # List builds for project
@@ -173,7 +173,7 @@ class BuildsCommand(Command):
                         # If it's a short ID (like from the table), find the full UUID
                         if len(build_id) == 8:
                             # List recent builds to find the matching one
-                            codebuild = boto3.client('codebuild', region_name='us-east-1')
+                            codebuild = boto3.client('codebuild', region_name=profile.aws_region)
                             response = codebuild.list_builds_for_project(
                                 projectName=project_name,
                                 sortOrder='DESCENDING'
@@ -195,7 +195,15 @@ class BuildsCommand(Command):
                             build_id = f"{project_name}:{build_id}"
             
             # Get build status from CodeBuild
-            codebuild = boto3.client('codebuild', region_name='us-east-1')
+            # Need to get profile to determine region
+            from ...config import Config
+            config = Config.load()
+            profile = config.get_profile("default")
+            if not profile:
+                console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
+                return 1
+            
+            codebuild = boto3.client('codebuild', region_name=profile.aws_region)
             response = codebuild.batch_get_builds(ids=[build_id])
             
             if not response.get('builds'):
