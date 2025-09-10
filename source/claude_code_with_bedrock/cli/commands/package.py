@@ -667,7 +667,14 @@ class PackageCommand(Command):
     def _build_linux_pyinstaller(self, output_dir: Path) -> Path:
         """Build Linux executable using PyInstaller."""
         console = Console()
-        binary_name = "credential-process-linux"
+        
+        # Detect architecture and set appropriate binary name
+        import platform
+        machine = platform.machine().lower()
+        if machine in ['aarch64', 'arm64']:
+            binary_name = "credential-process-linux-arm64"
+        else:
+            binary_name = "credential-process-linux-x64"
 
         # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
@@ -1212,7 +1219,13 @@ RUN pyinstaller \
             else:
                 binary_name = "otel-helper-macos"
         elif platform_name == "linux":
-            binary_name = "otel-helper-linux"
+            # Detect architecture and set appropriate binary name
+            import platform
+            machine = platform.machine().lower()
+            if machine in ['aarch64', 'arm64']:
+                binary_name = "otel-helper-linux-arm64"
+            else:
+                binary_name = "otel-helper-linux-x64"
         else:
             raise ValueError(f"Unsupported platform for OTEL helper: {platform_name}")
 
