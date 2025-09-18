@@ -53,73 +53,84 @@ aws cloudformation deploy \
 1. Navigate to the Athena console URL provided in the stack outputs
 2. Select the workgroup created by the stack (e.g., `claude-code-analytics-workgroup`)
 3. Select the database (e.g., `claude_code_analytics_analytics`)
+4. Access the saved queries from the "Saved queries" tab in the Athena console
 
-### Sample Queries
+### Pre-Built Named Queries
 
-The stack creates several named queries that you can use as starting points:
+The stack automatically creates 10 named queries associated with your workgroup. These queries provide comprehensive analytics capabilities:
 
-#### Top Users by Token Usage (Last 7 Days)
+#### 1. Top Users by Token Usage
+Identifies your top 10 users by token consumption over the last 7 days, including user email, organization, session count, and estimated costs.
 
-```sql
-WITH user_totals AS (
-    SELECT
-        user_id,
-        SUM(token_usage) as total_tokens,
-        COUNT(DISTINCT session_id) as session_count,
-        COUNT(DISTINCT DATE(from_unixtime(timestamp/1000))) as active_days
-    FROM metrics
-    WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
-        AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
-    GROUP BY user_id
-)
-SELECT
-    SUBSTR(user_id, 1, 8) || '...' as user_id_short,
-    total_tokens,
-    session_count,
-    active_days,
-    ROUND(total_tokens * 0.000015, 2) as estimated_cost_usd
-FROM user_totals
-ORDER BY total_tokens DESC
-LIMIT 10;
-```
+**Use Case:** Understand who your power users are and track usage patterns.
 
-#### Token Usage by Model
+#### 2. Token Usage by Model and Type
+Analyzes token usage patterns across different models (Opus, Sonnet, Haiku) and token types (input/output) with cost estimates.
 
-```sql
-SELECT
-    model,
-    type as token_type,
-    SUM(token_usage) as total_tokens,
-    COUNT(DISTINCT user_id) as unique_users,
-    ROUND(SUM(token_usage) * 0.000015, 2) as estimated_cost_usd
-FROM metrics
-WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
-    AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
-GROUP BY model, type
-ORDER BY total_tokens DESC;
-```
+**Use Case:** Optimize model selection and understand cost distribution.
 
-#### User Activity by Hour
+#### 3. User Activity Pattern
+Shows user activity patterns by hour of day to identify peak usage times.
 
-```sql
-SELECT
-    HOUR(from_unixtime(timestamp/1000)) as hour_of_day,
-    COUNT(DISTINCT user_id) as active_users,
-    SUM(token_usage) as total_tokens
-FROM metrics
-WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
-    AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
-GROUP BY HOUR(from_unixtime(timestamp/1000))
-ORDER BY hour_of_day;
-```
+**Use Case:** Capacity planning and understanding when your users are most active.
 
-### Custom Time Ranges
+#### 4. Token Usage by Organization
+Tracks token usage across different organizations with user counts and cost attribution.
 
-To query different time ranges, modify the WHERE clause:
+**Use Case:** Organizational billing and chargeback.
+
+#### 5. Token Usage by Email Domain
+Analyzes usage patterns by email domain to understand user demographics.
+
+**Use Case:** Identify which teams or departments are using the service.
+
+#### 6. Detailed TPM and RPM Analysis
+Calculates tokens per minute (TPM) and requests per minute (RPM) metrics for rate limit monitoring.
+
+**Use Case:** Monitor API usage patterns and prevent rate limiting issues.
+
+#### 7. User Session Analysis
+Analyzes user sessions including duration, intensity, models used, and per-session costs.
+
+**Use Case:** Understand user behavior and session patterns.
+
+#### 8. Detailed Cost Attribution
+Provides precise cost calculations by user, organization, and model with cumulative tracking.
+
+**Use Case:** Accurate billing and cost management.
+
+#### 9. Peak Usage and Rate Limit Analysis
+Identifies peak usage periods and highlights when you're approaching rate limits.
+
+**Use Case:** Proactive monitoring to prevent service disruptions.
+
+#### 10. Usage Analysis by Identity Provider
+Compares usage patterns across different identity providers (Okta, Auth0, Cognito).
+
+**Use Case:** Understand usage by authentication method.
+
+### Working with the Queries
+
+Once you've selected your workgroup and database in the Athena console:
+
+1. **Access Saved Queries**: Click on the "Saved queries" tab
+2. **Load a Query**: Select any of the 10 pre-built queries to load it into the query editor
+3. **Run the Query**: Click "Run" to execute the query with your current data
+4. **Export Results**: Download results as CSV for further analysis
+
+### Customizing Queries
+
+#### Adjusting Time Ranges
+
+Modify the WHERE clause in any query to change the time range:
 
 ```sql
 -- Last 24 hours
 WHERE from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
+
+-- Last 7 days
+WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+    AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
 
 -- Last 30 days
 WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
@@ -127,6 +138,21 @@ WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
 
 -- Specific date range
 WHERE from_unixtime(timestamp/1000) BETWEEN TIMESTAMP '2024-01-01' AND TIMESTAMP '2024-01-31'
+```
+
+#### Filtering by Specific Users or Organizations
+
+Add additional WHERE conditions to focus on specific users:
+
+```sql
+-- Filter by email domain
+AND user_email LIKE '%@example.com'
+
+-- Filter by organization
+AND organization_id = 'your-org-id'
+
+-- Filter by specific model
+AND model LIKE '%opus%'
 ```
 
 ## Data Retention

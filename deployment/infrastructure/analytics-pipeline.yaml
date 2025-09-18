@@ -1,6 +1,3 @@
-# ABOUTME: This CloudFormation template creates a Kinesis Firehose data pipeline for Claude Code analytics
-# ABOUTME: It streams CloudWatch Logs to S3 in Parquet format and sets up Athena for querying user metrics
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: '( SO9610 ) Analytics pipeline for Claude Code metrics using Kinesis Firehose and Athena'
 
@@ -9,19 +6,19 @@ Parameters:
     Type: String
     Default: /aws/claude-code/metrics
     Description: CloudWatch Log Group containing Claude Code metrics
-    
+
   DataRetentionDays:
     Type: Number
     Default: 90
     Description: Number of days to retain data in S3 before archiving to Glacier
-    
+
   FirehoseBufferInterval:
     Type: Number
     Default: 900
     MinValue: 60
     MaxValue: 900
     Description: Buffer interval in seconds for Kinesis Firehose
-    
+
   DebugMode:
     Type: String
     Default: 'false'
@@ -190,13 +187,13 @@ Resources:
           import gzip
           from datetime import datetime
           import os
-          
+
           DEBUG = os.environ.get('DEBUG_MODE', 'false').lower() == 'true'
-          
+
           def lambda_handler(event, context):
               print(f"[INFO] Lambda invoked with request ID: {context.aws_request_id}")
               print(f"[INFO] Number of records received: {len(event.get('records', []))}")
-              
+
               if DEBUG:
                   # Log first record structure for debugging
                   if event.get('records'):
@@ -208,18 +205,18 @@ Resources:
                           print(f"[DEBUG] First 500 chars of decoded data: {decoded_data[:500]}")
                       except Exception as e:
                           print(f"[DEBUG] Error decoding first record: {str(e)}")
-              
+
               output = []
               processed_count = 0
               dropped_count = 0
               error_count = 0
               metrics_found_total = 0
-              
+
               for idx, record in enumerate(event.get('records', [])):
                   try:
                       # Decode the data
                       compressed_payload = base64.b64decode(record['data'])
-                      
+
                       # Try to decompress - CloudWatch Logs data is gzipped
                       try:
                           uncompressed_payload = gzip.decompress(compressed_payload)
@@ -230,7 +227,7 @@ Resources:
                           uncompressed_payload = compressed_payload
                           if DEBUG and idx < 3:
                               print(f"[DEBUG] Record {idx} not gzipped, using raw data")
-                      
+
                       # Try to parse as JSON
                       try:
                           log_data = json.loads(uncompressed_payload)
@@ -241,7 +238,7 @@ Resources:
                           log_data = uncompressed_payload.decode('utf-8')
                           if DEBUG and idx < 3:
                               print(f"[DEBUG] Record {idx} as string: {log_data[:500]}")
-                      
+
                       # Handle control messages
                       if isinstance(log_data, dict) and log_data.get('messageType') == 'CONTROL_MESSAGE':
                           if DEBUG:
@@ -252,18 +249,18 @@ Resources:
                           })
                           dropped_count += 1
                           continue
-                      
+
                       # Handle CloudWatch Logs format
                       if isinstance(log_data, dict) and log_data.get('messageType') == 'DATA_MESSAGE' and 'logEvents' in log_data:
                           if DEBUG:
                               print(f"[DEBUG] Record {idx} is DATA_MESSAGE with {len(log_data.get('logEvents', []))} log events")
-                          
+
                           metrics_found = []
-                          
+
                           for log_event in log_data.get('logEvents', []):
                               try:
                                   message = json.loads(log_event.get('message', '{}'))
-                                  
+
                                   if 'claude_code.token.usage' in message:
                                       transformed = {
                                           'timestamp': log_event.get('timestamp', 0),
@@ -283,7 +280,7 @@ Resources:
                               except Exception as e:
                                   if DEBUG:
                                       print(f"[DEBUG] Error processing log event: {str(e)}")
-                          
+
                           if metrics_found:
                               combined_data = '\n'.join(json.dumps(m) for m in metrics_found)
                               output.append({
@@ -302,7 +299,7 @@ Resources:
                               dropped_count += 1
                               if DEBUG:
                                   print(f"[DEBUG] Record {idx} dropped - no metrics found")
-                      
+
                       # Handle direct metric format (not wrapped in CloudWatch Logs format)
                       elif isinstance(log_data, str):
                           # Try to parse each line as JSON
@@ -333,7 +330,7 @@ Resources:
                               except Exception as e:
                                   if DEBUG:
                                       print(f"[DEBUG] Error parsing line as JSON: {str(e)}")
-                          
+
                           if metrics_found:
                               combined_data = '\n'.join(json.dumps(m) for m in metrics_found)
                               output.append({
@@ -357,7 +354,7 @@ Resources:
                               'result': 'Dropped'
                           })
                           dropped_count += 1
-                          
+
                   except Exception as e:
                       print(f"[ERROR] Error processing record {idx}: {str(e)}")
                       if DEBUG:
@@ -368,9 +365,9 @@ Resources:
                           'result': 'ProcessingFailed'
                       })
                       error_count += 1
-              
+
               print(f"[INFO] Processing complete - Processed: {processed_count}, Dropped: {dropped_count}, Errors: {error_count}, Total Metrics: {metrics_found_total}")
-              
+
               return {'records': output}
 
   # Kinesis Data Firehose
@@ -383,7 +380,7 @@ Resources:
         BucketARN: !GetAtt AnalyticsBucket.Arn
         Prefix: 'data/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/'
         ErrorOutputPrefix: 'error/'
-        CompressionFormat: UNCOMPRESSED  # Parquet handles its own compression
+        CompressionFormat: UNCOMPRESSED # Parquet handles its own compression
         BufferingHints:
           SizeInMBs: 128
           IntervalInSeconds: !Ref FirehoseBufferInterval
@@ -413,7 +410,8 @@ Resources:
     Type: AWS::Logs::SubscriptionFilter
     Properties:
       LogGroupName: !Ref MetricsLogGroup
-      FilterPattern: ''  # Empty pattern sends all logs
+      FilterName: !Sub '${AWS::StackName}-subscription-filter'
+      FilterPattern: '' # Empty pattern sends all logs
       DestinationArn: !GetAtt MetricsFirehose.Arn
       RoleArn: !GetAtt LogsRole.Arn
 
@@ -508,23 +506,26 @@ Resources:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Top Users by Token Usage
       Description: Find top 10 users by token consumption in the last 7 days with user identity attribution
       QueryString: !Sub |
         WITH user_totals AS (
-            SELECT 
+            SELECT
                 user_id,
                 user_email,
                 organization_id,
                 SUM(token_usage) as total_tokens,
                 COUNT(DISTINCT session_id) as session_count,
-                COUNT(DISTINCT DATE(from_unixtime(timestamp/1000))) as active_days
+                COUNT(DISTINCT CAST(from_unixtime(timestamp/1000) AS DATE)) as active_days
             FROM "${GlueDatabase}".metrics
-            WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+            WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+                AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                              LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'))
                 AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
             GROUP BY user_id, user_email, organization_id
         )
-        SELECT 
+        SELECT
             user_email,
             organization_id,
             SUBSTR(user_id, 1, 8) || '...' as user_id_short,
@@ -540,10 +541,11 @@ Resources:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Token Usage by Model and Type
       Description: Analyze token usage patterns by model and token type
       QueryString: !Sub |
-        SELECT 
+        SELECT
             model,
             type as token_type,
             organization_id,
@@ -553,7 +555,10 @@ Resources:
             COUNT(DISTINCT session_id) as total_sessions,
             ROUND(SUM(token_usage) * 0.000015, 2) as estimated_cost_usd
         FROM "${GlueDatabase}".metrics
-        WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+        WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
         GROUP BY model, type, organization_id
         ORDER BY total_tokens DESC;
@@ -562,10 +567,11 @@ Resources:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: User Activity Pattern
       Description: Analyze user activity patterns by hour of day
       QueryString: !Sub |
-        SELECT 
+        SELECT
             HOUR(from_unixtime(timestamp/1000)) as hour_of_day,
             COUNT(DISTINCT user_id) as active_users,
             COUNT(DISTINCT user_email) as active_emails,
@@ -573,19 +579,22 @@ Resources:
             SUM(token_usage) as total_tokens,
             AVG(token_usage) as avg_tokens_per_request
         FROM "${GlueDatabase}".metrics
-        WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+        WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
         GROUP BY HOUR(from_unixtime(timestamp/1000))
         ORDER BY hour_of_day;
-        
+
   OrganizationUsageQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Token Usage by Organization
       Description: Analyze token usage across different organizations
       QueryString: !Sub |
-        SELECT 
+        SELECT
             organization_id,
             COUNT(DISTINCT user_id) as unique_users,
             COUNT(DISTINCT user_email) as unique_emails,
@@ -595,31 +604,38 @@ Resources:
             SUM(token_usage) as total_tokens,
             ROUND(SUM(token_usage) * 0.000015, 2) as estimated_cost_usd
         FROM "${GlueDatabase}".metrics
-        WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+        WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
         GROUP BY organization_id
         ORDER BY total_tokens DESC;
-        
+
   EmailDomainUsageQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Token Usage by Email Domain
       Description: Analyze token usage by email domain (extracted from user.email)
       QueryString: !Sub |
         WITH email_domains AS (
-          SELECT 
+          SELECT
             user_id,
             user_email,
-            REGEXP_EXTRACT(user_email, '@([^@]+)$', 1) as email_domain,
+            regexp_extract(user_email, '@([^@]+)$', 1) as email_domain,
             token_usage
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
             AND user_email IS NOT NULL
             AND user_email <> ''
         )
-        SELECT 
+        SELECT
           email_domain,
           COUNT(DISTINCT user_id) as unique_users,
           COUNT(DISTINCT user_email) as unique_emails,
@@ -628,17 +644,18 @@ Resources:
         FROM email_domains
         GROUP BY email_domain
         ORDER BY total_tokens DESC;
-        
+
   TPMAnalysisQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Detailed TPM and RPM Analysis
       Description: Calculate tokens per minute and requests per minute by user and model
       QueryString: !Sub |
         WITH minute_metrics AS (
-          SELECT 
-            DATE_TRUNC('minute', from_unixtime(timestamp/1000)) as minute,
+          SELECT
+            date_trunc('minute', from_unixtime(timestamp/1000)) as minute,
             user_email,
             user_id,
             organization_id,
@@ -646,16 +663,18 @@ Resources:
             SUM(token_usage) as tokens_per_minute,
             COUNT(*) as requests_per_minute
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
-          GROUP BY 
-            DATE_TRUNC('minute', from_unixtime(timestamp/1000)),
+          GROUP BY
+            date_trunc('minute', from_unixtime(timestamp/1000)),
             user_email,
             user_id,
             organization_id,
             model
         )
-        SELECT 
+        SELECT
           minute,
           user_email,
           organization_id,
@@ -667,16 +686,17 @@ Resources:
         FROM minute_metrics
         ORDER BY minute DESC, tokens_per_minute DESC
         LIMIT 1000;
-        
+
   UserSessionAnalysisQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: User Session Analysis
       Description: Analyze user sessions with duration and intensity metrics
       QueryString: !Sub |
         WITH session_metrics AS (
-          SELECT 
+          SELECT
             session_id,
             user_email,
             user_id,
@@ -688,40 +708,44 @@ Resources:
             COUNT(DISTINCT model) as models_used,
             AVG(token_usage) as avg_tokens_per_call
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
             AND session_id IS NOT NULL
             AND session_id <> ''
           GROUP BY session_id, user_email, user_id, organization_id
         )
-        SELECT 
+        SELECT
           user_email,
           organization_id,
           session_id,
           session_start,
           session_end,
-          DATE_DIFF('minute', session_start, session_end) as session_duration_minutes,
+          date_diff('minute', session_start, session_end) as session_duration_minutes,
           total_tokens,
           api_calls,
           models_used,
           ROUND(avg_tokens_per_call, 2) as avg_tokens_per_call,
-          ROUND(total_tokens / GREATEST(DATE_DIFF('minute', session_start, session_end), 1), 2) as tokens_per_minute,
+          ROUND(total_tokens / greatest(date_diff('minute', session_start, session_end), 1), 2) as tokens_per_minute,
           ROUND(total_tokens * 0.000015, 4) as session_cost_usd
         FROM session_metrics
-        WHERE DATE_DIFF('minute', session_start, session_end) > 0
+        WHERE date_diff('minute', session_start, session_end) > 0
         ORDER BY total_tokens DESC
         LIMIT 100;
-        
+
   CostAttributionQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Detailed Cost Attribution
       Description: Calculate costs by user, organization, and model with hourly breakdown
       QueryString: !Sub |
         WITH hourly_costs AS (
-          SELECT 
-            DATE_TRUNC('hour', from_unixtime(timestamp/1000)) as hour,
+          SELECT
+            date_trunc('hour', from_unixtime(timestamp/1000)) as hour,
             user_email,
             user_id,
             organization_id,
@@ -729,7 +753,7 @@ Resources:
             type as token_type,
             SUM(token_usage) as tokens,
             -- Approximate pricing per million tokens
-            CASE 
+            CASE
               WHEN model LIKE '%opus-4-1%' THEN 15.00
               WHEN model LIKE '%opus-4%' THEN 15.00
               WHEN model LIKE '%sonnet-4%' THEN 3.00
@@ -738,17 +762,20 @@ Resources:
               ELSE 3.00
             END as price_per_million
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
-          GROUP BY 
-            DATE_TRUNC('hour', from_unixtime(timestamp/1000)),
+          GROUP BY
+            date_trunc('hour', from_unixtime(timestamp/1000)),
             user_email,
             user_id,
             organization_id,
             model,
             type
         )
-        SELECT 
+        SELECT
           hour,
           user_email,
           organization_id,
@@ -761,44 +788,47 @@ Resources:
           SUM(ROUND(tokens * price_per_million / 1000000, 4)) OVER (PARTITION BY user_email ORDER BY hour) as cumulative_cost_usd
         FROM hourly_costs
         ORDER BY hour DESC, cost_usd DESC;
-        
+
   PeakUsageAnalysisQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Peak Usage and Rate Limit Analysis
       Description: Identify peak usage periods and potential rate limit issues
       QueryString: !Sub |
         WITH minute_usage AS (
-          SELECT 
-            DATE_TRUNC('minute', from_unixtime(timestamp/1000)) as minute,
+          SELECT
+            date_trunc('minute', from_unixtime(timestamp/1000)) as minute,
             user_email,
             model,
             SUM(token_usage) as tpm,
             COUNT(*) as rpm
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '7' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '7' DAY
-          GROUP BY 
-            DATE_TRUNC('minute', from_unixtime(timestamp/1000)),
+          GROUP BY
+            date_trunc('minute', from_unixtime(timestamp/1000)),
             user_email,
             model
         ),
         peak_minutes AS (
-          SELECT 
+          SELECT
             minute,
             user_email,
             model,
             tpm,
             rpm,
             -- Anthropic rate limits (approximate)
-            CASE 
+            CASE
               WHEN model LIKE '%opus%' THEN 40000
               WHEN model LIKE '%sonnet%' THEN 80000
               WHEN model LIKE '%haiku%' THEN 100000
               ELSE 80000
             END as tpm_limit,
-            CASE 
+            CASE
               WHEN model LIKE '%opus%' THEN 50
               WHEN model LIKE '%sonnet%' THEN 100
               WHEN model LIKE '%haiku%' THEN 100
@@ -806,7 +836,7 @@ Resources:
             END as rpm_limit
           FROM minute_usage
         )
-        SELECT 
+        SELECT
           minute,
           user_email,
           model,
@@ -816,29 +846,30 @@ Resources:
           rpm_limit,
           ROUND(100.0 * tpm / tpm_limit, 2) as tpm_utilization_pct,
           ROUND(100.0 * rpm / rpm_limit, 2) as rpm_utilization_pct,
-          CASE 
+          CASE
             WHEN tpm >= tpm_limit * 0.9 OR rpm >= rpm_limit * 0.9 THEN 'HIGH_RISK'
             WHEN tpm >= tpm_limit * 0.7 OR rpm >= rpm_limit * 0.7 THEN 'MEDIUM_RISK'
             ELSE 'LOW_RISK'
           END as rate_limit_risk
         FROM peak_minutes
         WHERE tpm > 0 OR rpm > 0
-        ORDER BY GREATEST(tpm_utilization_pct, rpm_utilization_pct) DESC
+        ORDER BY greatest(tpm_utilization_pct, rpm_utilization_pct) DESC
         LIMIT 100;
-        
+
   IdentityProviderUsageQuery:
     Type: AWS::Athena::NamedQuery
     Properties:
       Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
       Name: Usage Analysis by Identity Provider
       Description: Compare usage patterns across different identity providers
       QueryString: !Sub |
         WITH user_providers AS (
-          SELECT 
+          SELECT
             user_id,
             user_email,
             -- Simple heuristic to guess IdP from email patterns or org structure
-            CASE 
+            CASE
               WHEN user_email LIKE '%okta%' THEN 'Okta'
               WHEN user_email LIKE '%auth0%' THEN 'Auth0'
               WHEN user_email LIKE '%amazonaws.com' THEN 'Cognito'
@@ -848,10 +879,13 @@ Resources:
             token_usage,
             type
           FROM "${GlueDatabase}".metrics
-          WHERE year >= YEAR(CURRENT_DATE - INTERVAL '30' DAY)
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
+                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
             AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
         )
-        SELECT 
+        SELECT
           identity_provider,
           COUNT(DISTINCT user_id) as unique_users,
           SUM(CASE WHEN type = 'input' THEN token_usage ELSE 0 END) as input_tokens,
@@ -895,25 +929,25 @@ Outputs:
     Description: Information about sample queries
     Value: !Sub |
       Enhanced queries have been created for comprehensive usage analysis:
-      
+
       **Real-Time Metrics:**
       1. "Detailed TPM and RPM Analysis" - Calculate tokens per minute and requests per minute by user and model
       2. "Peak Usage and Rate Limit Analysis" - Identify when you're approaching rate limits
-      
+
       **User Analytics:**
       3. "Top Users by Token Usage" - Find top 10 users in last 7 days with email and org attribution
       4. "User Session Analysis" - Analyze session duration, intensity, and cost metrics
       5. "Token Usage by Email Domain" - Analyze usage patterns by email domain
-      
+
       **Cost & Attribution:**
       6. "Detailed Cost Attribution" - Calculate precise costs by user, org, and model with cumulative tracking
       7. "Token Usage by Organization" - Track token usage across organizations
-      
+
       **Usage Patterns:**
       8. "Token Usage by Model and Type" - Analyze usage by model and token type with org context
       9. "User Activity Pattern" - Show activity patterns by hour of day
       10. "Usage Analysis by Identity Provider" - Compare usage between Okta, Auth0, and Cognito
-      
+
       These queries help you:
       - Track real-time TPM/RPM for rate limit monitoring
       - Identify heavy users and usage spikes

@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code quota monitoring stack for per-user token limits and alerts'
+
+Parameters:
+  MonthlyTokenLimit:
+    Type: Number
+    Default: 300000000
+    Description: Monthly token limit per user (default 300M tokens)
+    MinValue: 1000000
+    MaxValue: 1000000000
+
+  MetricsTableArn:
+    Type: String
+    Description: ARN of the ClaudeCodeMetrics table from the dashboard stack
+
+  WarningThreshold80:
+    Type: Number
+    Default: 240000000
+    Description: Warning threshold at 80% (calculated automatically)
+
+  WarningThreshold90:
+    Type: Number
+    Default: 270000000
+    Description: Warning threshold at 90% (calculated automatically)
+
+  MetricsAggregatorRoleName:
+    Type: String
+    Description: Name of the MetricsAggregatorRole from the dashboard stack
+
+Resources:
+  # DynamoDB table for user quota tracking
+  UserQuotaMetrics:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UserQuotaMetrics
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: UserQuotaMetrics
+        - Key: Purpose
+          Value: User quota monitoring and alerts
+
+  # SNS Topic for quota alerts
+  QuotaAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: claude-code-quota-alerts
+      DisplayName: Claude Code Quota Alerts
+      Tags:
+        - Key: Name
+          Value: ClaudeCodeQuotaAlerts
+        - Key: Purpose
+          Value: Quota monitoring notifications
+
+  # IAM Role for Quota Monitor Lambda
+  QuotaMonitorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QuotaMonitorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource:
+                  - !Ref MetricsTableArn
+                  - !GetAtt UserQuotaMetrics.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref QuotaAlertTopic
+
+  # Lambda function for quota monitoring
+  QuotaMonitorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: claude-code-quota-monitor
+      Description: Monitors user token usage and sends alerts when quotas are exceeded
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt QuotaMonitorRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          QUOTA_TABLE: !Ref UserQuotaMetrics
+          SNS_TOPIC_ARN: !Ref QuotaAlertTopic
+          MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
+          WARNING_THRESHOLD_80: !Ref WarningThreshold80
+          WARNING_THRESHOLD_90: !Ref WarningThreshold90
+      Code: ./lambda-functions/quota_monitor/
+
+  # EventBridge Rule to run quota monitor every 15 minutes
+  QuotaMonitorScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: claude-code-quota-monitor-schedule
+      Description: Trigger quota monitoring every 15 minutes
+      ScheduleExpression: rate(15 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt QuotaMonitorFunction.Arn
+          Id: QuotaMonitorTarget
+
+  # Permission for EventBridge to invoke the Lambda
+  QuotaMonitorSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QuotaMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt QuotaMonitorScheduleRule.Arn
+
+  # Grant MetricsAggregator permissions to write to quota table
+  MetricsAggregatorQuotaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: MetricsAggregatorQuotaAccess
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:GetItem
+            Resource:
+              - !GetAtt UserQuotaMetrics.Arn
+      Roles:
+        - !Ref MetricsAggregatorRoleName
+
+Outputs:
+  QuotaTableName:
+    Description: Name of the UserQuotaMetrics DynamoDB table
+    Value: !Ref UserQuotaMetrics
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaTableName'
+
+  QuotaTableArn:
+    Description: ARN of the UserQuotaMetrics DynamoDB table
+    Value: !GetAtt UserQuotaMetrics.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaTableArn'
+
+  QuotaAlertTopicArn:
+    Description: SNS Topic ARN for quota alerts - subscribe to this for notifications
+    Value: !Ref QuotaAlertTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaAlertTopicArn'
+
+  QuotaMonitorFunctionArn:
+    Description: ARN of the quota monitoring Lambda function
+    Value: !GetAtt QuotaMonitorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaMonitorFunctionArn'

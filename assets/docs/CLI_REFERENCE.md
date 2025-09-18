@@ -80,7 +80,7 @@ poetry run ccwb deploy [stack] [options]
 
 **Arguments:**
 
-- `stack` - Specific stack to deploy: auth, networking, monitoring, dashboard, or analytics (optional)
+- `stack` - Specific stack to deploy: auth, networking, monitoring, dashboard, analytics, or quota (optional)
 
 **Options:**
 
@@ -102,7 +102,29 @@ poetry run ccwb deploy [stack] [options]
 3. **monitoring** - OpenTelemetry collector on ECS Fargate (optional)
 4. **dashboard** - CloudWatch dashboard for usage metrics (optional)
 5. **analytics** - Kinesis Firehose and Athena for analytics (optional)
-6. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
+6. **quota** - Per-user token quota monitoring and alerts (optional, requires dashboard)
+7. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
+
+**Examples:**
+
+```bash
+# Deploy all configured stacks
+poetry run ccwb deploy
+
+# Deploy only authentication
+poetry run ccwb deploy auth
+
+# Deploy quota monitoring (requires dashboard stack first)
+poetry run ccwb deploy quota
+
+# Show commands without executing
+poetry run ccwb deploy --show-commands
+
+# Dry run to see what would be deployed
+poetry run ccwb deploy --dry-run
+```
+
+> **Note**: Quota monitoring requires the dashboard stack to be deployed first. See [Quota Monitoring Guide](QUOTA_MONITORING.md) for detailed information.
 
 ### `test` - Test Package
 

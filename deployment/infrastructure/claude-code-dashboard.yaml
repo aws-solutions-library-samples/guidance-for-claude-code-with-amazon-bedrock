@@ -202,7 +202,8 @@ Resources:
                   - dynamodb:BatchWriteItem
                   - dynamodb:UpdateItem
                   - dynamodb:GetItem
-                Resource: !GetAtt MetricsTable.Arn
+                Resource:
+                  - !GetAtt MetricsTable.Arn
 
   MetricsAggregatorFunction:
     Type: AWS::Lambda::Function
@@ -863,3 +864,15 @@ Outputs:
   LogsInsightsURL:
     Description: URL to CloudWatch Logs Insights
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'
+
+  MetricsTableArn:
+    Description: ARN of the ClaudeCodeMetrics DynamoDB table
+    Value: !GetAtt MetricsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-MetricsTableArn'
+
+  MetricsAggregatorRoleName:
+    Description: Name of the MetricsAggregatorRole for cross-stack permissions
+    Value: !Ref MetricsAggregatorRole
+    Export:
+      Name: !Sub '${AWS::StackName}-MetricsAggregatorRoleName'

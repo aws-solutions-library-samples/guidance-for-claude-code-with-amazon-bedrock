@@ -38,6 +38,12 @@ class Profile:
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (S3 + presigned URLs)
 
+    # Quota monitoring configuration
+    quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
+    monthly_token_limit: int = 300000000  # Monthly token limit per user (300M default)
+    warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
+    warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:

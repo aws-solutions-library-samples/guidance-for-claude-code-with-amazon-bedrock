@@ -476,6 +476,40 @@ class InitCommand(Command):
                 if enable_analytics:
                     console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
 
+                # Quota monitoring configuration (only if monitoring is enabled)
+                console.print("\n[bold]Quota Monitoring[/bold]")
+                console.print("Per-user token usage limits with automated SNS alerts")
+                enable_quota_monitoring = questionary.confirm(
+                    "Enable quota monitoring?",
+                    default=config.get("quota", {}).get("enabled", False),
+                ).ask()
+
+                config["quota"] = {"enabled": enable_quota_monitoring}
+
+                if enable_quota_monitoring:
+                    console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
+
+                    # Monthly token limit
+                    monthly_limit_millions = questionary.text(
+                        "Monthly token limit per user (in millions):",
+                        default=str(config.get("quota", {}).get("monthly_limit_millions", 300)),
+                        validate=lambda x: x.isdigit() and int(x) > 0
+                    ).ask()
+
+                    monthly_limit = int(monthly_limit_millions) * 1000000
+                    warning_80 = int(monthly_limit * 0.8)
+                    warning_90 = int(monthly_limit * 0.9)
+
+                    config["quota"]["monthly_limit"] = monthly_limit
+                    config["quota"]["warning_threshold_80"] = warning_80
+                    config["quota"]["warning_threshold_90"] = warning_90
+
+                    console.print(f"[green]✓[/green] Quota monitoring configured:")
+                    console.print(f"  • Monthly limit: {monthly_limit:,} tokens per user")
+                    console.print(f"  • Warning at: {warning_80:,} tokens (80%)")
+                    console.print(f"  • Critical at: {warning_90:,} tokens (90%)")
+                    console.print(f"  • Estimated cost limit: ~${monthly_limit * 0.000015:.0f} per user per month")
+
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
 
@@ -901,6 +935,14 @@ class InitCommand(Command):
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
             enable_distribution=config_data.get("distribution", {}).get("enabled", False),
+            quota_monitoring_enabled=(
+                config_data.get("quota", {}).get("enabled", False)
+                if config_data.get("monitoring", {}).get("enabled")
+                else False
+            ),
+            monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
+            warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
+            warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
         )
 
         config.add_profile(profile)

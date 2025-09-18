@@ -32,6 +32,15 @@ Claude Code sends several metric types that the collector processes:
 - `claude_code.cost.usage` - Estimates costs based on token usage
 - `claude_code.code_edit_tool.decision` - Records code editing decisions
 
+## Usage Quota Monitoring
+
+The monitoring system supports optional quota tracking to alert administrators when users approach or exceed token usage limits. This helps manage costs and prevent unexpected overages.
+
+Quota monitoring deploys as a separate CloudFormation stack that integrates with the dashboard infrastructure. When enabled, it tracks monthly token consumption per user and sends automated alerts through Amazon SNS when usage thresholds are exceeded.
+
+> **Detailed Information**: For complete quota monitoring setup, configuration, and usage instructions, see the [Quota Monitoring Guide](QUOTA_MONITORING.md).
+
+
 ## Analytics Pipeline (Optional)
 
 Beyond real-time monitoring through CloudWatch, you can enable an analytics pipeline for advanced reporting and historical analysis. The analytics stack creates a data lake for long-term metric storage and analysis.
@@ -53,6 +62,8 @@ When prompted about monitoring, answering yes triggers additional configuration 
 The deployment creates the complete monitoring infrastructure: a VPC with public and private subnets (if not using an existing VPC), an ECS cluster and task definition for the OTEL Collector, the collector service itself, an Application Load Balancer to receive metrics, and CloudWatch log groups for storing logs and metrics.
 
 If you provide a custom domain name and hosted zone ID during setup, the system automatically provisions an ACM certificate and configures HTTPS. This ensures encrypted transmission of metrics from Claude Code to your collector.
+
+The dashboard stack creates the metrics aggregation infrastructure that supports quota monitoring. If you choose to deploy quota monitoring as a separate stack, it integrates with the dashboard's metrics table to track user consumption.
 
 ## Claude Code Configuration
 
@@ -131,3 +142,5 @@ The Application Load Balancer is internet-facing to receive metrics from Claude 
 The monitoring system provides comprehensive visibility into Claude Code usage across your organization. Deployment is automated through the `ccwb` CLI tools, creating all necessary infrastructure with minimal configuration. The OTEL Collector on ECS Fargate handles metric collection and transformation, while CloudWatch provides storage and visualization.
 
 User attribution happens automatically through the OTEL helper binary that extracts information from authentication tokens. This enables detailed usage tracking by user, department, team, and other organizational dimensions without requiring manual configuration.
+
+Quota monitoring provides proactive alerts when users approach or exceed token usage limits. The system sends detailed notifications through SNS, allowing organizations to manage costs and usage patterns effectively.

@@ -27,7 +27,7 @@ class DeployCommand(Command):
     arguments = [
         argument(
             "stack",
-            description="Specific stack to deploy (auth/networking/monitoring/dashboard/analytics)",
+            description="Specific stack to deploy (auth/networking/monitoring/dashboard/analytics/quota)",
             optional=True
         )
     ]
@@ -111,6 +111,16 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "quota":
+                if profile.monitoring_enabled:
+                    if getattr(profile, 'quota_monitoring_enabled', False):
+                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                    else:
+                        console.print("[yellow]Quota monitoring is not enabled in your configuration.[/yellow]")
+                        return 1
+                else:
+                    console.print("[yellow]Quota monitoring requires monitoring to be enabled in your configuration.[/yellow]")
+                    return 1
             elif stack_arg == "distribution":
                 if profile.enable_distribution:
                     stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
@@ -126,7 +136,7 @@ class DeployCommand(Command):
                     return 1
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, codebuild")
+                console.print("Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild")
                 return 1
         else:
             # Deploy all configured stacks
@@ -140,6 +150,9 @@ class DeployCommand(Command):
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, 'analytics_enabled', True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+                # Check if quota monitoring is enabled
+                if getattr(profile, 'quota_monitoring_enabled', False):
+                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
             # Check if CodeBuild is enabled
             if getattr(profile, 'enable_codebuild', False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -398,6 +411,33 @@ class DeployCommand(Command):
                 console.print(f"    {param} \\")
             console.print("")
 
+        elif stack_type == "quota":
+            template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
+            stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+
+            # Get MetricsTable ARN from dashboard stack (show placeholder)
+            dashboard_stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
+
+            # Build parameters for quota monitoring stack
+            monthly_limit = getattr(profile, 'monthly_token_limit', 300000000)
+            params = [
+                f"ParameterKey=MonthlyTokenLimit,ParameterValue={monthly_limit}",
+                f"ParameterKey=MetricsTableArn,ParameterValue=<ARN_FROM_DASHBOARD_STACK>",
+                f"ParameterKey=WarningThreshold80,ParameterValue={int(monthly_limit * 0.8)}",
+                f"ParameterKey=WarningThreshold90,ParameterValue={int(monthly_limit * 0.9)}"
+            ]
+
+            console.print("[dim]# Deploy quota monitoring (requires dashboard stack first)[/dim]")
+            console.print("aws cloudformation deploy \\")
+            console.print(f"  --template-file {template} \\")
+            console.print(f"  --stack-name {stack_name} \\")
+            console.print("  --capabilities CAPABILITY_IAM \\")
+            console.print(f"  --region {profile.aws_region} \\")
+            console.print("  --parameter-overrides \\")
+            for param in params:
+                console.print(f"    {param} \\")
+            console.print("")
+
         elif stack_type == "codebuild":
             template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
             stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
@@ -612,6 +652,80 @@ class DeployCommand(Command):
                     "--parameter-overrides"
                 ] + params
 
+            elif stack_type == "quota":
+                task = progress.add_task("Deploying quota monitoring...", total=None)
+
+                template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
+                stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+
+                # Get MetricsTable ARN from dashboard stack outputs
+                dashboard_stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
+                dashboard_outputs = get_stack_outputs(dashboard_stack_name, profile.aws_region)
+
+                if not dashboard_outputs or not dashboard_outputs.get('MetricsTableArn'):
+                    console.print(f"[red]Could not get MetricsTable ARN from dashboard stack {dashboard_stack_name}[/red]")
+                    console.print("[yellow]The dashboard stack must be deployed first.[/yellow]")
+                    console.print(f"Run: [cyan]ccwb deploy dashboard[/cyan]")
+                    return 1
+
+                # Get S3 bucket from networking stack for Lambda packaging
+                networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+                networking_outputs = get_stack_outputs(networking_stack, profile.aws_region)
+
+                if not networking_outputs or not networking_outputs.get('CfnArtifactsBucket'):
+                    console.print(f"[red]Could not get S3 bucket from networking stack {networking_stack}[/red]")
+                    console.print("[yellow]The networking stack must be deployed first.[/yellow]")
+                    console.print(f"Run: [cyan]ccwb deploy networking[/cyan]")
+                    return 1
+
+                # Package the template first
+                s3_bucket = networking_outputs['CfnArtifactsBucket']
+                packaged_template = f"/tmp/packaged-quota-{int(time.time())}.yaml"
+
+                package_cmd = [
+                    "aws", "cloudformation", "package",
+                    "--template-file", str(template),
+                    "--s3-bucket", s3_bucket,
+                    "--output-template-file", packaged_template,
+                    "--region", profile.aws_region
+                ]
+
+                # Run packaging
+                package_result = subprocess.run(package_cmd, capture_output=True, text=True)
+                if package_result.returncode != 0:
+                    console.print(f"[red]Failed to package quota monitoring template[/red]")
+                    console.print(f"[dim]{package_result.stderr}[/dim]")
+                    return 1
+
+                template_file = packaged_template
+
+                # Build parameters from profile configuration
+                monthly_limit = getattr(profile, 'monthly_token_limit', 300000000)
+                metrics_aggregator_role = dashboard_outputs.get('MetricsAggregatorRoleName')
+
+                if not metrics_aggregator_role:
+                    console.print(f"[yellow]Warning: Could not get MetricsAggregatorRoleName from dashboard stack[/yellow]")
+                    console.print("[yellow]The dashboard stack may need to be redeployed to export this value.[/yellow]")
+                    # Use a fallback pattern for the role name
+                    metrics_aggregator_role = f"claude-code-auth-dashboard-MetricsAggregatorRole-*"
+
+                params = [
+                    f"MonthlyTokenLimit={monthly_limit}",
+                    f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
+                    f"MetricsAggregatorRoleName={metrics_aggregator_role}",
+                    f"WarningThreshold80={int(monthly_limit * 0.8)}",
+                    f"WarningThreshold90={int(monthly_limit * 0.9)}"
+                ]
+
+                cmd = [
+                    "aws", "cloudformation", "deploy",
+                    "--template-file", template_file,
+                    "--stack-name", stack_name,
+                    "--capabilities", "CAPABILITY_IAM",
+                    "--region", profile.aws_region,
+                    "--parameter-overrides"
+                ] + params
+
             elif stack_type == "codebuild":
                 task = progress.add_task("Deploying CodeBuild for Windows builds...", total=None)
 
@@ -642,6 +756,11 @@ class DeployCommand(Command):
 
             if result.returncode == 0:
                 console.print(f"[green]✓ {stack_type} stack deployed successfully[/green]")
+
+                # For quota stack, update metrics aggregator Lambda environment variable
+                if stack_type == "quota":
+                    self._update_metrics_aggregator_env(profile, stack_name, console)
+
                 return 0
             else:
                 console.print(f"[red]✗ Failed to deploy {stack_type} stack[/red]")
@@ -794,3 +913,37 @@ class DeployCommand(Command):
                     console.print(f"• Database: [cyan]{analytics_outputs.get('AthenaDatabaseName', 'N/A')}[/cyan]")
                     console.print(f"• S3 Bucket: [cyan]{analytics_outputs.get('AnalyticsBucketName', 'N/A')}[/cyan]")
                     console.print(f"• Workgroup: [cyan]{analytics_outputs.get('AthenaWorkgroupName', 'N/A')}[/cyan]")
+
+    def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
+        """Update metrics aggregator Lambda environment variable to include quota table."""
+        try:
+            # Get the quota table name from the quota stack outputs
+            quota_outputs = get_stack_outputs(quota_stack_name, profile.aws_region)
+            if not quota_outputs or not quota_outputs.get('QuotaTableName'):
+                console.print("[yellow]Warning: Could not get quota table name from stack outputs[/yellow]")
+                return
+
+            quota_table_name = quota_outputs['QuotaTableName']
+
+            # Get the metrics aggregator function name
+            metrics_aggregator_name = "ClaudeCode-MetricsAggregator"
+
+            console.print(f"[dim]Updating {metrics_aggregator_name} environment variables...[/dim]")
+
+            # Update the Lambda function environment variables
+            cmd = [
+                "aws", "lambda", "update-function-configuration",
+                "--function-name", metrics_aggregator_name,
+                "--environment", f"Variables={{METRICS_LOG_GROUP={profile.metrics_log_group},METRICS_REGION={profile.aws_region},METRICS_TABLE=ClaudeCodeMetrics,QUOTA_TABLE={quota_table_name}}}",
+                "--region", profile.aws_region
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                console.print(f"[green]✓ Updated metrics aggregator to enable quota tracking[/green]")
+            else:
+                console.print(f"[yellow]Warning: Failed to update metrics aggregator environment variables[/yellow]")
+                console.print(f"[dim]You may need to manually add QUOTA_TABLE={quota_table_name} to the metrics aggregator Lambda[/dim]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
