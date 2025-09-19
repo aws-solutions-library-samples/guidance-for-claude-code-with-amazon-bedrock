@@ -4,7 +4,7 @@
 """Status command - Show deployment status."""
 
 import json
-import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info, get_configuration_dict
 from claude_code_with_bedrock.config import Config
 
@@ -189,24 +190,28 @@ class StatusCommand(Command):
         return stacks
 
     def _check_stack(self, stack_name: str, region: str) -> dict[str, Any]:
-        """Check individual stack status."""
-        try:
-            cmd = [
-                "aws", "cloudformation", "describe-stacks",
-                "--stack-name", stack_name,
-                "--region", region,
-                "--query", "Stacks[0].[StackStatus,LastUpdatedTime]",
-                "--output", "json"
-            ]
+        """Check individual stack status using boto3."""
+        cf_manager = CloudFormationManager(region=region)
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
+        try:
+            # Get stack details
+            response = cf_manager.cf_client.describe_stacks(StackName=stack_name)
+            if response['Stacks']:
+                stack = response['Stacks'][0]
+                last_updated = stack.get('LastUpdatedTime') or stack.get('CreationTime')
+
+                # Format timestamp if present
+                if last_updated:
+                    if hasattr(last_updated, 'isoformat'):
+                        last_updated = last_updated.isoformat()
+                    else:
+                        last_updated = str(last_updated)
+
                 return {
-                    "status": data[0] if data else "NOT_FOUND",
-                    "last_updated": data[1] if len(data) > 1 else None
+                    "status": stack['StackStatus'],
+                    "last_updated": last_updated
                 }
-        except:
+        except Exception:
             pass
 
         return {"status": "NOT_FOUND", "last_updated": None}
@@ -221,7 +226,8 @@ class StatusCommand(Command):
 
         if auth_outputs:
             endpoints["identity_pool_id"] = auth_outputs.get("IdentityPoolId")
-            endpoints["role_arn"] = auth_outputs.get("BedrockRoleArn")
+            # Try FederatedRoleArn first (new templates), fallback to BedrockRoleArn (old template)
+            endpoints["role_arn"] = auth_outputs.get("FederatedRoleArn") or auth_outputs.get("BedrockRoleArn")
             endpoints["oidc_provider"] = auth_outputs.get("OIDCProviderArn")
 
         if profile.monitoring_enabled:

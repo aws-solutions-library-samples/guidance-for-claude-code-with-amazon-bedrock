@@ -19,14 +19,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 packages = [
-    { include = "cognito_auth" },
+    { include = "credential_provider" },
     { include = "claude_code_with_bedrock" }
 ]
 
 [tool.poetry.scripts]
 claude-code-with-bedrock = "claude_code_with_bedrock.cli:main"
 ccwb = "claude_code_with_bedrock.cli:main"
-cognito-auth = "cognito_auth:main"
+credential-provider = "credential_provider:main"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
@@ -40,6 +40,7 @@ rich = "^13.0.0"
 pydantic = "^2.0.0"
 pyyaml = "^6.0"
 questionary = "^2.0.0"
+cfn-flip = "^1.3.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

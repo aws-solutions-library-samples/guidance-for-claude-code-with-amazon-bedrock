@@ -1,0 +1,336 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code with Bedrock - Auth0 Authentication Stack'
+
+Parameters:
+  FederationType:
+    Type: String
+    Default: direct
+    AllowedValues:
+      - direct
+      - cognito
+    Description: Authentication mode - Direct IAM or Cognito Identity Pool
+
+  Auth0Domain:
+    Type: String
+    Description: Your Auth0 domain (e.g., company.auth0.com or company.us.auth0.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.(us|eu|au|jp)?\.?auth0\.com$'
+    ConstraintDescription: Must be a valid Auth0 domain
+
+  Auth0ClientId:
+    Type: String
+    Description: Auth0 application client ID
+    AllowedPattern: '^[a-zA-Z0-9]{32}$'
+    ConstraintDescription: Must be a valid Auth0 client ID
+
+  IdentityPoolName:
+    Type: String
+    Default: claude-code-auth0
+    Description: Name for the Cognito Identity Pool (used in cognito mode)
+    AllowedPattern: '^[\w\s+=,.@-]+$'
+    MaxLength: 128
+
+  FederatedRoleName:
+    Type: String
+    Default: BedrockAuth0FederatedRole
+    Description: Name for the IAM role used for federation
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-_]*$'
+    MaxLength: 64
+
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-west-2'
+    Description: Comma-delimited list of AWS regions where Bedrock access is allowed
+
+  EnableMonitoring:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable CloudWatch monitoring for Bedrock usage
+
+  EnableSessionTags:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable session tags for enhanced security and tracking
+
+Conditions:
+  UseDirectIAM: !Equals [!Ref FederationType, direct]
+  UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
+  MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  SessionTagsEnabled: !Equals [!Ref EnableSessionTags, 'true']
+
+Resources:
+  # ===============================================
+  # OIDC Provider for Auth0
+  # ===============================================
+
+  Auth0OIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Sub 'https://${Auth0Domain}'
+      ClientIdList:
+        - !Ref Auth0ClientId
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280  # Auth0's thumbprint
+        - 60b5e7d8fbad8a16a1caf68d01354c20bb1f8620  # Additional Auth0 thumbprint
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Auth0 Authentication
+        - Key: Provider
+          Value: Auth0
+
+  # ===============================================
+  # Bedrock Access Policy (Shared)
+  # ===============================================
+
+  BedrockAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::StackName}-BedrockAccessPolicy'
+      Description: Policy for accessing Bedrock services
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBedrockInvoke
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:InvokeModel'
+              - 'bedrock-runtime:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:ConverseStream'
+              - 'bedrock-runtime:Converse'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockList
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - !If
+            - MonitoringEnabled
+            - Sid: AllowCloudWatchMetrics
+              Effect: Allow
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace':
+                    - 'ClaudeCode/Bedrock/Usage'
+                    - 'AWS/Bedrock'
+            - !Ref 'AWS::NoValue'
+
+  # ===============================================
+  # Direct IAM Resources (when FederationType=direct)
+  # ===============================================
+
+  DirectIAMRole:
+    Type: AWS::IAM::Role
+    Condition: UseDirectIAM
+    Properties:
+      RoleName: !Ref FederatedRoleName
+      Description: Direct IAM role for Auth0 users accessing Bedrock
+      MaxSessionDuration: 43200  # 12 hours
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt Auth0OIDCProvider.Arn
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+              - !If
+                - SessionTagsEnabled
+                - 'sts:TagSession'
+                - !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Direct IAM Authentication
+        - Key: Provider
+          Value: Auth0
+        - Key: FederationType
+          Value: direct
+
+  # ===============================================
+  # Cognito Identity Pool Resources (when FederationType=cognito)
+  # ===============================================
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolName: !Ref IdentityPoolName
+      AllowUnauthenticatedIdentities: false
+      AllowClassicFlow: false
+      OpenIdConnectProviderARNs:
+        - !GetAtt Auth0OIDCProvider.Arn
+
+  CognitoAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-CognitoAuthRole'
+      Description: Role for authenticated Cognito Identity Pool users
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Authentication
+        - Key: Provider
+          Value: Auth0
+
+  CognitoUnauthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-CognitoUnauthRole'
+      Description: Role for unauthenticated Cognito Identity Pool users (restricted)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': unauthenticated
+      Policies:
+        - PolicyName: DenyAll
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Deny
+                Action: '*'
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Unauthenticated Role
+        - Key: Provider
+          Value: Auth0
+
+  CognitoIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthenticatedRole.Arn
+        unauthenticated: !GetAtt CognitoUnauthenticatedRole.Arn
+
+  # ===============================================
+  # Optional Monitoring Resources
+  # ===============================================
+
+  BedrockAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: MonitoringEnabled
+    Properties:
+      LogGroupName: !Sub '/aws/bedrock/claude-code-${AWS::StackName}'
+      RetentionInDays: 30
+
+Outputs:
+  FederationType:
+    Description: Current federation type configuration
+    Value: !Ref FederationType
+    Export:
+      Name: !Sub '${AWS::StackName}-FederationType'
+
+  OIDCProviderArn:
+    Description: ARN of the Auth0 OIDC Provider
+    Value: !GetAtt Auth0OIDCProvider.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OIDCProviderArn'
+
+  FederatedRoleArn:
+    Description: ARN of the federated role for Auth0 users
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FederatedRoleArn'
+
+  DirectSTSRoleArn:
+    Description: Direct STS federated role ARN (when using direct IAM)
+    Condition: UseDirectIAM
+    Value: !GetAtt DirectIAMRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DirectSTSRoleArn'
+
+  BedrockRoleArn:
+    Description: IAM Role ARN for Bedrock access (for backward compatibility)
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockRoleArn'
+
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID (if using Cognito mode)
+    Condition: UseCognitoIdentity
+    Value: !Ref CognitoIdentityPool
+    Export:
+      Name: !Sub '${AWS::StackName}-IdentityPoolId'
+
+  BedrockPolicyArn:
+    Description: ARN of the Bedrock access policy
+    Value: !Ref BedrockAccessPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockPolicyArn'
+
+  ConfigurationJson:
+    Description: Configuration JSON for CLI tool
+    Value: !If
+      - UseDirectIAM
+      - !Sub |
+        {
+          "federation_type": "direct",
+          "provider_type": "auth0",
+          "provider_domain": "${Auth0Domain}",
+          "client_id": "${Auth0ClientId}",
+          "federated_role_arn": "${DirectIAMRole.Arn}",
+          "aws_region": "${AWS::Region}",
+          "max_session_duration": 43200
+        }
+      - !Sub |
+        {
+          "federation_type": "cognito",
+          "provider_type": "auth0",
+          "provider_domain": "${Auth0Domain}",
+          "client_id": "${Auth0ClientId}",
+          "identity_pool_id": "${CognitoIdentityPool}",
+          "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
+          "aws_region": "${AWS::Region}"
+        }

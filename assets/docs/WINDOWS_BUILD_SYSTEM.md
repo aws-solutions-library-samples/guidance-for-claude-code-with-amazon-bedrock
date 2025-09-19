@@ -513,7 +513,7 @@ C:\Python312\python.exe -m nuitka \
   --output-filename=credential-process-windows.exe \
   --output-dir=. \
   --remove-output \                # Clean up build artifacts
-  source/cognito_auth/__main__.py
+  source/credential_provider/__main__.py
 ```
 
 ### Build Performance
@@ -600,7 +600,7 @@ C:\Python312\python.exe -m nuitka \
 
 ```
 /source/
-├── cognito_auth/
+├── credential_provider/
 │   └── __main__.py           # Main authentication module
 ├── otel_helper/
 │   └── __main__.py           # Telemetry helper module

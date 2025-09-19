@@ -76,10 +76,11 @@ class MultiProviderAuth:
     def __init__(self, profile=None):
         # Load configuration from environment or config file
         self.profile = profile or "default"
-        self.config = self._load_config()
 
-        # Debug mode
+        # Debug mode - set before loading config since _load_config may use _debug_print
         self.debug = os.getenv("COGNITO_AUTH_DEBUG", "").lower() in ("1", "true", "yes")
+
+        self.config = self._load_config()
 
         # Determine provider type from domain
         self.provider_type = self._determine_provider_type()
@@ -125,14 +126,25 @@ class MultiProviderAuth:
             # Map new field names to expected ones
             profile_config["provider_domain"] = profile_config.get("provider_domain", profile_config.get("okta_domain"))
             profile_config["client_id"] = profile_config.get("client_id", profile_config.get("okta_client_id"))
-            profile_config["identity_pool_id"] = profile_config["identity_pool_name"]
+
+            # Handle both identity_pool_id and identity_pool_name for compatibility
+            if "identity_pool_name" in profile_config:
+                profile_config["identity_pool_id"] = profile_config["identity_pool_name"]
+
             profile_config["credential_storage"] = profile_config.get("credential_storage", "session")
         else:
             # Old format for backward compatibility
             profile_config = file_config.get(self.profile, {})
 
-        # Validate required configuration
-        required = ["provider_domain", "client_id", "identity_pool_id"]
+        # Auto-detect federation type based on configuration
+        self._detect_federation_type(profile_config)
+
+        # Validate required configuration based on federation type
+        if profile_config.get("federation_type") == "direct":
+            required = ["provider_domain", "client_id", "federated_role_arn"]
+        else:
+            required = ["provider_domain", "client_id", "identity_pool_id"]
+
         missing = [k for k in required if not profile_config.get(k)]
         if missing:
             raise ValueError(f"Missing required configuration: {', '.join(missing)}")
@@ -141,8 +153,29 @@ class MultiProviderAuth:
         profile_config.setdefault("aws_region", "us-east-1")
         profile_config.setdefault("provider_type", "auto")
         profile_config.setdefault("credential_storage", "session")
+        profile_config.setdefault(
+            "max_session_duration", 43200 if profile_config.get("federation_type") == "direct" else 28800
+        )
 
         return profile_config
+
+    def _detect_federation_type(self, config):
+        """Auto-detect whether to use Cognito Identity Pool or direct STS federation"""
+        # Explicit federation type takes precedence
+        if "federation_type" in config:
+            return
+
+        # Auto-detect based on available configuration
+        if "federated_role_arn" in config:
+            config["federation_type"] = "direct"
+            self._debug_print("Detected Direct STS federation mode (federated_role_arn found)")
+        elif "identity_pool_id" in config or "identity_pool_name" in config:
+            config["federation_type"] = "cognito"
+            self._debug_print("Detected Cognito Identity Pool federation mode")
+        else:
+            # Default to cognito for backward compatibility
+            config["federation_type"] = "cognito"
+            self._debug_print("Defaulting to Cognito Identity Pool federation mode")
 
     def _determine_provider_type(self):
         """Determine provider type from domain"""
@@ -161,14 +194,14 @@ class MultiProviderAuth:
                 f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                 f"Please check your provider domain configuration."
             )
-        
+
         # Handle both full URLs and domain-only inputs
-        url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
-        
+        url_to_parse = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+
         try:
             parsed = urlparse(url_to_parse)
             hostname = parsed.hostname
-            
+
             if not hostname:
                 # Fail with clear error for unknown providers
                 raise ValueError(
@@ -176,20 +209,20 @@ class MultiProviderAuth:
                     f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                     f"Please check your provider domain configuration."
                 )
-            
+
             hostname_lower = hostname.lower()
-            
+
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
-            if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+            if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
                 return "okta"
-            elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+            elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
-            elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+            elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                 return "azure"
-            elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
+            elif hostname_lower.endswith(".windows.net") or hostname_lower == "windows.net":
                 return "azure"
-            elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
+            elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
                 return "cognito"
             else:
@@ -203,9 +236,7 @@ class MultiProviderAuth:
             raise
         except Exception as e:
             # Fail with clear error for unknown providers
-            raise ValueError(
-                f"Unable to auto-detect provider type for domain '{domain}': {e}"
-            )
+            raise ValueError(f"Unable to auto-detect provider type for domain '{domain}': {e}")
 
     def _init_credential_storage(self):
         """Initialize secure credential storage"""
@@ -229,30 +260,30 @@ class MultiProviderAuth:
                     token1 = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-token1")
                     token2 = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-token2")
                     meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-meta")
-                    
+
                     if not all([keys_json, token1, token2, meta_json]):
                         return None
-                    
+
                     # Reconstruct credentials
                     keys = json.loads(keys_json)
                     meta = json.loads(meta_json)
-                    
+
                     creds = {
                         "Version": meta["Version"],
                         "AccessKeyId": keys["AccessKeyId"],
                         "SecretAccessKey": keys["SecretAccessKey"],
                         "SessionToken": token1 + token2,
-                        "Expiration": meta["Expiration"]
+                        "Expiration": meta["Expiration"],
                     }
                 else:
                     # Non-Windows: single entry storage
                     creds_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials")
-                    
+
                     if not creds_json:
                         return None
-                    
+
                     creds = json.loads(creds_json)
-                
+
                 # Check for dummy/cleared credentials first
                 # These are set when credentials are cleared to maintain keychain permissions
                 if creds.get("AccessKeyId") == "EXPIRED":
@@ -285,7 +316,7 @@ class MultiProviderAuth:
             try:
                 with open(session_file, "r") as f:
                     creds = json.load(f)
-                
+
                 # Check for dummy/cleared credentials first
                 if creds.get("AccessKeyId") == "EXPIRED":
                     self._debug_print("Found cleared dummy credentials in session file, need re-authentication")
@@ -317,37 +348,30 @@ class MultiProviderAuth:
                     # Split the SessionToken in half
                     token = credentials["SessionToken"]
                     mid = len(token) // 2
-                    
+
                     # Store as 4 separate entries
                     keyring.set_password(
-                        "claude-code-with-bedrock", 
+                        "claude-code-with-bedrock",
                         f"{self.profile}-keys",
-                        json.dumps({
-                            "AccessKeyId": credentials["AccessKeyId"],
-                            "SecretAccessKey": credentials["SecretAccessKey"]
-                        })
+                        json.dumps(
+                            {
+                                "AccessKeyId": credentials["AccessKeyId"],
+                                "SecretAccessKey": credentials["SecretAccessKey"],
+                            }
+                        ),
                     )
-                    keyring.set_password(
-                        "claude-code-with-bedrock",
-                        f"{self.profile}-token1",
-                        token[:mid]
-                    )
-                    keyring.set_password(
-                        "claude-code-with-bedrock",
-                        f"{self.profile}-token2",
-                        token[mid:]
-                    )
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-token1", token[:mid])
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-token2", token[mid:])
                     keyring.set_password(
                         "claude-code-with-bedrock",
                         f"{self.profile}-meta",
-                        json.dumps({
-                            "Version": credentials["Version"],
-                            "Expiration": credentials["Expiration"]
-                        })
+                        json.dumps({"Version": credentials["Version"], "Expiration": credentials["Expiration"]}),
                     )
                 else:
                     # Non-Windows: store as single entry
-                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", json.dumps(credentials))
+                    keyring.set_password(
+                        "claude-code-with-bedrock", f"{self.profile}-credentials", json.dumps(credentials)
+                    )
             except Exception as e:
                 self._debug_print(f"Error saving credentials to keyring: {e}")
                 raise Exception(f"Failed to save credentials to keyring: {str(e)}")
@@ -365,11 +389,11 @@ class MultiProviderAuth:
 
             # Set restrictive permissions
             session_file.chmod(0o600)
-    
+
     def clear_cached_credentials(self):
         """Clear all cached credentials for this profile"""
         cleared_items = []
-        
+
         # Clear from keyring by replacing with expired credentials
         # This maintains keychain access permissions on macOS
         try:
@@ -377,85 +401,78 @@ class MultiProviderAuth:
                 # On Windows, we have 4 separate entries to clear
                 entries_to_clear = [
                     f"{self.profile}-keys",
-                    f"{self.profile}-token1", 
+                    f"{self.profile}-token1",
                     f"{self.profile}-token2",
-                    f"{self.profile}-meta"
+                    f"{self.profile}-meta",
                 ]
-                
+
                 for entry in entries_to_clear:
                     if keyring.get_password("claude-code-with-bedrock", entry):
                         # Replace with expired dummy data
                         if "keys" in entry:
-                            expired_data = json.dumps({
-                                "AccessKeyId": "EXPIRED",
-                                "SecretAccessKey": "EXPIRED"
-                            })
+                            expired_data = json.dumps({"AccessKeyId": "EXPIRED", "SecretAccessKey": "EXPIRED"})
                         elif "token" in entry:
                             expired_data = "EXPIRED"
                         elif "meta" in entry:
-                            expired_data = json.dumps({
-                                "Version": 1,
-                                "Expiration": "2000-01-01T00:00:00Z"
-                            })
+                            expired_data = json.dumps({"Version": 1, "Expiration": "2000-01-01T00:00:00Z"})
                         else:
                             expired_data = "EXPIRED"
-                        
+
                         keyring.set_password("claude-code-with-bedrock", entry, expired_data)
-                
+
                 cleared_items.append("keyring credentials (Windows)")
             else:
                 # Non-Windows: single entry storage
                 if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials"):
                     # Replace with expired dummy credential instead of deleting
                     # This prevents macOS from asking for "Always Allow" again
-                    expired_credential = json.dumps({
-                        "Version": 1,
-                        "AccessKeyId": "EXPIRED",
-                        "SecretAccessKey": "EXPIRED",
-                        "SessionToken": "EXPIRED",
-                        "Expiration": "2000-01-01T00:00:00Z"  # Far past date
-                    })
+                    expired_credential = json.dumps(
+                        {
+                            "Version": 1,
+                            "AccessKeyId": "EXPIRED",
+                            "SecretAccessKey": "EXPIRED",
+                            "SessionToken": "EXPIRED",
+                            "Expiration": "2000-01-01T00:00:00Z",  # Far past date
+                        }
+                    )
                     keyring.set_password("claude-code-with-bedrock", f"{self.profile}-credentials", expired_credential)
                     cleared_items.append("keyring credentials")
         except Exception as e:
             self._debug_print(f"Could not clear keyring credentials: {e}")
-        
-        # Clear monitoring token from keyring  
+
+        # Clear monitoring token from keyring
         try:
             if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
                 # Replace with expired dummy token
-                expired_token = json.dumps({
-                    "token": "EXPIRED",
-                    "expires": 0,  # Expired timestamp
-                    "email": "",
-                    "profile": self.profile
-                })
+                expired_token = json.dumps(
+                    {"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}  # Expired timestamp
+                )
                 keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", expired_token)
                 cleared_items.append("keyring monitoring token")
         except Exception as e:
             self._debug_print(f"Could not clear keyring monitoring token: {e}")
-        
+
         # Clear session files
         session_dir = Path.home() / ".claude-code-session"
         if session_dir.exists():
             session_file = session_dir / f"{self.profile}-session.json"
             monitoring_file = session_dir / f"{self.profile}-monitoring.json"
-            
+
             if session_file.exists():
                 session_file.unlink()
                 cleared_items.append("session file")
-            
+
             if monitoring_file.exists():
                 monitoring_file.unlink()
                 cleared_items.append("monitoring token file")
-            
+
             # Remove directory if empty
             try:
                 if not any(session_dir.iterdir()):
                     session_dir.rmdir()
             except Exception:
                 pass
-        
+
         return cleared_items
 
     def save_monitoring_token(self, id_token, token_claims):
@@ -705,8 +722,121 @@ class MultiProviderAuth:
         return CallbackHandler
 
     def get_aws_credentials(self, id_token, token_claims):
-        """Exchange OIDC token for AWS credentials via Cognito"""
+        """Exchange OIDC token for AWS credentials"""
         self._debug_print("Entering get_aws_credentials method")
+
+        # Route to appropriate federation method
+        federation_type = self.config.get("federation_type", "cognito")
+        self._debug_print(f"Using federation type: {federation_type}")
+
+        if federation_type == "direct":
+            return self.get_aws_credentials_direct(id_token, token_claims)
+        else:
+            return self.get_aws_credentials_cognito(id_token, token_claims)
+
+    def get_aws_credentials_direct(self, id_token, token_claims):
+        """Direct STS federation without Cognito Identity Pool - provides 12 hour sessions"""
+        self._debug_print("Using Direct STS federation (AssumeRoleWithWebIdentity)")
+
+        try:
+            # Get the federated role ARN from config
+            federated_role_arn = self.config.get("federated_role_arn")
+            if not federated_role_arn:
+                raise ValueError("federated_role_arn is required for direct STS federation")
+
+            # Create STS client
+            sts_client = boto3.client("sts", region_name=self.config["aws_region"])
+
+            # Prepare session tags from token claims
+            session_tags = []
+
+            # Map common claims to session tags
+            tag_mappings = {
+                "email": "UserEmail",
+                "sub": "UserId",
+                "preferred_username": "UserName",
+                "name": "UserName",  # Fallback for providers that use 'name' instead
+            }
+
+            for claim_key, tag_key in tag_mappings.items():
+                if claim_key in token_claims:
+                    # Session tag values have a 256 character limit
+                    tag_value = str(token_claims[claim_key])[:256]
+                    session_tags.append({"Key": tag_key, "Value": tag_value})
+
+            # Generate session name from user identifier
+            session_name = "claude-code"
+            if "sub" in token_claims:
+                # Use first 32 chars of sub for uniqueness
+                session_name = f"claude-code-{token_claims['sub'][:32]}"
+            elif "email" in token_claims:
+                # Use email username part
+                session_name = f"claude-code-{token_claims['email'].split('@')[0][:32]}"
+
+            self._debug_print(f"Assuming role: {federated_role_arn}")
+            self._debug_print(f"Session name: {session_name}")
+            self._debug_print(f"Session tags: {session_tags}")
+
+            # Call AssumeRoleWithWebIdentity
+            # Note: AssumeRoleWithWebIdentity doesn't support Tags parameter directly
+            # Session tags must be passed via the token claims and configured in the trust policy
+            assume_role_params = {
+                "RoleArn": federated_role_arn,
+                "RoleSessionName": session_name,
+                "WebIdentityToken": id_token,
+                "DurationSeconds": self.config.get("max_session_duration", 43200),  # 12 hours
+            }
+
+            response = sts_client.assume_role_with_web_identity(**assume_role_params)
+
+            # Extract credentials
+            creds = response["Credentials"]
+
+            # Format for AWS CLI
+            formatted_creds = {
+                "Version": 1,
+                "AccessKeyId": creds["AccessKeyId"],
+                "SecretAccessKey": creds["SecretAccessKey"],
+                "SessionToken": creds["SessionToken"],
+                "Expiration": (
+                    creds["Expiration"].isoformat()
+                    if hasattr(creds["Expiration"], "isoformat")
+                    else creds["Expiration"]
+                ),
+            }
+
+            self._debug_print(
+                f"Successfully obtained credentials via Direct STS, expires: {formatted_creds['Expiration']}"
+            )
+            return formatted_creds
+
+        except Exception as e:
+            # Check if this is a credential error that suggests bad cached credentials
+            error_str = str(e)
+            if any(
+                err in error_str
+                for err in [
+                    "InvalidParameterException",
+                    "NotAuthorizedException",
+                    "ValidationError",
+                    "Invalid AccessKeyId",
+                    "ExpiredToken",
+                    "Invalid JWT",
+                ]
+            ):
+                self._debug_print("Detected invalid credentials, clearing cache...")
+                self.clear_cached_credentials()
+                # Add helpful message for user
+                raise Exception(
+                    f"Authentication failed - cached credentials were invalid and have been cleared.\n"
+                    f"Please try again to re-authenticate.\n"
+                    f"Original error: {error_str}"
+                )
+            raise Exception(f"Failed to get AWS credentials via Direct STS: {str(e)}")
+
+    def get_aws_credentials_cognito(self, id_token, token_claims):
+        """Exchange OIDC token for AWS credentials via Cognito Identity Pool"""
+        self._debug_print("Using Cognito Identity Pool federation")
 
         # Clear any AWS credentials to prevent recursive calls
         env_vars_to_clear = ["AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
@@ -819,13 +949,16 @@ class MultiProviderAuth:
         except Exception as e:
             # Check if this is a credential error that suggests bad cached credentials
             error_str = str(e)
-            if any(err in error_str for err in [
-                "InvalidParameterException",
-                "NotAuthorizedException", 
-                "ValidationError",
-                "Invalid AccessKeyId",
-                "Token is not from a supported provider"
-            ]):
+            if any(
+                err in error_str
+                for err in [
+                    "InvalidParameterException",
+                    "NotAuthorizedException",
+                    "ValidationError",
+                    "Invalid AccessKeyId",
+                    "Token is not from a supported provider",
+                ]
+            ):
                 self._debug_print("Detected invalid credentials, clearing cache...")
                 self.clear_cached_credentials()
                 # Add helpful message for user
@@ -884,7 +1017,7 @@ class MultiProviderAuth:
                     # Port in use, another auth is in progress
                     self._debug_print("Another authentication is in progress, waiting...")
                     test_socket.close()
-                    
+
                     # Wait for the other process to complete
                     # After waiting, check if we now have a monitoring token
                     self._wait_for_auth_completion()
@@ -897,24 +1030,24 @@ class MultiProviderAuth:
                 else:
                     test_socket.close()
                     raise
-            
+
             # Authenticate with OIDC provider
             self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
             id_token, token_claims = self.authenticate_oidc()
-            
+
             # Get AWS credentials (we need them but won't output them)
             self._debug_print("Exchanging token for AWS credentials...")
             credentials = self.get_aws_credentials(id_token, token_claims)
-            
+
             # Cache credentials for future use
             self.save_credentials(credentials)
-            
+
             # Save monitoring token
             self.save_monitoring_token(id_token, token_claims)
-            
+
             # Return just the monitoring token
             return id_token
-            
+
         except KeyboardInterrupt:
             # User cancelled
             self._debug_print("Authentication cancelled by user")
