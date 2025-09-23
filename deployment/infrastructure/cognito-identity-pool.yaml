@@ -145,6 +145,8 @@ Resources:
               - 'bedrock:ListFoundationModels'
               - 'bedrock:GetFoundationModel'
               - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
             Resource: '*'
             Condition:
               StringEquals:
