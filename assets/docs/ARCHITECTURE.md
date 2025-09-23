@@ -20,6 +20,20 @@ The management CLI in `source/claude_code_with_bedrock/` provides IT administrat
 
 The authentication infrastructure centers on an Amazon Cognito Identity Pool that federates OIDC tokens into AWS credentials. This creates a trust relationship between the organization's identity provider and AWS through an IAM OIDC Provider. The associated IAM role grants permissions specifically for Amazon Bedrock model invocation in configured regions. Every API call includes session tags containing the user's email and subject claim, ensuring complete attribution in CloudTrail logs.
 
+#### IAM Permissions
+
+The IAM role assigned to authenticated users grants the following Amazon Bedrock permissions:
+
+- `bedrock:InvokeModel` - Invoke foundation models for text generation
+- `bedrock:InvokeModelWithResponseStream` - Invoke models with streaming responses
+- `bedrock:ListFoundationModels` - List available foundation models
+- `bedrock:GetFoundationModel` - Get details about specific models
+- `bedrock:GetFoundationModelAvailability` - Check model availability in regions
+- `bedrock:ListInferenceProfiles` - List available cross-region inference profiles
+- `bedrock:GetInferenceProfile` - Get details about specific inference profiles
+
+These permissions are scoped to the configured regions and enable users to discover and invoke models through cross-region inference profiles, ensuring optimal performance and availability.
+
 When monitoring is enabled, the solution deploys additional infrastructure to collect and analyze usage metrics. A VPC with public subnets hosts an ECS Fargate cluster running the OpenTelemetry collector. An Application Load Balancer provides the ingestion endpoint for metrics from Claude Code clients. The collector processes these metrics and forwards them to CloudWatch Logs in Embedded Metric Format, enabling real-time dashboards and alerting.
 
 For organizations requiring detailed analytics, the optional analytics stack provides comprehensive usage analysis capabilities. Kinesis Data Firehose continuously streams metrics from CloudWatch Logs to an S3 data lake, with a Lambda function transforming the data into Parquet format for efficient querying. Amazon Athena enables SQL analytics on this data, with pre-configured partition projection eliminating the need for Glue crawlers. This architecture supports queries spanning months of historical data while keeping costs minimal through columnar storage and lifecycle policies.
