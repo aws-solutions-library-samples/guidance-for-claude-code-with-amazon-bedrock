@@ -12,13 +12,13 @@ The Claude Code authentication system enables secure, scalable access to Amazon 
 
 ### Authentication Components
 
-The core authentication component is the credential process located in `source/cognito_auth/`. This implements a complete OAuth2/OIDC client with PKCE flow for secure authentication without client secrets. When packaged for distribution, PyInstaller compiles this into a standalone executable that end users can run without needing Python installed. The credential process supports multiple identity providers including Okta, Azure AD, Auth0, and Cognito User Pools through a flexible provider registry system. Once authenticated, credentials are cached either in the operating system's secure keyring or in session files, depending on the organization's preference. The implementation follows the AWS CLI credential process protocol, making it transparent to any AWS SDK or tool.
+The core authentication component is the credential process located in `source/credential_provider/`. This implements a complete OAuth2/OIDC client with PKCE flow for secure authentication without client secrets. When packaged for distribution, PyInstaller compiles this into a standalone executable that end users can run without needing Python installed. The credential process supports multiple identity providers including Okta, Azure AD, Auth0, and Cognito User Pools through a flexible provider registry system. Once authenticated, credentials are cached either in the operating system's secure keyring or in session files, depending on the organization's preference. The implementation follows the AWS CLI credential process protocol, making it transparent to any AWS SDK or tool.
 
 The management CLI in `source/claude_code_with_bedrock/` provides IT administrators with tools to deploy and manage the infrastructure. Built on the Cleo framework, it offers an intuitive command-line interface for initialization, deployment, and package generation. This component is used only during setup and is not distributed to end users.
 
 ### AWS Infrastructure Components
 
-The authentication infrastructure centers on an Amazon Cognito Identity Pool that federates OIDC tokens into AWS credentials. This creates a trust relationship between the organization's identity provider and AWS through an IAM OIDC Provider. The associated IAM role grants permissions specifically for Amazon Bedrock model invocation in configured regions. Every API call includes session tags containing the user's email and subject claim, ensuring complete attribution in CloudTrail logs.
+The authentication infrastructure supports two federation methods. With Direct IAM Federation, an IAM OIDC Provider creates the trust relationship between the organization's identity provider and AWS, allowing direct token exchange via STS. With Cognito Identity Pool, Amazon Cognito acts as an intermediary that federates OIDC tokens into AWS credentials. Both methods use IAM roles that grant permissions specifically for Amazon Bedrock model invocation in configured regions. Every API call includes session tags containing the user's email and subject claim, ensuring complete attribution in CloudTrail logs.
 
 When monitoring is enabled, the solution deploys additional infrastructure to collect and analyze usage metrics. A VPC with public subnets hosts an ECS Fargate cluster running the OpenTelemetry collector. An Application Load Balancer provides the ingestion endpoint for metrics from Claude Code clients. The collector processes these metrics and forwards them to CloudWatch Logs in Embedded Metric Format, enabling real-time dashboards and alerting.
 
@@ -28,9 +28,25 @@ For organizations requiring detailed analytics, the optional analytics stack pro
 
 The authentication flow begins when Claude Code requests AWS credentials through the AWS CLI. The CLI invokes our credential process executable, which initiates an OAuth2 flow with PKCE (Proof Key for Code Exchange) to ensure security without requiring client secrets. A browser window opens automatically, directing the user to their organization's identity provider for authentication.
 
-After successful authentication, the identity provider redirects back to the local callback server with an authorization code. The credential process exchanges this code for OIDC tokens, then presents the ID token to Amazon Cognito Identity Pool. Cognito validates the token and calls STS AssumeRoleWithWebIdentity to obtain temporary AWS credentials. These credentials include session tags containing the user's email and subject claim, ensuring every subsequent API call to Amazon Bedrock can be attributed to the specific user.
+After successful authentication, the identity provider redirects back to the local callback server with an authorization code. The credential process exchanges this code for OIDC tokens. The system then uses one of two authentication methods to obtain AWS credentials:
 
-The temporary credentials are returned to Claude Code through the standard AWS CLI credential process protocol. By default, credentials last for one hour but can be configured up to eight hours. The entire flow operates without any client secrets or long-lived credentials, following zero-trust security principles. Credentials are cached securely using either the operating system's keyring service or encrypted session files, preventing repeated authentication requests during the session lifetime.
+### Authentication Methods
+
+The system supports two authentication methods:
+
+**Direct IAM Federation**
+- Uses IAM OIDC Provider with STS AssumeRoleWithWebIdentity
+- Direct federation from OIDC tokens to AWS credentials
+- Configurable session duration up to 12 hours
+
+**Cognito Identity Pool**
+- Uses Amazon Cognito Identity Pool as federation broker
+- Cognito manages the OIDC to AWS credential exchange
+- Configurable session duration up to 8 hours
+
+The authentication method is selected during initial configuration and both methods provide full CloudTrail attribution through session tags. These credentials include session tags containing the user's email and subject claim, ensuring every subsequent API call to Amazon Bedrock can be attributed to the specific user.
+
+The temporary credentials are returned to Claude Code through the standard AWS CLI credential process protocol. The entire flow operates without any client secrets or long-lived credentials, following zero-trust security principles. Credentials are cached securely using either the operating system's keyring service or encrypted session files, preventing repeated authentication requests during the session lifetime.
 
 ## AWS CLI Credential Process Protocol
 

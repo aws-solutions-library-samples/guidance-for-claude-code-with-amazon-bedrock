@@ -43,6 +43,16 @@ def _display_table_format(console: Console, profile, identity_pool_id: Optional[
     config_table.add_row("OIDC Provider", profile.provider_domain)
     config_table.add_row("Client ID", profile.client_id)
 
+    # Federation configuration
+    federation_type = getattr(profile, 'federation_type', 'cognito')
+    if federation_type == 'direct':
+        config_table.add_row("Federation Type", "Direct STS (12-hour sessions)")
+        federated_role_arn = getattr(profile, 'federated_role_arn', None)
+        if federated_role_arn:
+            config_table.add_row("Federated Role", federated_role_arn.split('/')[-1])  # Show just role name
+    else:
+        config_table.add_row("Federation Type", "Cognito Identity Pool (8-hour sessions)")
+
     # AWS configuration
     config_table.add_row("AWS Region", profile.aws_region)
 
@@ -94,6 +104,16 @@ def _display_simple_format(console: Console, profile, identity_pool_id: Optional
     # Provider information
     console.print(f"  OIDC Provider: [cyan]{profile.provider_domain}[/cyan]")
     console.print(f"  Client ID: [cyan]{profile.client_id}[/cyan]")
+
+    # Federation configuration
+    federation_type = getattr(profile, 'federation_type', 'cognito')
+    if federation_type == 'direct':
+        console.print(f"  Federation Type: [cyan]Direct STS (12-hour sessions)[/cyan]")
+        federated_role_arn = getattr(profile, 'federated_role_arn', None)
+        if federated_role_arn:
+            console.print(f"  Federated Role: [cyan]{federated_role_arn.split('/')[-1]}[/cyan]")
+    else:
+        console.print(f"  Federation Type: [cyan]Cognito Identity Pool (8-hour sessions)[/cyan]")
 
     # AWS configuration
     console.print(f"  AWS Region: [cyan]{profile.aws_region}[/cyan]")

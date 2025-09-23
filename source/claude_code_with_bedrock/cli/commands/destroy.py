@@ -3,14 +3,14 @@
 
 """Destroy command - Remove deployed infrastructure."""
 
-import subprocess
-
 from cleo.commands.command import Command
 from cleo.helpers import argument, option
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
+from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.config import Config
 
 
@@ -132,48 +132,41 @@ class DestroyCommand(Command):
         return 0
 
     def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
-        """Delete a CloudFormation stack."""
-        # Check if stack exists
-        check_cmd = [
-            "aws", "cloudformation", "describe-stacks",
-            "--stack-name", stack_name,
-            "--region", region,
-            "--query", "Stacks[0].StackStatus",
-            "--output", "text"
-        ]
+        """Delete a CloudFormation stack using boto3."""
+        cf_manager = CloudFormationManager(region=region)
 
-        result = subprocess.run(check_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
+        # Check if stack exists
+        status = cf_manager.get_stack_status(stack_name)
+        if not status:
             console.print(f"[yellow]Stack {stack_name} not found or already deleted[/yellow]")
             return 0
 
-        # Delete the stack
-        delete_cmd = [
-            "aws", "cloudformation", "delete-stack",
-            "--stack-name", stack_name,
-            "--region", region
-        ]
+        # Use progress indicator
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Deleting stack {stack_name}...", total=None)
 
-        result = subprocess.run(delete_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            console.print(f"[red]Error deleting stack: {result.stderr}[/red]")
-            return 1
+            # Delete the stack with event tracking
+            result = cf_manager.delete_stack(
+                stack_name=stack_name,
+                force=True,
+                on_event=lambda e: progress.update(
+                    task,
+                    description=f"Deleting {e.get('LogicalResourceId', stack_name)}..."
+                ),
+                timeout=300
+            )
 
-        # Wait for deletion to complete
-        console.print("[yellow]Waiting for stack deletion to complete...[/yellow]")
-        wait_cmd = [
-            "aws", "cloudformation", "wait", "stack-delete-complete",
-            "--stack-name", stack_name,
-            "--region", region
-        ]
+            progress.update(task, completed=True)
 
-        # Use a shorter timeout for the wait command
-        result = subprocess.run(wait_cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            if "DELETE_FAILED" in result.stderr or "DELETE_FAILED" in result.stdout:
-                console.print("[red]Stack deletion failed. Check CloudFormation console for details.[/red]")
+            if result.success:
+                return 0
             else:
-                console.print("[yellow]Stack deletion is taking longer than expected. Check CloudFormation console.[/yellow]")
-            return 1
-
-        return 0
+                if "DELETE_FAILED" in str(result.error):
+                    console.print("[red]Stack deletion failed. Check CloudFormation console for details.[/red]")
+                else:
+                    console.print(f"[red]Error deleting stack: {result.error}[/red]")
+                return 1

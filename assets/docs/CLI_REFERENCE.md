@@ -60,7 +60,10 @@ poetry run ccwb init [options]
 
 - Checks prerequisites (AWS CLI, credentials, Python version)
 - Prompts for OIDC provider configuration
-- Configures AWS settings (region, identity pool name)
+- Prompts for authentication method selection:
+  - Direct IAM: Uses IAM OIDC Provider for federation
+  - Cognito: Uses Cognito Identity Pool for federation
+- Configures AWS settings (region, stack names)
 - Prompts for Claude model selection (Opus, Sonnet, Haiku)
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
@@ -90,14 +93,14 @@ poetry run ccwb deploy [stack] [options]
 
 **What it does:**
 
-- Deploys Cognito Identity Pool for authentication
+- Deploys authentication infrastructure (IAM OIDC Provider or Cognito Identity Pool)
 - Creates IAM roles and policies for Bedrock access
 - Deploys monitoring infrastructure (if enabled)
-- Shows stack outputs including Identity Pool ID
+- Shows stack outputs including authentication resource identifiers
 
 **Stacks deployed:**
 
-1. **auth** - Cognito Identity Pool and IAM roles (always required)
+1. **auth** - Authentication infrastructure and IAM roles (always required)
 2. **networking** - VPC and networking resources for monitoring (optional)
 3. **monitoring** - OpenTelemetry collector on ECS Fargate (optional)
 4. **dashboard** - CloudWatch dashboard for usage metrics (optional)

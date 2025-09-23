@@ -155,7 +155,7 @@ Based on AWS Pricing Calculator: [View Detailed Estimate](https://calculator.aws
 
 - AWS account with appropriate IAM permissions to create:
   - CloudFormation stacks
-  - Cognito Identity Pools
+  - IAM OIDC Providers or Cognito Identity Pools
   - IAM roles and policies
   - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
   - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
@@ -182,7 +182,7 @@ Based on AWS Pricing Calculator: [View Detailed Estimate](https://calculator.aws
 
 The guidance can be deployed in any AWS region that supports:
 
-- Amazon Cognito Identity Pools
+- IAM OIDC Providers or Amazon Cognito Identity Pools
 - Amazon Bedrock
 - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
 - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
@@ -257,8 +257,8 @@ This creates the following AWS resources:
 
 **Authentication Infrastructure:**
 
-- Amazon Cognito Identity Pool for OIDC federation
-- IAM OIDC Provider trust relationship
+- IAM OIDC Provider or Amazon Cognito Identity Pool for OIDC federation
+- IAM trust relationship for federated access
 - IAM role with policies for:
   - Bedrock model invocation in specified regions
   - CloudWatch metrics (if monitoring enabled)

@@ -76,7 +76,7 @@ class PackageCommand(Command):
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
-        # Get actual Identity Pool ID from stack outputs
+        # Get actual Identity Pool ID or Role ARN from stack outputs
         console.print("[yellow]Fetching deployment information...[/yellow]")
         stack_outputs = get_stack_outputs(
             profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
@@ -86,10 +86,25 @@ class PackageCommand(Command):
             console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
             return 1
 
-        identity_pool_id = stack_outputs.get("IdentityPoolId")
-        if not identity_pool_id:
-            console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
-            return 1
+        # Check federation type and get appropriate identifier
+        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        identity_pool_id = None
+        federated_role_arn = None
+
+        if federation_type == "direct":
+            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
+            # Then fallback to FederatedRoleArn (new templates)
+            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                federated_role_arn = stack_outputs.get("FederatedRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                return 1
+        else:
+            identity_pool_id = stack_outputs.get("IdentityPoolId")
+            if not identity_pool_id:
+                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                return 1
 
         # Welcome
         console.print(
@@ -109,19 +124,26 @@ class PackageCommand(Command):
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Create embedded configuration
+        # Create embedded configuration based on federation type
         embedded_config = {
             "provider_domain": profile.provider_domain,
             "client_id": profile.client_id,
-            "identity_pool_id": identity_pool_id,
             "region": profile.aws_region,
             "allowed_bedrock_regions": profile.allowed_bedrock_regions,
             "package_timestamp": timestamp,
             "package_version": "1.0.0",
+            "federation_type": federation_type,
         }
 
+        # Add federation-specific configuration
+        if federation_type == "direct":
+            embedded_config["federated_role_arn"] = federated_role_arn
+            embedded_config["max_session_duration"] = profile.max_session_duration
+        else:
+            embedded_config["identity_pool_id"] = identity_pool_id
+
         # Show what will be packaged using shared display utility
-        display_configuration_info(profile, identity_pool_id, format_type="simple")
+        display_configuration_info(profile, identity_pool_id or federated_role_arn, format_type="simple")
 
         # Build package
         console.print("\n[bold]Building package...[/bold]")
@@ -233,7 +255,9 @@ class PackageCommand(Command):
 
             # Create configuration
             task = progress.add_task("Creating configuration...", total=None)
-            config_path = self._create_config(output_dir, profile, identity_pool_id)
+            # Pass the appropriate identifier based on federation type
+            federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
+            config_path = self._create_config(output_dir, profile, federation_identifier, federation_type)
             progress.update(task, completed=True)
 
             # Create installer
@@ -503,7 +527,7 @@ class PackageCommand(Command):
             )
 
         # Find the source file
-        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
+        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "credential_provider" / "__main__.py"
 
         if not src_file.exists():
             raise FileNotFoundError(f"Source file not found: {src_file}")
@@ -586,7 +610,7 @@ class PackageCommand(Command):
             raise ValueError(f"Unsupported macOS architecture: {arch}")
 
         # Find the source file
-        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
+        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "credential_provider" / "__main__.py"
         if not src_file.exists():
             raise FileNotFoundError(f"Source file not found: {src_file}")
 
@@ -685,7 +709,7 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux-x64"
 
         # Find the source file
-        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "cognito_auth" / "__main__.py"
+        src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "credential_provider" / "__main__.py"
         if not src_file.exists():
             raise FileNotFoundError(f"Source file not found: {src_file}")
 
@@ -761,7 +785,7 @@ class PackageCommand(Command):
 
             # Copy source files to temp directory
             source_dir = Path(__file__).parent.parent.parent.parent
-            shutil.copytree(source_dir / "cognito_auth", temp_path / "cognito_auth")
+            shutil.copytree(source_dir / "credential_provider", temp_path / "credential_provider")
 
             # Create Dockerfile with PyInstaller
             dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:20.04
@@ -807,7 +831,7 @@ RUN python3 -m pip install --no-cache-dir \
 WORKDIR /build
 
 # Copy source code
-COPY cognito_auth /build/cognito_auth
+COPY credential_provider /build/credential_provider
 
 # Build the binary with PyInstaller
 RUN pyinstaller \
@@ -827,7 +851,7 @@ RUN pyinstaller \
     --hidden-import six.moves.urllib \
     --hidden-import six.moves.urllib.parse \
     --hidden-import dateutil \
-    cognito_auth/__main__.py
+    credential_provider/__main__.py
 
 # The binary will be in /output/{binary_name}
 """
@@ -1419,19 +1443,27 @@ RUN pyinstaller \
 
         return output_dir / binary_name
 
-    def _create_config(self, output_dir: Path, profile, identity_pool_id: str) -> Path:
+    def _create_config(self, output_dir: Path, profile, federation_identifier: str, federation_type: str = "cognito") -> Path:
         """Create the configuration file."""
         config = {
             "ClaudeCode": {
                 "provider_domain": profile.provider_domain,
                 "client_id": profile.client_id,
-                "identity_pool_id": identity_pool_id,
                 "aws_region": profile.aws_region,
                 "provider_type": profile.provider_type or self._detect_provider_type(profile.provider_domain),
                 "credential_storage": profile.credential_storage,
                 "cross_region_profile": profile.cross_region_profile or "us",
             }
         }
+
+        # Add the appropriate federation field based on type
+        if federation_type == "direct":
+            config["ClaudeCode"]["federated_role_arn"] = federation_identifier
+            config["ClaudeCode"]["federation_type"] = "direct"
+            config["ClaudeCode"]["max_session_duration"] = profile.max_session_duration
+        else:
+            config["ClaudeCode"]["identity_pool_id"] = federation_identifier
+            config["ClaudeCode"]["federation_type"] = "cognito"
 
         # Add cognito_user_pool_id if it's a Cognito provider
         if profile.provider_type == "cognito" and profile.cognito_user_pool_id:

@@ -65,48 +65,133 @@ class TestCommand(Command):
             console.print(f"[dim]  - {local_dist}[/dim]")
             return 1
 
-        # Create temporary test directory
-        import tempfile
+        # Test directly from the package directory
+        console.print(f"[dim]Testing package in: {package_dir}[/dim]\n")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            test_dir = Path(temp_dir)
-            console.print(f"[dim]Testing in: {test_dir}[/dim]\n")
+        # Step 1: Check package contents
+        console.print("[bold]Step 1: Checking package contents[/bold]")
 
-            # Copy package files
-            console.print("[bold]Step 1: Simulating package distribution[/bold]")
-            shutil.copytree(package_dir, test_dir / "dist")
-            console.print("✓ Package files copied\n")
+        # Detect current platform
+        import platform as platform_module
+        system = platform_module.system().lower()
+        machine = platform_module.machine().lower()
 
-            # Run installer
-            console.print("[bold]Step 2: Running installer (as end user would)[/bold]")
-            install_result = subprocess.run(
-                ["bash", "install.sh"], cwd=test_dir / "dist", capture_output=True, text=True
+        if system == "darwin":
+            if machine == "arm64":
+                platform_suffix = "macos-arm64"
+            else:
+                platform_suffix = "macos-intel"
+        elif system == "linux":
+            if machine in ["aarch64", "arm64"]:
+                platform_suffix = "linux-arm64"
+            else:
+                platform_suffix = "linux-x64"
+        elif system == "windows":
+            platform_suffix = "windows"
+        else:
+            console.print(f"[red]Unsupported platform: {system}[/red]")
+            return 1
+
+        # Check for platform binary
+        credential_binary = package_dir / f"credential-process-{platform_suffix}"
+        if system == "windows" and not credential_binary.exists():
+            credential_binary = package_dir / f"credential-process-{platform_suffix}.exe"
+
+        if not credential_binary.exists():
+            console.print(f"[red]✗ Binary not found for your platform: {credential_binary.name}[/red]")
+            return 1
+
+        console.print(f"✓ Found binary: {credential_binary.name}")
+
+        # Check for OTEL helper (optional)
+        otel_binary = package_dir / f"otel-helper-{platform_suffix}"
+        if system == "windows" and not otel_binary.exists():
+            otel_binary = package_dir / f"otel-helper-{platform_suffix}.exe"
+
+        has_otel = otel_binary.exists()
+        if has_otel:
+            console.print(f"✓ Found OTEL helper: {otel_binary.name}")
+        else:
+            console.print(f"[dim]  - OTEL helper not included (monitoring disabled)[/dim]")
+
+        # Check config
+        config_path = package_dir / "config.json"
+        if not config_path.exists():
+            console.print("[red]✗ config.json not found[/red]")
+            return 1
+
+        console.print("✓ Found config.json")
+
+        # Read and display config details
+        with open(config_path) as f:
+            pkg_config = json.load(f)
+            profile_config = pkg_config.get("ClaudeCode", {})
+
+            # Display configuration
+            console.print("\n[bold]Configuration:[/bold]")
+            console.print(f"[dim]  - Provider: {profile_config.get('provider_domain', 'unknown')}[/dim]")
+            console.print(f"[dim]  - AWS Region: {profile_config.get('aws_region', 'unknown')}[/dim]")
+
+            # Check credential storage
+            storage_method = profile_config.get("credential_storage", "session")
+            storage_display = (
+                "Keyring (OS secure storage)" if storage_method == "keyring" else "Session Files (temporary)"
             )
+            console.print(f"[dim]  - Credential Storage: {storage_display}[/dim]")
 
-            if install_result.returncode != 0:
-                console.print("[red]✗ Installation failed[/red]")
-                console.print(f"[dim]{install_result.stderr}[/dim]")
-                return 1
+            # Check federation type
+            federation_type = profile_config.get("federation_type", "cognito")
+            if federation_type == "direct":
+                console.print(f"[dim]  - Federation Type: Direct STS (12-hour sessions)[/dim]")
+                if "federated_role_arn" in profile_config:
+                    console.print(f"[dim]  - Role ARN: {profile_config['federated_role_arn']}[/dim]")
+            else:
+                console.print(f"[dim]  - Federation Type: Cognito Identity Pool (8-hour sessions)[/dim]")
+                if "identity_pool_id" in profile_config:
+                    console.print(f"[dim]  - Identity Pool: {profile_config['identity_pool_id']}[/dim]")
 
-            console.print("✓ Installation completed")
-            console.print("[dim]  - Executable: ~/claude-code-with-bedrock/credential-process[/dim]")
-            console.print("[dim]  - Config: ~/claude-code-with-bedrock/config.json[/dim]")
-            console.print("[dim]  - AWS Profile: ClaudeCode[/dim]")
+        console.print()
 
-            # Check the installed config to show credential storage method
-            installed_config_path = Path.home() / "claude-code-with-bedrock" / "config.json"
-            if installed_config_path.exists():
-                with open(installed_config_path) as f:
-                    installed_config = json.load(f)
-                    storage_method = installed_config.get("default", {}).get("credential_storage", "session")
-                    storage_display = (
-                        "Keyring (OS secure storage)" if storage_method == "keyring" else "Session Files (temporary)"
-                    )
-                    console.print(f"[dim]  - Credential Storage: {storage_display}[/dim]")
-            console.print()
+        # Step 2: Test the binary directly
+        console.print("[bold]Step 2: Testing credential process binary[/bold]")
 
-            # Now run the actual tests
-            console.print("[bold]Step 3: Testing authentication[/bold]")
+        # Test if binary is executable
+        test_result = subprocess.run(
+            [str(credential_binary), "--version"],
+            capture_output=True,
+            text=True
+        )
+
+        if test_result.returncode == 0:
+            console.print(f"✓ Binary is executable")
+        else:
+            console.print(f"[red]✗ Binary failed to run[/red]")
+            console.print(f"[dim]{test_result.stderr}[/dim]")
+            return 1
+
+        # Set up temporary AWS profile for testing
+        import tempfile
+        import uuid
+        test_profile = f"ccwb-test-{uuid.uuid4().hex[:8]}"
+
+        console.print(f"\n[bold]Step 3: Testing authentication[/bold]")
+        console.print(f"[dim]Using temporary profile: {test_profile}[/dim]")
+
+        # Configure the test profile
+        aws_config_result = subprocess.run(
+            ["aws", "configure", "set", f"profile.{test_profile}.credential_process", str(credential_binary)],
+            capture_output=True
+        )
+
+        if aws_config_result.returncode != 0:
+            console.print("[red]Failed to configure test profile[/red]")
+            return 1
+
+        # Configure region for the test profile
+        subprocess.run(
+            ["aws", "configure", "set", f"profile.{test_profile}.region", profile_config.get('aws_region', 'us-east-1')],
+            capture_output=True
+        )
 
         # Load configuration for test parameters
         config = Config.load()
@@ -116,16 +201,16 @@ class TestCommand(Command):
             console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
-        # Get AWS profile name
-        aws_profile = self.option("profile")
+        # Use test_profile instead of hardcoded "ClaudeCode"
+        aws_profile = test_profile
         quick_mode = self.option("quick")
         with_api = self.option("api")
 
         # Create test results table
         table = Table(title="Test Results", box=box.ROUNDED, show_header=True, header_style="bold cyan")
-        table.add_column("Test", style="white", no_wrap=True)
-        table.add_column("Status", style="white", width=10)
-        table.add_column("Details", style="dim")
+        table.add_column("Test", style="white", no_wrap=True, min_width=24)
+        table.add_column("Status", style="white", width=12)
+        table.add_column("Details", style="dim", min_width=50, overflow="fold")
 
         test_results = []
 
@@ -219,7 +304,14 @@ class TestCommand(Command):
                     "\n[dim]Note: API invocation tests were skipped. Use --api to test actual Bedrock calls.[/dim]"
                 )
 
-            console.print(f"\n[bold]AWS Profile '{aws_profile}' is configured and working with Bedrock.[/bold]")
+            console.print(f"\n[bold]Package test complete. Authentication and Bedrock access verified.[/bold]")
+
+            # Clean up test profile if we created one
+            if 'test_profile' in locals():
+                subprocess.run(
+                    ["aws", "configure", "--profile", test_profile, "set", "credential_process", ""],
+                    capture_output=True
+                )
 
             return 0
 
@@ -284,8 +376,20 @@ class TestCommand(Command):
                     if expected_account and account_id != expected_account:
                         return {"status": "✗", "details": f"Wrong account: {account_id} (expected {expected_account})"}
 
-                    # Check role name pattern
-                    if config_profile.identity_pool_name in role_name or "BedrockAccessRole" in role_name:
+                    # Check role name pattern - support both Cognito and Direct IAM patterns
+                    expected_patterns = [
+                        config_profile.identity_pool_name,
+                        "BedrockAccessRole",
+                        "BedrockOktaFederatedRole",
+                        "BedrockAzureFederatedRole",
+                        "BedrockAuth0FederatedRole",
+                        "BedrockCognitoFederatedRole",
+                        "Bedrock",  # General Bedrock role pattern
+                        "FederatedRole"  # General federated pattern
+                    ]
+
+                    # Check if role matches any expected pattern
+                    if any(pattern in role_name for pattern in expected_patterns if pattern):
                         return {"status": "✓", "details": f"Role: {role_name} in account {account_id}"}
                     else:
                         return {"status": "!", "details": f"Using role: {role_name}"}
@@ -390,6 +494,59 @@ class TestCommand(Command):
             return {"status": "!", "details": "Request timed out (may be a network issue)"}
         except Exception as e:
             return {"status": "✗", "details": str(e)}
+
+    def _test_otel_helper(self, otel_binary: Path, credential_binary: Path) -> dict:
+        """Test OTEL helper functionality."""
+        try:
+            # First get a monitoring token
+            token_result = subprocess.run(
+                [str(credential_binary), "--get-monitoring-token"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if token_result.returncode != 0 or not token_result.stdout.strip():
+                return {"status": "!", "details": "Could not get monitoring token"}
+
+            # Test OTEL helper with the token
+            import os
+            env = os.environ.copy()
+            env["CLAUDE_CODE_MONITORING_TOKEN"] = token_result.stdout.strip()
+
+            otel_result = subprocess.run(
+                [str(otel_binary), "--test"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=10
+            )
+
+            if otel_result.returncode == 0:
+                # Parse output to extract key claims
+                output = otel_result.stdout
+                email = None
+                user_id = None
+
+                for line in output.split('\n'):
+                    if 'X-user-email:' in line:
+                        email = line.split(':', 1)[1].strip()
+                    elif 'user.id:' in line and not user_id:
+                        user_id = line.split(':', 1)[1].strip()[:20] + "..."
+
+                if email:
+                    details = f"Claims extracted: email={email[:20]}..."
+                    if user_id:
+                        details += f", id={user_id}"
+                    return {"status": "✓", "details": details}
+                else:
+                    return {"status": "✓", "details": "OTEL helper working"}
+            else:
+                return {"status": "✗", "details": "OTEL helper failed"}
+        except subprocess.TimeoutExpired:
+            return {"status": "✗", "details": "OTEL helper timeout"}
+        except Exception as e:
+            return {"status": "✗", "details": str(e)[:50]}
 
     def _test_model_invocation(self, profile_name: str, region: str, available_models: list = None) -> dict:
         """Test actual model invocation with Claude 3."""

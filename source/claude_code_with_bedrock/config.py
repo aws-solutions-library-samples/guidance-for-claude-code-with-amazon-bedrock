@@ -13,6 +13,7 @@ from typing import Any, Optional
 @dataclass
 class Profile:
     """Configuration profile for a deployment."""
+
     name: str
     provider_domain: str  # Generic OIDC provider domain (was okta_domain)
     client_id: str  # Generic OIDC client ID (was okta_client_id)
@@ -29,7 +30,9 @@ class Profile:
     analytics_debug_mode: bool = False
     allowed_bedrock_regions: list[str] = field(default_factory=list)
     cross_region_profile: Optional[str] = None  # Cross-region profile: "us", "europe", "apac"
-    selected_model: Optional[str] = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
+    selected_model: Optional[str] = (
+        None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
+    )
     selected_source_region: Optional[str] = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -43,6 +46,11 @@ class Profile:
     monthly_token_limit: int = 300000000  # Monthly token limit per user (300M default)
     warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
     warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
+
+    # Federation configuration
+    federation_type: str = "cognito"  # "cognito" or "direct"
+    federated_role_arn: Optional[str] = None  # ARN for Direct STS federation
+    max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
 
     # Legacy field support
     @property
@@ -63,57 +71,58 @@ class Profile:
     def from_dict(cls, data: dict[str, Any]) -> "Profile":
         """Create profile from dictionary with migration support."""
         # Migrate old field names to new ones
-        if 'okta_domain' in data and 'provider_domain' not in data:
-            data['provider_domain'] = data.pop('okta_domain')
-        if 'okta_client_id' in data and 'client_id' not in data:
-            data['client_id'] = data.pop('okta_client_id')
+        if "okta_domain" in data and "provider_domain" not in data:
+            data["provider_domain"] = data.pop("okta_domain")
+        if "okta_client_id" in data and "client_id" not in data:
+            data["client_id"] = data.pop("okta_client_id")
 
         # Remove any remaining old fields to avoid conflicts
-        data.pop('okta_domain', None)
-        data.pop('okta_client_id', None)
+        data.pop("okta_domain", None)
+        data.pop("okta_client_id", None)
 
         # Provide default for credential_storage if not present
-        if 'credential_storage' not in data:
-            data['credential_storage'] = 'session'
+        if "credential_storage" not in data:
+            data["credential_storage"] = "session"
 
         # Auto-detect provider type if not set
-        if 'provider_type' not in data and 'provider_domain' in data:
-            domain = data['provider_domain']
+        if "provider_type" not in data and "provider_domain" in data:
+            domain = data["provider_domain"]
             # Secure provider detection using proper URL parsing
             if domain:
                 # Handle both full URLs and domain-only inputs
-                url_to_parse = domain if domain.startswith(('http://', 'https://')) else f"https://{domain}"
-                
+                url_to_parse = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+
                 try:
                     from urllib.parse import urlparse
+
                     parsed = urlparse(url_to_parse)
                     hostname = parsed.hostname
-                    
+
                     if hostname:
                         hostname_lower = hostname.lower()
-                        
+
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
-                        if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
-                            data['provider_type'] = 'okta'
-                        elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
-                            data['provider_type'] = 'auth0'
-                        elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
-                            data['provider_type'] = 'azure'
-                        elif hostname_lower.endswith('.windows.net') or hostname_lower == 'windows.net':
-                            data['provider_type'] = 'azure'
-                        elif hostname_lower.endswith('.amazoncognito.com') or hostname_lower == 'amazoncognito.com':
-                            data['provider_type'] = 'cognito'
+                        if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                            data["provider_type"] = "okta"
+                        elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
+                            data["provider_type"] = "auth0"
+                        elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
+                            data["provider_type"] = "azure"
+                        elif hostname_lower.endswith(".windows.net") or hostname_lower == "windows.net":
+                            data["provider_type"] = "azure"
+                        elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
+                            data["provider_type"] = "cognito"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 
         # Set default cross-region profile if not present
-        if 'cross_region_profile' not in data:
+        if "cross_region_profile" not in data:
             # Default to 'us' for existing deployments with US regions
-            if 'allowed_bedrock_regions' in data:
-                regions = data['allowed_bedrock_regions']
-                if any(r.startswith('us-') for r in regions):
-                    data['cross_region_profile'] = 'us'
+            if "allowed_bedrock_regions" in data:
+                regions = data["allowed_bedrock_regions"]
+                if any(r.startswith("us-") for r in regions):
+                    data["cross_region_profile"] = "us"
 
         return cls(**data)
 
@@ -161,13 +170,10 @@ class Config:
         data = {
             "version": "1.0",
             "default_profile": self.default_profile,
-            "profiles": {
-                name: profile.to_dict()
-                for name, profile in self.profiles.items()
-            }
+            "profiles": {name: profile.to_dict() for name, profile in self.profiles.items()},
         }
 
-        with open(self.CONFIG_FILE, 'w') as f:
+        with open(self.CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
     def add_profile(self, profile: Profile) -> None:
@@ -221,5 +227,5 @@ class Config:
             "OktaClientId": profile.okta_client_id,
             "IdentityPoolName": profile.identity_pool_name,
             "AllowedBedrockRegions": ",".join(profile.allowed_bedrock_regions),
-            "EnableMonitoring": "true" if profile.monitoring_enabled else "false"
+            "EnableMonitoring": "true" if profile.monitoring_enabled else "false",
         }

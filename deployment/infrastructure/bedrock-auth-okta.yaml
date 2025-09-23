@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code with Bedrock - Okta Authentication Stack'
+
+Parameters:
+  FederationType:
+    Type: String
+    Default: direct
+    AllowedValues:
+      - direct
+      - cognito
+    Description: Authentication mode - Direct IAM or Cognito Identity Pool
+
+  OktaDomain:
+    Type: String
+    Description: Your Okta domain (e.g., company.okta.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(-emea)?\.com$'
+    ConstraintDescription: Must be a valid Okta domain
+
+  OktaClientId:
+    Type: String
+    Description: Okta application client ID
+    AllowedPattern: '^[a-zA-Z0-9]{20}$'
+    ConstraintDescription: Must be a valid Okta client ID
+
+  IdentityPoolName:
+    Type: String
+    Default: claude-code-okta
+    Description: Name for the Cognito Identity Pool (used in cognito mode)
+    AllowedPattern: '^[\w\s+=,.@-]+$'
+    MaxLength: 128
+
+  FederatedRoleName:
+    Type: String
+    Default: BedrockOktaFederatedRole
+    Description: Name for the IAM role used for federation
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-_]*$'
+    MaxLength: 64
+
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-west-2'
+    Description: Comma-delimited list of AWS regions where Bedrock access is allowed
+
+  EnableMonitoring:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable CloudWatch monitoring for Bedrock usage
+
+  EnableSessionTags:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable session tags for enhanced security and tracking
+
+Conditions:
+  UseDirectIAM: !Equals [!Ref FederationType, direct]
+  UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
+  MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  SessionTagsEnabled: !Equals [!Ref EnableSessionTags, 'true']
+
+Resources:
+  # ===============================================
+  # OIDC Provider for Okta
+  # ===============================================
+
+  OktaOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Sub 'https://${OktaDomain}'
+      ClientIdList:
+        - !Ref OktaClientId
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280  # Okta's thumbprint
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Okta Authentication
+        - Key: Provider
+          Value: Okta
+
+  # ===============================================
+  # Bedrock Access Policy (Shared)
+  # ===============================================
+
+  BedrockAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::StackName}-BedrockAccessPolicy'
+      Description: Policy for accessing Bedrock services
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBedrockInvoke
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:InvokeModel'
+              - 'bedrock-runtime:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:ConverseStream'
+              - 'bedrock-runtime:Converse'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockList
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - !If
+            - MonitoringEnabled
+            - Sid: AllowCloudWatchMetrics
+              Effect: Allow
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace':
+                    - 'ClaudeCode/Bedrock/Usage'
+                    - 'AWS/Bedrock'
+            - !Ref 'AWS::NoValue'
+
+  # ===============================================
+  # Direct IAM Resources (when FederationType=direct)
+  # ===============================================
+
+  DirectIAMRole:
+    Type: AWS::IAM::Role
+    Condition: UseDirectIAM
+    Properties:
+      RoleName: !Ref FederatedRoleName
+      Description: Direct IAM role for Okta users accessing Bedrock
+      MaxSessionDuration: 43200  # 12 hours
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt OktaOIDCProvider.Arn
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+              - !If
+                - SessionTagsEnabled
+                - 'sts:TagSession'
+                - !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Direct IAM Authentication
+        - Key: Provider
+          Value: Okta
+        - Key: FederationType
+          Value: direct
+
+  # ===============================================
+  # Cognito Identity Pool Resources (when FederationType=cognito)
+  # ===============================================
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolName: !Ref IdentityPoolName
+      AllowUnauthenticatedIdentities: false
+      AllowClassicFlow: false
+      OpenIdConnectProviderARNs:
+        - !GetAtt OktaOIDCProvider.Arn
+
+  CognitoAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-CognitoAuthRole'
+      Description: Role for authenticated Cognito Identity Pool users
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Authentication
+        - Key: Provider
+          Value: Okta
+
+  CognitoUnauthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-CognitoUnauthRole'
+      Description: Role for unauthenticated Cognito Identity Pool users (restricted)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': unauthenticated
+      Policies:
+        - PolicyName: DenyAll
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Deny
+                Action: '*'
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Unauthenticated Role
+        - Key: Provider
+          Value: Okta
+
+  CognitoIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthenticatedRole.Arn
+        unauthenticated: !GetAtt CognitoUnauthenticatedRole.Arn
+
+  # ===============================================
+  # Optional Monitoring Resources
+  # ===============================================
+
+  BedrockAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: MonitoringEnabled
+    Properties:
+      LogGroupName: !Sub '/aws/bedrock/claude-code-${AWS::StackName}'
+      RetentionInDays: 30
+
+Outputs:
+  FederationType:
+    Description: Current federation type configuration
+    Value: !Ref FederationType
+    Export:
+      Name: !Sub '${AWS::StackName}-FederationType'
+
+  OIDCProviderArn:
+    Description: ARN of the Okta OIDC Provider
+    Value: !GetAtt OktaOIDCProvider.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OIDCProviderArn'
+
+  FederatedRoleArn:
+    Description: ARN of the federated role for Okta users
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FederatedRoleArn'
+
+  DirectSTSRoleArn:
+    Description: Direct STS federated role ARN (when using direct IAM)
+    Condition: UseDirectIAM
+    Value: !GetAtt DirectIAMRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DirectSTSRoleArn'
+
+  BedrockRoleArn:
+    Description: IAM Role ARN for Bedrock access (for backward compatibility)
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockRoleArn'
+
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID (if using Cognito mode)
+    Condition: UseCognitoIdentity
+    Value: !Ref CognitoIdentityPool
+    Export:
+      Name: !Sub '${AWS::StackName}-IdentityPoolId'
+
+  BedrockPolicyArn:
+    Description: ARN of the Bedrock access policy
+    Value: !Ref BedrockAccessPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockPolicyArn'
+
+  ConfigurationJson:
+    Description: Configuration JSON for CLI tool
+    Value: !If
+      - UseDirectIAM
+      - !Sub |
+        {
+          "federation_type": "direct",
+          "provider_type": "okta",
+          "provider_domain": "${OktaDomain}",
+          "client_id": "${OktaClientId}",
+          "federated_role_arn": "${DirectIAMRole.Arn}",
+          "aws_region": "${AWS::Region}",
+          "max_session_duration": 43200
+        }
+      - !Sub |
+        {
+          "federation_type": "cognito",
+          "provider_type": "okta",
+          "provider_domain": "${OktaDomain}",
+          "client_id": "${OktaClientId}",
+          "identity_pool_id": "${CognitoIdentityPool}",
+          "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
+          "aws_region": "${AWS::Region}"
+        }
