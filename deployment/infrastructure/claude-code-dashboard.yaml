@@ -631,7 +631,7 @@ Resources:
               "width": 12,
               "height": 6,
               "properties": {
-                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-0|opus-4-[^1]/, tokens, 0) as opus_4, if(model like /sonnet-4/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
+                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-0|opus-4-[^1]/, tokens, 0) as opus_4, if(model like /sonnet-4-5/, tokens, 0) as sonnet_4_5, if(model like /sonnet-4-[^5]|sonnet-4-20250514/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4_5) as Sonnet_4_5, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
                 "region": "us-east-1",
                 "title": "Token Usage by Model Over Time",
                 "queryLanguage": "cwli",
@@ -836,6 +836,13 @@ Resources:
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-east-1)", "region": "us-east-1" } ],
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-west-2)", "region": "us-west-2" } ],
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-20250514-v1:0", { "stat": "Sum", "label": "Opus 4 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-east-1)", "region": "us-east-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-west-2)", "region": "us-west-2" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-east-2)", "region": "us-east-2" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (eu-central-1)", "region": "eu-central-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (eu-west-1)", "region": "eu-west-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (ap-northeast-1)", "region": "ap-northeast-1" } ],
+                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (ap-southeast-1)", "region": "ap-southeast-1" } ],
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-sonnet-4-20250514-v1:0", { "stat": "Sum", "label": "Sonnet 4 (us-east-1)", "region": "us-east-1" } ],
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-3-7-sonnet-20250219-v1:0", { "stat": "Sum", "label": "Sonnet 3.7 (us-east-1)", "region": "us-east-1" } ],
                   [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "anthropic.claude-3-5-haiku-20241022-v1:0", { "stat": "Sum", "label": "Haiku 3.5 (us-east-1)", "region": "us-east-1" } ]
