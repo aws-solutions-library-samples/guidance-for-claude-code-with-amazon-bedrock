@@ -56,3 +56,6 @@ assets/docs/planning
 .ruff_cache/
 .coverage
 .epcc
+
+EPCC_*
+PRs/

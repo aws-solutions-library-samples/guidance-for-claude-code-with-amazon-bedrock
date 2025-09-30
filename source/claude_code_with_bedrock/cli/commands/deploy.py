@@ -344,10 +344,12 @@ class DeployCommand(Command):
                         f"AzureClientId={profile.client_id}",
                     ])
                 elif provider_type == 'cognito':
+                    # Extract domain prefix from full domain (e.g., "us-east-1p8mdr8zxe" from "us-east-1p8mdr8zxe.auth.us-east-1.amazoncognito.com")
+                    cognito_domain = profile.provider_domain.split('.')[0] if '.' in profile.provider_domain else profile.provider_domain
                     params.extend([
                         f"CognitoUserPoolId={profile.cognito_user_pool_id}",
                         f"CognitoUserPoolClientId={profile.client_id}",
-                        f"CognitoUserPoolDomain={profile.provider_domain}",
+                        f"CognitoUserPoolDomain={cognito_domain}",
                     ])
 
                 params.extend([

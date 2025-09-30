@@ -96,12 +96,11 @@ Resources:
   BedrockAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: !Sub '${AWS::StackName}-BedrockAccessPolicy'
       Description: Policy for accessing Bedrock services
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowBedrockInvoke
+          - Sid: AllowBedrockInvokeRegional
             Effect: Allow
             Action:
               - 'bedrock:InvokeModel'
@@ -110,11 +109,24 @@ Resources:
               - 'bedrock-runtime:InvokeModelWithResponseStream'
               - 'bedrock-runtime:ConverseStream'
               - 'bedrock-runtime:Converse'
-            Resource: '*'
+            Resource:
+              - 'arn:aws:bedrock:*::foundation-model/*'
+              - 'arn:aws:bedrock:*:*:inference-profile/*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
-          - Sid: AllowBedrockList
+          - Sid: AllowBedrockInvokeGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:InvokeModel'
+              - 'bedrock-runtime:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:ConverseStream'
+              - 'bedrock-runtime:Converse'
+            Resource:
+              - 'arn:aws:bedrock:::foundation-model/*'
+          - Sid: AllowBedrockListRegional
             Effect: Allow
             Action:
               - 'bedrock:ListFoundationModels'
@@ -122,10 +134,22 @@ Resources:
               - 'bedrock:GetFoundationModelAvailability'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
-            Resource: '*'
+            Resource:
+              - 'arn:aws:bedrock:*::foundation-model/*'
+              - 'arn:aws:bedrock:*:*:inference-profile/*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockListGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
+            Resource:
+              - 'arn:aws:bedrock:::foundation-model/*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics
@@ -193,7 +217,6 @@ Resources:
     Type: AWS::IAM::Role
     Condition: UseCognitoIdentity
     Properties:
-      RoleName: !Sub '${AWS::StackName}-CognitoAuthRole'
       Description: Role for authenticated Cognito Identity Pool users
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -220,7 +243,6 @@ Resources:
     Type: AWS::IAM::Role
     Condition: UseCognitoIdentity
     Properties:
-      RoleName: !Sub '${AWS::StackName}-CognitoUnauthRole'
       Description: Role for unauthenticated Cognito Identity Pool users (restricted)
       AssumeRolePolicyDocument:
         Version: '2012-10-17'

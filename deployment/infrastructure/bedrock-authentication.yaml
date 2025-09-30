@@ -216,7 +216,7 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowBedrockInvoke
+          - Sid: AllowBedrockInvokeRegional
             Effect: Allow
             Action:
               - 'bedrock:InvokeModel'
@@ -227,6 +227,13 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockInvokeGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+            Resource:
+              - 'arn:aws:bedrock:::foundation-model/*'
           - Sid: AllowBedrockList
             Effect: Allow
             Action:

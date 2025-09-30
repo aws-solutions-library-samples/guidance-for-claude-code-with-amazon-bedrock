@@ -676,19 +676,12 @@ class InitCommand(Command):
             # Get destination regions for the model/profile combination
             destination_regions = get_destination_regions_for_model_profile(selected_model_key, selected_profile)
 
-            # For now, use a default set of regions until the TODO regions are filled in
-            # This ensures the system still works during the transition
-            if not destination_regions:  # Empty list means TODO regions not filled yet
-                default_region_sets = {
-                    "us": ["us-east-1", "us-east-2", "us-west-2"],
-                    "europe": ["eu-west-1", "eu-west-3", "eu-central-1", "eu-north-1"],
-                    "apac": ["ap-northeast-1", "ap-southeast-1", "ap-southeast-2", "ap-south-1"],
-                }
-                config["aws"]["allowed_bedrock_regions"] = default_region_sets.get(
-                    selected_profile, default_region_sets["us"]
-                )
-            else:
-                config["aws"]["allowed_bedrock_regions"] = destination_regions
+            # Use the destination regions from the model profile
+            if not destination_regions:
+                console.print(f"[red]Error:[/red] No destination regions configured for {selected_model_key} with {selected_profile} profile")
+                raise ValueError(f"No destination regions configured for model/profile combination")
+
+            config["aws"]["allowed_bedrock_regions"] = destination_regions
 
             # Step 3: Select source region for the selected model/profile combination
             profile_name = selected_profile.upper() if selected_profile != "us" else "US"
