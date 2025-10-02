@@ -313,9 +313,11 @@ class DeployCommand(Command):
                 template_file = template_map.get(provider_type, 'bedrock-auth-okta.yaml')
                 template = project_root / "deployment" / "infrastructure" / template_file
 
-                # Use old template if new one doesn't exist (backwards compatibility)
+                # Verify template exists
                 if not template.exists():
-                    template = project_root / "deployment" / "infrastructure" / "bedrock-authentication.yaml"
+                    console.print(f"[red]Error: Template not found: {template_file}[/red]")
+                    console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
+                    return 1
 
                 stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 

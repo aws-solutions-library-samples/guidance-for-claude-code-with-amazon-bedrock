@@ -55,19 +55,10 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
-  EnableSessionTags:
-    Type: String
-    Default: 'true'
-    AllowedValues:
-      - 'true'
-      - 'false'
-    Description: Enable session tags for enhanced security and tracking
-
 Conditions:
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
-  SessionTagsEnabled: !Equals [!Ref EnableSessionTags, 'true']
 
 Resources:
   # ===============================================
@@ -183,10 +174,7 @@ Resources:
               Federated: !GetAtt CognitoUserPoolOIDCProvider.Arn
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
-              - !If
-                - SessionTagsEnabled
-                - 'sts:TagSession'
-                - !Ref 'AWS::NoValue'
+              - 'sts:TagSession'
       ManagedPolicyArns:
         - !Ref BedrockAccessPolicy
       Tags:
@@ -226,6 +214,7 @@ Resources:
               Federated: cognito-identity.amazonaws.com
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
+              - 'sts:TagSession'
             Condition:
               StringEquals:
                 'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
@@ -279,6 +268,19 @@ Resources:
       Roles:
         authenticated: !GetAtt CognitoAuthenticatedRole.Arn
         unauthenticated: !GetAtt CognitoUnauthenticatedRole.Arn
+
+  # Principal Tag Mapping for Session Tags
+  IdentityPoolPrincipalTag:
+    Type: AWS::Cognito::IdentityPoolPrincipalTag
+    Condition: UseCognitoIdentity
+    DeletionPolicy: Delete
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      IdentityProviderName: !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+      UseDefaults: false
+      PrincipalTags:
+        UserEmail: email
+        UserId: sub
 
   # ===============================================
   # Optional Monitoring Resources

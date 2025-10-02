@@ -339,7 +339,7 @@ class PackageCommand(Command):
             if not profile:
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
-            
+
             codebuild = boto3.client("codebuild", region_name=profile.aws_region)
             response = codebuild.batch_get_builds(ids=[build_id])
 
@@ -699,11 +699,12 @@ class PackageCommand(Command):
     def _build_linux_pyinstaller(self, output_dir: Path) -> Path:
         """Build Linux executable using PyInstaller."""
         console = Console()
-        
+
         # Detect architecture and set appropriate binary name
         import platform
+
         machine = platform.machine().lower()
-        if machine in ['aarch64', 'arm64']:
+        if machine in ["aarch64", "arm64"]:
             binary_name = "credential-process-linux-arm64"
         else:
             binary_name = "credential-process-linux-x64"
@@ -788,7 +789,7 @@ class PackageCommand(Command):
             shutil.copytree(source_dir / "credential_provider", temp_path / "credential_provider")
 
             # Create Dockerfile with PyInstaller
-            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:20.04
+            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:22.04
 
 # Set non-interactive to avoid tzdata prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -933,7 +934,7 @@ RUN pyinstaller \
             shutil.copytree(source_dir / "otel_helper", temp_path / "otel_helper")
 
             # Create Dockerfile for OTEL helper with PyInstaller
-            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:20.04
+            dockerfile_content = f"""FROM --platform={docker_platform} ubuntu:22.04
 
 # Set non-interactive to avoid tzdata prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -1253,8 +1254,9 @@ RUN pyinstaller \
         elif platform_name == "linux":
             # Detect architecture and set appropriate binary name
             import platform
+
             machine = platform.machine().lower()
-            if machine in ['aarch64', 'arm64']:
+            if machine in ["aarch64", "arm64"]:
                 binary_name = "otel-helper-linux-arm64"
             else:
                 binary_name = "otel-helper-linux-x64"
@@ -1443,7 +1445,9 @@ RUN pyinstaller \
 
         return output_dir / binary_name
 
-    def _create_config(self, output_dir: Path, profile, federation_identifier: str, federation_type: str = "cognito") -> Path:
+    def _create_config(
+        self, output_dir: Path, profile, federation_identifier: str, federation_type: str = "cognito"
+    ) -> Path:
         """Create the configuration file."""
         config = {
             "ClaudeCode": {
@@ -1685,7 +1689,7 @@ echo
         installer_path.chmod(0o755)
 
         # Create Windows installer only if Windows builds are enabled (CodeBuild)
-        if "windows" in platforms_built or (hasattr(profile, 'enable_codebuild') and profile.enable_codebuild):
+        if "windows" in platforms_built or (hasattr(profile, "enable_codebuild") and profile.enable_codebuild):
             self._create_windows_installer(output_dir, profile)
 
         return installer_path
@@ -2032,26 +2036,28 @@ Available metrics include:
 
                     if endpoint:
                         # Add monitoring configuration
-                        settings["env"].update({
-                            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-                            "OTEL_METRICS_EXPORTER": "otlp",
-                            "OTEL_LOGS_EXPORTER": "otlp",
-                            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-                            "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                            # Add basic OTEL resource attributes for multi-team support
-                            "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
-                        })
+                        settings["env"].update(
+                            {
+                                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                                "OTEL_METRICS_EXPORTER": "otlp",
+                                "OTEL_LOGS_EXPORTER": "otlp",
+                                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                                "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+                                # Add basic OTEL resource attributes for multi-team support
+                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
+                            }
+                        )
 
                         # Add the helper executable for generating OTEL headers with user attributes
                         # Use a placeholder that will be replaced by the installer script based on platform
                         settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
                         is_https = endpoint.startswith("https://")
-                        console.print(
-                            f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]"
-                        )
+                        console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
                         if not is_https:
-                            console.print("[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]")
+                            console.print(
+                                "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
+                            )
                     else:
                         console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
                 else:
@@ -2062,9 +2068,7 @@ Available metrics include:
             with open(settings_path, "w") as f:
                 json.dump(settings, f, indent=2)
 
-            console.print(
-                f"[dim]Created Claude Code settings for Bedrock configuration[/dim]"
-            )
+            console.print(f"[dim]Created Claude Code settings for Bedrock configuration[/dim]")
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")

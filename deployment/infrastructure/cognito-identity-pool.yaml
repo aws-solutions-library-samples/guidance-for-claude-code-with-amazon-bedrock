@@ -240,10 +240,6 @@ Resources:
       PrincipalTags:
         UserEmail: email
         UserId: sub
-        UserName: !If
-          - UseCognitoUserPool
-          - preferred_username
-          - name
 
   # CloudWatch Log Group for Bedrock Access Tracking
   BedrockAccessLogGroup:
