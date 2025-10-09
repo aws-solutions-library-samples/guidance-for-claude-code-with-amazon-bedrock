@@ -9,7 +9,6 @@ import platform
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import questionary
 from cleo.commands.command import Command
@@ -158,7 +157,6 @@ class PackageCommand(Command):
 
         # Use default values
         output_dir = Path("./dist")
-        package_format = "both"
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,11 +324,11 @@ class PackageCommand(Command):
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
-        config_path = self._create_config(output_dir, profile, federation_identifier, federation_type)
+        self._create_config(output_dir, profile, federation_identifier, federation_type)
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
-        installer_path = self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
@@ -1380,7 +1378,7 @@ RUN pyinstaller \
         # Fallback
         raise ValueError(f"Unsupported target platform for OTEL helper: {target_platform}")
 
-    def _build_otel_helper_pyinstaller(self, output_dir: Path, platform_name: str, arch: Optional[str]) -> Path:
+    def _build_otel_helper_pyinstaller(self, output_dir: Path, platform_name: str, arch: str | None) -> Path:
         """Build OTEL helper using PyInstaller."""
         import platform as platform_module
 
@@ -1517,7 +1515,6 @@ RUN pyinstaller \
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
         # Check platform compatibility (same as credential-process)
-        current_platform_str = f"{current_system}-{current_machine}"
         if target_platform == "macos" and current_system != "darwin":
             raise RuntimeError(f"Cannot build macOS binary on {current_system}. Nuitka requires native builds.")
         elif target_platform == "linux" and current_system != "linux":
@@ -1674,7 +1671,7 @@ RUN pyinstaller \
 
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
-        otel_platforms_built = [platform for platform, _ in built_otel_helpers] if built_otel_helpers else []
+        [platform for platform, _ in built_otel_helpers] if built_otel_helpers else []
 
         installer_content = f"""#!/bin/bash
 # Claude Code Authentication Installer

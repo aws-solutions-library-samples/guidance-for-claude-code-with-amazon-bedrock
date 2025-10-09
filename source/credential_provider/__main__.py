@@ -990,7 +990,7 @@ class MultiProviderAuth:
             self._debug_print("Cognito client created")
 
             self._debug_print("Creating STS client...")
-            sts_client = boto3.client("sts", region_name=self.config["aws_region"])
+            boto3.client("sts", region_name=self.config["aws_region"])
             self._debug_print("STS client created")
         finally:
             # Restore environment variables

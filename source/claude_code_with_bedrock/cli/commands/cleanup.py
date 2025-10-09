@@ -110,7 +110,7 @@ class CleanupCommand(Command):
                 # Find and remove the profile section
                 new_lines = []
                 skip = False
-                for i, line in enumerate(lines):
+                for _i, line in enumerate(lines):
                     if line.strip() == f"[profile {profile_name}]":
                         skip = True
                         # Remove any trailing blank line before the profile

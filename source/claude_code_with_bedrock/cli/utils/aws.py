@@ -3,13 +3,13 @@
 
 """AWS utilities for CLI commands."""
 
-from typing import Any, Optional
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
 
-def get_current_region() -> Optional[str]:
+def get_current_region() -> str | None:
     """Get the current AWS region from configuration."""
     try:
         session = boto3.Session()
@@ -104,7 +104,7 @@ def get_stack_outputs(stack_name: str, region: str) -> dict[str, str]:
         return {}
 
 
-def get_account_id() -> Optional[str]:
+def get_account_id() -> str | None:
     """Get the current AWS account ID."""
     try:
         client = boto3.client("sts")

@@ -235,7 +235,7 @@ def get_token_via_credential_process():
 
 def main():
     """Main function to generate OTEL headers"""
-    args = parse_args()
+    parse_args()
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
     token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")

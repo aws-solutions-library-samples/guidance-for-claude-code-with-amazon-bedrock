@@ -695,22 +695,9 @@ class DistributeCommand(Command):
     def _generate_restricted_url(self, s3_client, bucket: str, key: str, allowed_ips: str, expires_hours: int) -> str:
         """Generate a presigned URL with IP restrictions."""
         # Parse IP addresses
-        ip_list = [ip.strip() for ip in allowed_ips.split(",")]
+        [ip.strip() for ip in allowed_ips.split(",")]
 
         # Create bucket policy for IP restriction
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Sid": "RestrictToIPs",
-                    "Effect": "Allow",
-                    "Principal": "*",
-                    "Action": "s3:GetObject",
-                    "Resource": f"arn:aws:s3:::{bucket}/{key}",
-                    "Condition": {"IpAddress": {"aws:SourceIp": ip_list}},
-                }
-            ],
-        }
 
         # Generate presigned POST (which supports policies)
         # Note: For GET with IP restrictions, we'd need to use CloudFront

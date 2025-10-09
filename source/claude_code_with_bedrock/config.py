@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -29,15 +29,13 @@ class Profile:
     firehose_buffer_interval: int = 900
     analytics_debug_mode: bool = False
     allowed_bedrock_regions: list[str] = field(default_factory=list)
-    cross_region_profile: Optional[str] = None  # Cross-region profile: "us", "europe", "apac"
-    selected_model: Optional[
-        str
-    ] = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
-    selected_source_region: Optional[str] = None  # User-selected source region for AWS config and Claude Code settings
+    cross_region_profile: str | None = None  # Cross-region profile: "us", "europe", "apac"
+    selected_model: str | None = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
+    selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: Optional[str] = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
-    cognito_user_pool_id: Optional[str] = None  # Only for Cognito User Pool providers
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (S3 + presigned URLs)
 
@@ -49,7 +47,7 @@ class Profile:
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
-    federated_role_arn: Optional[str] = None  # ARN for Direct STS federation
+    federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
 
     # Claude Code settings configuration
@@ -139,7 +137,7 @@ class Config:
     def __init__(self):
         """Initialize configuration."""
         self.profiles: dict[str, Profile] = {}
-        self.default_profile: Optional[str] = None
+        self.default_profile: str | None = None
         self._ensure_config_dir()
 
     def _ensure_config_dir(self) -> None:
@@ -188,7 +186,7 @@ class Config:
         if len(self.profiles) == 1:
             self.default_profile = profile.name
 
-    def get_profile(self, name: Optional[str] = None) -> Optional[Profile]:
+    def get_profile(self, name: str | None = None) -> Profile | None:
         """Get a profile by name or the default profile."""
         if name:
             return self.profiles.get(name)
@@ -219,7 +217,7 @@ class Config:
             return True
         return False
 
-    def get_aws_config_for_profile(self, profile_name: Optional[str] = None) -> dict[str, Any]:
+    def get_aws_config_for_profile(self, profile_name: str | None = None) -> dict[str, Any]:
         """Get AWS configuration for CloudFormation deployment."""
         profile = self.get_profile(profile_name)
         if not profile:

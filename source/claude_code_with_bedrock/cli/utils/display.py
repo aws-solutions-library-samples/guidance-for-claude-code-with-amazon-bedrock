@@ -3,7 +3,7 @@
 
 """Shared display utilities for consistent output formatting across commands."""
 
-from typing import Any, Optional
+from typing import Any
 
 from rich import box
 from rich.console import Console
@@ -12,7 +12,7 @@ from rich.table import Table
 from claude_code_with_bedrock.models import get_all_model_display_names
 
 
-def display_configuration_info(profile, identity_pool_id: Optional[str] = None, format_type: str = "table") -> None:
+def display_configuration_info(profile, identity_pool_id: str | None = None, format_type: str = "table") -> None:
     """
     Display configuration information in a consistent format.
 
@@ -29,7 +29,7 @@ def display_configuration_info(profile, identity_pool_id: Optional[str] = None, 
         _display_simple_format(console, profile, identity_pool_id)
 
 
-def _display_table_format(console: Console, profile, identity_pool_id: Optional[str]) -> None:
+def _display_table_format(console: Console, profile, identity_pool_id: str | None) -> None:
     """Display configuration in rich table format."""
     config_table = Table(box=box.SIMPLE)
     config_table.add_column("Setting", style="dim")
@@ -93,7 +93,7 @@ def _display_table_format(console: Console, profile, identity_pool_id: Optional[
     console.print(config_table)
 
 
-def _display_simple_format(console: Console, profile, identity_pool_id: Optional[str]) -> None:
+def _display_simple_format(console: Console, profile, identity_pool_id: str | None) -> None:
     """Display configuration in simple text format."""
     console.print("\n[bold]Package Configuration:[/bold]")
 
@@ -150,7 +150,7 @@ def _display_simple_format(console: Console, profile, identity_pool_id: Optional
         console.print("  Analytics: [cyan]Enabled (Athena + Kinesis Firehose)[/cyan]")
 
 
-def get_configuration_dict(profile, identity_pool_id: Optional[str] = None) -> dict[str, Any]:
+def get_configuration_dict(profile, identity_pool_id: str | None = None) -> dict[str, Any]:
     """
     Get configuration information as a dictionary for JSON output.
 

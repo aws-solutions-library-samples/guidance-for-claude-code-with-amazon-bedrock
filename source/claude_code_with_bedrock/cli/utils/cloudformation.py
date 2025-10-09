@@ -6,7 +6,7 @@
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 import boto3
 import cfn_flip
@@ -77,7 +77,7 @@ class CloudFormationManager:
     def deploy_stack(
         self,
         stack_name: str,
-        template_path: Union[str, Path],
+        template_path: str | Path,
         parameters: list[dict[str, str]] = None,
         capabilities: list[str] = None,
         tags: dict[str, str] = None,
@@ -250,7 +250,7 @@ class CloudFormationManager:
             return StackDeletionResult(success=False, error=str(e))
 
     def package_template(
-        self, template_path: Union[str, Path], s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
+        self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
     ) -> str:
         """
         Package a CloudFormation template and upload artifacts to S3.
@@ -337,7 +337,7 @@ class CloudFormationManager:
         # Return packaged template as YAML with CloudFormation intrinsic functions preserved
         return cfn_flip.dump_yaml(template)
 
-    def get_stack_status(self, stack_name: str) -> Optional[str]:
+    def get_stack_status(self, stack_name: str) -> str | None:
         """
         Get the current status of a stack.
 
@@ -399,14 +399,14 @@ class CloudFormationManager:
         except ClientError:
             return []
 
-    def _read_template(self, template_path: Union[str, Path]) -> str:
+    def _read_template(self, template_path: str | Path) -> str:
         """Read and return template content."""
         template_path = Path(template_path)
         with open(template_path) as f:
             content = f.read()
         return content
 
-    def _check_stack_exists(self, stack_name: str) -> tuple[bool, Optional[str]]:
+    def _check_stack_exists(self, stack_name: str) -> tuple[bool, str | None]:
         """Check if stack exists and return its status."""
         try:
             response = self.cf_client.describe_stacks(StackName=stack_name)
@@ -434,7 +434,7 @@ class CloudFormationManager:
         """
         # Stream events while waiting
         if on_event:
-            event_thread = self._start_event_streaming(stack_name, on_event)
+            self._start_event_streaming(stack_name, on_event)
 
         try:
             waiter = self.cf_client.get_waiter(waiter_name)
@@ -510,7 +510,7 @@ class CloudFormationManager:
         except Exception as e:
             return f"Error fetching failure reason: {str(e)}"
 
-    def validate_template(self, template_path: Union[str, Path]) -> bool:
+    def validate_template(self, template_path: str | Path) -> bool:
         """
         Validate a CloudFormation template.
 

@@ -389,7 +389,7 @@ def get_all_model_display_names() -> dict[str, str]:
     """Get a mapping of all model IDs to their display names for UI purposes."""
     display_names = {}
 
-    for model_key, model_config in CLAUDE_MODELS.items():
+    for _model_key, model_config in CLAUDE_MODELS.items():
         for profile_key, profile_config in model_config["profiles"].items():
             model_id = profile_config["model_id"]
             base_name = model_config["name"]
