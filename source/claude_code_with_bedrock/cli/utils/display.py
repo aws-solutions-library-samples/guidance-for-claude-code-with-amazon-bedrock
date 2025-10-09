@@ -44,12 +44,12 @@ def _display_table_format(console: Console, profile, identity_pool_id: Optional[
     config_table.add_row("Client ID", profile.client_id)
 
     # Federation configuration
-    federation_type = getattr(profile, 'federation_type', 'cognito')
-    if federation_type == 'direct':
+    federation_type = getattr(profile, "federation_type", "cognito")
+    if federation_type == "direct":
         config_table.add_row("Federation Type", "Direct STS (12-hour sessions)")
-        federated_role_arn = getattr(profile, 'federated_role_arn', None)
+        federated_role_arn = getattr(profile, "federated_role_arn", None)
         if federated_role_arn:
-            config_table.add_row("Federated Role", federated_role_arn.split('/')[-1])  # Show just role name
+            config_table.add_row("Federated Role", federated_role_arn.split("/")[-1])  # Show just role name
     else:
         config_table.add_row("Federation Type", "Cognito Identity Pool (8-hour sessions)")
 
@@ -63,13 +63,13 @@ def _display_table_format(console: Console, profile, identity_pool_id: Optional[
         config_table.add_row("Identity Pool", profile.identity_pool_name)
 
     # Model configuration
-    selected_model = getattr(profile, 'selected_model', None)
+    selected_model = getattr(profile, "selected_model", None)
     if selected_model:
         model_names = get_all_model_display_names()
         config_table.add_row("Claude Model", model_names.get(selected_model, selected_model))
 
     # Source region
-    source_region = getattr(profile, 'selected_source_region', None)
+    source_region = getattr(profile, "selected_source_region", None)
     if source_region:
         config_table.add_row("Source Region", source_region)
 
@@ -77,9 +77,9 @@ def _display_table_format(console: Console, profile, identity_pool_id: Optional[
     cross_region_names = {
         "us": "US Cross-Region (us-east-1, us-east-2, us-west-2)",
         "europe": "Europe Cross-Region (eu-west-1, eu-west-3, eu-central-1, eu-north-1)",
-        "apac": "APAC Cross-Region (ap-northeast-1, ap-southeast-1/2, ap-south-1)"
+        "apac": "APAC Cross-Region (ap-northeast-1, ap-southeast-1/2, ap-south-1)",
     }
-    cross_region = getattr(profile, 'cross_region_profile', None) or "us"
+    cross_region = getattr(profile, "cross_region_profile", None) or "us"
     config_table.add_row("Bedrock Regions", cross_region_names.get(cross_region, cross_region))
 
     # Monitoring and Analytics
@@ -106,14 +106,14 @@ def _display_simple_format(console: Console, profile, identity_pool_id: Optional
     console.print(f"  Client ID: [cyan]{profile.client_id}[/cyan]")
 
     # Federation configuration
-    federation_type = getattr(profile, 'federation_type', 'cognito')
-    if federation_type == 'direct':
-        console.print(f"  Federation Type: [cyan]Direct STS (12-hour sessions)[/cyan]")
-        federated_role_arn = getattr(profile, 'federated_role_arn', None)
+    federation_type = getattr(profile, "federation_type", "cognito")
+    if federation_type == "direct":
+        console.print("  Federation Type: [cyan]Direct STS (12-hour sessions)[/cyan]")
+        federated_role_arn = getattr(profile, "federated_role_arn", None)
         if federated_role_arn:
             console.print(f"  Federated Role: [cyan]{federated_role_arn.split('/')[-1]}[/cyan]")
     else:
-        console.print(f"  Federation Type: [cyan]Cognito Identity Pool (8-hour sessions)[/cyan]")
+        console.print("  Federation Type: [cyan]Cognito Identity Pool (8-hour sessions)[/cyan]")
 
     # AWS configuration
     console.print(f"  AWS Region: [cyan]{profile.aws_region}[/cyan]")
@@ -125,14 +125,14 @@ def _display_simple_format(console: Console, profile, identity_pool_id: Optional
         console.print(f"  Identity Pool: [cyan]{profile.identity_pool_name}[/cyan]")
 
     # Model configuration
-    selected_model = getattr(profile, 'selected_model', None)
+    selected_model = getattr(profile, "selected_model", None)
     if selected_model:
         model_names = get_all_model_display_names()
         model_display = model_names.get(selected_model, selected_model)
         console.print(f"  Claude Model: [cyan]{model_display}[/cyan]")
 
     # Source region
-    source_region = getattr(profile, 'selected_source_region', None)
+    source_region = getattr(profile, "selected_source_region", None)
     if source_region:
         console.print(f"  Source Region: [cyan]{source_region}[/cyan]")
 
@@ -142,7 +142,7 @@ def _display_simple_format(console: Console, profile, identity_pool_id: Optional
         "europe": "Europe Cross-Region (eu-west-1, eu-west-3, eu-central-1, eu-north-1)",
         "apac": "APAC Cross-Region (ap-northeast-1, ap-southeast-1/2, ap-south-1)",
     }
-    cross_region = getattr(profile, 'cross_region_profile', None) or "us"
+    cross_region = getattr(profile, "cross_region_profile", None) or "us"
     console.print(f"  Bedrock Regions: [cyan]{cross_region_names.get(cross_region, cross_region)}[/cyan]")
 
     # Analytics
@@ -170,10 +170,10 @@ def get_configuration_dict(profile, identity_pool_id: Optional[str] = None) -> d
         "identity_pool_name": profile.identity_pool_name,
         "monitoring_enabled": profile.monitoring_enabled,
         "bedrock_regions": profile.allowed_bedrock_regions,
-        "selected_model": getattr(profile, 'selected_model', None),
-        "cross_region_profile": getattr(profile, 'cross_region_profile', None),
-        "source_region": getattr(profile, 'selected_source_region', None),
-        "analytics_enabled": getattr(profile, 'analytics_enabled', None)
+        "selected_model": getattr(profile, "selected_model", None),
+        "cross_region_profile": getattr(profile, "cross_region_profile", None),
+        "source_region": getattr(profile, "selected_source_region", None),
+        "analytics_enabled": getattr(profile, "analytics_enabled", None),
     }
 
     if identity_pool_id:

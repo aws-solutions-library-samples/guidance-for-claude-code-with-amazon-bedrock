@@ -4,7 +4,6 @@
 """Status command - Show deployment status."""
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,22 +25,9 @@ class StatusCommand(Command):
     description = "Show current deployment status and usage metrics"
 
     options = [
-        option(
-            "profile",
-            description="Configuration profile to check",
-            flag=False,
-            default="default"
-        ),
-        option(
-            "json",
-            description="Output in JSON format",
-            flag=True
-        ),
-        option(
-            "detailed",
-            description="Show detailed information",
-            flag=True
-        )
+        option("profile", description="Configuration profile to check", flag=False, default="default"),
+        option("json", description="Output in JSON format", flag=True),
+        option("detailed", description="Show detailed information", flag=True),
     ]
 
     def handle(self) -> int:
@@ -69,11 +55,13 @@ class StatusCommand(Command):
     def _show_rich_status(self, profile, console: Console, detailed: bool) -> int:
         """Show status in rich formatted output."""
         # Header
-        console.print(Panel.fit(
-            "[bold cyan]Claude Code with Bedrock - Deployment Status[/bold cyan]",
-            border_style="cyan",
-            padding=(1, 2)
-        ))
+        console.print(
+            Panel.fit(
+                "[bold cyan]Claude Code with Bedrock - Deployment Status[/bold cyan]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
 
         # Configuration section
         console.print("\n[bold]Configuration[/bold]")
@@ -99,7 +87,7 @@ class StatusCommand(Command):
             stack_table.add_row(
                 stack_type.title(),
                 f"[{status_color}]{info['status']}[/{status_color}]",
-                info.get("last_updated", "N/A")
+                info.get("last_updated", "N/A"),
             )
 
         console.print(stack_table)
@@ -148,7 +136,9 @@ class StatusCommand(Command):
 
             # Show test commands
             console.print("\n[bold]Test Commands[/bold]")
-            console.print("• Test authentication: [dim]export AWS_PROFILE=ClaudeCode && aws sts get-caller-identity[/dim]")
+            console.print(
+                "• Test authentication: [dim]export AWS_PROFILE=ClaudeCode && aws sts get-caller-identity[/dim]"
+            )
             console.print("• Get monitoring token: [dim]poetry run ccwb get-monitoring-token[/dim]")
 
         return 0
@@ -163,7 +153,7 @@ class StatusCommand(Command):
             "profile": profile.name,
             "configuration": get_configuration_dict(profile, identity_pool_id),
             "stacks": self._get_stack_status(profile),
-            "endpoints": endpoints
+            "endpoints": endpoints,
         }
 
         console.print(json.dumps(status, indent=2))
@@ -196,21 +186,18 @@ class StatusCommand(Command):
         try:
             # Get stack details
             response = cf_manager.cf_client.describe_stacks(StackName=stack_name)
-            if response['Stacks']:
-                stack = response['Stacks'][0]
-                last_updated = stack.get('LastUpdatedTime') or stack.get('CreationTime')
+            if response["Stacks"]:
+                stack = response["Stacks"][0]
+                last_updated = stack.get("LastUpdatedTime") or stack.get("CreationTime")
 
                 # Format timestamp if present
                 if last_updated:
-                    if hasattr(last_updated, 'isoformat'):
+                    if hasattr(last_updated, "isoformat"):
                         last_updated = last_updated.isoformat()
                     else:
                         last_updated = str(last_updated)
 
-                return {
-                    "status": stack['StackStatus'],
-                    "last_updated": last_updated
-                }
+                return {"status": stack["StackStatus"], "last_updated": last_updated}
         except Exception:
             pass
 

@@ -6,30 +6,29 @@ AWS Credential Provider for OIDC + Cognito Identity Pool
 Supports multiple OIDC providers for Bedrock access
 """
 
+import base64
+import errno
+import hashlib
 import json
-import sys
 import os
+import platform
+import secrets
+import socket
+import sys
+import threading
 import time
 import webbrowser
-import hashlib
-import base64
-import secrets
-import jwt
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
-import threading
+from urllib.parse import parse_qs, urlencode, urlparse
+
 import boto3
+import jwt
+import keyring
+import requests
 from botocore import UNSIGNED
 from botocore.config import Config
-import requests
-import keyring
-import platform
-import atexit
-import signal
-import socket
-import errno
 
 # No longer using file locks - using port-based locking instead
 
@@ -112,7 +111,7 @@ class MultiProviderAuth:
         if not config_path.exists():
             raise ValueError(f"Configuration file not found: {config_path}")
 
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             file_config = json.load(f)
 
         # Handle new config format with profiles
@@ -190,9 +189,9 @@ class MultiProviderAuth:
         if not domain:
             # Fail with clear error for unknown providers
             raise ValueError(
-                f"Unable to auto-detect provider type for empty domain. "
-                f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
-                f"Please check your provider domain configuration."
+                "Unable to auto-detect provider type for empty domain. "
+                "Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
+                "Please check your provider domain configuration."
             )
 
         # Handle both full URLs and domain-only inputs
@@ -304,39 +303,28 @@ class MultiProviderAuth:
                 self._debug_print(f"Error retrieving credentials from keyring: {e}")
                 return None
         else:
-            # Session file storage
-            session_dir = Path.home() / ".claude-code-session"
+            # Session storage uses ~/.aws/credentials file
+            credentials = self.read_from_credentials_file(self.profile)
 
-            # Look for session file for this profile
-            session_file = session_dir / f"{self.profile}-session.json"
-
-            if not session_file.exists():
+            if not credentials:
                 return None
 
-            try:
-                with open(session_file, "r") as f:
-                    creds = json.load(f)
+            # Check for dummy/cleared credentials first
+            if credentials.get("AccessKeyId") == "EXPIRED":
+                self._debug_print("Found cleared dummy credentials in credentials file, need re-authentication")
+                return None
 
-                # Check for dummy/cleared credentials first
-                if creds.get("AccessKeyId") == "EXPIRED":
-                    self._debug_print("Found cleared dummy credentials in session file, need re-authentication")
-                    return None
+            # Validate expiration
+            exp_str = credentials.get("Expiration")
+            if exp_str:
+                exp_time = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
 
-                # Validate expiration for real credentials
-                exp_str = creds.get("Expiration")
-                if exp_str:
-                    exp_time = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                    now = datetime.now(timezone.utc)
+                # Use credentials if they expire in more than 30 seconds
+                if (exp_time - now).total_seconds() > 30:
+                    return credentials
 
-                    # Use credentials if they expire in more than 30 seconds
-                    if (exp_time - now).total_seconds() > 30:
-                        return creds
-
-            except Exception as e:
-                # Invalid session file, remove it
-                session_file.unlink(missing_ok=True)
-
-        return None
+            return None
 
     def save_credentials(self, credentials):
         """Save credentials to configured storage"""
@@ -376,19 +364,8 @@ class MultiProviderAuth:
                 self._debug_print(f"Error saving credentials to keyring: {e}")
                 raise Exception(f"Failed to save credentials to keyring: {str(e)}")
         else:
-            # Session file storage
-            session_dir = Path.home() / ".claude-code-session"
-            session_dir.mkdir(parents=True, exist_ok=True)
-
-            # Use a simple session file per profile (will be cleaned up on terminal exit)
-            session_file = session_dir / f"{self.profile}-session.json"
-
-            # Store as plain JSON (no encryption needed for session files)
-            with open(session_file, "w") as f:
-                json.dump(credentials, f)
-
-            # Set restrictive permissions
-            session_file.chmod(0o600)
+            # Session storage uses ~/.aws/credentials file
+            self.save_to_credentials_file(credentials, self.profile)
 
     def clear_cached_credentials(self):
         """Clear all cached credentials for this profile"""
@@ -452,15 +429,28 @@ class MultiProviderAuth:
         except Exception as e:
             self._debug_print(f"Could not clear keyring monitoring token: {e}")
 
-        # Clear session files
+        # Clear credentials file (for session storage mode)
+        try:
+            credentials_path = Path.home() / ".aws" / "credentials"
+            if credentials_path.exists():
+                # Replace with expired dummy credentials instead of deleting
+                # This preserves the file for other profiles
+                expired_creds = {
+                    "Version": 1,
+                    "AccessKeyId": "EXPIRED",
+                    "SecretAccessKey": "EXPIRED",
+                    "SessionToken": "EXPIRED",
+                    "Expiration": "2000-01-01T00:00:00Z",
+                }
+                self.save_to_credentials_file(expired_creds, self.profile)
+                cleared_items.append("credentials file")
+        except Exception as e:
+            self._debug_print(f"Could not clear credentials file: {e}")
+
+        # Clear monitoring token from session directory
         session_dir = Path.home() / ".claude-code-session"
         if session_dir.exists():
-            session_file = session_dir / f"{self.profile}-session.json"
             monitoring_file = session_dir / f"{self.profile}-monitoring.json"
-
-            if session_file.exists():
-                session_file.unlink()
-                cleared_items.append("session file")
 
             if monitoring_file.exists():
                 monitoring_file.unlink()
@@ -535,7 +525,7 @@ class MultiProviderAuth:
                 if not token_file.exists():
                     return None
 
-                with open(token_file, "r") as f:
+                with open(token_file) as f:
                     token_data = json.load(f)
 
             # Check expiration
@@ -552,6 +542,151 @@ class MultiProviderAuth:
             return None
         except Exception:
             return None
+
+    def save_to_credentials_file(self, credentials, profile="ClaudeCode"):
+        """Save credentials to ~/.aws/credentials file
+
+        Args:
+            credentials: Dict with AccessKeyId, SecretAccessKey, SessionToken, Expiration
+            profile: Profile name to use in credentials file (default: ClaudeCode)
+        """
+        import tempfile
+        from configparser import ConfigParser
+
+        credentials_path = Path.home() / ".aws" / "credentials"
+
+        # Create ~/.aws directory if it doesn't exist
+        credentials_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing file or create new config
+        # Disable inline comment characters so we can use keys like 'x-expiration'
+        config = ConfigParser(inline_comment_prefixes=())
+        if credentials_path.exists():
+            try:
+                config.read(credentials_path)
+            except Exception as e:
+                self._debug_print(f"Warning: Could not read existing credentials file: {e}")
+
+        # Update profile section
+        if profile not in config:
+            config[profile] = {}
+
+        config[profile]["aws_access_key_id"] = credentials["AccessKeyId"]
+        config[profile]["aws_secret_access_key"] = credentials["SecretAccessKey"]
+        config[profile]["aws_session_token"] = credentials["SessionToken"]
+
+        # Add expiration as a special key that AWS SDK will ignore
+        # Use 'x-' prefix which is a convention for custom/extension fields
+        if "Expiration" in credentials:
+            config[profile]["x-expiration"] = credentials["Expiration"]
+
+        # Atomic write using temporary file
+        try:
+            # Write to temporary file first
+            temp_fd, temp_path = tempfile.mkstemp(dir=credentials_path.parent, prefix=".credentials.", suffix=".tmp")
+
+            try:
+                with os.fdopen(temp_fd, "w") as f:
+                    config.write(f)
+
+                # Set restrictive permissions on temp file
+                os.chmod(temp_path, 0o600)
+
+                # Atomic rename
+                os.replace(temp_path, credentials_path)
+
+                self._debug_print(f"Saved credentials to {credentials_path} for profile '{profile}'")
+            except Exception:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+                raise
+        except Exception as e:
+            raise Exception(f"Failed to save credentials to file: {str(e)}")
+
+    def read_from_credentials_file(self, profile="ClaudeCode"):
+        """Read credentials from ~/.aws/credentials file
+
+        Args:
+            profile: Profile name to read from credentials file
+
+        Returns:
+            Dict with credentials or None if not found
+        """
+        from configparser import ConfigParser
+
+        credentials_path = Path.home() / ".aws" / "credentials"
+
+        if not credentials_path.exists():
+            return None
+
+        try:
+            # Disable inline comment characters to read keys like 'x-expiration'
+            config = ConfigParser(inline_comment_prefixes=())
+            config.read(credentials_path)
+
+            if profile not in config:
+                return None
+
+            profile_section = config[profile]
+
+            # Build credentials dict
+            credentials = {
+                "Version": 1,
+                "AccessKeyId": profile_section.get("aws_access_key_id"),
+                "SecretAccessKey": profile_section.get("aws_secret_access_key"),
+                "SessionToken": profile_section.get("aws_session_token"),
+            }
+
+            # Extract expiration from custom field if present
+            expiration = profile_section.get("x-expiration")
+            if expiration:
+                credentials["Expiration"] = expiration
+
+            # Validate all required fields are present
+            if not all(
+                [credentials.get("AccessKeyId"), credentials.get("SecretAccessKey"), credentials.get("SessionToken")]
+            ):
+                return None
+
+            return credentials
+
+        except Exception as e:
+            self._debug_print(f"Error reading credentials from file: {e}")
+            return None
+
+    def check_credentials_file_expiration(self, profile="ClaudeCode"):
+        """Check if credentials in file are expired
+
+        Args:
+            profile: Profile name to check
+
+        Returns:
+            True if expired, False if valid
+        """
+        credentials = self.read_from_credentials_file(profile)
+
+        if not credentials:
+            return True  # No credentials = expired
+
+        exp_str = credentials.get("Expiration")
+        if not exp_str:
+            # No expiration info, assume expired for safety
+            return True
+
+        try:
+            exp_time = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+
+            # Use 30-second buffer - consider expired if less than 30s remaining
+            remaining_seconds = (exp_time - now).total_seconds()
+            return remaining_seconds <= 30
+
+        except Exception as e:
+            self._debug_print(f"Error parsing expiration: {e}")
+            return True  # Assume expired on parse error
 
     def authenticate_oidc(self):
         """Perform OIDC authentication with PKCE"""
@@ -1135,8 +1270,8 @@ class MultiProviderAuth:
             # Provide specific guidance for common errors
             if "NotAuthorizedException" in error_msg and "Token is not from a supported provider" in error_msg:
                 print("\nAuthentication failed: Token provider mismatch", file=sys.stderr)
-                print(f"Identity pool expects tokens from a specific provider configuration.", file=sys.stderr)
-                print(f"Please verify your Cognito Identity Pool is configured correctly.", file=sys.stderr)
+                print("Identity pool expects tokens from a specific provider configuration.", file=sys.stderr)
+                print("Please verify your Cognito Identity Pool is configured correctly.", file=sys.stderr)
             elif "timeout" in error_msg.lower():
                 self._debug_print("\nAuthentication timed out. Possible causes:")
                 self._debug_print("- Browser did not complete authentication")
@@ -1161,6 +1296,16 @@ def main():
     )
     parser.add_argument(
         "--clear-cache", action="store_true", help="Clear cached credentials and force re-authentication"
+    )
+    parser.add_argument(
+        "--check-expiration",
+        action="store_true",
+        help="Check if credentials need refresh (exit 0 if valid, 1 if expired)",
+    )
+    parser.add_argument(
+        "--refresh-if-needed",
+        action="store_true",
+        help="Refresh credentials if expired (for cron jobs with session storage)",
     )
 
     args = parser.parse_args()
@@ -1198,7 +1343,32 @@ def main():
                 # This prevents OTEL helper from using default/unknown values
                 sys.exit(1)
 
-    # Normal AWS credential flow
+    # Handle check-expiration request
+    if args.check_expiration:
+        is_expired = auth.check_credentials_file_expiration(args.profile)
+        if is_expired:
+            print(f"Credentials expired or missing for profile '{args.profile}'", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"Credentials valid for profile '{args.profile}'", file=sys.stderr)
+            sys.exit(0)
+
+    # Handle refresh-if-needed request (for cron jobs with session storage)
+    if args.refresh_if_needed:
+        # Only works with session storage mode (credentials file)
+        if auth.credential_storage != "session":
+            print("Error: --refresh-if-needed only works with session storage mode", file=sys.stderr)
+            sys.exit(1)
+
+        is_expired = auth.check_credentials_file_expiration(args.profile)
+        if not is_expired:
+            # Credentials still valid, nothing to do
+            auth._debug_print(f"Credentials still valid for profile '{args.profile}', no refresh needed")
+            sys.exit(0)
+        # Credentials expired, fall through to normal auth flow
+
+    # Normal AWS credential flow (credential_process mode)
+    # For session storage, this automatically uses ~/.aws/credentials
     sys.exit(auth.run())
 
 

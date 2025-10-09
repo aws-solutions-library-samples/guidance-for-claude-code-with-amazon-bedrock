@@ -534,7 +534,7 @@ class InitCommand(Command):
                     config["quota"]["warning_threshold_80"] = warning_80
                     config["quota"]["warning_threshold_90"] = warning_90
 
-                    console.print(f"[green]✓[/green] Quota monitoring configured:")
+                    console.print("[green]✓[/green] Quota monitoring configured:")
                     console.print(f"  • Monthly limit: {monthly_limit:,} tokens per user")
                     console.print(f"  • Warning at: {warning_80:,} tokens (80%)")
                     console.print(f"  • Critical at: {warning_90:,} tokens (90%)")
@@ -678,8 +678,10 @@ class InitCommand(Command):
 
             # Use the destination regions from the model profile
             if not destination_regions:
-                console.print(f"[red]Error:[/red] No destination regions configured for {selected_model_key} with {selected_profile} profile")
-                raise ValueError(f"No destination regions configured for model/profile combination")
+                console.print(
+                    f"[red]Error:[/red] No destination regions configured for {selected_model_key} with {selected_profile} profile"
+                )
+                raise ValueError("No destination regions configured for model/profile combination")
 
             config["aws"]["allowed_bedrock_regions"] = destination_regions
 

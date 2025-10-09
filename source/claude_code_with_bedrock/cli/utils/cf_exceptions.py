@@ -36,9 +36,9 @@ class ResourceConflictError(CloudFormationError):
 
     def get_cleanup_command(self) -> str:
         """Get the AWS CLI command to clean up the conflicting resource."""
-        if 'LogGroup' in self.message:
+        if "LogGroup" in self.message:
             return f"aws logs delete-log-group --log-group-name {self.resource_id}"
-        elif 'Bucket' in self.message:
+        elif "Bucket" in self.message:
             return f"aws s3 rb s3://{self.resource_id} --force"
         return ""
 

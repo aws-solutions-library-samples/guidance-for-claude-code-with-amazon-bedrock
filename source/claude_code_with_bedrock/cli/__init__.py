@@ -5,13 +5,13 @@
 
 from cleo.application import Application
 
+from .commands.builds import BuildsCommand
 from .commands.cleanup import CleanupCommand
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
-from .commands.builds import BuildsCommand
 from .commands.status import StatusCommand
 from .commands.test import TestCommand
 
@@ -20,10 +20,7 @@ from .commands.test import TestCommand
 
 def create_application() -> Application:
     """Create the CLI application."""
-    application = Application(
-        "claude-code-with-bedrock",
-        "1.0.0"
-    )
+    application = Application("claude-code-with-bedrock", "1.0.0")
 
     # Add commands
     application.add(InitCommand())

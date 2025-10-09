@@ -17,7 +17,7 @@ class Profile:
     name: str
     provider_domain: str  # Generic OIDC provider domain (was okta_domain)
     client_id: str  # Generic OIDC client ID (was okta_client_id)
-    credential_storage: str  # Storage method: "keyring" or "session"
+    credential_storage: str  # Storage method: "keyring" (OS keyring) or "session" (~/.aws/credentials)
     aws_region: str
     identity_pool_name: str
     stack_names: dict[str, str] = field(default_factory=dict)
@@ -30,9 +30,9 @@ class Profile:
     analytics_debug_mode: bool = False
     allowed_bedrock_regions: list[str] = field(default_factory=list)
     cross_region_profile: Optional[str] = None  # Cross-region profile: "us", "europe", "apac"
-    selected_model: Optional[str] = (
-        None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
-    )
+    selected_model: Optional[
+        str
+    ] = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
     selected_source_region: Optional[str] = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -51,6 +51,9 @@ class Profile:
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: Optional[str] = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+
+    # Claude Code settings configuration
+    include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
     # Legacy field support
     @property

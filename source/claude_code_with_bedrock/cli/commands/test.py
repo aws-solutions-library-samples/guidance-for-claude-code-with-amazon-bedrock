@@ -4,7 +4,6 @@
 """Test command - Verify authentication and access."""
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -73,6 +72,7 @@ class TestCommand(Command):
 
         # Detect current platform
         import platform as platform_module
+
         system = platform_module.system().lower()
         machine = platform_module.machine().lower()
 
@@ -112,7 +112,7 @@ class TestCommand(Command):
         if has_otel:
             console.print(f"✓ Found OTEL helper: {otel_binary.name}")
         else:
-            console.print(f"[dim]  - OTEL helper not included (monitoring disabled)[/dim]")
+            console.print("[dim]  - OTEL helper not included (monitoring disabled)[/dim]")
 
         # Check config
         config_path = package_dir / "config.json"
@@ -142,11 +142,11 @@ class TestCommand(Command):
             # Check federation type
             federation_type = profile_config.get("federation_type", "cognito")
             if federation_type == "direct":
-                console.print(f"[dim]  - Federation Type: Direct STS (12-hour sessions)[/dim]")
+                console.print("[dim]  - Federation Type: Direct STS (12-hour sessions)[/dim]")
                 if "federated_role_arn" in profile_config:
                     console.print(f"[dim]  - Role ARN: {profile_config['federated_role_arn']}[/dim]")
             else:
-                console.print(f"[dim]  - Federation Type: Cognito Identity Pool (8-hour sessions)[/dim]")
+                console.print("[dim]  - Federation Type: Cognito Identity Pool (8-hour sessions)[/dim]")
                 if "identity_pool_id" in profile_config:
                     console.print(f"[dim]  - Identity Pool: {profile_config['identity_pool_id']}[/dim]")
 
@@ -156,31 +156,27 @@ class TestCommand(Command):
         console.print("[bold]Step 2: Testing credential process binary[/bold]")
 
         # Test if binary is executable
-        test_result = subprocess.run(
-            [str(credential_binary), "--version"],
-            capture_output=True,
-            text=True
-        )
+        test_result = subprocess.run([str(credential_binary), "--version"], capture_output=True, text=True)
 
         if test_result.returncode == 0:
-            console.print(f"✓ Binary is executable")
+            console.print("✓ Binary is executable")
         else:
-            console.print(f"[red]✗ Binary failed to run[/red]")
+            console.print("[red]✗ Binary failed to run[/red]")
             console.print(f"[dim]{test_result.stderr}[/dim]")
             return 1
 
         # Set up temporary AWS profile for testing
-        import tempfile
         import uuid
+
         test_profile = f"ccwb-test-{uuid.uuid4().hex[:8]}"
 
-        console.print(f"\n[bold]Step 3: Testing authentication[/bold]")
+        console.print("\n[bold]Step 3: Testing authentication[/bold]")
         console.print(f"[dim]Using temporary profile: {test_profile}[/dim]")
 
         # Configure the test profile
         aws_config_result = subprocess.run(
             ["aws", "configure", "set", f"profile.{test_profile}.credential_process", str(credential_binary)],
-            capture_output=True
+            capture_output=True,
         )
 
         if aws_config_result.returncode != 0:
@@ -189,8 +185,14 @@ class TestCommand(Command):
 
         # Configure region for the test profile
         subprocess.run(
-            ["aws", "configure", "set", f"profile.{test_profile}.region", profile_config.get('aws_region', 'us-east-1')],
-            capture_output=True
+            [
+                "aws",
+                "configure",
+                "set",
+                f"profile.{test_profile}.region",
+                profile_config.get("aws_region", "us-east-1"),
+            ],
+            capture_output=True,
         )
 
         # Load configuration for test parameters
@@ -217,7 +219,6 @@ class TestCommand(Command):
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
         ) as progress:
-
             # Test 1: AWS Profile exists
             task = progress.add_task("Checking AWS profile...", total=None)
             result = self._test_aws_profile(aws_profile)
@@ -304,13 +305,13 @@ class TestCommand(Command):
                     "\n[dim]Note: API invocation tests were skipped. Use --api to test actual Bedrock calls.[/dim]"
                 )
 
-            console.print(f"\n[bold]Package test complete. Authentication and Bedrock access verified.[/bold]")
+            console.print("\n[bold]Package test complete. Authentication and Bedrock access verified.[/bold]")
 
             # Clean up test profile if we created one
-            if 'test_profile' in locals():
+            if "test_profile" in locals():
                 subprocess.run(
                     ["aws", "configure", "--profile", test_profile, "set", "credential_process", ""],
-                    capture_output=True
+                    capture_output=True,
                 )
 
             return 0
@@ -385,7 +386,7 @@ class TestCommand(Command):
                         "BedrockAuth0FederatedRole",
                         "BedrockCognitoFederatedRole",
                         "Bedrock",  # General Bedrock role pattern
-                        "FederatedRole"  # General federated pattern
+                        "FederatedRole",  # General federated pattern
                     ]
 
                     # Check if role matches any expected pattern
@@ -500,10 +501,7 @@ class TestCommand(Command):
         try:
             # First get a monitoring token
             token_result = subprocess.run(
-                [str(credential_binary), "--get-monitoring-token"],
-                capture_output=True,
-                text=True,
-                timeout=30
+                [str(credential_binary), "--get-monitoring-token"], capture_output=True, text=True, timeout=30
             )
 
             if token_result.returncode != 0 or not token_result.stdout.strip():
@@ -511,15 +509,12 @@ class TestCommand(Command):
 
             # Test OTEL helper with the token
             import os
+
             env = os.environ.copy()
             env["CLAUDE_CODE_MONITORING_TOKEN"] = token_result.stdout.strip()
 
             otel_result = subprocess.run(
-                [str(otel_binary), "--test"],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=10
+                [str(otel_binary), "--test"], capture_output=True, text=True, env=env, timeout=10
             )
 
             if otel_result.returncode == 0:
@@ -528,11 +523,11 @@ class TestCommand(Command):
                 email = None
                 user_id = None
 
-                for line in output.split('\n'):
-                    if 'X-user-email:' in line:
-                        email = line.split(':', 1)[1].strip()
-                    elif 'user.id:' in line and not user_id:
-                        user_id = line.split(':', 1)[1].strip()[:20] + "..."
+                for line in output.split("\n"):
+                    if "X-user-email:" in line:
+                        email = line.split(":", 1)[1].strip()
+                    elif "user.id:" in line and not user_id:
+                        user_id = line.split(":", 1)[1].strip()[:20] + "..."
 
                 if email:
                     details = f"Claims extracted: email={email[:20]}..."

@@ -20,22 +20,13 @@ class CleanupCommand(Command):
     description = "Remove installed authentication components"
 
     options = [
+        option("force", description="Skip confirmation prompts", flag=True),
         option(
-            "force",
-            description="Skip confirmation prompts",
-            flag=True
+            "profile", description="AWS profile name to remove (default: ClaudeCode)", flag=False, default="ClaudeCode"
         ),
         option(
-            "profile",
-            description="AWS profile name to remove (default: ClaudeCode)",
-            flag=False,
-            default="ClaudeCode"
+            "credentials-only", description="Only clear cached credentials without removing other components", flag=True
         ),
-        option(
-            "credentials-only",
-            description="Only clear cached credentials without removing other components",
-            flag=True
-        )
     ]
 
     def handle(self) -> int:
@@ -51,12 +42,14 @@ class CleanupCommand(Command):
             return self._clear_credentials_only(console, profile_name, force)
 
         # Show what will be cleaned
-        console.print(Panel.fit(
-            "[bold yellow]Authentication Cleanup[/bold yellow]\n\n"
-            "This will remove components installed by the test command or manual installation",
-            border_style="yellow",
-            padding=(1, 2)
-        ))
+        console.print(
+            Panel.fit(
+                "[bold yellow]Authentication Cleanup[/bold yellow]\n\n"
+                "This will remove components installed by the test command or manual installation",
+                border_style="yellow",
+                padding=(1, 2),
+            )
+        )
 
         # List items to be removed
         items_to_remove = []
@@ -124,7 +117,7 @@ class CleanupCommand(Command):
                         if new_lines and new_lines[-1].strip() == "":
                             new_lines.pop()
                         continue
-                    elif skip and line.strip() and line[0] == '[':
+                    elif skip and line.strip() and line[0] == "[":
                         # Found next section, stop skipping
                         skip = False
                     elif skip and line.strip() == "":
@@ -136,7 +129,7 @@ class CleanupCommand(Command):
                         new_lines.append(line)
 
                 # Write back the cleaned config
-                with open(aws_config, 'w') as f:
+                with open(aws_config, "w") as f:
                     f.writelines(new_lines)
 
                 console.print(f"✓ Removed AWS profile '{profile_name}'")
@@ -168,12 +161,14 @@ class CleanupCommand(Command):
 
     def _clear_credentials_only(self, console, profile_name, force):
         """Clear only cached credentials without removing other components."""
-        console.print(Panel.fit(
-            "[bold cyan]Clear Cached Credentials[/bold cyan]\n\n"
-            f"This will clear cached credentials for profile: {profile_name}",
-            border_style="cyan",
-            padding=(1, 2)
-        ))
+        console.print(
+            Panel.fit(
+                "[bold cyan]Clear Cached Credentials[/bold cyan]\n\n"
+                f"This will clear cached credentials for profile: {profile_name}",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
 
         # Check if credential-process exists
         credential_process = Path.home() / "claude-code-with-bedrock" / "credential-process"
@@ -196,13 +191,13 @@ class CleanupCommand(Command):
                 [str(credential_process), "--profile", profile_name, "--clear-cache"],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             if result.returncode == 0:
                 if result.stderr:
                     # Parse the output to show what was cleared
-                    for line in result.stderr.split('\n'):
+                    for line in result.stderr.split("\n"):
                         if line.strip():
                             console.print(f"  {line}")
                 console.print("\n[green]✓ Cached credentials cleared successfully![/green]")

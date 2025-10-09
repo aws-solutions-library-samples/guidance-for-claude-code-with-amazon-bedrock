@@ -3,14 +3,13 @@
 
 """CloudFormation manager for boto3-based stack operations."""
 
-import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
 import boto3
 import cfn_flip
-import yaml
 from botocore.exceptions import ClientError, WaiterError
 
 from .cf_exceptions import (
@@ -18,7 +17,6 @@ from .cf_exceptions import (
     PermissionError,
     ResourceConflictError,
     StackNotFoundError,
-    StackRollbackError,
     TemplateValidationError,
 )
 
@@ -26,7 +24,7 @@ from .cf_exceptions import (
 class StackDeploymentResult:
     """Result of a stack deployment operation."""
 
-    def __init__(self, success: bool, stack_id: str = None, outputs: Dict[str, str] = None, error: str = None):
+    def __init__(self, success: bool, stack_id: str = None, outputs: dict[str, str] = None, error: str = None):
         self.success = success
         self.stack_id = stack_id
         self.outputs = outputs or {}
@@ -56,7 +54,9 @@ class CloudFormationManager:
             profile: Optional AWS profile name
         """
         self.region = region
-        self.session = boto3.Session(region_name=region, profile_name=profile) if profile else boto3.Session(region_name=region)
+        self.session = (
+            boto3.Session(region_name=region, profile_name=profile) if profile else boto3.Session(region_name=region)
+        )
         self._cf_client = None
         self._s3_client = None
 
@@ -64,26 +64,26 @@ class CloudFormationManager:
     def cf_client(self):
         """Lazy-loaded CloudFormation client with connection pooling."""
         if not self._cf_client:
-            self._cf_client = self.session.client('cloudformation')
+            self._cf_client = self.session.client("cloudformation")
         return self._cf_client
 
     @property
     def s3_client(self):
         """Lazy-loaded S3 client for template packaging."""
         if not self._s3_client:
-            self._s3_client = self.session.client('s3')
+            self._s3_client = self.session.client("s3")
         return self._s3_client
 
     def deploy_stack(
         self,
         stack_name: str,
         template_path: Union[str, Path],
-        parameters: List[Dict[str, str]] = None,
-        capabilities: List[str] = None,
-        tags: Dict[str, str] = None,
+        parameters: list[dict[str, str]] = None,
+        capabilities: list[str] = None,
+        tags: dict[str, str] = None,
         on_event: Callable = None,
         timeout: int = 3600,
-        disable_rollback: bool = False
+        disable_rollback: bool = False,
     ) -> StackDeploymentResult:
         """
         Deploy or update a CloudFormation stack.
@@ -120,37 +120,37 @@ class CloudFormationManager:
 
             # Prepare parameters
             params = {
-                'StackName': stack_name,
-                'TemplateBody': template_body,
-                'Capabilities': capabilities or [],
+                "StackName": stack_name,
+                "TemplateBody": template_body,
+                "Capabilities": capabilities or [],
             }
 
             if parameters:
-                params['Parameters'] = parameters
+                params["Parameters"] = parameters
 
             if tags:
-                params['Tags'] = [{'Key': k, 'Value': v} for k, v in tags.items()]
+                params["Tags"] = [{"Key": k, "Value": v} for k, v in tags.items()]
 
             if disable_rollback:
-                params['DisableRollback'] = True
+                params["DisableRollback"] = True
 
             # Create or update stack
             if not exists:
                 if on_event:
                     on_event({"message": f"Creating stack {stack_name}..."})
                 response = self.cf_client.create_stack(**params)
-                stack_id = response['StackId']
-                wait_status = 'stack_create_complete'
+                stack_id = response["StackId"]
+                wait_status = "stack_create_complete"
             else:
                 if on_event:
                     on_event({"message": f"Updating stack {stack_name}..."})
                 try:
                     # For updates, we need to use different parameters
                     update_params = params.copy()
-                    update_params.pop('DisableRollback', None)  # Not valid for updates
+                    update_params.pop("DisableRollback", None)  # Not valid for updates
                     response = self.cf_client.update_stack(**update_params)
-                    stack_id = response['StackId']
-                    wait_status = 'stack_update_complete'
+                    stack_id = response["StackId"]
+                    wait_status = "stack_update_complete"
                 except ClientError as e:
                     if "No updates are to be performed" in str(e):
                         if on_event:
@@ -171,19 +171,19 @@ class CloudFormationManager:
                 return StackDeploymentResult(success=False, error=error)
 
         except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
+            error_code = e.response["Error"]["Code"]
+            error_message = e.response["Error"]["Message"]
 
             # Map to our custom exceptions
-            if error_code == 'ValidationError':
-                if 'does not exist' in error_message:
+            if error_code == "ValidationError":
+                if "does not exist" in error_message:
                     raise StackNotFoundError(f"Stack {stack_name} not found: {error_message}")
                 else:
                     raise TemplateValidationError(f"Template validation failed: {error_message}")
-            elif error_code == 'InsufficientCapabilitiesException':
+            elif error_code == "InsufficientCapabilitiesException":
                 raise PermissionError(f"Insufficient capabilities: {error_message}")
-            elif error_code == 'AlreadyExistsException':
-                if 'LogGroup' in error_message:
+            elif error_code == "AlreadyExistsException":
+                if "LogGroup" in error_message:
                     raise ResourceConflictError(f"Resource already exists: {error_message}")
             else:
                 raise CloudFormationError(f"CloudFormation error: {error_message}")
@@ -194,10 +194,10 @@ class CloudFormationManager:
     def delete_stack(
         self,
         stack_name: str,
-        retain_resources: List[str] = None,
+        retain_resources: list[str] = None,
         force: bool = False,
         on_event: Callable = None,
-        timeout: int = 600
+        timeout: int = 600,
     ) -> StackDeletionResult:
         """
         Delete a CloudFormation stack.
@@ -223,12 +223,14 @@ class CloudFormationManager:
 
             # Handle DELETE_FAILED state
             if current_status == "DELETE_FAILED" and not force:
-                return StackDeletionResult(success=False, error="Stack is in DELETE_FAILED state. Use force=True to retry.")
+                return StackDeletionResult(
+                    success=False, error="Stack is in DELETE_FAILED state. Use force=True to retry."
+                )
 
             # Delete stack
-            params = {'StackName': stack_name}
+            params = {"StackName": stack_name}
             if retain_resources:
-                params['RetainResources'] = retain_resources
+                params["RetainResources"] = retain_resources
 
             if on_event:
                 on_event({"message": f"Deleting stack {stack_name}..."})
@@ -236,23 +238,19 @@ class CloudFormationManager:
             self.cf_client.delete_stack(**params)
 
             # Wait for deletion
-            success = self._wait_for_stack(stack_name, 'stack_delete_complete', timeout, on_event)
+            success = self._wait_for_stack(stack_name, "stack_delete_complete", timeout, on_event)
 
             return StackDeletionResult(success=success)
 
         except ClientError as e:
-            error_message = e.response['Error']['Message']
+            error_message = e.response["Error"]["Message"]
             return StackDeletionResult(success=False, error=error_message)
 
         except Exception as e:
             return StackDeletionResult(success=False, error=str(e))
 
     def package_template(
-        self,
-        template_path: Union[str, Path],
-        s3_bucket: str,
-        s3_prefix: str = None,
-        on_event: Callable = None
+        self, template_path: Union[str, Path], s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
     ) -> str:
         """
         Package a CloudFormation template and upload artifacts to S3.
@@ -272,32 +270,36 @@ class CloudFormationManager:
         template_path = Path(template_path)
 
         # Read template
-        with open(template_path, 'r') as f:
+        with open(template_path) as f:
             template_body = f.read()
 
         # Parse template using cfn-flip for CloudFormation compatibility
-        if template_path.suffix in ['.yaml', '.yml']:
+        if template_path.suffix in [".yaml", ".yml"]:
             template = cfn_flip.load_yaml(template_body)
         else:
             template = cfn_flip.load_json(template_body)
 
         # Process resources for packaging
-        if 'Resources' in template:
-            for resource_name, resource in template['Resources'].items():
+        if "Resources" in template:
+            for resource_name, resource in template["Resources"].items():
                 # Ensure resource is a dict (cfn_flip might return special types)
                 if not isinstance(resource, dict):
                     continue
-                resource_type = resource.get('Type', '')
+                resource_type = resource.get("Type", "")
 
                 # Handle Lambda functions
-                if resource_type == 'AWS::Lambda::Function':
-                    code = resource.get('Properties', {}).get('Code', {})
-                    if 'ZipFile' not in code and code.get('S3Bucket') != s3_bucket:
+                if resource_type == "AWS::Lambda::Function":
+                    code = resource.get("Properties", {}).get("Code", {})
+                    if "ZipFile" not in code and code.get("S3Bucket") != s3_bucket:
                         # Need to package local code
-                        local_path = template_path.parent / code.get('S3Key', '')
+                        local_path = template_path.parent / code.get("S3Key", "")
                         if local_path.exists():
                             # Upload to S3
-                            s3_key = f"{s3_prefix}/{resource_name}/{local_path.name}" if s3_prefix else f"{resource_name}/{local_path.name}"
+                            s3_key = (
+                                f"{s3_prefix}/{resource_name}/{local_path.name}"
+                                if s3_prefix
+                                else f"{resource_name}/{local_path.name}"
+                            )
 
                             if on_event:
                                 on_event({"message": f"Uploading {local_path.name} to s3://{s3_bucket}/{s3_key}"})
@@ -305,15 +307,12 @@ class CloudFormationManager:
                             self.s3_client.upload_file(str(local_path), s3_bucket, s3_key)
 
                             # Update template
-                            resource['Properties']['Code'] = {
-                                'S3Bucket': s3_bucket,
-                                'S3Key': s3_key
-                            }
+                            resource["Properties"]["Code"] = {"S3Bucket": s3_bucket, "S3Key": s3_key}
 
                 # Handle nested stacks
-                elif resource_type == 'AWS::CloudFormation::Stack':
-                    template_url = resource.get('Properties', {}).get('TemplateURL', '')
-                    if not str(template_url).startswith('https://'):
+                elif resource_type == "AWS::CloudFormation::Stack":
+                    template_url = resource.get("Properties", {}).get("TemplateURL", "")
+                    if not str(template_url).startswith("https://"):
                         # Need to package nested template
                         nested_path = template_path.parent / template_url
                         if nested_path.exists():
@@ -321,19 +320,19 @@ class CloudFormationManager:
                             nested_packaged = self.package_template(nested_path, s3_bucket, s3_prefix, on_event)
 
                             # Upload packaged nested template
-                            s3_key = f"{s3_prefix}/{resource_name}/template.yaml" if s3_prefix else f"{resource_name}/template.yaml"
+                            s3_key = (
+                                f"{s3_prefix}/{resource_name}/template.yaml"
+                                if s3_prefix
+                                else f"{resource_name}/template.yaml"
+                            )
 
                             if on_event:
                                 on_event({"message": f"Uploading nested template to s3://{s3_bucket}/{s3_key}"})
 
-                            self.s3_client.put_object(
-                                Bucket=s3_bucket,
-                                Key=s3_key,
-                                Body=nested_packaged
-                            )
+                            self.s3_client.put_object(Bucket=s3_bucket, Key=s3_key, Body=nested_packaged)
 
                             # Update template
-                            resource['Properties']['TemplateURL'] = f"https://{s3_bucket}.s3.amazonaws.com/{s3_key}"
+                            resource["Properties"]["TemplateURL"] = f"https://{s3_bucket}.s3.amazonaws.com/{s3_key}"
 
         # Return packaged template as YAML with CloudFormation intrinsic functions preserved
         return cfn_flip.dump_yaml(template)
@@ -350,15 +349,15 @@ class CloudFormationManager:
         """
         try:
             response = self.cf_client.describe_stacks(StackName=stack_name)
-            if response['Stacks']:
-                return response['Stacks'][0]['StackStatus']
+            if response["Stacks"]:
+                return response["Stacks"][0]["StackStatus"]
             return None
         except ClientError as e:
-            if e.response['Error']['Code'] == 'ValidationError':
+            if e.response["Error"]["Code"] == "ValidationError":
                 return None
             raise
 
-    def get_stack_outputs(self, stack_name: str) -> Dict[str, str]:
+    def get_stack_outputs(self, stack_name: str) -> dict[str, str]:
         """
         Get outputs from a CloudFormation stack.
 
@@ -370,17 +369,17 @@ class CloudFormationManager:
         """
         try:
             response = self.cf_client.describe_stacks(StackName=stack_name)
-            if response['Stacks']:
-                stack = response['Stacks'][0]
+            if response["Stacks"]:
+                stack = response["Stacks"][0]
                 outputs = {}
-                for output in stack.get('Outputs', []):
-                    outputs[output['OutputKey']] = output['OutputValue']
+                for output in stack.get("Outputs", []):
+                    outputs[output["OutputKey"]] = output["OutputValue"]
                 return outputs
             return {}
         except ClientError:
             return {}
 
-    def list_stacks(self, status_filter: List[str] = None) -> List[Dict[str, Any]]:
+    def list_stacks(self, status_filter: list[str] = None) -> list[dict[str, Any]]:
         """
         List CloudFormation stacks.
 
@@ -393,17 +392,17 @@ class CloudFormationManager:
         try:
             params = {}
             if status_filter:
-                params['StackStatusFilter'] = status_filter
+                params["StackStatusFilter"] = status_filter
 
             response = self.cf_client.list_stacks(**params)
-            return response.get('StackSummaries', [])
+            return response.get("StackSummaries", [])
         except ClientError:
             return []
 
     def _read_template(self, template_path: Union[str, Path]) -> str:
         """Read and return template content."""
         template_path = Path(template_path)
-        with open(template_path, 'r') as f:
+        with open(template_path) as f:
             content = f.read()
         return content
 
@@ -411,22 +410,16 @@ class CloudFormationManager:
         """Check if stack exists and return its status."""
         try:
             response = self.cf_client.describe_stacks(StackName=stack_name)
-            if response['Stacks']:
-                status = response['Stacks'][0]['StackStatus']
+            if response["Stacks"]:
+                status = response["Stacks"][0]["StackStatus"]
                 return True, status
             return False, None
         except ClientError as e:
-            if e.response['Error']['Code'] == 'ValidationError':
+            if e.response["Error"]["Code"] == "ValidationError":
                 return False, None
             raise
 
-    def _wait_for_stack(
-        self,
-        stack_name: str,
-        waiter_name: str,
-        timeout: int,
-        on_event: Callable = None
-    ) -> bool:
+    def _wait_for_stack(self, stack_name: str, waiter_name: str, timeout: int, on_event: Callable = None) -> bool:
         """
         Wait for stack operation to complete with event streaming.
 
@@ -445,20 +438,14 @@ class CloudFormationManager:
 
         try:
             waiter = self.cf_client.get_waiter(waiter_name)
-            waiter.wait(
-                StackName=stack_name,
-                WaiterConfig={
-                    'Delay': 5,
-                    'MaxAttempts': timeout // 5
-                }
-            )
+            waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": timeout // 5})
             return True
-        except WaiterError as e:
+        except WaiterError:
             # Check if it's a timeout or actual failure
             final_status = self.get_stack_status(stack_name)
-            if final_status and 'FAILED' in final_status:
+            if final_status and "FAILED" in final_status:
                 return False
-            elif final_status and 'ROLLBACK' in final_status:
+            elif final_status and "ROLLBACK" in final_status:
                 return False
             # Might be timeout
             return False
@@ -475,24 +462,24 @@ class CloudFormationManager:
             while True:
                 try:
                     response = self.cf_client.describe_stack_events(StackName=stack_name)
-                    for event in response.get('StackEvents', []):
-                        event_id = event['EventId']
+                    for event in response.get("StackEvents", []):
+                        event_id = event["EventId"]
                         if event_id not in seen_events:
                             seen_events.add(event_id)
                             # Format event for callback
                             formatted_event = {
-                                'timestamp': event.get('Timestamp'),
-                                'LogicalResourceId': event.get('LogicalResourceId'),
-                                'ResourceType': event.get('ResourceType'),
-                                'ResourceStatus': event.get('ResourceStatus'),
-                                'ResourceStatusReason': event.get('ResourceStatusReason'),
-                                'message': f"{event.get('LogicalResourceId')} - {event.get('ResourceStatus')}"
+                                "timestamp": event.get("Timestamp"),
+                                "LogicalResourceId": event.get("LogicalResourceId"),
+                                "ResourceType": event.get("ResourceType"),
+                                "ResourceStatus": event.get("ResourceStatus"),
+                                "ResourceStatusReason": event.get("ResourceStatusReason"),
+                                "message": f"{event.get('LogicalResourceId')} - {event.get('ResourceStatus')}",
                             }
                             on_event(formatted_event)
 
                     # Check if stack operation is complete
                     status = self.get_stack_status(stack_name)
-                    if status and ('COMPLETE' in status or 'FAILED' in status):
+                    if status and ("COMPLETE" in status or "FAILED" in status):
                         break
 
                     time.sleep(2)
@@ -507,16 +494,16 @@ class CloudFormationManager:
         """Get the failure reason from stack events."""
         try:
             response = self.cf_client.describe_stack_events(StackName=stack_name)
-            events = response.get('StackEvents', [])
+            events = response.get("StackEvents", [])
 
             # Find the first failure event
             for event in events:
-                status = event.get('ResourceStatus', '')
-                reason = event.get('ResourceStatusReason', '')
+                status = event.get("ResourceStatus", "")
+                reason = event.get("ResourceStatusReason", "")
 
-                if 'FAILED' in status and 'cancelled' not in reason.lower():
-                    resource_type = event.get('ResourceType', 'Unknown')
-                    logical_id = event.get('LogicalResourceId', 'Unknown')
+                if "FAILED" in status and "cancelled" not in reason.lower():
+                    resource_type = event.get("ResourceType", "Unknown")
+                    logical_id = event.get("LogicalResourceId", "Unknown")
                     return f"{resource_type} ({logical_id}): {reason}"
 
             return "Unknown failure reason"

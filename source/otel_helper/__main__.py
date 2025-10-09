@@ -10,15 +10,14 @@ It extracts user information from JWT tokens and provides properly formatted hea
 that the OTEL collector's attributes processor converts to resource attributes.
 """
 
-import os
-import sys
-import json
-import base64
-import logging
 import argparse
+import base64
 import hashlib
+import json
+import logging
+import os
 import subprocess
-from pathlib import Path
+import sys
 
 # Configure debug mode if requested
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ("true", "1", "yes", "y")
@@ -117,26 +116,26 @@ def extract_user_info(payload):
     org_id = "amazon-internal"  # Default for internal deployment
     if payload.get("iss"):
         from urllib.parse import urlparse
-        
+
         # Secure provider detection using proper URL parsing
         issuer = payload["iss"]
         # Handle both full URLs and domain-only inputs
-        url_to_parse = issuer if issuer.startswith(('http://', 'https://')) else f"https://{issuer}"
-        
+        url_to_parse = issuer if issuer.startswith(("http://", "https://")) else f"https://{issuer}"
+
         try:
             parsed = urlparse(url_to_parse)
             hostname = parsed.hostname
-            
+
             if hostname:
                 hostname_lower = hostname.lower()
-                
+
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
-                if hostname_lower.endswith('.okta.com') or hostname_lower == 'okta.com':
+                if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
                     org_id = "okta"
-                elif hostname_lower.endswith('.auth0.com') or hostname_lower == 'auth0.com':
+                elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
-                elif hostname_lower.endswith('.microsoftonline.com') or hostname_lower == 'microsoftonline.com':
+                elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
         except Exception:
             pass  # Keep default org_id if parsing fails
@@ -195,19 +194,20 @@ def format_as_headers_dict(attributes):
 def get_token_via_credential_process():
     """Get monitoring token via credential-process to avoid direct keychain access"""
     logger.info("Getting token via credential-process...")
-    
+
     # Path to credential process - add .exe extension on Windows
     import platform
+
     if platform.system() == "Windows":
         credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process.exe")
     else:
         credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process")
-    
+
     # Check if credential process exists
     if not os.path.exists(credential_process):
         logger.warning(f"Credential process not found at {credential_process}")
         return None
-    
+
     try:
         # Run credential process with --get-monitoring-token flag
         # This will return cached token or trigger auth if needed
@@ -215,16 +215,16 @@ def get_token_via_credential_process():
             [credential_process, "--get-monitoring-token"],
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout for auth if needed
+            timeout=300,  # 5 minute timeout for auth if needed
         )
-        
+
         if result.returncode == 0 and result.stdout.strip():
             logger.info("Successfully retrieved token via credential-process")
             return result.stdout.strip()
         else:
             logger.warning("Could not get token via credential-process")
             return None
-            
+
     except subprocess.TimeoutExpired:
         logger.warning("Credential process timed out")
         return None
@@ -245,7 +245,7 @@ def main():
         # Use credential-process to get token (handles auth if needed)
         # This avoids direct keychain access from OTEL helper
         token = get_token_via_credential_process()
-        
+
         if not token:
             logger.warning("Could not obtain authentication token")
             # Return failure to indicate we couldn't get user attributes

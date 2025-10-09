@@ -3,6 +3,6 @@
 
 """AWS credential provider for OIDC + Cognito Identity Pool."""
 
-from .__main__ import main, MultiProviderAuth, __version__
+from .__main__ import MultiProviderAuth, __version__, main
 
 __all__ = ["main", "MultiProviderAuth", "__version__"]

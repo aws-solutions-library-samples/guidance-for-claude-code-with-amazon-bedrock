@@ -31,47 +31,39 @@ class WizardProgress:
                 with open(self.progress_file) as f:
                     data = json.load(f)
                     # Check if progress is recent (within 24 hours)
-                    saved_time = datetime.fromisoformat(data.get('timestamp', ''))
+                    saved_time = datetime.fromisoformat(data.get("timestamp", ""))
                     if (datetime.now() - saved_time).days < 1:
                         return data
             except:
                 pass
-        return {
-            'step': 'start',
-            'data': {},
-            'timestamp': datetime.now().isoformat()
-        }
+        return {"step": "start", "data": {}, "timestamp": datetime.now().isoformat()}
 
     def save_step(self, step: str, step_data: dict[str, Any]) -> None:
         """Save progress for a specific step."""
-        self.data['step'] = step
-        self.data['data'].update(step_data)
-        self.data['timestamp'] = datetime.now().isoformat()
+        self.data["step"] = step
+        self.data["data"].update(step_data)
+        self.data["timestamp"] = datetime.now().isoformat()
 
-        with open(self.progress_file, 'w') as f:
+        with open(self.progress_file, "w") as f:
             json.dump(self.data, f, indent=2)
 
     def get_saved_data(self) -> dict[str, Any]:
         """Get all saved data."""
-        return self.data.get('data', {})
+        return self.data.get("data", {})
 
     def get_last_step(self) -> str:
         """Get the last completed step."""
-        return self.data.get('step', 'start')
+        return self.data.get("step", "start")
 
     def has_saved_progress(self) -> bool:
         """Check if there's saved progress to resume."""
-        return self.get_last_step() != 'start' and bool(self.data.get('data'))
+        return self.get_last_step() != "start" and bool(self.data.get("data"))
 
     def clear(self) -> None:
         """Clear saved progress."""
         if self.progress_file.exists():
             self.progress_file.unlink()
-        self.data = {
-            'step': 'start',
-            'data': {},
-            'timestamp': datetime.now().isoformat()
-        }
+        self.data = {"step": "start", "data": {}, "timestamp": datetime.now().isoformat()}
 
     def get_summary(self) -> str:
         """Get a summary of saved progress."""
@@ -82,16 +74,20 @@ class WizardProgress:
         step = self.get_last_step()
 
         summary_parts = []
-        if step == 'okta_complete':
+        if step == "okta_complete":
             summary_parts.append(f"✓ Okta: {data.get('okta', {}).get('domain', 'Not set')}")
-        if step in ['aws_complete', 'monitoring_complete', 'bedrock_complete']:
+        if step in ["aws_complete", "monitoring_complete", "bedrock_complete"]:
             summary_parts.append(f"✓ Okta: {data.get('okta', {}).get('domain', 'Not set')}")
             summary_parts.append(f"✓ AWS Region: {data.get('aws', {}).get('region', 'Not set')}")
-        if step == 'monitoring_complete':
-            summary_parts.append(f"✓ Monitoring: {'Enabled' if data.get('monitoring', {}).get('enabled') else 'Disabled'}")
-        if step == 'bedrock_complete':
-            summary_parts.append(f"✓ Monitoring: {'Enabled' if data.get('monitoring', {}).get('enabled') else 'Disabled'}")
-            regions = data.get('aws', {}).get('allowed_bedrock_regions', [])
+        if step == "monitoring_complete":
+            summary_parts.append(
+                f"✓ Monitoring: {'Enabled' if data.get('monitoring', {}).get('enabled') else 'Disabled'}"
+            )
+        if step == "bedrock_complete":
+            summary_parts.append(
+                f"✓ Monitoring: {'Enabled' if data.get('monitoring', {}).get('enabled') else 'Disabled'}"
+            )
+            regions = data.get("aws", {}).get("allowed_bedrock_regions", [])
             summary_parts.append(f"✓ Bedrock Regions: {len(regions)} selected")
 
         return "\n".join(summary_parts)

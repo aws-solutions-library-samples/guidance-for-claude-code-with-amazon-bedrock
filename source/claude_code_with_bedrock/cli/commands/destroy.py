@@ -22,22 +22,13 @@ class DestroyCommand(Command):
         argument(
             "stack",
             description="Specific stack to destroy (auth/networking/monitoring/dashboard/analytics)",
-            optional=True
+            optional=True,
         )
     ]
 
     options = [
-        option(
-            "profile",
-            description="Configuration profile to use",
-            flag=False,
-            default="default"
-        ),
-        option(
-            "force",
-            description="Skip confirmation prompts",
-            flag=True
-        )
+        option("profile", description="Configuration profile to use", flag=False, default="default"),
+        option("force", description="Skip confirmation prompts", flag=True),
     ]
 
     def handle(self) -> int:
@@ -70,12 +61,14 @@ class DestroyCommand(Command):
             stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "auth"]
 
         # Show what will be destroyed
-        console.print(Panel.fit(
-            "[bold red]⚠️  Infrastructure Destruction Warning[/bold red]\n\n"
-            "This will permanently delete the following AWS resources:",
-            border_style="red",
-            padding=(1, 2)
-        ))
+        console.print(
+            Panel.fit(
+                "[bold red]⚠️  Infrastructure Destruction Warning[/bold red]\n\n"
+                "This will permanently delete the following AWS resources:",
+                border_style="red",
+                padding=(1, 2),
+            )
+        )
 
         for stack in stacks_to_destroy:
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
@@ -124,8 +117,12 @@ class DestroyCommand(Command):
         console.print("\n[green]Stack destruction complete![/green]")
         console.print("\n[yellow]Manual cleanup may be required for:[/yellow]")
         console.print("1. CloudWatch LogGroups:")
-        console.print(f"   [cyan]aws logs delete-log-group --log-group-name /ecs/otel-collector --region {profile.aws_region}[/cyan]")
-        console.print(f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics --region {profile.aws_region}[/cyan]")
+        console.print(
+            f"   [cyan]aws logs delete-log-group --log-group-name /ecs/otel-collector --region {profile.aws_region}[/cyan]"
+        )
+        console.print(
+            f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics --region {profile.aws_region}[/cyan]"
+        )
         console.print("\n2. Check CloudFormation console for any DELETE_FAILED resources")
         console.print("\nFor more information, see: assets/docs/TROUBLESHOOTING.md")
 
@@ -143,9 +140,7 @@ class DestroyCommand(Command):
 
         # Use progress indicator
         with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
         ) as progress:
             task = progress.add_task(f"Deleting stack {stack_name}...", total=None)
 
@@ -154,10 +149,9 @@ class DestroyCommand(Command):
                 stack_name=stack_name,
                 force=True,
                 on_event=lambda e: progress.update(
-                    task,
-                    description=f"Deleting {e.get('LogicalResourceId', stack_name)}..."
+                    task, description=f"Deleting {e.get('LogicalResourceId', stack_name)}..."
                 ),
-                timeout=300
+                timeout=300,
             )
 
             progress.update(task, completed=True)

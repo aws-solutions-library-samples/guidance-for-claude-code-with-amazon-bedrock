@@ -33,3 +33,18 @@ repos:
         pass_filenames: true
         # This hook will only run if AWS credentials are configured
         # It provides additional validation beyond cfn-lint
+
+  # Python code quality - Ruff (fast linter and formatter)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.9
+    hooks:
+      - id: ruff
+        name: Lint Python with Ruff (auto-fix)
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^source/.*\.py$
+        exclude: ^source/(build|dist)/
+
+      - id: ruff-format
+        name: Format Python with Ruff
+        files: ^source/.*\.py$
+        exclude: ^source/(build|dist)/
