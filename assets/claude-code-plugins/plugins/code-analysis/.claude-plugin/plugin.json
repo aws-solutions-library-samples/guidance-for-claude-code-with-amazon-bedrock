@@ -1,0 +1,20 @@
+{
+  "name": "code-analysis",
+  "version": "1.0.0",
+  "description": "Code archaeology and technology evaluation for legacy systems and technical debt assessment",
+  "author": {
+    "name": "AWS Solutions Library",
+    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
+  },
+  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/code-analysis",
+  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
+  "license": "MIT-0",
+  "keywords": [
+    "analysis",
+    "legacy",
+    "evaluation",
+    "archaeology",
+    "technical-debt"
+  ],
+  "agents": ["agents/"]
+}

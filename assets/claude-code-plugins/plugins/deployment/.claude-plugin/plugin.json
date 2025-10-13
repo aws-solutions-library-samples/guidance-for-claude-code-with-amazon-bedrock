@@ -1,0 +1,21 @@
+{
+  "name": "deployment",
+  "version": "1.0.0",
+  "description": "Deployment orchestration and compliance automation with progressive rollout strategies",
+  "author": {
+    "name": "AWS Solutions Library",
+    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
+  },
+  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/deployment",
+  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
+  "license": "MIT-0",
+  "keywords": [
+    "deployment",
+    "devops",
+    "ci-cd",
+    "automation",
+    "compliance"
+  ],
+  "agents": ["agents/"],
+  "hooks": ["hooks/"]
+}

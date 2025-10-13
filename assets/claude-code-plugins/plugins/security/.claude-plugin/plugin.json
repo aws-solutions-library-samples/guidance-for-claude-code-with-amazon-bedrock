@@ -1,0 +1,23 @@
+{
+  "name": "security",
+  "version": "1.0.0",
+  "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
+  "author": {
+    "name": "AWS Solutions Library",
+    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
+  },
+  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/security",
+  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
+  "license": "MIT-0",
+  "keywords": [
+    "security",
+    "audit",
+    "compliance",
+    "scanning",
+    "vulnerability",
+    "owasp"
+  ],
+  "commands": ["commands/"],
+  "agents": ["agents/"],
+  "hooks": ["hooks/"]
+}
