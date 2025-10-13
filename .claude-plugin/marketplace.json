@@ -6,13 +6,13 @@
   "metadata": {
     "description": "Production-ready plugins for Claude Code: agents, hooks, and workflows",
     "version": "1.0.0",
-    "pluginRoot": "./assets/claude-code-plugins/plugins"
+    "pluginRoot": "./assets/claude-code-plugins/plugins/"
   },
   "plugins": [
     {
       "name": "epcc-workflow",
       "version": "1.0.0",
-      "source": "epcc-workflow",
+      "source": "./epcc-workflow",
       "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents for exploration, planning, coding, and commit phases",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/epcc-workflow",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -36,7 +36,7 @@
     {
       "name": "documentation",
       "version": "1.0.0",
-      "source": "documentation",
+      "source": "./documentation",
       "description": "Complete Diataxis documentation framework with 12 specialized agents for tutorials, how-tos, references, explanations, and analysis",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/documentation",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -62,7 +62,7 @@
     {
       "name": "architecture",
       "version": "1.0.0",
-      "source": "architecture",
+      "source": "./architecture",
       "description": "Architecture design, review, and documentation with 10 specialized agents for C4 diagrams, ADRs, and quality analysis",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/architecture",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -87,7 +87,7 @@
     {
       "name": "security",
       "version": "1.0.0",
-      "source": "security",
+      "source": "./security",
       "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/security",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -112,7 +112,7 @@
     {
       "name": "testing",
       "version": "1.0.0",
-      "source": "testing",
+      "source": "./testing",
       "description": "Testing, QA, and quality gates with 3 specialized agents for automated validation and code quality checks",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/testing",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -137,7 +137,7 @@
     {
       "name": "performance",
       "version": "1.0.0",
-      "source": "performance",
+      "source": "./performance",
       "description": "Performance profiling, optimization, and monitoring with 5 specialized agents for comprehensive performance analysis",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/performance",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -161,7 +161,7 @@
     {
       "name": "tdd-workflow",
       "version": "1.0.0",
-      "source": "tdd-workflow",
+      "source": "./tdd-workflow",
       "description": "TDD workflow with 6 specialized agents for test-first development, red-green-refactor cycle, and comprehensive quality analysis",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/tdd-workflow",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -185,7 +185,7 @@
     {
       "name": "agile-tools",
       "version": "1.0.0",
-      "source": "agile-tools",
+      "source": "./agile-tools",
       "description": "Agile team roles: Scrum Master, Product Owner, Business Analyst, and Project Manager agents",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/agile-tools",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -209,7 +209,7 @@
     {
       "name": "ux-design",
       "version": "1.0.0",
-      "source": "ux-design",
+      "source": "./ux-design",
       "description": "UX optimization and UI design tools with accessibility validation and WCAG compliance",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/ux-design",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -234,7 +234,7 @@
     {
       "name": "deployment",
       "version": "1.0.0",
-      "source": "deployment",
+      "source": "./deployment",
       "description": "Deployment orchestration and compliance automation with progressive rollout strategies",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/deployment",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
@@ -258,7 +258,7 @@
     {
       "name": "code-analysis",
       "version": "1.0.0",
-      "source": "code-analysis",
+      "source": "./code-analysis",
       "description": "Code archaeology and technology evaluation for legacy systems and technical debt assessment",
       "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/code-analysis",
       "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
