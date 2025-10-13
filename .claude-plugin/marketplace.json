@@ -32,9 +32,30 @@
         "development-process",
         "systematic-development"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "commands": [
+        "./commands/epcc-code.md",
+        "./commands/epcc-commit.md",
+        "./commands/epcc-explore.md",
+        "./commands/epcc-plan.md",
+        "./commands/epcc-prd.md"
+      ],
+      "agents": [
+        "./agents/business-analyst.md",
+        "./agents/code-archaeologist.md",
+        "./agents/deployment-agent.md",
+        "./agents/documentation-agent.md",
+        "./agents/optimization-engineer.md",
+        "./agents/project-manager.md",
+        "./agents/qa-engineer.md",
+        "./agents/security-reviewer.md",
+        "./agents/system-designer.md",
+        "./agents/tech-evaluator.md",
+        "./agents/test-generator.md",
+        "./agents/ux-optimizer.md"
+      ],
+      "hooks": [
+        "./hooks/auto_recovery.json"
+      ]
     },
     {
       "name": "documentation",
@@ -61,8 +82,27 @@
         "knowledge-management",
         "diataxis"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"]
+      "commands": [
+        "./commands/docs-create.md",
+        "./commands/docs-explanation.md",
+        "./commands/docs-howto.md",
+        "./commands/docs-reference.md",
+        "./commands/docs-tutorial.md"
+      ],
+      "agents": [
+        "./agents/architecture-documenter.md",
+        "./agents/business-analyst.md",
+        "./agents/code-archaeologist.md",
+        "./agents/docs-explanation-agent.md",
+        "./agents/docs-howto-agent.md",
+        "./agents/docs-reference-agent.md",
+        "./agents/docs-tutorial-agent.md",
+        "./agents/documentation-agent.md",
+        "./agents/optimization-engineer.md",
+        "./agents/system-designer.md",
+        "./agents/test-generator.md",
+        "./agents/ux-optimizer.md"
+      ]
     },
     {
       "name": "architecture",
@@ -88,9 +128,28 @@
         "architecture-docs",
         "c4-diagrams"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "commands": [
+        "./commands/code-review.md",
+        "./commands/design-architecture.md",
+        "./commands/refactor-code.md"
+      ],
+      "agents": [
+        "./agents/architect.md",
+        "./agents/architecture-documenter.md",
+        "./agents/code-archaeologist.md",
+        "./agents/performance-profiler.md",
+        "./agents/qa-engineer.md",
+        "./agents/security-reviewer.md",
+        "./agents/simple-architect.md",
+        "./agents/simple-architecture-documenter.md",
+        "./agents/system-designer.md",
+        "./agents/test-generator.md"
+      ],
+      "hooks": [
+        "./hooks/architecture-design-hook.json",
+        "./hooks/architecture-docs-hook.json",
+        "./hooks/parallel-architecture-hook.json"
+      ]
     },
     {
       "name": "security",
@@ -116,9 +175,19 @@
         "security-gates",
         "vulnerability-detection"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "commands": [
+        "./commands/permission-audit.md",
+        "./commands/security-scan.md"
+      ],
+      "agents": [
+        "./agents/business-analyst.md",
+        "./agents/qa-engineer.md",
+        "./agents/security-reviewer.md",
+        "./agents/system-designer.md"
+      ],
+      "hooks": [
+        "./hooks/security_gates.json"
+      ]
     },
     {
       "name": "testing",
@@ -144,9 +213,17 @@
         "code-quality",
         "quality-gates"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "commands": [
+        "./commands/generate-tests.md"
+      ],
+      "agents": [
+        "./agents/qa-engineer.md",
+        "./agents/system-designer.md",
+        "./agents/test-generator.md"
+      ],
+      "hooks": [
+        "./hooks/quality_gates.json"
+      ]
     },
     {
       "name": "performance",
@@ -171,9 +248,19 @@
         "performance-monitoring",
         "benchmarking"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "commands": [
+        "./commands/analyze-performance.md"
+      ],
+      "agents": [
+        "./agents/code-archaeologist.md",
+        "./agents/optimization-engineer.md",
+        "./agents/performance-optimizer.md",
+        "./agents/performance-profiler.md",
+        "./agents/system-designer.md"
+      ],
+      "hooks": [
+        "./hooks/performance_monitor.json"
+      ]
     },
     {
       "name": "tdd-workflow",
@@ -198,8 +285,18 @@
         "quality",
         "tdd-workflow"
       ],
-      "commands": ["commands/"],
-      "agents": ["agents/"]
+      "commands": [
+        "./commands/tdd-bugfix.md",
+        "./commands/tdd-feature.md"
+      ],
+      "agents": [
+        "./agents/business-analyst.md",
+        "./agents/code-archaeologist.md",
+        "./agents/performance-profiler.md",
+        "./agents/qa-engineer.md",
+        "./agents/security-reviewer.md",
+        "./agents/test-generator.md"
+      ]
     },
     {
       "name": "agile-tools",
@@ -224,8 +321,15 @@
         "project-management",
         "scrum"
       ],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "agents": [
+        "./agents/business-analyst.md",
+        "./agents/product-owner.md",
+        "./agents/project-manager.md",
+        "./agents/scrum-master.md"
+      ],
+      "hooks": [
+        "./hooks/notifications.json"
+      ]
     },
     {
       "name": "ux-design",
@@ -251,7 +355,10 @@
         "accessibility",
         "wcag"
       ],
-      "agents": ["agents/"]
+      "agents": [
+        "./agents/ui-designer.md",
+        "./agents/ux-optimizer.md"
+      ]
     },
     {
       "name": "deployment",
@@ -276,8 +383,12 @@
         "devops-tools",
         "ci-cd"
       ],
-      "agents": ["agents/"],
-      "hooks": ["hooks/"]
+      "agents": [
+        "./agents/deployment-agent.md"
+      ],
+      "hooks": [
+        "./hooks/compliance.json"
+      ]
     },
     {
       "name": "code-analysis",
@@ -302,7 +413,10 @@
         "tech-evaluation",
         "technical-debt"
       ],
-      "agents": ["agents/"]
+      "agents": [
+        "./agents/code-archaeologist.md",
+        "./agents/tech-evaluator.md"
+      ]
     }
   ]
 }
