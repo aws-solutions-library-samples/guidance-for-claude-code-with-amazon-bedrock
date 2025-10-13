@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-plugins",
+  "name": "aws-claude-code-plugins",
   "owner": {
     "name": "AWS Solutions Library",
     "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
