@@ -10,77 +10,77 @@
     {
       "name": "epcc-workflow",
       "version": "1.0.0",
-      "source": "./epcc-workflow",
+      "source": "./assets/claude-code-plugins/plugins/epcc-workflow",
       "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents for exploration, planning, coding, and commit phases",
       "category": "workflow"
     },
     {
       "name": "documentation",
       "version": "1.0.0",
-      "source": "./documentation",
+      "source": "./assets/claude-code-plugins/plugins/documentation",
       "description": "Complete Diataxis documentation framework with 12 specialized agents for tutorials, how-tos, references, explanations, and analysis",
       "category": "documentation"
     },
     {
       "name": "architecture",
       "version": "1.0.0",
-      "source": "./architecture",
+      "source": "./assets/claude-code-plugins/plugins/architecture",
       "description": "Architecture design, review, and documentation with 10 specialized agents for C4 diagrams, ADRs, and quality analysis",
       "category": "architecture"
     },
     {
       "name": "security",
       "version": "1.0.0",
-      "source": "./security",
+      "source": "./assets/claude-code-plugins/plugins/security",
       "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
       "category": "security"
     },
     {
       "name": "testing",
       "version": "1.0.0",
-      "source": "./testing",
+      "source": "./assets/claude-code-plugins/plugins/testing",
       "description": "Testing, QA, and quality gates with 3 specialized agents for automated validation and code quality checks",
       "category": "testing"
     },
     {
       "name": "performance",
       "version": "1.0.0",
-      "source": "./performance",
+      "source": "./assets/claude-code-plugins/plugins/performance",
       "description": "Performance profiling, optimization, and monitoring with 5 specialized agents for comprehensive performance analysis",
       "category": "performance"
     },
     {
       "name": "tdd-workflow",
       "version": "1.0.0",
-      "source": "./tdd-workflow",
+      "source": "./assets/claude-code-plugins/plugins/tdd-workflow",
       "description": "TDD workflow with 6 specialized agents for test-first development, red-green-refactor cycle, and comprehensive quality analysis",
       "category": "workflow"
     },
     {
       "name": "agile-tools",
       "version": "1.0.0",
-      "source": "./agile-tools",
+      "source": "./assets/claude-code-plugins/plugins/agile-tools",
       "description": "Agile team roles: Scrum Master, Product Owner, Business Analyst, and Project Manager agents",
       "category": "agile"
     },
     {
       "name": "ux-design",
       "version": "1.0.0",
-      "source": "./ux-design",
+      "source": "./assets/claude-code-plugins/plugins/ux-design",
       "description": "UX optimization and UI design tools with accessibility validation and WCAG compliance",
       "category": "design"
     },
     {
       "name": "deployment",
       "version": "1.0.0",
-      "source": "./deployment",
+      "source": "./assets/claude-code-plugins/plugins/deployment",
       "description": "Deployment orchestration and compliance automation with progressive rollout strategies",
       "category": "devops"
     },
     {
       "name": "code-analysis",
       "version": "1.0.0",
-      "source": "./code-analysis",
+      "source": "./assets/claude-code-plugins/plugins/code-analysis",
       "description": "Code archaeology and technology evaluation for legacy systems and technical debt assessment",
       "category": "analysis"
     }
