@@ -3,19 +3,6 @@
   "version": "1.0.0",
   "description": "UX optimization and UI design tools with accessibility validation and WCAG compliance",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/ux-design",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "ux",
-    "ui",
-    "design",
-    "accessibility",
-    "wcag",
-    "user-experience"
-  ],
-  "agents": ["agents/"]
+    "name": "AWS Solutions Library"
+  }
 }

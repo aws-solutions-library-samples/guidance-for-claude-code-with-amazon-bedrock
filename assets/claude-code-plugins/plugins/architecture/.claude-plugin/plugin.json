@@ -3,21 +3,6 @@
   "version": "1.0.0",
   "description": "Architecture design, review, and documentation with 10 specialized agents for C4 diagrams, ADRs, and quality analysis",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/architecture",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "architecture",
-    "design",
-    "system-design",
-    "c4",
-    "adr",
-    "diagrams"
-  ],
-  "commands": ["commands/"],
-  "agents": ["agents/"],
-  "hooks": ["hooks/"]
+    "name": "AWS Solutions Library"
+  }
 }

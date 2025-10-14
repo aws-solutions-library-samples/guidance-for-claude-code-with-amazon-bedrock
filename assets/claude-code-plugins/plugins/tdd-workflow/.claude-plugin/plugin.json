@@ -3,19 +3,6 @@
   "version": "1.0.0",
   "description": "TDD workflow with 6 specialized agents for test-first development, red-green-refactor cycle, and comprehensive quality analysis",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/tdd-workflow",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "tdd",
-    "test-driven",
-    "testing",
-    "red-green-refactor",
-    "test-first"
-  ],
-  "commands": ["commands/"],
-  "agents": ["agents/"]
+    "name": "AWS Solutions Library"
+  }
 }

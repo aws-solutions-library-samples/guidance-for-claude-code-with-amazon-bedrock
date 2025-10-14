@@ -3,21 +3,6 @@
   "version": "1.0.0",
   "description": "Testing, QA, and quality gates with 3 specialized agents for automated validation and code quality checks",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/testing",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "testing",
-    "qa",
-    "quality",
-    "quality-gates",
-    "validation",
-    "linting"
-  ],
-  "commands": ["commands/"],
-  "agents": ["agents/"],
-  "hooks": ["hooks/"]
+    "name": "AWS Solutions Library"
+  }
 }

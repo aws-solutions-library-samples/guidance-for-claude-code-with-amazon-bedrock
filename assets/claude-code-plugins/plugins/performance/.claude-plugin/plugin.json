@@ -3,20 +3,6 @@
   "version": "1.0.0",
   "description": "Performance profiling, optimization, and monitoring with 5 specialized agents for comprehensive performance analysis",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/performance",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "performance",
-    "optimization",
-    "profiling",
-    "benchmarking",
-    "monitoring"
-  ],
-  "commands": ["commands/"],
-  "agents": ["agents/"],
-  "hooks": ["hooks/"]
+    "name": "AWS Solutions Library"
+  }
 }

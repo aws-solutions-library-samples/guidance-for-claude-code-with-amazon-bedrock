@@ -3,19 +3,6 @@
   "version": "1.0.0",
   "description": "Agile team roles: Scrum Master, Product Owner, Business Analyst, and Project Manager agents",
   "author": {
-    "name": "AWS Solutions Library",
-    "url": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
-  },
-  "homepage": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/main/assets/claude-code-plugins/plugins/agile-tools",
-  "repository": "https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock",
-  "license": "MIT-0",
-  "keywords": [
-    "agile",
-    "scrum",
-    "product-management",
-    "business-analysis",
-    "project-management"
-  ],
-  "agents": ["agents/"],
-  "hooks": ["hooks/"]
+    "name": "AWS Solutions Library"
+  }
 }
