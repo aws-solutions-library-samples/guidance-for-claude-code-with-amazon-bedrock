@@ -12,7 +12,7 @@ Production-ready agents, hooks, and workflows for Claude Code - a comprehensive 
 /plugin marketplace add aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock
 
 # Install your first plugin (EPCC workflow recommended)
-/plugin install epcc-workflow
+/plugin install epcc-workflow@aws-claude-code-plugins
 
 # Browse all available plugins interactively
 /plugin
