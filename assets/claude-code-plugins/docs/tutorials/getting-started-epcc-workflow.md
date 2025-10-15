@@ -317,9 +317,9 @@ The marketplace has 10 more plugins to discover:
 /plugin
 
 # Popular combinations:
-/plugin install documentation@claude-code-plugins  # Great docs
-/plugin install security@claude-code-plugins       # Security checks
-/plugin install testing@claude-code-plugins        # QA automation
+/plugin install documentation@aws-claude-code-plugins  # Great docs
+/plugin install security@aws-claude-code-plugins       # Security checks
+/plugin install testing@aws-claude-code-plugins        # QA automation
 ```
 
 ### Configure for Your Team

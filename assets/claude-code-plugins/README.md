@@ -41,7 +41,7 @@ A comprehensive methodology for systematic software development with exploration
 - 4 workflow commands (/epcc-explore, /epcc-plan, /epcc-code, /epcc-commit)
 - Auto-recovery hooks
 
-**Install:** `/plugin install epcc-workflow`
+**Install:** `/plugin install epcc-workflow@aws-claude-code-plugins`
 
 **Use Case:** Teams needing systematic, methodical development approach
 
@@ -57,7 +57,7 @@ Implements the full Diataxis documentation system with 12 specialized agents for
 - 5 documentation commands
 - Diataxis-compliant structure
 
-**Install:** `/plugin install documentation`
+**Install:** `/plugin install documentation@aws-claude-code-plugins`
 
 **Use Case:** Projects requiring comprehensive, user-focused documentation
 
@@ -73,7 +73,7 @@ Complete toolkit for system architecture design, C4 diagrams, ADRs, and architec
 - 3 commands (design, review, refactor)
 - 3 automation hooks
 
-**Install:** `/plugin install architecture`
+**Install:** `/plugin install architecture@aws-claude-code-plugins`
 
 **Use Case:** Architects and teams working on system design
 
@@ -89,7 +89,7 @@ Comprehensive security tooling with automated gates, vulnerability scanning, and
 - 2 commands (/security-scan, /permission-audit)
 - Automated security gates and scripts
 
-**Install:** `/plugin install security`
+**Install:** `/plugin install security@aws-claude-code-plugins`
 
 **Use Case:** Security-conscious teams, compliance requirements
 
@@ -105,7 +105,7 @@ Complete testing infrastructure with automated quality gates, linting, and valid
 - Test generation command
 - Quality gates with Python linting (Black, Ruff, mypy)
 
-**Install:** `/plugin install testing`
+**Install:** `/plugin install testing@aws-claude-code-plugins`
 
 **Use Case:** QA teams, TDD practitioners, quality-focused development
 
@@ -121,7 +121,7 @@ Tools for performance analysis, profiling, optimization, and continuous monitori
 - Performance analysis command
 - Performance monitoring hooks
 
-**Install:** `/plugin install performance`
+**Install:** `/plugin install performance@aws-claude-code-plugins`
 
 **Use Case:** Performance-critical applications, optimization work
 
@@ -137,7 +137,7 @@ Specialized workflow for TDD with red-green-refactor cycle support.
 - 2 TDD commands (/tdd-feature, /tdd-bugfix)
 - Test-first development patterns
 
-**Install:** `/plugin install tdd-workflow`
+**Install:** `/plugin install tdd-workflow@aws-claude-code-plugins`
 
 **Use Case:** TDD practitioners, test-first development teams
 
@@ -152,7 +152,7 @@ Complete set of agile role-based agents for team coordination and project manage
 - 4 agile role agents (Scrum Master, Product Owner, Business Analyst, Project Manager)
 - Notification hooks
 
-**Install:** `/plugin install agile-tools`
+**Install:** `/plugin install agile-tools@aws-claude-code-plugins`
 
 **Use Case:** Agile teams, product management, business analysis
 
@@ -167,7 +167,7 @@ User experience and interface design tools with accessibility validation.
 - 2 design agents (UI designer, UX optimizer)
 - WCAG accessibility support
 
-**Install:** `/plugin install ux-design`
+**Install:** `/plugin install ux-design@aws-claude-code-plugins`
 
 **Use Case:** Frontend teams, design-focused development
 
@@ -183,7 +183,7 @@ DevOps tools for deployment automation, progressive rollouts, and compliance.
 - Compliance hooks
 - Progressive deployment strategies
 
-**Install:** `/plugin install deployment`
+**Install:** `/plugin install deployment@aws-claude-code-plugins`
 
 **Use Case:** DevOps teams, CI/CD pipelines
 
@@ -198,7 +198,7 @@ Tools for analyzing legacy systems, evaluating technologies, and assessing techn
 - 2 analysis agents (code archaeologist, tech evaluator)
 - Legacy system analysis
 
-**Install:** `/plugin install code-analysis`
+**Install:** `/plugin install code-analysis@aws-claude-code-plugins`
 
 **Use Case:** Legacy modernization, technology evaluation
 

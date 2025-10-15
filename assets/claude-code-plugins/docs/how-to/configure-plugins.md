@@ -125,9 +125,9 @@ Create `.claude/settings.json` in your project root:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "documentation@claude-code-plugins",
-    "security@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "documentation@aws-claude-code-plugins",
+    "security@aws-claude-code-plugins"
   ]
 }
 ```
@@ -148,11 +148,11 @@ Create `.claude/settings.json` in your project root:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "documentation@claude-code-plugins",
-    "architecture@claude-code-plugins",
-    "testing@claude-code-plugins",
-    "ux-design@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "documentation@aws-claude-code-plugins",
+    "architecture@aws-claude-code-plugins",
+    "testing@aws-claude-code-plugins",
+    "ux-design@aws-claude-code-plugins"
   ]
 }
 ```
@@ -167,13 +167,13 @@ Create `.claude/settings.json` in your project root:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "security@claude-code-plugins",
-    "testing@claude-code-plugins",
-    "performance@claude-code-plugins",
-    "architecture@claude-code-plugins",
-    "deployment@claude-code-plugins",
-    "agile-tools@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "security@aws-claude-code-plugins",
+    "testing@aws-claude-code-plugins",
+    "performance@aws-claude-code-plugins",
+    "architecture@aws-claude-code-plugins",
+    "deployment@aws-claude-code-plugins",
+    "agile-tools@aws-claude-code-plugins"
   ]
 }
 ```
@@ -188,9 +188,9 @@ Create `.claude/settings.json` in your project root:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "tdd-workflow@claude-code-plugins",
-    "testing@claude-code-plugins",
-    "epcc-workflow@claude-code-plugins"
+    "tdd-workflow@aws-claude-code-plugins",
+    "testing@aws-claude-code-plugins",
+    "epcc-workflow@aws-claude-code-plugins"
   ]
 }
 ```
@@ -321,7 +321,7 @@ Add hook configuration to `.claude/settings.json`:
 ```json
 {
   "requiredPlugins": [
-    "security@claude-code-plugins"
+    "security@aws-claude-code-plugins"
   ],
   "hooks": {
     "PreToolUse": [
@@ -366,7 +366,7 @@ Add to `.claude/settings.json`:
 ```json
 {
   "requiredPlugins": [
-    "testing@claude-code-plugins"
+    "testing@aws-claude-code-plugins"
   ],
   "hooks": {
     "PreCommit": [
@@ -701,9 +701,9 @@ For enterprise-scale deployments with hundreds of developers:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "security@claude-code-plugins",
-    "testing@claude-code-plugins",
-    "deployment@claude-code-plugins"
+    "security@aws-claude-code-plugins",
+    "testing@aws-claude-code-plugins",
+    "deployment@aws-claude-code-plugins"
   ],
   "hooks": {
     "PreCommit": [
@@ -741,8 +741,8 @@ If you need custom functionality not in marketplace:
     "aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"
   ],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "security@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "security@aws-claude-code-plugins"
   ],
   "localPlugins": [
     ".claude/plugins/custom-workflow",
@@ -787,8 +787,8 @@ If you need custom functionality not in marketplace:
   "description": "Team standards: EPCC for consistency, security for compliance",
   "requiredMarketplaces": ["aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "security@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "security@aws-claude-code-plugins"
   ]
 }
 ```

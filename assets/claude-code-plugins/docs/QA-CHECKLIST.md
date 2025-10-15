@@ -15,22 +15,22 @@ All plugin names must match these exactly:
 
 | Plugin Name | Install Command |
 |-------------|----------------|
-| `epcc-workflow` | `/plugin install epcc-workflow@claude-code-plugins` |
-| `documentation` | `/plugin install documentation@claude-code-plugins` |
-| `architecture` | `/plugin install architecture@claude-code-plugins` |
-| `security` | `/plugin install security@claude-code-plugins` |
-| `testing` | `/plugin install testing@claude-code-plugins` |
-| `performance` | `/plugin install performance@claude-code-plugins` |
-| `tdd-workflow` | `/plugin install tdd-workflow@claude-code-plugins` |
-| `agile-tools` | `/plugin install agile-tools@claude-code-plugins` |
-| `ux-design` | `/plugin install ux-design@claude-code-plugins` |
-| `deployment` | `/plugin install deployment@claude-code-plugins` |
-| `code-analysis` | `/plugin install code-analysis@claude-code-plugins` |
+| `epcc-workflow` | `/plugin install epcc-workflow@aws-claude-code-plugins` |
+| `documentation` | `/plugin install documentation@aws-claude-code-plugins` |
+| `architecture` | `/plugin install architecture@aws-claude-code-plugins` |
+| `security` | `/plugin install security@aws-claude-code-plugins` |
+| `testing` | `/plugin install testing@aws-claude-code-plugins` |
+| `performance` | `/plugin install performance@aws-claude-code-plugins` |
+| `tdd-workflow` | `/plugin install tdd-workflow@aws-claude-code-plugins` |
+| `agile-tools` | `/plugin install agile-tools@aws-claude-code-plugins` |
+| `ux-design` | `/plugin install ux-design@aws-claude-code-plugins` |
+| `deployment` | `/plugin install deployment@aws-claude-code-plugins` |
+| `code-analysis` | `/plugin install code-analysis@aws-claude-code-plugins` |
 
 ### Command Syntax Standards
 - ✅ Commands always start with `/` (e.g., `/plugin`, `/epcc-explore`)
-- ✅ Marketplace reference: `@claude-code-plugins`
-- ✅ Full install syntax: `/plugin install <name>@claude-code-plugins`
+- ✅ Marketplace reference: `@aws-claude-code-plugins`
+- ✅ Full install syntax: `/plugin install <name>@aws-claude-code-plugins`
 - ✅ Slash commands: `/epcc-explore`, `/epcc-plan`, `/epcc-code`, `/epcc-commit`
 
 ### Common Terms (Consistent Usage)
@@ -141,8 +141,8 @@ All code examples must:
 {
   "requiredMarketplaces": ["aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock"],
   "requiredPlugins": [
-    "epcc-workflow@claude-code-plugins",
-    "security@claude-code-plugins"
+    "epcc-workflow@aws-claude-code-plugins",
+    "security@aws-claude-code-plugins"
   ]
 }
 ```
