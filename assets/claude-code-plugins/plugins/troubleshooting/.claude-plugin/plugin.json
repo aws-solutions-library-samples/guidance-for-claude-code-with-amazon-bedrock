@@ -1,0 +1,8 @@
+{
+  "name": "troubleshooting",
+  "version": "1.0.0",
+  "description": "Systematic debugging and problem-solving with ask-for-help mechanism to prevent spinning wheels and ensure methodical issue resolution",
+  "author": {
+    "name": "AWS Solutions Library"
+  }
+}
