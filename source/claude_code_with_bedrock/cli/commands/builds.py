@@ -26,6 +26,7 @@ class BuildsCommand(Command):
         option("limit", description="Number of builds to show", flag=False, default="10"),
         option("project", description="CodeBuild project name (default: auto-detect)", flag=False),
         option("status", description="Check status of a specific build by ID", flag=False),
+        option("download", description="Download completed Windows artifacts to dist folder", flag=True),
     ]
 
     def handle(self) -> int:
@@ -115,6 +116,8 @@ class BuildsCommand(Command):
             # Show command hints
             console.print("\n[dim]To check specific build status:[/dim]")
             console.print("  poetry run ccwb builds --status <build-id>")
+            console.print("\n[dim]To download completed Windows artifacts:[/dim]")
+            console.print("  poetry run ccwb builds --status latest --download")
             console.print("\n[dim]To start a new build:[/dim]")
             console.print("  poetry run ccwb package --target-platform windows")
 
@@ -206,11 +209,26 @@ class BuildsCommand(Command):
                 console.print("[green]✓ Build succeeded![/green]")
                 console.print(f"Duration: {build.get('buildDurationInMinutes', 'Unknown')} minutes")
                 console.print("\n[bold]Windows build artifacts are ready![/bold]")
-                console.print("Next steps:")
-                console.print("  1. Run: [cyan]poetry run ccwb package --target-platform all[/cyan]")
-                console.print("     (This will download the Windows artifacts)")
-                console.print("  2. Run: [cyan]poetry run ccwb distribute[/cyan]")
-                console.print("     (This will create the distribution URL)")
+
+                # Download artifacts if --download flag is provided
+                if self.option("download"):
+                    console.print("\n[cyan]Downloading Windows artifacts to dist folder...[/cyan]")
+                    from pathlib import Path
+
+                    dist_folder = Path("./dist")
+                    dist_folder.mkdir(parents=True, exist_ok=True)
+
+                    if self._download_windows_artifacts(profile, dist_folder, console):
+                        console.print("[green]✓ Downloaded Windows artifacts to dist folder[/green]")
+                        console.print(f"\nArtifacts location: {dist_folder.absolute()}")
+                    else:
+                        console.print("[red]✗ Failed to download artifacts[/red]")
+                else:
+                    console.print("\nNext steps:")
+                    console.print("  Run: [cyan]poetry run ccwb builds --download[/cyan]")
+                    console.print("  This will download Windows artifacts directly to your dist folder")
+                    console.print("\n  Or run: [cyan]poetry run ccwb distribute[/cyan]")
+                    console.print("  This will download artifacts and create distribution package")
             else:
                 console.print(f"[red]✗ Build {status.lower()}[/red]")
                 if "phases" in build:
@@ -230,3 +248,57 @@ class BuildsCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
+
+    def _download_windows_artifacts(self, profile, package_path, console: Console) -> bool:
+        """Download Windows build artifacts from S3."""
+        import zipfile
+
+        from botocore.exceptions import ClientError
+
+        try:
+            # Windows artifacts are in the CodeBuild bucket
+            if not profile.enable_codebuild:
+                console.print("[red]CodeBuild is not enabled for this profile[/red]")
+                return False
+
+            # Get CodeBuild stack outputs
+            from ...cli.utils.aws import get_stack_outputs
+
+            codebuild_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+            codebuild_outputs = get_stack_outputs(codebuild_stack_name, profile.aws_region)
+
+            if not codebuild_outputs:
+                console.print("[red]CodeBuild stack not found[/red]")
+                return False
+
+            bucket_name = codebuild_outputs.get("BuildBucket")
+            if not bucket_name:
+                console.print("[red]Could not get CodeBuild bucket from stack outputs[/red]")
+                return False
+
+            # Download from S3
+            s3 = boto3.client("s3", region_name=profile.aws_region)
+            zip_path = package_path / "windows-binaries.zip"
+
+            # CodeBuild stores artifacts at root of bucket
+            artifact_key = "windows-binaries.zip"
+
+            try:
+                s3.download_file(bucket_name, artifact_key, str(zip_path))
+
+                # Extract binaries
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(package_path)
+
+                # Clean up zip file
+                zip_path.unlink()
+                return True
+
+            except ClientError as e:
+                console.print(f"[red]Failed to download artifacts: {e}[/red]")
+                console.print(f"[dim]Tried: s3://{bucket_name}/{artifact_key}[/dim]")
+                return False
+
+        except Exception as e:
+            console.print(f"[red]Error downloading Windows artifacts: {e}[/red]")
+            return False

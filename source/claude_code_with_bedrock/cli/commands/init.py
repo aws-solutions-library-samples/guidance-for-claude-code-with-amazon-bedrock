@@ -352,13 +352,16 @@ class InitCommand(Command):
             console.print("Direct STS.")
             console.print("Cognito Identity Pool.\n")
 
+            # Use existing federation type as default if available
+            existing_federation_type = config.get("federation_type", "direct")
+
             federation_type = questionary.select(
                 "Choose federation type:",
                 choices=[
                     questionary.Choice("Direct STS", value="direct"),
                     questionary.Choice("Cognito Identity Pool", value="cognito"),
                 ],
-                default="direct",
+                default=existing_federation_type,
             ).ask()
 
             if not federation_type:
@@ -1202,6 +1205,14 @@ class InitCommand(Command):
                 "monitoring": {"enabled": profile.monitoring_enabled},
             }
 
+            # Add federation type if present (critical to preserve during updates)
+            if hasattr(profile, "federation_type") and profile.federation_type:
+                existing_config["federation_type"] = profile.federation_type
+
+            # Add max session duration if present
+            if hasattr(profile, "max_session_duration") and profile.max_session_duration:
+                existing_config["max_session_duration"] = profile.max_session_duration
+
             # Add Cognito User Pool ID if present
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:
                 existing_config["cognito_user_pool_id"] = profile.cognito_user_pool_id
@@ -1213,6 +1224,26 @@ class InitCommand(Command):
             # Add cross-region profile if present
             if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
                 existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
+
+            # Add CodeBuild configuration if present
+            if hasattr(profile, "enable_codebuild"):
+                existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
+
+            # Add distribution configuration if present
+            if hasattr(profile, "enable_distribution"):
+                existing_config["distribution"] = {"enabled": profile.enable_distribution}
+
+            # Add quota monitoring configuration if present
+            if hasattr(profile, "quota_monitoring_enabled"):
+                existing_config["quota"] = {"enabled": profile.quota_monitoring_enabled}
+
+            # Add analytics configuration if present
+            if hasattr(profile, "analytics_enabled"):
+                existing_config["analytics"] = {"enabled": profile.analytics_enabled}
+
+            # Add selected source region if present
+            if hasattr(profile, "selected_source_region") and profile.selected_source_region:
+                existing_config["aws"]["selected_source_region"] = profile.selected_source_region
 
             return existing_config
 
