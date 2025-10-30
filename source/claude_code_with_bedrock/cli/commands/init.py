@@ -293,9 +293,10 @@ class InitCommand(Command):
                         provider_type = "cognito"
             except Exception:
                 pass  # Continue to manual selection if parsing fails
-                # For Cognito, we must ask for the User Pool ID
-                # Cannot reliably extract from domain due to case sensitivity
-
+                
+            # For Cognito, we must ask for the User Pool ID
+            # Cannot reliably extract from domain due to case sensitivity
+            if provider_type == "cognito":
                 # Try to detect region from domain
                 region_match = re.search(r"\.auth\.([^.]+)\.amazoncognito\.com", provider_domain)
                 if not region_match:
