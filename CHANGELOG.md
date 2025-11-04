@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2025-11-03
+
+### Fixed
+
+- **Azure AD tenant ID extraction**: Fixed deployment failures when using Azure AD provider with various URL formats
+  - Regex pattern matching now extracts tenant GUID from multiple input formats
+  - Supports full URLs (with/without /v2.0), just tenant ID, and with https:// prefix
+  - Updated CloudFormation template to use correct Microsoft OIDC v2.0 endpoint (`login.microsoftonline.com/{tenant}/v2.0`)
+  - Added documentation for supported Azure provider domain formats with comprehensive examples
+  - Added troubleshooting section for "Parameter AzureTenantId failed to satisfy constraint" error
+
 ## [1.1.1] - 2025-10-09
 
 ### Added
