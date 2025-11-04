@@ -62,7 +62,7 @@ Resources:
   AzureOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
-      Url: !Sub 'https://sts.windows.net/${AzureTenantId}/'
+      Url: !Sub 'https://login.microsoftonline.com/${AzureTenantId}/v2.0'
       ClientIdList:
         - !Ref AzureClientId
       ThumbprintList:
