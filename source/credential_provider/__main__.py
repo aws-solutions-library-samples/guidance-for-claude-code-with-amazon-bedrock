@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import socket
 import sys
@@ -900,13 +901,19 @@ class MultiProviderAuth:
                     session_tags.append({"Key": tag_key, "Value": tag_value})
 
             # Generate session name from user identifier
+            # AWS RoleSessionName regex: [\w+=,.@-]*
+            # Auth0 often uses pipe-delimited format in sub claims (e.g., auth0|12345)
+            # Sanitize to replace invalid characters with hyphens
             session_name = "claude-code"
             if "sub" in token_claims:
-                # Use first 32 chars of sub for uniqueness
-                session_name = f"claude-code-{token_claims['sub'][:32]}"
+                # Use first 32 chars of sub for uniqueness, sanitized for AWS
+                sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:32])
+                session_name = f"claude-code-{sub_sanitized}"
             elif "email" in token_claims:
-                # Use email username part
-                session_name = f"claude-code-{token_claims['email'].split('@')[0][:32]}"
+                # Use email username part, sanitized
+                email_part = token_claims["email"].split("@")[0][:32]
+                email_sanitized = re.sub(r"[^\w+=,.@-]", "-", email_part)
+                session_name = f"claude-code-{email_sanitized}"
 
             self._debug_print(f"Assuming role: {federated_role_arn}")
             self._debug_print(f"Session name: {session_name}")
