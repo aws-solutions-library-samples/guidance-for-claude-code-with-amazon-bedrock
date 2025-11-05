@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2025-11-04
+
+### Fixed
+
+- **Auth0 OIDC provider URL format**: Fixed issuer validation failures during token exchange
+  - Added trailing slash to Auth0 OIDC provider URL (`https://${Auth0Domain}/`)
+  - Auth0's OIDC issuer includes trailing slash per OAuth 2.0 spec
+  - Prevents "issuer mismatch" errors during Direct IAM federation
+  - Updated CloudFormation template parameter documentation with supported domain formats
+
+- **Auth0 session name sanitization**: Fixed AssumeRoleWithWebIdentity errors for Auth0 users
+  - Auth0 uses pipe-delimited format in sub claims (e.g., `auth0|12345`)
+  - AWS RoleSessionName regex `[\w+=,.@-]*` doesn't allow pipe characters
+  - Automatically sanitize invalid characters to hyphens in session names
+  - Prevents "Member must satisfy regular expression pattern" validation errors
+
+- **Bedrock list permissions**: Fixed permission errors for model listing operations
+  - Changed Resource from specific ARNs to `'*'` for list operations
+  - Affects `ListFoundationModels`, `GetFoundationModel`, `GetFoundationModelAvailability`, `ListInferenceProfiles`, `GetInferenceProfile`
+  - AWS Bedrock list operations require `Resource: '*'` per AWS IAM documentation
+  - Applied fix to all provider templates (Auth0, Azure AD, Okta, Cognito User Pool)
+
+- **Dashboard region configuration**: Fixed monitoring dashboards for multi-region deployments
+  - Replaced hardcoded `us-east-1` with `${MetricsRegion}` parameter in log widgets
+  - Deploy command now passes `MetricsRegion` parameter from `profile.aws_region`
+  - Prevents `ResourceNotFoundException` for deployments outside us-east-1
+  - Affects CloudWatch Logs Insights widgets in monitoring dashboard
+
+### Changed
+
+- **Code quality improvements**:
+  - Moved `subprocess` import to module level in `deploy.py`
+  - Fixed variable shadowing: `platform_choice` → `platform_name` in `package.py`
+
+### Documentation
+
+- Enhanced Auth0 setup documentation
+  - Added comprehensive table of supported Auth0 domain formats (standard and regional)
+  - Added troubleshooting section for AssumeRoleWithWebIdentity validation errors
+  - Documented automatic handling of Auth0 pipe character issue
+  - Added examples of valid and invalid domain formats
+  - Clarified that https:// prefix and trailing slash are added automatically
+
 ## [1.1.3] - 2025-11-03
 
 ### Fixed

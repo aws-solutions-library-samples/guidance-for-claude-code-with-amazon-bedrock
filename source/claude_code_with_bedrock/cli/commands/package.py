@@ -112,10 +112,10 @@ class PackageCommand(Command):
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
         if isinstance(target_platform, list):
-            for platform_choice in target_platform:
-                if platform_choice not in valid_platforms:
+            for platform_name in target_platform:
+                if platform_name not in valid_platforms:
                     console.print(
-                        f"[red]Invalid platform: {platform_choice}. Valid options: {', '.join(valid_platforms)}[/red]"
+                        f"[red]Invalid platform: {platform_name}. Valid options: {', '.join(valid_platforms)}[/red]"
                     )
                     return 1
         elif target_platform not in valid_platforms:

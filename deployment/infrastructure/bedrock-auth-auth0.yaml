@@ -12,9 +12,17 @@ Parameters:
 
   Auth0Domain:
     Type: String
-    Description: Your Auth0 domain (e.g., company.auth0.com or company.us.auth0.com)
+    Description: |
+      Your Auth0 domain (e.g., company.auth0.com or company.us.auth0.com).
+      Supported formats:
+        - company.auth0.com (standard domain)
+        - company.us.auth0.com (region-specific domain)
+        - company.eu.auth0.com (European region)
+        - company.au.auth0.com (Australia region)
+        - company.jp.auth0.com (Japan region)
+      Note: Do NOT include 'https://' prefix or trailing slash - these are added automatically.
     AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.(us|eu|au|jp)?\.?auth0\.com$'
-    ConstraintDescription: Must be a valid Auth0 domain
+    ConstraintDescription: Must be a valid Auth0 domain without https:// prefix or trailing slash
 
   Auth0ClientId:
     Type: String
@@ -62,7 +70,7 @@ Resources:
   Auth0OIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
-      Url: !Sub 'https://${Auth0Domain}'
+      Url: !Sub 'https://${Auth0Domain}/'
       ClientIdList:
         - !Ref Auth0ClientId
       ThumbprintList:
@@ -119,9 +127,7 @@ Resources:
               - 'bedrock:GetFoundationModelAvailability'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
-            Resource:
-              - 'arn:aws:bedrock:*::foundation-model/*'
-              - 'arn:aws:bedrock:*:*:inference-profile/*'
+            Resource: '*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
@@ -133,8 +139,7 @@ Resources:
               - 'bedrock:GetFoundationModelAvailability'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
-            Resource:
-              - 'arn:aws:bedrock:::foundation-model/*'
+            Resource: '*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics

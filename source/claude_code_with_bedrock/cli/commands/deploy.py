@@ -5,6 +5,7 @@
 
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -337,7 +338,7 @@ class DeployCommand(Command):
                     # - https://login.microsoftonline.com/{tenant-id}/v2.0
 
                     # Extract GUID using regex pattern matching
-                    guid_pattern = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+                    guid_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
                     match = re.search(guid_pattern, profile.provider_domain)
 
                     if match:
@@ -462,8 +463,6 @@ class DeployCommand(Command):
                 task = progress.add_task("Packaging dashboard Lambda functions...", total=None)
 
                 try:
-                    import subprocess
-
                     # Create temp file for packaged template
                     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
                         packaged_template_path = f.name
@@ -495,9 +494,10 @@ class DeployCommand(Command):
                         task, description="Dashboard Lambda functions packaged successfully", completed=True
                     )
 
-                    # Deploy the packaged template
+                    # Deploy the packaged template with MetricsRegion parameter
+                    params = [f"MetricsRegion={profile.aws_region}"]
                     return deploy_with_cf(
-                        packaged_template_path, stack_name, [], task_description="Deploying monitoring dashboard..."
+                        packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
                     )
 
                 finally:
