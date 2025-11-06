@@ -118,9 +118,7 @@ Resources:
               - 'bedrock:GetFoundationModelAvailability'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
-            Resource:
-              - 'arn:aws:bedrock:*::foundation-model/*'
-              - 'arn:aws:bedrock:*:*:inference-profile/*'
+            Resource: '*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
@@ -132,8 +130,7 @@ Resources:
               - 'bedrock:GetFoundationModelAvailability'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
-            Resource:
-              - 'arn:aws:bedrock:::foundation-model/*'
+            Resource: '*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics

@@ -41,7 +41,12 @@ class PackageCommand(Command):
             "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
         ),
         option("profile", description="Configuration profile to use", flag=False, default="default"),
-        option("status", description="Check status of a build by ID", flag=False),
+        option(
+            "status",
+            description="[DEPRECATED] Use 'ccwb builds' instead. Check build status by ID or 'latest'",
+            flag=False,
+            default=None,
+        ),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
     ]
 
@@ -53,9 +58,13 @@ class PackageCommand(Command):
         console = Console()
 
         # Check if this is a status check (deprecated - moved to builds command)
-        if self.option("status"):
-            console.print("[yellow]Status check has moved to the builds command[/yellow]")
-            console.print("Use: [cyan]poetry run ccwb builds --status <build-id>[/cyan]")
+        if self.option("status") is not None:
+            console.print("[yellow]⚠️  DEPRECATED: Status check has moved to the builds command[/yellow]")
+            console.print("\nUse one of these commands instead:")
+            console.print("  • [cyan]poetry run ccwb builds[/cyan]                    (list all recent builds)")
+            console.print("  • [cyan]poetry run ccwb builds --status <build-id>[/cyan] (check specific build)")
+            console.print("  • [cyan]poetry run ccwb builds --status latest[/cyan]    (check latest build)")
+            console.print("\nRedirecting to builds command...\n")
             return self._check_build_status(self.option("status"), console)
 
         # Load configuration first (needed to check CodeBuild status)
@@ -103,10 +112,10 @@ class PackageCommand(Command):
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
         if isinstance(target_platform, list):
-            for platform in target_platform:
-                if platform not in valid_platforms:
+            for platform_name in target_platform:
+                if platform_name not in valid_platforms:
                     console.print(
-                        f"[red]Invalid platform: {platform}. Valid options: {', '.join(valid_platforms)}[/red]"
+                        f"[red]Invalid platform: {platform_name}. Valid options: {', '.join(valid_platforms)}[/red]"
                     )
                     return 1
         elif target_platform not in valid_platforms:
@@ -310,7 +319,9 @@ class PackageCommand(Command):
                     console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
                     try:
                         otel_helper_path = self._build_otel_helper(output_dir, platform_name)
-                        built_otel_helpers.append((platform_name, otel_helper_path))
+                        # Only add to list if build was successful (not None)
+                        if otel_helper_path is not None:
+                            built_otel_helpers.append((platform_name, otel_helper_path))
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
@@ -344,9 +355,9 @@ class PackageCommand(Command):
         console.print("\nPackage contents:")
 
         # Show which binaries were built
-        for platform, executable_path in built_executables:
+        for platform_name, executable_path in built_executables:
             binary_name = executable_path.name
-            console.print(f"  • {binary_name} - Authentication executable for {platform}")
+            console.print(f"  • {binary_name} - Authentication executable for {platform_name}")
 
         console.print("  • config.json - Configuration")
         console.print("  • install.sh - Installation script for macOS/Linux")
@@ -356,8 +367,8 @@ class PackageCommand(Command):
         console.print("  • README.md - Installation instructions")
         if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
-            for platform, otel_helper_path in built_otel_helpers:
-                console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform}")
+            for platform_name, otel_helper_path in built_otel_helpers:
+                console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
 
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
@@ -371,7 +382,12 @@ class PackageCommand(Command):
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
-        console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
+
+        # Only show distribute command if distribution is enabled
+        if profile.enable_distribution:
+            console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
+        else:
+            console.print("Share the dist folder with your users for installation")
 
         return 0
 
@@ -429,10 +445,8 @@ class PackageCommand(Command):
                 console.print(f"Duration: {build.get('buildDurationInMinutes', 'Unknown')} minutes")
                 console.print("\n[bold]Windows build artifacts are ready![/bold]")
                 console.print("Next steps:")
-                console.print("  1. Run: [cyan]poetry run ccwb package --target-platform all[/cyan]")
-                console.print("     (This will download the Windows artifacts)")
-                console.print("  2. Run: [cyan]poetry run ccwb distribute[/cyan]")
-                console.print("     (This will create the distribution URL)")
+                console.print("  Run: [cyan]poetry run ccwb distribute[/cyan]")
+                console.print("  This will download Windows artifacts from S3 and create your distribution package")
             else:
                 console.print(f"[red]✗ Build {status.lower()}[/red]")
                 if "phases" in build:
@@ -854,13 +868,24 @@ class PackageCommand(Command):
             docker_platform = "linux/amd64"
             binary_name = "credential-process-linux-x64"
 
-        # Check if Docker is available
+        # Check if Docker is available and running
         docker_check = subprocess.run(["docker", "--version"], capture_output=True)
         if docker_check.returncode != 0:
-            raise RuntimeError(
-                "Docker is not available. Please install Docker to build Linux binaries.\n"
-                "Visit: https://docs.docker.com/get-docker/"
-            )
+            console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} build[/yellow]")
+            console.print("[dim]Linux binaries require Docker Desktop to be installed and running.[/dim]")
+            console.print("[dim]Install Docker: https://docs.docker.com/get-docker/[/dim]")
+            console.print(f"[dim]Skipping credential-process-linux-{arch}[/dim]\n")
+            # Return a dummy path that won't be included in the package
+            return None
+
+        # Check if Docker daemon is running
+        daemon_check = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if daemon_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker daemon not running - skipping Linux {arch} build[/yellow]")
+            console.print("[dim]Please start Docker Desktop and try again.[/dim]")
+            console.print(f"[dim]Skipping credential-process-linux-{arch}[/dim]\n")
+            # Return a dummy path that won't be included in the package
+            return None
 
         # Create a temporary directory for the Docker build
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1036,6 +1061,24 @@ RUN pyinstaller \
         else:
             docker_platform = "linux/amd64"
             binary_name = "otel-helper-linux-x64"
+
+        # Check if Docker is available and running
+        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+        if docker_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} OTEL helper build[/yellow]")
+            console.print("[dim]Linux binaries require Docker Desktop to be installed and running.[/dim]")
+            console.print(f"[dim]Skipping otel-helper-linux-{arch}[/dim]\n")
+            # Return a dummy path that won't be included in the package
+            return None
+
+        # Check if Docker daemon is running
+        daemon_check = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if daemon_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker daemon not running - skipping Linux {arch} OTEL helper build[/yellow]")
+            console.print("[dim]Please start Docker Desktop and try again.[/dim]")
+            console.print(f"[dim]Skipping otel-helper-linux-{arch}[/dim]\n")
+            # Return a dummy path that won't be included in the package
+            return None
 
         # Create a temporary directory for the Docker build
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1238,7 +1281,7 @@ RUN pyinstaller \
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
-            raise RuntimeError("CodeBuild stack not deployed")
+            raise RuntimeError("CodeBuild stack not deployed") from None
 
         bucket_name = stack_outputs.get("BuildBucket")
         project_name = stack_outputs.get("ProjectName")
@@ -1278,7 +1321,6 @@ RUN pyinstaller \
             console.print(f"[dim]Build ID: {build_id}[/dim]")
 
             # Store build ID for later retrieval
-            import json
             from pathlib import Path
 
             build_info_file = Path.home() / ".claude-code" / "latest-build.json"
@@ -1302,10 +1344,27 @@ RUN pyinstaller \
         console.print("\n[bold yellow]Windows build started![/bold yellow]")
         console.print(f"[dim]Build ID: {build_id}[/dim]")
         console.print("Build will take approximately 20+ minutes to complete.")
-        console.print("\nTo check status:")
+
+        console.print("\n[bold]Monitor build progress:[/bold]")
         console.print("  [cyan]poetry run ccwb builds[/cyan]")
-        console.print("\nWhen ready, create distribution:")
-        console.print("  [cyan]poetry run ccwb distribute[/cyan]")
+        console.print("  This shows the current status and elapsed time")
+
+        console.print("\n[bold]Next steps:[/bold]")
+        console.print("  1. Wait for build to complete (you can continue working)")
+        console.print("  2. Run [cyan]poetry run ccwb builds[/cyan] to check completion status")
+
+        # Get profile to check if distribution is enabled
+        config = Config.load()
+        profile_obj = config.get_profile(self.option("profile"))
+
+        if profile_obj and profile_obj.enable_distribution:
+            console.print("  3. Once complete, run [cyan]poetry run ccwb distribute[/cyan]")
+            console.print("     This will download Windows binaries and create the distribution package")
+        else:
+            console.print("  3. Once complete, run [cyan]poetry run ccwb builds --status latest --download[/cyan]")
+            console.print("     This will download Windows binaries from S3 into your dist folder")
+            console.print("  4. Share the complete dist folder with your users for installation")
+
         console.print("\n[dim]View logs in AWS Console:[/dim]")
         console.print(
             f"  [dim]https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id.split(':')[1]}[/dim]"

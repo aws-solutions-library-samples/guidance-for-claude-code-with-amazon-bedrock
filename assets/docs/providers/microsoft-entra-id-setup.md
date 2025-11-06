@@ -140,6 +140,19 @@ You now have everything needed for deployment:
 | **Provider Domain** | Your tenant URL     | `login.microsoftonline.com/{tenant-id}/v2.0` |
 | **Client ID**       | Your Application ID | `12345678-1234-1234-1234-123456789012`       |
 
+### Supported Provider Domain Formats
+
+The CLI accepts multiple formats for the Azure provider domain. Choose the format that's most convenient for you:
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| **Full URL with /v2.0** | `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0` | **Recommended** - Standard Azure AD v2.0 endpoint |
+| **Full URL without /v2.0** | `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36` | Also supported |
+| **Just the tenant ID** | `c56f9106-1d27-456d-bd20-3de87e595a36` | Simplest format |
+| **With https:// prefix** | `https://login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0` | Protocol stripped automatically |
+
+> **Note**: The CLI automatically extracts the tenant ID GUID from any of these formats, so you don't need to worry about formatting.
+
 ### Use the values with ccwb init
 
 When running `poetry run ccwb init`, you'll be prompted for these values:
@@ -197,6 +210,16 @@ Should return a JSON response with OIDC configuration.
 1. Go to **Applications** → **App registrations**
 2. Click on your application
 3. The Client ID is on the overview page
+
+### "Parameter AzureTenantId failed to satisfy constraint" Error
+
+This error occurs during deployment if the tenant ID format is incorrect. The fix:
+
+- **If using an older version of the CLI**: Upgrade to the latest version which supports multiple URL formats
+- **Manual workaround**: When prompted for "Provider Domain", enter just your tenant ID GUID instead of the full URL:
+  - ✅ Use: `c56f9106-1d27-456d-bd20-3de87e595a36`
+  - ❌ Instead of: `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0`
+- **After upgrading**: The CLI now accepts all formats automatically (see [Supported Provider Domain Formats](#supported-provider-domain-formats))
 
 ---
 

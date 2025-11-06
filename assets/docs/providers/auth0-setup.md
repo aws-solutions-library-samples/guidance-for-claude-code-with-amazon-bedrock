@@ -157,6 +157,23 @@ You now have everything needed for deployment:
 | **Auth0Domain**   | Your Auth0 domain | `your-name.auth0.com`              |
 | **Auth0ClientId** | Your Client ID    | `aBcDeFgHiJkLmNoPqRsTuVwXyZ123456` |
 
+### Supported Provider Domain Formats
+
+The CLI accepts multiple formats for the Auth0 provider domain:
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| **Standard domain** | `company.auth0.com` | **Recommended** - Standard Auth0 domain |
+| **Regional domain (US)** | `company.us.auth0.com` | US-based Auth0 tenant |
+| **Regional domain (EU)** | `company.eu.auth0.com` | European Auth0 tenant |
+| **Regional domain (AU)** | `company.au.auth0.com` | Australia Auth0 tenant |
+| **Regional domain (JP)** | `company.jp.auth0.com` | Japan Auth0 tenant |
+
+**Important**:
+- Do NOT include `https://` prefix - the system adds this automatically
+- Do NOT include trailing slash - the OIDC provider URL is constructed automatically
+- Just provide the domain name (e.g., `company.auth0.com`)
+
 ### Use the values with ccwb init
 
 When running `poetry run ccwb init`, you'll be prompted for these values:
@@ -228,6 +245,39 @@ Should return a JSON response with OIDC endpoints.
 - Ensure Authorization Code grant type is enabled
 - Check that PKCE is not explicitly disabled
 - Verify refresh token settings
+
+### "AssumeRoleWithWebIdentity" Validation Error
+
+If you encounter errors like:
+```
+Member must satisfy regular expression pattern: [\w+=,.@-]*
+```
+
+This is automatically handled by the credential provider. Auth0 commonly uses pipe-delimited format in user IDs (e.g., `auth0|12345`), which AWS doesn't allow in session names. The credential provider sanitizes these characters automatically by replacing them with hyphens.
+
+**What this means for you:**
+- This is a known Auth0 characteristic and is handled automatically
+- No configuration changes needed
+- Session names are automatically sanitized to meet AWS requirements
+- User authentication will work seamlessly
+
+### "Parameter Auth0Domain failed to satisfy constraint" Error
+
+If you encounter deployment errors related to the Auth0Domain parameter:
+
+**Cause**: The Auth0 domain format doesn't match the expected pattern.
+
+**Solution**:
+1. Ensure you're using just the domain name: `company.auth0.com`
+2. Don't include `https://` or trailing slash
+3. Verify the regional suffix if using a regional tenant (`.us`, `.eu`, `.au`, `.jp`)
+4. The domain must be a valid Auth0 domain
+
+**Valid examples:**
+- ✅ `company.auth0.com`
+- ✅ `company.us.auth0.com`
+- ❌ `https://company.auth0.com`
+- ❌ `company.auth0.com/`
 
 ---
 

@@ -4,6 +4,8 @@
 """Deploy command - Deploy AWS infrastructure using boto3."""
 
 import os
+import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -328,11 +330,24 @@ class DeployCommand(Command):
                         ]
                     )
                 elif provider_type == "azure":
-                    # Azure uses tenant ID instead of domain
-                    tenant_id = profile.provider_domain
-                    if "/" in tenant_id:
-                        # Extract tenant ID from full Azure domain if needed
-                        tenant_id = tenant_id.split("/")[0]
+                    # Azure uses tenant ID (GUID) instead of full domain
+                    # Support multiple input formats:
+                    # - login.microsoftonline.com/{tenant-id}/v2.0
+                    # - login.microsoftonline.com/{tenant-id}
+                    # - {tenant-id} (just the GUID)
+                    # - https://login.microsoftonline.com/{tenant-id}/v2.0
+
+                    # Extract GUID using regex pattern matching
+                    guid_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                    match = re.search(guid_pattern, profile.provider_domain)
+
+                    if match:
+                        tenant_id = match.group(0)
+                    else:
+                        # If no GUID found, use the provider_domain as-is
+                        # (in case user provided just the GUID but in unexpected format)
+                        tenant_id = profile.provider_domain
+
                     params.extend(
                         [
                             f"AzureTenantId={tenant_id}",
@@ -448,8 +463,6 @@ class DeployCommand(Command):
                 task = progress.add_task("Packaging dashboard Lambda functions...", total=None)
 
                 try:
-                    import subprocess
-
                     # Create temp file for packaged template
                     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
                         packaged_template_path = f.name
@@ -481,9 +494,10 @@ class DeployCommand(Command):
                         task, description="Dashboard Lambda functions packaged successfully", completed=True
                     )
 
-                    # Deploy the packaged template
+                    # Deploy the packaged template with MetricsRegion parameter
+                    params = [f"MetricsRegion={profile.aws_region}"]
                     return deploy_with_cf(
-                        packaged_template_path, stack_name, [], task_description="Deploying monitoring dashboard..."
+                        packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
                     )
 
                 finally:

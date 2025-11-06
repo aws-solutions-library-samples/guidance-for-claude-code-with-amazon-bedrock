@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "claude-code-with-bedrock"
-version = "1.1.0"
+version = "1.1.4"
 description = "Deploy and manage Claude Code on Amazon Bedrock"
 authors = ["Claude Code Team <claude-code@example.com>"]
 readme = "../README.md"
