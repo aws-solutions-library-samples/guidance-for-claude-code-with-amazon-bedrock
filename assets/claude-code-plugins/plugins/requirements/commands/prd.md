@@ -1,21 +1,23 @@
 ---
 name: prd
 description: Product requirements discovery - Create comprehensive PRD through focused questions and guided questionnaire
-version: 2.0.0
-argument-hint: "[initial-idea-or-project-name] [--process PRD_QUESTIONS.md]"
+version: 1.0.0
+argument-hint: '[initial-idea-or-project-name] [--process PRD_QUESTIONS.md]'
 ---
 
-# PRD Command - Product Requirements Discovery (v2.0)
+# PRD Command - Product Requirements Discovery
 
 You are facilitating **PRODUCT REQUIREMENTS DISCOVERY** using a hybrid approach: **Interactive foundational questions** followed by a **self-paced questionnaire**.
 
 ⚠️ **IMPORTANT WORKFLOW**:
+
 1. **Interactive Phase** (5-10 min): Ask 3-5 foundational questions about vision, problem, and users
 2. **Generate questionnaire file** (`PRD_QUESTIONS.md`) for detailed requirements
 3. **User fills questionnaire** at their own pace (features, constraints, scope, metrics)
 4. **Process questionnaire** (`/prd --process PRD_QUESTIONS.md`) to generate final `PRD.md`
 
 ⚠️ **KEY PRINCIPLES**:
+
 - **Focus on Why First**: Vision and problem before features and constraints
 - **Interactive for Foundation**: Critical understanding happens conversationally
 - **Questionnaire for Details**: Detailed planning happens at user's own pace
@@ -23,10 +25,12 @@ You are facilitating **PRODUCT REQUIREMENTS DISCOVERY** using a hybrid approach:
 - **Strict Non-Technical**: PRD = what/why/who, NOT how (tech decisions in `/tech-req`)
 
 ## Initial Input
+
 $ARGUMENTS
 
 **Check for --process flag**:
 If `--process PRD_QUESTIONS.md` flag detected:
+
 - Skip to [Questionnaire Processing](#questionnaire-processing) section
 - Read answers from file and generate PRD.md
 
@@ -58,11 +62,13 @@ Ask **ONE question at a time**, wait for answer, adapt next question based on re
 **Wait for answer.**
 
 **Follow-up based on response**:
+
 - If too vague: "Can you give me a concrete example of what this would look like?"
 - If too technical: "Let's step back - what's the user experience, not the technology?"
 - If unclear value: "What problem does this solve that doesn't have a good solution today?"
 
 **Document**:
+
 ```
 Vision: [User's one-sentence answer]
 ```
@@ -76,10 +82,12 @@ Vision: [User's one-sentence answer]
 **Wait for answer.**
 
 **Follow-up**:
+
 - "What would happen if this problem wasn't solved?"
 - "How do people currently deal with this problem?"
 
 **Document**:
+
 ```
 Problem Statement: [User's answer about the problem]
 Current Workarounds: [How people handle it now, if mentioned]
@@ -94,10 +102,12 @@ Current Workarounds: [How people handle it now, if mentioned]
 **Wait for answer.**
 
 **Follow-up**:
+
 - "Are there different types of users with different needs?"
 - "What does success look like for these users?"
 
 **Document**:
+
 ```
 Target Users:
 - Primary: [Main user type and their needs]
@@ -115,10 +125,12 @@ User Success: [What "winning" looks like for users]
 **Wait for answer.**
 
 **Follow-up if they mention examples**:
+
 - "What do you like about [example]?"
 - "What would you do differently?"
 
 **Document**:
+
 ```
 Inspiration: [Examples or inspiration if provided]
 What to emulate: [Positive aspects to copy]
@@ -134,6 +146,7 @@ What to avoid: [Things to do differently]
 **Wait for answer.**
 
 **Document**:
+
 ```
 Success Vision: [User's answer]
 ```
@@ -144,6 +157,7 @@ After completing Phase 1 interactive questions, generate `PRD_QUESTIONS.md` for 
 
 **Inform User**:
 "Great! I understand your vision:
+
 - **Vision**: [Summary]
 - **Problem**: [Summary]
 - **Users**: [Summary]
@@ -155,13 +169,14 @@ Now I'll generate a questionnaire for the detailed requirements (features, const
 
 **Generate Questionnaire File**:
 
-````markdown
+```markdown
 # Product Requirements Questionnaire
 
 **Project**: [Project name from user's input]
 **Date**: [Current date]
 
 **Foundation (from interactive session)**:
+
 - **Vision**: [Vision from Question 1]
 - **Problem**: [Problem from Question 2]
 - **Target Users**: [Users from Question 3]
@@ -201,6 +216,7 @@ Now I'll generate a questionnaire for the detailed requirements (features, const
 **Walk me through a typical user's journey from start to finish:**
 
 Example format:
+
 1. User arrives at...
 2. User does...
 3. System responds with...
@@ -217,7 +233,7 @@ Example format:
 1. [YOUR ANSWER]
 2. [YOUR ANSWER]
 3. [YOUR ANSWER]
-... (add as many as needed)
+   ... (add as many as needed)
 
 ---
 
@@ -260,6 +276,7 @@ Example format:
 ### 2.1 Deployment
 
 **Where should this run?**
+
 - [ ] Cloud (AWS/Azure/GCP)
 - [ ] Local/On-premises
 - [ ] Hybrid
@@ -268,6 +285,7 @@ Example format:
 **Your Choice**: [YOUR ANSWER]
 
 **If Cloud, any provider preference?**
+
 - [ ] AWS
 - [ ] Azure
 - [ ] GCP
@@ -284,6 +302,7 @@ Example format:
 ### 2.2 Scale & Performance
 
 **How many people would use this at once?**
+
 - [ ] Just me
 - [ ] Small team (<10)
 - [ ] Department (10-100)
@@ -317,6 +336,7 @@ Example format:
 [YOUR ANSWER]
 
 **Do you need user authentication?**
+
 - [ ] No authentication needed
 - [ ] Single user only (just me)
 - [ ] Multiple users (team/organization)
@@ -330,6 +350,7 @@ Example format:
 ### 2.4 Team & Technology
 
 **What's your team's technical comfort level?**
+
 - [ ] Beginner - Prefer simple, managed solutions
 - [ ] Intermediate - Comfortable with most tools
 - [ ] Advanced - Can handle complex setups
@@ -398,7 +419,7 @@ Example format:
 
 1. [YOUR ANSWER]
 2. [YOUR ANSWER]
-... (add as many as needed)
+   ... (add as many as needed)
 
 **If you had to cut features, what's the absolute minimum viable version?**
 
@@ -418,7 +439,7 @@ Example format:
 
 1. [YOUR ANSWER]
 2. [YOUR ANSWER]
-... (add as many as needed)
+   ... (add as many as needed)
 
 ---
 
@@ -441,7 +462,7 @@ Example format:
 - [ ] [YOUR ANSWER - Specific testable criterion]
 - [ ] [YOUR ANSWER - Specific testable criterion]
 - [ ] [YOUR ANSWER - Specific testable criterion]
-... (add as many as needed)
+      ... (add as many as needed)
 
 ---
 
@@ -481,7 +502,7 @@ Example format:
 
 - [ ] [YOUR QUESTION]
 - [ ] [YOUR QUESTION]
-... (add as many as needed)
+      ... (add as many as needed)
 
 ---
 
@@ -496,22 +517,25 @@ Example format:
 ## Next Steps
 
 **When you're done**:
+
 1. Save this file
 2. Run: `/prd --process PRD_QUESTIONS.md`
 3. I'll generate your comprehensive PRD.md!
-````
+```
 
 **After generating file, tell user**:
 
 "✅ **Questionnaire Generated!** I've created `PRD_QUESTIONS.md` with all the detailed questions.
 
 **Next Steps**:
+
 1. Open `PRD_QUESTIONS.md` and fill in your answers (replace `[YOUR ANSWER]` placeholders)
 2. Take your time - there's no rush. Think through features, prioritization, and constraints
 3. When done, save the file and run: `/prd --process PRD_QUESTIONS.md`
 4. I'll generate your comprehensive `PRD.md`!
 
 The questionnaire has 6 sections:
+
 - Section 1: Core Features (what users can do)
 - Section 2: Technical Constraints (deployment, scale, data needs)
 - Section 3: Constraints & Scope (timeline, budget, out-of-scope items)
@@ -532,15 +556,18 @@ This section is used when user runs `/prd --process PRD_QUESTIONS.md` after fill
 Read `PRD_QUESTIONS.md` file and extract all answers.
 
 **Validate completeness**:
+
 - Check that required sections have answers (Section 1-4)
 - Note any skipped optional sections
 - Identify incomplete answers marked as `[YOUR ANSWER]`
 
 If critical sections are incomplete:
 "⚠️ I noticed some required sections are incomplete:
+
 - [List incomplete sections]
 
 Would you like to:
+
 1. Fill in these sections now (I'll wait)
 2. Proceed with what you have (I'll note gaps in PRD)
 3. Cancel and complete later"
@@ -660,6 +687,7 @@ Example: "[Project name] is a [type of product] that [solves problem] for [targe
 [From Section 1.1 and 1.4 of questionnaire - the essential features]
 
 For each P0 feature:
+
 1. **[Feature Name]**
    - **Description**: [What it does]
    - **User Value**: [Why users need this]
@@ -818,6 +846,7 @@ If all features were cut except the absolute essentials:
 "✅ **PRD Complete!** I've generated `PRD.md` with your comprehensive product requirements.
 
 **What's in the PRD**:
+
 - Executive summary and vision statement
 - Problem statement and target users
 - Prioritized features (P0/P1/P2)
@@ -834,6 +863,7 @@ If all features were cut except the absolute essentials:
 3. **Direct Implementation**: Start building based on this PRD if requirements are clear
 
 **Review Your PRD**:
+
 - Read through `PRD.md` and verify it captures your vision
 - Add any missing details or clarifications
 - Share with stakeholders for feedback if needed
@@ -845,6 +875,7 @@ The PRD is your north star for all subsequent work. Keep it updated as requireme
 ## Conversation Guidelines for Phase 1
 
 ### Stay Product-Focused, Not Technical
+
 ⚠️ **CRITICAL**: PRD focuses on WHAT users need, NOT HOW it will be built.
 
 ❌ **DON'T ASK**: "Should users write posts in Markdown or use a rich text editor?"
@@ -860,26 +891,33 @@ The PRD is your north star for all subsequent work. Keep it updated as requireme
 ✅ **DO ASK**: "How much content do you expect to have? (10 posts, 1000 posts, 10000 posts)"
 
 ### Let Technical Questions Wait for /tech-req
+
 When you catch yourself about to ask a technical question:
 ✅ **SAY**: "That's a great technical question - we'll evaluate implementation options in the `/tech-req` command. For now, let's focus on what users need to do."
 
 ### Be Socratic About Product Requirements
+
 ❌ **DON'T SAY**: "You should add a search feature"
 ✅ **DO SAY**: "If someone visits your blog looking for a specific topic, how would you want them to find it? Browse categories? Search? Something else?"
 
 ### Acknowledge Uncertainty
+
 ❌ **DON'T SAY**: "This will definitely work"
 ✅ **DO SAY**: "Based on similar projects, this approach typically works well for [use case]"
 
 ### Ask Follow-ups
+
 When user says something vague:
+
 - "Can you give me an example of what that would look like?"
 - "Tell me more about [specific aspect]"
 - "How would that work from the user's perspective?"
 
 ### Reflect Back After Phase 1
+
 After completing Phase 1 questions, summarize:
 ✅ "So if I understand correctly:
+
 - **Vision**: [Summary]
 - **Problem**: [Summary]
 - **Users**: [Summary]

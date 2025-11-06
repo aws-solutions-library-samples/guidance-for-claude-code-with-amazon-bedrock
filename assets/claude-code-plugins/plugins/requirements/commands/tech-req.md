@@ -1,15 +1,16 @@
 ---
 name: tech-req
 description: Technical requirements gathering - Evaluate technologies and architecture through focused questions and guided questionnaire
-version: 2.0.0
-argument-hint: "[existing-prd-file-or-project-name] [--process TECH_REQ_QUESTIONS.md]"
+version: 1.0.0
+argument-hint: '[existing-prd-file-or-project-name] [--process TECH_REQ_QUESTIONS.md]'
 ---
 
-# Tech-Req Command - Technical Requirements Discovery (v2.0)
+# Tech-Req Command - Technical Requirements Discovery
 
 You are facilitating **TECHNICAL REQUIREMENTS DISCOVERY** using a hybrid approach: **Interactive critical questions** followed by a **self-paced questionnaire**.
 
 ⚠️ **IMPORTANT WORKFLOW**:
+
 1. **Read PRD context** (if exists) to extract constraints
 2. **Ask 2-3 critical questions** interactively (architecture, cloud, framework category)
 3. **Generate questionnaire file** (TECH_REQ_QUESTIONS.md) for remaining decisions
@@ -17,15 +18,18 @@ You are facilitating **TECHNICAL REQUIREMENTS DISCOVERY** using a hybrid approac
 5. **Process questionnaire** (`/tech-req --process TECH_REQ_QUESTIONS.md`) to generate TECH_REQ.md
 
 ⚠️ **KEY PRINCIPLES**:
+
 - **Smart Filtering**: Show only 2-3 most relevant options per decision (filtered by PRD constraints)
 - **Sequential Decisions**: Later questions depend on earlier answers
 - **No Information Overload**: Never present 4+ options simultaneously
 - **Strict Separation**: PRD = what/why/who, Tech-Req = how/with what
 
 ## Initial Input
+
 $ARGUMENTS
 
 If `--process TECH_REQ_QUESTIONS.md` flag detected:
+
 - Skip to [Questionnaire Processing](#questionnaire-processing) section
 - Read answers from file and generate TECH_REQ.md
 
@@ -36,6 +40,7 @@ Otherwise, proceed with interactive discovery.
 ## Step 1: Extract PRD Context
 
 If PRD.md exists, read it and extract:
+
 - **Deployment Preference**: Cloud (AWS/Azure/GCP) / Local / Hybrid
 - **Scale**: Expected users/traffic
 - **Budget**: Infrastructure cost constraints
@@ -45,6 +50,7 @@ If PRD.md exists, read it and extract:
 - **Data Needs**: Storage type and volume
 
 **Document Extracted Constraints**:
+
 ```markdown
 ## PRD Constraints Extracted
 
@@ -60,6 +66,7 @@ If PRD.md exists, read it and extract:
 
 If no PRD exists, ask user:
 "I don't see a PRD.md file. Would you like me to:
+
 1. Ask a few constraint questions now
 2. Generate a PRD first using `/prd`
 3. Proceed with general recommendations (no filtering)"
@@ -75,6 +82,7 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 **Apply Smart Filtering** based on PRD constraints:
 
 **Filtering Logic**:
+
 - If "single author blog" or "documentation site" → Show only SSG + JAMstack (skip SSR, microservices)
 - If "< 10 users" or "internal tool" → Show only Monolithic + Serverless (skip microservices)
 - If "need real-time features" → Show SSR + Serverless (skip pure SSG)
@@ -92,11 +100,13 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 **What it is**: [One sentence description]
 
 **Pros**:
+
 - ✅ [Key advantage 1]
 - ✅ [Key advantage 2]
 - ✅ [Key advantage 3]
 
 **Cons**:
+
 - ❌ [Key limitation 1]
 - ❌ [Key limitation 2]
 
@@ -127,14 +137,17 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 ### Question 2: Cloud Provider (CONDITIONAL)
 
 **Only ask if**:
+
 - PRD deployment preference is "Cloud"
 - PRD didn't specify cloud provider preference
 
 **Skip if**:
+
 - PRD says "AWS only" → Auto-select AWS, document decision
 - Deployment is Local/Hybrid → Skip to framework question
 
 **Apply Smart Filtering**:
+
 - If Budget < $10/month → Skip Azure/GCP, show AWS (best free tier)
 - If "Must Use: Microsoft stack" → Show only Azure
 - If no constraints → Show AWS + 1 alternative (GCP if focus is data/ML, Vercel if SSG architecture chosen)
@@ -146,6 +159,7 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 ---
 
 ### Option 1: AWS
+
 **Why for you**: [Specific reason based on architecture + constraints]
 **Monthly Cost**: ~$[X] (for your scale)
 **Key Services**: [3-4 services you'd use]
@@ -153,6 +167,7 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 ---
 
 ### Option 2: [GCP / Azure / PaaS]
+
 **Why for you**: [Specific reason]
 **Monthly Cost**: ~$[X]
 **Key Services**: [3-4 services you'd use]
@@ -176,6 +191,7 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 **If Serverless chosen** → Ask about serverless framework preferences
 
 **Apply Smart Filtering** (example for SSG):
+
 - If "performance critical" → Show Astro + Hugo (skip heavier options)
 - If "familiar with React" → Show Next.js + Astro
 - If "beginner" → Show Hugo + 11ty (skip React-based)
@@ -188,12 +204,15 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 ---
 
 ### Option 1: Astro
+
 **Pros**:
+
 - ✅ Excellent performance (zero JS by default)
 - ✅ Component flexibility (can use React/Vue/Svelte)
 - ✅ Perfect for blogs and content sites
 
 **Cons**:
+
 - ❌ Newer ecosystem (fewer themes than Hugo)
 
 **Best for**: Modern blogs, performance-first
@@ -203,12 +222,15 @@ Ask **ONE question at a time**, wait for answer, adapt next question.
 ---
 
 ### Option 2: Hugo
+
 **Pros**:
+
 - ✅ Extremely fast builds (fastest static generator)
 - ✅ Simple setup (single binary, no dependencies)
 - ✅ Great for blogs (built-in features)
 
 **Cons**:
+
 - ❌ Go templating (less familiar than JavaScript)
 
 **Best for**: Simple, fast blogs with minimal maintenance
@@ -231,6 +253,7 @@ After 2-3 critical questions answered, generate `TECH_REQ_QUESTIONS.md` for rema
 
 **Inform User**:
 "Great! Based on your choices:
+
 - Architecture: [Choice]
 - Cloud: [Choice]
 - Framework: [Choice]
@@ -241,12 +264,13 @@ I'll now generate a questionnaire for the remaining technical decisions. You can
 
 **Generate Questionnaire**:
 
-```markdown
+````markdown
 # Technical Requirements Questionnaire
 
 **Project**: [Project name from PRD]
 **Date**: [Current date]
 **Your Decisions So Far**:
+
 - Architecture: [Architecture choice]
 - Cloud Provider: [Cloud choice]
 - Framework: [Framework choice]
@@ -267,6 +291,7 @@ I'll now generate a questionnaire for the remaining technical decisions. You can
 Based on your [framework choice], here's what works well:
 
 **Q1.1: CSS Framework**
+
 - [ ] Tailwind CSS - Utility-first, rapid development, great for clean designs
 - [ ] Custom CSS - Full control, more time-consuming, learning opportunity
 - [ ] [Other]: [Specify if you have a preference]
@@ -283,6 +308,7 @@ Based on your [framework choice], here's what works well:
 **Q2.1: How will you manage content?**
 
 Based on [single author/team size]:
+
 - [ ] Git-based (Markdown files) - Version controlled, developer-friendly
 - [ ] Headless CMS (Contentful, Strapi) - Web interface, $20-50/month
 - [ ] [Other]: [Specify]
@@ -300,6 +326,7 @@ If Git-based: Will you write locally and push, or prefer a web editor?
 **Q3.1: Specific [Cloud] Services**
 
 For [architecture] on [cloud provider], recommend:
+
 - [ ] [Recommended service stack A] - Simple, managed, ~$[X]/month
 - [ ] [Recommended service stack B] - More control, ~$[Y]/month
 - [ ] [Other]: [Specify if you have preferences]
@@ -307,6 +334,7 @@ For [architecture] on [cloud provider], recommend:
 **Your Choice**: [YOUR ANSWER]
 
 **Q3.2: Domain Setup**
+
 - [ ] I have a domain: [YOUR DOMAIN NAME]
 - [ ] Need to register a domain
 - [ ] Will decide later
@@ -320,6 +348,7 @@ For [architecture] on [cloud provider], recommend:
 [Only include if PRD indicated data storage needs]
 
 Based on your data needs ([type and volume from PRD]):
+
 - [ ] [Recommended DB option 1] - [Why it fits]
 - [ ] [Recommended DB option 2] - [Alternative if X]
 - [ ] [Other]: [Specify]
@@ -333,6 +362,7 @@ Based on your data needs ([type and volume from PRD]):
 [Only include if PRD indicated auth needs]
 
 For [single/multiple users]:
+
 - [ ] [Managed auth provider] - $0-50/month, handles complexity
 - [ ] [Simple auth approach] - Build yourself, more control
 - [ ] [Other]: [Specify]
@@ -344,6 +374,7 @@ For [single/multiple users]:
 ## Section 6: CI/CD & Deployment
 
 **Q6.1: Deployment Automation**
+
 - [ ] Automated (GitHub Actions deploys on git push) - Recommended
 - [ ] Manual (run deploy script when ready) - Simple, more control
 - [ ] [Other]: [Specify]
@@ -352,6 +383,7 @@ For [single/multiple users]:
 
 **Q6.2: Deployment frequency**
 How often will you deploy updates?
+
 - [ ] Multiple times per day
 - [ ] Few times per week
 - [ ] Once per week or less
@@ -363,6 +395,7 @@ How often will you deploy updates?
 ## Section 7: Monitoring & Analytics (Optional)
 
 **Q7.1: Do you need analytics/monitoring?**
+
 - [ ] Yes - Basic (page views, visitors)
 - [ ] Yes - Advanced (user behavior, funnels, performance)
 - [ ] No - Not needed initially
@@ -387,12 +420,15 @@ Examples: SEO needs, accessibility requirements, integrations, etc.
 ## Ready to Generate Tech-Req!
 
 Once you've answered these questions, run:
+
 ```bash
 /tech-req --process TECH_REQ_QUESTIONS.md
 ```
+````
 
 This will generate your comprehensive `TECH_REQ.md` document with all technology decisions documented and explained.
-```
+
+````
 
 **Save file as**: `TECH_REQ_QUESTIONS.md`
 
@@ -457,11 +493,13 @@ Create comprehensive technical requirements document:
 - [Characteristic 3]
 
 **System Components**:
-```
+````
+
 [Simple ASCII diagram or description of main components]
 Example for SSG:
 User → CloudFront (CDN) → S3 (Static Files)
 Developer → Git Push → GitHub Actions → Build → S3
+
 ```
 
 **Trade-offs Accepted**:
@@ -509,7 +547,9 @@ Developer → Git Push → GitHub Actions → Build → S3
 
 **Architecture Diagram**:
 ```
+
 [Service-level architecture showing how cloud services connect]
+
 ```
 
 ### Domain: [Status from questionnaire]
@@ -717,6 +757,7 @@ Based on PRD requirements:
 "✅ **Tech-Req Complete!** Generated `TECH_REQ.md` with your complete technical specification.
 
 **Key Decisions**:
+
 - Architecture: [Choice]
 - Cloud: [Provider]
 - Framework: [Framework]
@@ -736,21 +777,25 @@ The technical foundation is set - time to build!"
 ## Smart Filtering Rules Reference
 
 ### Budget-Based Filtering
+
 - **< $10/month**: Show managed/PaaS options, skip enterprise services
 - **$10-50/month**: Show PaaS + basic cloud setups
 - **> $50/month**: Show all options including complex architectures
 
 ### Scale-Based Filtering
+
 - **< 1k users**: Skip microservices, show monolithic/serverless/SSG
 - **1k-10k users**: Show most architectures except microservices
 - **> 10k users**: Show all including microservices
 
 ### Complexity-Based Filtering
+
 - **Beginner**: Show managed services, simple frameworks, PaaS
 - **Intermediate**: Show most options
 - **Advanced**: Show all including custom infrastructure
 
 ### Use Case-Based Filtering
+
 - **Blog/Documentation**: Show only SSG + JAMstack
 - **Internal Tool (< 10 users)**: Show monolithic + serverless
 - **SaaS Application**: Show SSR + Microservices + Hybrid
@@ -761,14 +806,17 @@ The technical foundation is set - time to build!"
 ## Example Filtered Question
 
 **Bad** (Information Overload):
+
 ```
 Here are 5 architecture options: Monolithic (pros: A, B, C, cons: D, E, F),
 Microservices (pros: G, H, I, cons: J, K, L), Serverless (pros: M, N, O, cons: P, Q, R),
 JAMstack (pros: S, T, U, cons: V, W, X), Hybrid (pros: Y, Z, AA, cons: BB, CC, DD)...
 ```
+
 👎 User has to process 15 pros + 15 cons = 30 points before answering
 
 **Good** (Smart Filtered):
+
 ```
 Based on your single-author blog with < 1k users, here are the 2 best options:
 
@@ -783,4 +831,5 @@ Option 2: JAMstack
 Recommendation: SSG - matches your use case perfectly.
 Which appeals to you?
 ```
+
 👍 User processes 4 pros + 2 cons = 6 points, makes decision quickly
