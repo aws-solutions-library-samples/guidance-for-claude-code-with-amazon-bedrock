@@ -143,8 +143,7 @@ class InitCommand(Command):
             "[bold cyan]Welcome to Claude Code with Bedrock Setup![/bold cyan]\n\n"
             "This wizard will help you deploy Claude Code using Amazon Bedrock with:\n"
             "  • Secure authentication via your identity provider\n"
-            "  • Usage monitoring and dashboards\n"
-            "  • Cost tracking and controls",
+            "  • Usage monitoring and dashboards",
             border_style="cyan",
             padding=(1, 2),
         )
@@ -453,7 +452,7 @@ class InitCommand(Command):
 
             # Monitoring
             console.print("\n[bold]Monitoring and Usage Dashboards[/bold]")
-            console.print("Track Claude Code usage, costs, and performance metrics in CloudWatch")
+            console.print("Track Claude Code usage and performance metrics in CloudWatch")
             enable_monitoring = questionary.confirm(
                 "Enable monitoring?", default=config.get("monitoring", {}).get("enabled", True)
             ).ask()
@@ -542,7 +541,6 @@ class InitCommand(Command):
                     console.print(f"  • Monthly limit: {monthly_limit:,} tokens per user")
                     console.print(f"  • Warning at: {warning_80:,} tokens (80%)")
                     console.print(f"  • Critical at: {warning_90:,} tokens (90%)")
-                    console.print(f"  • Estimated cost limit: ~${monthly_limit * 0.000015:.0f} per user per month")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
