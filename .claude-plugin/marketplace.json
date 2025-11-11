@@ -14,6 +14,20 @@
       "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents for exploration, planning, coding, and commit phases",
       "category": "workflow"
     },
+        {
+      "name": "requirements",
+      "version": "1.0.0",
+      "source": "./assets/claude-code-plugins/plugins/requirements",
+      "description": "PRD and TECH_REQ generating commands that can be used pre-EPCC workflow",
+      "category": "workflow"
+    },
+    {
+      "name": "troubleshooting",
+      "version": "1.0.0",
+      "source": "./assets/claude-code-plugins/plugins/troubleshooting",
+      "description": "Troubleshooting command to assist with complex problems",
+      "category": "troubleshooting"
+    },    
     {
       "name": "documentation",
       "version": "1.0.0",
