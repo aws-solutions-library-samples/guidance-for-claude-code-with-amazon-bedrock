@@ -35,6 +35,48 @@ from botocore.config import Config
 
 __version__ = "1.0.0"
 
+
+def extract_user_attributes_from_token(token_claims):
+    """Extract user information from JWT claims for OTEL resource attributes"""
+    # Extract basic user info
+    email = (
+        token_claims.get("email")
+        or token_claims.get("preferred_username")
+        or token_claims.get("mail")
+        or "unknown@example.com"
+    )
+
+    # Extract team/department information - these fields vary by IdP
+    department = (
+        token_claims.get("department") or token_claims.get("dept") or token_claims.get("division") or "unspecified"
+    )
+    team = token_claims.get("team") or token_claims.get("team_id") or token_claims.get("group") or "default-team"
+
+    return {
+        "email": email,
+        "department": department,
+        "team": team,
+    }
+
+
+def format_as_otel_resource_attributes(attributes):
+    """Format attributes as OTEL_RESOURCE_ATTRIBUTES string"""
+    # Map attributes to resource attribute keys
+    attr_mapping = {
+        "email": "user.email",
+        "department": "user.department",
+        "team": "user.team",
+    }
+
+    attr_pairs = []
+    for attr_key, resource_key in attr_mapping.items():
+        if attr_key in attributes and attributes[attr_key]:
+            # Escape commas and equals signs in values
+            value = str(attributes[attr_key]).replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
+            attr_pairs.append(f"{resource_key}={value}")
+
+    return ",".join(attr_pairs)
+
 # OIDC Provider Configurations
 PROVIDER_CONFIGS = {
     "okta": {
@@ -499,6 +541,55 @@ class MultiProviderAuth:
         except Exception as e:
             # Non-fatal error - monitoring is optional
             self._debug_print(f"Warning: Could not save monitoring token: {e}")
+
+    def update_claude_otel_settings(self, token_claims):
+        """Update ~/.claude/settings.json with OTEL resource attributes from token"""
+        try:
+            import tempfile
+
+            settings_path = Path.home() / ".claude" / "settings.json"
+
+            # Create .claude directory if it doesn't exist
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Extract user attributes from token
+            user_attrs = extract_user_attributes_from_token(token_claims)
+            otel_attrs = format_as_otel_resource_attributes(user_attrs)
+
+            # Read existing settings or create new
+            if settings_path.exists():
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+            else:
+                settings = {}
+
+            # Ensure env section exists
+            if "env" not in settings:
+                settings["env"] = {}
+
+            # Update OTEL_RESOURCE_ATTRIBUTES
+            settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] = otel_attrs
+
+            # Write atomically using temp file + rename
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=settings_path.parent,
+                delete=False,
+                suffix=".tmp"
+            ) as tmp_file:
+                json.dump(settings, tmp_file, indent=2)
+                tmp_file.write("\n")  # Add trailing newline
+                tmp_path = tmp_file.name
+
+            # Atomic rename
+            os.replace(tmp_path, settings_path)
+            settings_path.chmod(0o600)
+
+            self._debug_print(f"Updated Claude settings with OTEL attributes: {otel_attrs[:100]}...")
+
+        except Exception as e:
+            # Non-fatal error - don't break authentication flow
+            self._debug_print(f"Warning: Could not update Claude settings: {e}")
 
     def get_monitoring_token(self):
         """Retrieve valid monitoring token from configured storage"""
@@ -1255,6 +1346,9 @@ class MultiProviderAuth:
             # Save monitoring token (non-blocking, failures don't affect AWS auth)
             self.save_monitoring_token(id_token, token_claims)
 
+            # Update Claude settings with OTEL attributes
+            self.update_claude_otel_settings(token_claims)
+
             # Output credentials
             # CodeQL: This is not a security issue - this is an AWS credential provider
             # that must output credentials to stdout for AWS CLI to consume them.
@@ -1314,6 +1408,11 @@ def main():
         action="store_true",
         help="Refresh credentials if expired (for cron jobs with session storage)",
     )
+    parser.add_argument(
+        "--setup-otel-attrs",
+        action="store_true",
+        help="Setup OTEL resource attributes in Claude settings (run during installation)",
+    )
 
     args = parser.parse_args()
 
@@ -1349,6 +1448,30 @@ def main():
                 # Return failure exit code so OTEL helper knows auth failed
                 # This prevents OTEL helper from using default/unknown values
                 sys.exit(1)
+
+    # Handle setup-otel-attrs request (for installation)
+    if args.setup_otel_attrs:
+        # Try to get monitoring token (may trigger auth if not cached)
+        token = auth.get_monitoring_token()
+        if not token:
+            # No cached token, trigger authentication
+            token = auth.authenticate_for_monitoring()
+
+        if token:
+            # Decode token to get claims
+            try:
+                token_claims = jwt.decode(token, options={"verify_signature": False})
+                # Update settings with OTEL attributes
+                auth.update_claude_otel_settings(token_claims)
+                # Silent success
+                sys.exit(0)
+            except Exception as e:
+                # Silent failure - don't block installation
+                auth._debug_print(f"Failed to setup OTEL attributes: {e}")
+                sys.exit(0)
+        else:
+            # Silent failure - don't block installation
+            sys.exit(0)
 
     # Handle check-expiration request
     if args.check_expiration:

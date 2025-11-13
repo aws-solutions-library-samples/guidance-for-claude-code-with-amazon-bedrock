@@ -1852,6 +1852,10 @@ if [ -d "claude-settings" ]; then
     fi
 fi
 
+# Setup OTEL resource attributes in Claude settings
+echo "Setting up OpenTelemetry resource attributes..."
+~/claude-code-with-bedrock/credential-process --setup-otel-attrs 2>/dev/null || true
+
 # Copy OTEL helper executable if present
 if [ -f "$OTEL_BINARY" ]; then
     echo
@@ -1990,6 +1994,10 @@ if exist "claude-settings" (
         )
     )
 )
+
+REM Setup OTEL resource attributes in Claude settings
+echo Setting up OpenTelemetry resource attributes...
+"%USERPROFILE%\claude-code-with-bedrock\credential-process.exe" --setup-otel-attrs >nul 2>&1
 
 REM Configure AWS profile
 echo.
@@ -2221,6 +2229,13 @@ Available metrics include:
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     "CLAUDE_CODE_USE_BEDROCK": "1",
                     "AWS_PROFILE": "ClaudeCode",
+                    # Add monitoring configuration using Honeycomb
+                    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                    "OTEL_METRICS_EXPORTER": "otlp",
+                    "OTEL_METRIC_EXPORT_INTERVAL": "20000",
+                    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": "https://api.honeycomb.io",
+                    "OTEL_EXPORTER_OTLP_HEADERS": "x-honeycomb-team=hcaik_api_token,x-honeycomb-dataset=<replace-with-dataset-name>",
                 }
             }
 
