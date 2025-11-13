@@ -84,6 +84,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: AllowSharedSecretsManagerRead
+            Effect: Allow
+            Action:
+              - 'secretsmanager:Get*'
+              - 'secretsmanager:List*'
+              - 'secretsmanager:DescribeSecret'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:ResourceTag/Shared: "true"
           - Sid: AllowBedrockInvokeRegional
             Effect: Allow
             Action:

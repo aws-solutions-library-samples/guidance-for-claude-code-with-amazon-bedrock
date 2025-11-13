@@ -542,54 +542,95 @@ class MultiProviderAuth:
             # Non-fatal error - monitoring is optional
             self._debug_print(f"Warning: Could not save monitoring token: {e}")
 
-    def update_claude_otel_settings(self, token_claims):
-        """Update ~/.claude/settings.json with OTEL resource attributes from token"""
+    def _fetch_honeycomb_config_from_secrets_manager(self, secret_name="shared/claude-code-for-everyone-otel-config", profile_name="ClaudeCode"):
+        """Fetch Honeycomb configuration for authentication from AWS Secrets Manager
+
+        Args:
+            secret_name: Name of the secret in Secrets Manager (default: claude-code-otel-config)
+
+        Returns:
+            Dict with 'honeycomb_api_key' and 'honeycomb_dataset_name'
+
+        Raises:
+            Exception: If secret cannot be fetched or parsed
+        """
         try:
-            import tempfile
+            import boto3
+            session = boto3.Session(
+                profile_name=profile_name
+            )
+            secrets_client = session.client("secretsmanager")
+            response = secrets_client.get_secret_value(SecretId=secret_name)
+            secret_data = json.loads(response["SecretString"])
 
-            settings_path = Path.home() / ".claude" / "settings.json"
+            # Validate required fields
+            if "honeycomb_api_key" not in secret_data or "honeycomb_dataset_name" not in secret_data:
+                raise ValueError(
+                    f"Secret '{secret_name}' missing required fields. "
+                    f"Expected: honeycomb_api_key, honeycomb_dataset_name. "
+                    f"Found: {list(secret_data.keys())}"
+                )
 
-            # Create .claude directory if it doesn't exist
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Extract user attributes from token
-            user_attrs = extract_user_attributes_from_token(token_claims)
-            otel_attrs = format_as_otel_resource_attributes(user_attrs)
-
-            # Read existing settings or create new
-            if settings_path.exists():
-                with open(settings_path, "r") as f:
-                    settings = json.load(f)
-            else:
-                settings = {}
-
-            # Ensure env section exists
-            if "env" not in settings:
-                settings["env"] = {}
-
-            # Update OTEL_RESOURCE_ATTRIBUTES
-            settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] = otel_attrs
-
-            # Write atomically using temp file + rename
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                dir=settings_path.parent,
-                delete=False,
-                suffix=".tmp"
-            ) as tmp_file:
-                json.dump(settings, tmp_file, indent=2)
-                tmp_file.write("\n")  # Add trailing newline
-                tmp_path = tmp_file.name
-
-            # Atomic rename
-            os.replace(tmp_path, settings_path)
-            settings_path.chmod(0o600)
-
-            self._debug_print(f"Updated Claude settings with OTEL attributes: {otel_attrs[:100]}...")
-
+            self._debug_print(f"Successfully fetched OTEL headers from Secrets Manager")
+            return {
+                "honeycomb_api_key": secret_data["honeycomb_api_key"],
+                "honeycomb_dataset_name": secret_data["honeycomb_dataset_name"]
+            }
         except Exception as e:
-            # Non-fatal error - don't break authentication flow
-            self._debug_print(f"Warning: Could not update Claude settings: {e}")
+            error_msg = str(e)
+            if "ResourceNotFoundException" in error_msg:
+                raise Exception(
+                    f"OTEL configuration secret '{secret_name}' not found in AWS Secrets Manager. "
+                    f"Please create the secret with keys: honeycomb_api_key, honeycomb_dataset_name"
+                )
+            elif "AccessDeniedException" in error_msg:
+                raise Exception(
+                    f"Access denied to secret '{secret_name}'. "
+                    f"Please ensure your IAM role has secretsmanager:GetSecretValue permission."
+                )
+            else:
+                raise Exception(f"Failed to fetch OTEL headers from Secrets Manager: {error_msg}")
+
+    def _update_claude_otel_attributes(self, attributes):
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if settings_path.exists():
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        if "env" not in settings:
+            settings["env"] = {}
+        settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] = attributes
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+        self._debug_print(f"Updated Claude settings with OTEL attributes: {attributes[:100]}...")
+
+    def _update_claude_otel_headers(self, headers):
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if settings_path.exists():
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        if "env" not in settings:
+            settings["env"] = {}
+        settings["env"]["OTEL_EXPORTER_OTLP_HEADERS"] = headers
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+        self._debug_print(f"Updated Claude settings with OTEL headers: {headers[:100]}...")
+
+    def update_claude_otel_settings(self, token_claims, profile="ClaudeCode"):
+        user_attrs = extract_user_attributes_from_token(token_claims)
+        otel_attrs = format_as_otel_resource_attributes(user_attrs)
+        self._update_claude_otel_attributes(otel_attrs)
+
+        hc_config = self._fetch_honeycomb_config_from_secrets_manager(profile_name=profile)
+        headers = [
+            f"x-honeycomb-team={hc_config['honeycomb_api_key']}",
+            f"x-honeycomb-dataset={hc_config['honeycomb_dataset_name']}",
+        ]
+        self._update_claude_otel_headers(",".join(headers))
+
 
     def get_monitoring_token(self):
         """Retrieve valid monitoring token from configured storage"""
@@ -1347,7 +1388,7 @@ class MultiProviderAuth:
             self.save_monitoring_token(id_token, token_claims)
 
             # Update Claude settings with OTEL attributes
-            self.update_claude_otel_settings(token_claims)
+            self.update_claude_otel_settings(token_claims, profile=self.profile)
 
             # Output credentials
             # CodeQL: This is not a security issue - this is an AWS credential provider
