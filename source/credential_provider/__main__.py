@@ -35,48 +35,6 @@ from botocore.config import Config
 
 __version__ = "1.0.0"
 
-
-def extract_user_attributes_from_token(token_claims):
-    """Extract user information from JWT claims for OTEL resource attributes"""
-    # Extract basic user info
-    email = (
-        token_claims.get("email")
-        or token_claims.get("preferred_username")
-        or token_claims.get("mail")
-        or "unknown@example.com"
-    )
-
-    # Extract team/department information - these fields vary by IdP
-    department = (
-        token_claims.get("department") or token_claims.get("dept") or token_claims.get("division") or "unspecified"
-    )
-    team = token_claims.get("team") or token_claims.get("team_id") or token_claims.get("group") or "default-team"
-
-    return {
-        "email": email,
-        "department": department,
-        "team": team,
-    }
-
-
-def format_as_otel_resource_attributes(attributes):
-    """Format attributes as OTEL_RESOURCE_ATTRIBUTES string"""
-    # Map attributes to resource attribute keys
-    attr_mapping = {
-        "email": "user.email",
-        "department": "user.department",
-        "team": "user.team",
-    }
-
-    attr_pairs = []
-    for attr_key, resource_key in attr_mapping.items():
-        if attr_key in attributes and attributes[attr_key]:
-            # Escape commas and equals signs in values
-            value = str(attributes[attr_key]).replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
-            attr_pairs.append(f"{resource_key}={value}")
-
-    return ",".join(attr_pairs)
-
 # OIDC Provider Configurations
 PROVIDER_CONFIGS = {
     "okta": {
@@ -542,6 +500,68 @@ class MultiProviderAuth:
             # Non-fatal error - monitoring is optional
             self._debug_print(f"Warning: Could not save monitoring token: {e}")
 
+    def decode_jwt_payload(self, token):
+        """Decode the payload portion of a JWT token"""
+        try:
+            # Get the payload part (second segment)
+            _, payload_b64, _ = token.split(".")
+
+            # Add padding if needed
+            padding_needed = len(payload_b64) % 4
+            if padding_needed:
+                payload_b64 += "=" * (4 - padding_needed)
+
+            # Replace URL-safe characters and decode
+            payload_b64 = payload_b64.replace("-", "+").replace("_", "/")
+            decoded = base64.b64decode(payload_b64)
+            payload = json.loads(decoded)
+            return payload
+        except Exception as e:
+            self._debug_print(f"Error decoding JWT: {e}")
+            return {}
+
+
+    def _extract_user_attributes_from_token(self, token_claims):
+        """Extract user information from JWT claims for OTEL resource attributes"""
+        # Extract basic user info
+        email = (
+            token_claims.get("email")
+            or token_claims.get("preferred_username")
+            or token_claims.get("mail")
+            or "unknown@example.com"
+        )
+
+        # Extract team/department information - these fields vary by IdP
+        department = (
+            token_claims.get("department") or token_claims.get("dept") or token_claims.get("division") or "unspecified"
+        )
+        team = token_claims.get("team") or token_claims.get("team_id") or token_claims.get("group") or "default-team"
+
+        return {
+            "email": email,
+            "department": department,
+            "team": team,
+        }
+
+
+    def _format_as_otel_resource_attributes(self, attributes):
+        """Format attributes as OTEL_RESOURCE_ATTRIBUTES string"""
+        # Map attributes to resource attribute keys
+        attr_mapping = {
+            "email": "user.email",
+            "department": "user.department",
+            "team": "user.team",
+        }
+
+        attr_pairs = []
+        for attr_key, resource_key in attr_mapping.items():
+            if attr_key in attributes and attributes[attr_key]:
+                # Escape commas and equals signs in values
+                value = str(attributes[attr_key]).replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
+                attr_pairs.append(f"{resource_key}={value}")
+
+        return ",".join(attr_pairs)
+
     def _fetch_honeycomb_config_from_secrets_manager(self, secret_name="shared/claude-code-for-everyone-otel-config", profile_name="ClaudeCode"):
         """Fetch Honeycomb configuration for authentication from AWS Secrets Manager
 
@@ -617,19 +637,66 @@ class MultiProviderAuth:
         settings["env"]["OTEL_EXPORTER_OTLP_HEADERS"] = headers
         with open(settings_path, "w") as f:
             json.dump(settings, f, indent=2)
-        self._debug_print(f"Updated Claude settings with OTEL headers: {headers[:100]}...")
+        self._debug_print(f"Updated Claude settings with OTEL headers ...")
 
-    def update_claude_otel_settings(self, token_claims, profile="ClaudeCode"):
-        user_attrs = extract_user_attributes_from_token(token_claims)
-        otel_attrs = format_as_otel_resource_attributes(user_attrs)
-        self._update_claude_otel_attributes(otel_attrs)
+    def update_claude_otel_settings(self, profile="ClaudeCode"):
+        """Update Claude OTEL settings
 
-        hc_config = self._fetch_honeycomb_config_from_secrets_manager(profile_name=profile)
-        headers = [
-            f"x-honeycomb-team={hc_config['honeycomb_api_key']}",
-            f"x-honeycomb-dataset={hc_config['honeycomb_dataset_name']}",
-        ]
-        self._update_claude_otel_headers(",".join(headers))
+        Args:
+            profile: AWS profile to use for fetching Secrets Manager config
+        """
+        self._debug_print("=== Starting OTEL settings update ===")
+
+        try:
+            if self.check_credentials_file_expiration(profile):
+                self._debug_print("Credentials expired or missing, need refresh")
+                self.authenticate_for_monitoring()
+            else:
+                self._debug_print("Credentials found in cache")
+
+            # Get monitoring token
+            self._debug_print("Getting monitoring token...")
+            token = self.get_monitoring_token()
+
+            if not token:
+                self._debug_print("No cached monitoring token found, attempting authentication...")
+                token = self.authenticate_for_monitoring()
+            else:
+                self._debug_print("Using existing monitoring token from cache or environment")
+
+            # We must have the token and valid AWS credentials. Raise an error if not.
+            if not token:
+                raise Exception("No monitoring token found, authentication failed")
+            if self.check_credentials_file_expiration(profile):
+                raise Exception("No AWS credentials found, authentication failed")
+
+            token_claims = self.decode_jwt_payload(token)
+            self._debug_print(f"Extracting user attributes from token ...")
+            user_attrs = self._extract_user_attributes_from_token(token_claims)
+            otel_attrs = self._format_as_otel_resource_attributes(user_attrs)
+            self._debug_print(f"OTEL resource attributes formatted: {otel_attrs[:100]}...")
+            self._update_claude_otel_attributes(otel_attrs)
+
+            self._debug_print(f"Fetching Honeycomb config from Secrets Manager (profile: {profile})...")
+            try:
+                hc_config = self._fetch_honeycomb_config_from_secrets_manager(profile_name=profile)
+                headers = [
+                    f"x-honeycomb-team={hc_config['honeycomb_api_key']}",
+                    f"x-honeycomb-dataset={hc_config['honeycomb_dataset_name']}",
+                ]
+                headers_str = ",".join(headers)
+                self._update_claude_otel_headers(headers_str)
+
+            except Exception as e:
+                # Secrets Manager errors are non-fatal for OTEL setup
+                error_msg = str(e)
+                self._debug_print(f"Warning: Failed to fetch Honeycomb config from Secrets Manager: {error_msg}")
+                self._debug_print("OTEL attributes were set, but headers could not be updated")
+
+        except Exception as e:
+            # Log the error but don't raise - OTEL setup failure should not block credential operations
+            error_msg = str(e)
+            self._debug_print(f"Error during OTEL settings update: {error_msg}")
 
 
     def get_monitoring_token(self):
@@ -1388,7 +1455,7 @@ class MultiProviderAuth:
             self.save_monitoring_token(id_token, token_claims)
 
             # Update Claude settings with OTEL attributes
-            self.update_claude_otel_settings(token_claims, profile=self.profile)
+            self.update_claude_otel_settings(profile=self.profile)
 
             # Output credentials
             # CodeQL: This is not a security issue - this is an AWS credential provider
@@ -1492,27 +1559,8 @@ def main():
 
     # Handle setup-otel-attrs request (for installation)
     if args.setup_otel_attrs:
-        # Try to get monitoring token (may trigger auth if not cached)
-        token = auth.get_monitoring_token()
-        if not token:
-            # No cached token, trigger authentication
-            token = auth.authenticate_for_monitoring()
-
-        if token:
-            # Decode token to get claims
-            try:
-                token_claims = jwt.decode(token, options={"verify_signature": False})
-                # Update settings with OTEL attributes
-                auth.update_claude_otel_settings(token_claims)
-                # Silent success
-                sys.exit(0)
-            except Exception as e:
-                # Silent failure - don't block installation
-                auth._debug_print(f"Failed to setup OTEL attributes: {e}")
-                sys.exit(0)
-        else:
-            # Silent failure - don't block installation
-            sys.exit(0)
+        auth.update_claude_otel_settings()
+        sys.exit(0)
 
     # Handle check-expiration request
     if args.check_expiration:

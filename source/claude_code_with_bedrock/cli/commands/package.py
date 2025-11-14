@@ -1850,7 +1850,7 @@ fi
 
 # Setup OTEL resource attributes in Claude settings
 echo "Setting up OpenTelemetry resource attributes..."
-~/claude-code-with-bedrock/credential-process --setup-otel-attrs 2>/dev/null || true
+~/claude-code-with-bedrock/credential-process --setup-otel-attrs
 
 # Copy OTEL helper executable if present
 if [ -f "$OTEL_BINARY" ]; then
