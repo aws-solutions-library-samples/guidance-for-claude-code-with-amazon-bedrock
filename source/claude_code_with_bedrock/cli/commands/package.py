@@ -1811,13 +1811,9 @@ cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
 cp config.json ~/claude-code-with-bedrock/
 chmod +x ~/claude-code-with-bedrock/credential-process
 
-# macOS Keychain Notice
+# Un-quarantine the credential-process executable
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    echo
-    echo "⚠️  macOS Keychain Access:"
-    echo "   On first use, macOS will ask for permission to access the keychain."
-    echo "   This is normal and required for secure credential storage."
-    echo "   Click 'Always Allow' when prompted."
+    xattr -r -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process
 fi
 
 # Copy Claude Code settings if present
@@ -2236,7 +2232,8 @@ Available metrics include:
                     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                     "OTEL_EXPORTER_OTLP_ENDPOINT": "https://api.honeycomb.io",
                     "OTEL_EXPORTER_OTLP_HEADERS": "x-honeycomb-team=hcaik_api_token,x-honeycomb-dataset=<replace-with-dataset-name>",
-                }
+                },
+                "alwaysThinkingEnabled": False,
             }
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
