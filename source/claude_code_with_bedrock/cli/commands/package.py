@@ -1848,10 +1848,6 @@ if [ -d "claude-settings" ]; then
     fi
 fi
 
-# Setup OTEL resource attributes in Claude settings
-echo "Setting up OpenTelemetry resource attributes..."
-~/claude-code-with-bedrock/credential-process --setup-otel-attrs
-
 # Copy OTEL helper executable if present
 if [ -f "$OTEL_BINARY" ]; then
     echo
@@ -1889,6 +1885,10 @@ cat >> ~/.aws/config << EOF
 credential_process = $HOME/claude-code-with-bedrock/credential-process
 region = $REGION
 EOF
+
+# Setup OTEL resource attributes in Claude settings
+echo "Setting up OpenTelemetry resource attributes..."
+~/claude-code-with-bedrock/credential-process --setup-otel-attrs
 
 echo
 echo "======================================"
@@ -1991,10 +1991,6 @@ if exist "claude-settings" (
     )
 )
 
-REM Setup OTEL resource attributes in Claude settings
-echo Setting up OpenTelemetry resource attributes...
-"%USERPROFILE%\claude-code-with-bedrock\credential-process.exe" --setup-otel-attrs >nul 2>&1
-
 REM Configure AWS profile
 echo.
 echo Configuring AWS profile...
@@ -2022,6 +2018,10 @@ if %errorlevel% equ 0 (
 ) else (
     echo WARNING: Authentication test failed. You may need to authenticate when first using the profile.
 )
+
+REM Setup OTEL resource attributes in Claude settings
+echo Setting up OpenTelemetry resource attributes...
+"%USERPROFILE%\claude-code-with-bedrock\credential-process.exe" --setup-otel-attrs >nul 2>&1
 
 echo.
 echo ======================================
