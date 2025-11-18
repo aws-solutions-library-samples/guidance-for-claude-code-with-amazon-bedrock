@@ -14,7 +14,7 @@ def get_current_region() -> str | None:
     try:
         session = boto3.Session()
         return session.region_name or "us-east-1"
-    except:
+    except Exception:
         return "us-east-1"
 
 
@@ -59,7 +59,7 @@ def get_bedrock_models(region: str) -> list[dict[str, Any]]:
         ]
 
         return claude_models
-    except:
+    except Exception:
         return []
 
 
@@ -82,7 +82,7 @@ def check_stack_exists(stack_name: str, region: str) -> bool:
             # Stack doesn't exist
             return False
         raise
-    except:
+    except Exception:
         return False
 
 
@@ -110,7 +110,7 @@ def get_account_id() -> str | None:
         client = boto3.client("sts")
         response = client.get_caller_identity()
         return response["Account"]
-    except:
+    except Exception:
         return None
 
 
@@ -123,7 +123,7 @@ def validate_iam_permissions() -> dict[str, bool]:
         client = boto3.client("cloudformation")
         client.list_stacks(StackStatusFilter=["CREATE_COMPLETE"])
         permissions["cloudformation"] = True
-    except:
+    except Exception:
         permissions["cloudformation"] = False
 
     # Check IAM permissions
@@ -131,7 +131,7 @@ def validate_iam_permissions() -> dict[str, bool]:
         client = boto3.client("iam")
         client.list_roles(MaxItems=1)
         permissions["iam"] = True
-    except:
+    except Exception:
         permissions["iam"] = False
 
     # Check Cognito permissions
@@ -139,7 +139,7 @@ def validate_iam_permissions() -> dict[str, bool]:
         client = boto3.client("cognito-identity")
         client.list_identity_pools(MaxResults=1)
         permissions["cognito"] = True
-    except:
+    except Exception:
         permissions["cognito"] = False
 
     return permissions
@@ -206,5 +206,119 @@ def get_subnets(region: str, vpc_id: str) -> list[dict[str, Any]]:
         subnets.sort(key=lambda x: x["availability_zone"])
         return subnets
 
+    except Exception:
+        return []
+
+
+def detect_cognito_stack(region: str) -> dict[str, Any] | None:
+    """
+    Detect if cognito-user-pool-setup stack is deployed.
+    Returns stack info with outputs if found, None otherwise.
+
+    Searches for CloudFormation stacks matching common Cognito naming patterns
+    and validates they have distribution support (DistributionWebClientId output).
+    """
+    try:
+        client = boto3.client("cloudformation", region_name=region)
+
+        # Search for stacks with known naming patterns
+        response = client.list_stacks(StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"])
+
+        cognito_stacks = []
+        for stack in response.get("StackSummaries", []):
+            stack_name = stack["StackName"]
+            # Look for Cognito User Pool stacks (flexible naming: "userpool" or "cognito")
+            stack_lower = stack_name.lower()
+            if "userpool" in stack_lower or "cognito" in stack_lower:
+                cognito_stacks.append(stack_name)
+
+        if not cognito_stacks:
+            return None
+
+        # Check which stack has DistributionWebClient output
+        for stack_name in cognito_stacks:
+            outputs = get_stack_outputs(stack_name, region)
+            if "DistributionWebClientId" in outputs and "DistributionWebClientSecretArn" in outputs:
+                return {"stack_name": stack_name, "outputs": outputs}
+
+        return None
+
+    except ClientError as e:
+        # Gracefully handle permission errors
+        if e.response["Error"]["Code"] == "AccessDenied":
+            return None
+        return None
+    except Exception:
+        return None
+
+
+def validate_cognito_stack_for_distribution(stack_name: str, region: str) -> tuple[bool, str]:
+    """
+    Validate that Cognito stack has required resources for distribution.
+    Returns (is_valid, message).
+
+    Checks for presence of all required CloudFormation outputs:
+    - UserPoolId
+    - DistributionWebClientId
+    - UserPoolDomain
+    - DistributionWebClientSecretArn
+    """
+    try:
+        outputs = get_stack_outputs(stack_name, region)
+
+        required_outputs = [
+            "UserPoolId",
+            "DistributionWebClientId",
+            "UserPoolDomain",
+            "DistributionWebClientSecretArn",
+        ]
+
+        missing = [out for out in required_outputs if out not in outputs]
+
+        if missing:
+            return (
+                False,
+                f"Stack is missing outputs: {', '.join(missing)}. Please update to latest cognito-user-pool-setup.yaml \
+                template.",
+            )
+
+        return True, "Stack has all required outputs for distribution"
+
+    except ClientError as e:
+        return False, f"Error accessing stack: {e.response['Error']['Message']}"
+    except Exception as e:
+        return False, f"Error validating stack: {str(e)}"
+
+
+def detect_all_cognito_stacks(region: str) -> list[dict[str, Any]]:
+    """
+    Detect all Cognito User Pool stacks in the region.
+    Returns list of stack info dicts with stack_name and outputs.
+
+    Useful when multiple Cognito stacks exist and user needs to choose.
+    """
+    try:
+        client = boto3.client("cloudformation", region_name=region)
+
+        # Search for stacks with known naming patterns
+        response = client.list_stacks(StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"])
+
+        cognito_stacks = []
+        for stack in response.get("StackSummaries", []):
+            stack_name = stack["StackName"]
+            # Look for Cognito User Pool stacks (flexible naming: "userpool" or "cognito")
+            stack_lower = stack_name.lower()
+            if "userpool" in stack_lower or "cognito" in stack_lower:
+                try:
+                    outputs = get_stack_outputs(stack_name, region)
+                    cognito_stacks.append({"stack_name": stack_name, "outputs": outputs})
+                except Exception:
+                    # Skip stacks we can't access
+                    continue
+
+        return cognito_stacks
+
+    except ClientError:
+        return []
     except Exception:
         return []

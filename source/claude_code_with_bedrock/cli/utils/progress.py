@@ -34,7 +34,7 @@ class WizardProgress:
                     saved_time = datetime.fromisoformat(data.get("timestamp", ""))
                     if (datetime.now() - saved_time).days < 1:
                         return data
-            except:
+            except Exception:
                 pass
         return {"step": "start", "data": {}, "timestamp": datetime.now().isoformat()}
 

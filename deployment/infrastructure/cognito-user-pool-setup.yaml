@@ -48,6 +48,7 @@ Parameters:
 
 Conditions:
   UseFederate: !Not [!Equals [!Ref FederateEnvironment, 'none']]
+  NotUseFederate: !Equals [!Ref FederateEnvironment, 'none']
   UseFederateInteg: !Equals [!Ref FederateEnvironment, 'integ']
   UseFederateProd: !Equals [!Ref FederateEnvironment, 'prod']
 
@@ -57,9 +58,7 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Ref UserPoolName
-      # Sign-in options as specified in the guide
-      UsernameAttributes:
-        - email
+      # Sign-in options: Use AliasAttributes for federated auth (cannot use both UsernameAttributes and AliasAttributes)
       AliasAttributes:
         - preferred_username
         - email
@@ -154,6 +153,61 @@ Resources:
         - given_name
         - family_name
 
+  # Distribution Web Client (for authenticated landing page)
+  # This is a confidential client with client secret for ALB OIDC authentication
+  DistributionWebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${UserPoolName}-distribution-web'
+      UserPoolId: !Ref UserPool
+      # OAuth2 configuration for web application
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      # Placeholder callback URLs - will be updated after ALB deployment
+      CallbackURLs:
+        - 'https://placeholder.example.com/oauth2/idpresponse'
+      LogoutURLs:
+        - 'https://placeholder.example.com'
+      # Authentication flows
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+      # Token validity settings
+      AuthSessionValidity: 3         # 3 minutes
+      RefreshTokenValidity: 600      # 600 minutes (10 hours)
+      AccessTokenValidity: 10        # 10 minutes
+      IdTokenValidity: 60           # 60 minutes
+      TokenValidityUnits:
+        RefreshToken: minutes
+        AccessToken: minutes
+        IdToken: minutes
+      # Security settings
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      # Identity providers - same as main client
+      SupportedIdentityProviders:
+        - !If [UseFederate, !Ref ExternalIdentityProvider, COGNITO]
+        - COGNITO
+      # Generate client secret (KEY DIFFERENCE from CLI client)
+      GenerateSecret: true
+      # Attributes
+      ReadAttributes:
+        - email
+        - email_verified
+        - preferred_username
+        - given_name
+        - family_name
+        - sub
+      WriteAttributes:
+        - email
+        - preferred_username
+        - given_name
+        - family_name
+
   # Cognito Domain
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
@@ -174,7 +228,7 @@ Resources:
         client_secret: !Ref FederateClientSecret
         authorize_scopes: 'openid'
         attributes_request_method: GET
-        oidc_issuer: !If 
+        oidc_issuer: !If
           - UseFederateInteg
           - 'https://idp-integ.federate.amazon.com'
           - 'https://idp.federate.amazon.com'
@@ -209,41 +263,41 @@ Resources:
           import boto3
           import cfnresponse
           import json
-          
+
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                       return
-                      
+
                   user_pool_id = event['ResourceProperties']['UserPoolId']
                   client_id = event['ResourceProperties']['ClientId']
                   provider_name = event['ResourceProperties']['ProviderName']
-                  
+
                   cognito = boto3.client('cognito-idp')
-                  
+
                   # Get current client config
                   response = cognito.describe_user_pool_client(
                       UserPoolId=user_pool_id,
                       ClientId=client_id
                   )
-                  
+
                   client = response['UserPoolClient']
-                  
+
                   # Update supported identity providers
                   providers = client.get('SupportedIdentityProviders', ['COGNITO'])
                   if provider_name not in providers:
                       providers.append(provider_name)
-                  
+
                   # Update client
                   update_params = {
                       'UserPoolId': user_pool_id,
                       'ClientId': client_id,
                       'SupportedIdentityProviders': providers
                   }
-                  
+
                   # Copy over existing settings
-                  for key in ['ClientName', 'RefreshTokenValidity', 'AccessTokenValidity', 
+                  for key in ['ClientName', 'RefreshTokenValidity', 'AccessTokenValidity',
                               'IdTokenValidity', 'TokenValidityUnits', 'ReadAttributes',
                               'WriteAttributes', 'ExplicitAuthFlows', 'AllowedOAuthFlows',
                               'AllowedOAuthScopes', 'CallbackURLs', 'LogoutURLs',
@@ -251,9 +305,9 @@ Resources:
                               'EnableTokenRevocation', 'AuthSessionValidity']:
                       if key in client:
                           update_params[key] = client[key]
-                  
+
                   cognito.update_user_pool_client(**update_params)
-                  
+
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {
                       'Message': 'Client updated successfully'
                   })
@@ -289,6 +343,114 @@ Resources:
                 Resource:
                   - !GetAtt UserPool.Arn
 
+  # Lambda function to retrieve DistributionWebClient secret and store in Secrets Manager
+  SecretStoreFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt SecretStoreRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      # On stack deletion, optionally keep the secret for safety
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  client_id = event['ResourceProperties']['ClientId']
+                  secret_name = event['ResourceProperties']['SecretName']
+
+                  cognito = boto3.client('cognito-idp')
+                  secrets = boto3.client('secretsmanager')
+
+                  # Get the client secret from Cognito
+                  response = cognito.describe_user_pool_client(
+                      UserPoolId=user_pool_id,
+                      ClientId=client_id
+                  )
+
+                  client_secret = response['UserPoolClient'].get('ClientSecret')
+                  if not client_secret:
+                      raise ValueError("Client does not have a secret (GenerateSecret must be true)")
+
+                  # Store in Secrets Manager
+                  try:
+                      secret_response = secrets.create_secret(
+                          Name=secret_name,
+                          SecretString=client_secret,
+                          Description=f"Auto-generated secret for Cognito distribution web client {client_id}"
+                      )
+                      secret_arn = secret_response['ARN']
+                  except secrets.exceptions.ResourceExistsException:
+                      # Secret exists, update it instead
+                      secret_response = secrets.update_secret(
+                          SecretId=secret_name,
+                          SecretString=client_secret
+                      )
+                      # Get ARN for existing secret
+                      describe_response = secrets.describe_secret(SecretId=secret_name)
+                      secret_arn = describe_response['ARN']
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'SecretArn': secret_arn,
+                      'SecretName': secret_name
+                  })
+
+              except Exception as e:
+                  print(f"Error storing client secret: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Message': str(e)
+                  })
+
+  # IAM role for SecretStoreFunction
+  SecretStoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CognitoAndSecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                Resource:
+                  - !GetAtt UserPool.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:TagResource
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*'
+
+  # Custom Resource to automatically store distribution web client secret
+  DistributionWebClientSecret:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: DistributionWebClient
+    Properties:
+      ServiceToken: !GetAtt SecretStoreFunction.Arn
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref DistributionWebClient
+      SecretName: !Sub '${AWS::StackName}-distribution-web-client-secret'
+
 Outputs:
   UserPoolId:
     Description: Cognito User Pool ID
@@ -297,10 +459,22 @@ Outputs:
       Name: !Sub '${AWS::StackName}-UserPoolId'
 
   UserPoolClientId:
-    Description: Cognito User Pool App Client ID
+    Description: Cognito User Pool App Client ID (CLI native app - no secret)
     Value: !Ref UserPoolClient
     Export:
       Name: !Sub '${AWS::StackName}-ClientId'
+
+  DistributionWebClientId:
+    Description: Cognito Web App Client ID (for distribution landing page - has secret)
+    Value: !Ref DistributionWebClient
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionWebClientId'
+
+  DistributionWebClientSecretArn:
+    Description: Secrets Manager ARN for distribution web client secret (auto-stored by CloudFormation)
+    Value: !GetAtt DistributionWebClientSecret.SecretArn
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionWebClientSecretArn'
 
   UserPoolDomain:
     Description: Cognito User Pool Domain
@@ -313,42 +487,82 @@ Outputs:
     Value: !Sub 'https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse'
 
   ClaudeCodeConfiguration:
-    Description: Configuration values for Claude Code
+    Description: Configuration values for Claude Code CLI authentication
     Value: !Sub |
-      To use with Claude Code authentication:
-      
+      To use with Claude Code CLI authentication (native app):
+
       poetry run ccwb init
       - Provider Domain: ${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com
       - User Pool ID: ${UserPool}
       - Client ID: ${UserPoolClient}
 
+  DistributionWebClientConfiguration:
+    Description: Configuration for distribution landing page (web app) - AUTOMATED
+    Value: !Sub |
+      To use the distribution landing page with Cognito web authentication:
+
+      1. Run the init wizard:
+         poetry run ccwb init
+
+      2. When prompted for distribution method:
+         - Select: "Authenticated Landing Page (IdP + ALB)"
+         - Choose: "Cognito" as IdP provider
+
+      3. Auto-detection will populate configuration:
+         ✓ User Pool ID: ${UserPool}
+         ✓ Domain: ${DomainPrefix}
+         ✓ Client ID: ${DistributionWebClient}
+         ✓ Secret ARN: (automatically retrieved from stack outputs)
+
+      4. Press Enter to accept detected values → Configuration complete!
+
+      5. Deploy the distribution stack:
+         poetry run ccwb deploy distribution
+
+      6. After deployment, update the callback URLs:
+         aws cognito-idp update-user-pool-client \
+           --user-pool-id ${UserPool} \
+           --client-id ${DistributionWebClient} \
+           --callback-urls "https://<alb-dns-from-stack-output>/oauth2/idpresponse" \
+           --logout-urls "https://<alb-dns-from-stack-output>"
+
+      Note:
+      - Client secret is automatically stored in Secrets Manager by this stack
+      - No manual copy-paste required!
+      - The callback URL comes from the landing-page stack outputs after deployment
+
   FederateSetupInstructions:
     Condition: UseFederate
     Description: Federate has been configured
-    Value: !Sub |
-      Federate integration has been configured with:
-      - Environment: ${FederateEnvironment}
-      - Provider Name: midway
-      - Issuer: ${ExternalIdentityProvider.ProviderDetails.oidc_issuer}
-      
-      The redirect URI for Federate is:
-      https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
-      
-      To complete setup:
-      1. Ensure your Federate service profile includes this redirect URI
-      2. Verify the client ID and secret match your Federate configuration
-      3. Add allowed/restricted groups in Federate for access control
+    Value: !Sub
+      - |
+        Federate integration has been configured with:
+        - Environment: ${FederateEnvironment}
+        - Provider Name: midway
+        - Issuer: ${IssuerUrl}
+
+        The redirect URI for Federate is:
+        https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
+
+        To complete setup:
+        1. Ensure your Federate service profile includes this redirect URI
+        2. Verify the client ID and secret match your Federate configuration
+        3. Add allowed/restricted groups in Federate for access control
+      - IssuerUrl: !If
+          - UseFederateInteg
+          - 'https://idp-integ.federate.amazon.com'
+          - 'https://idp.federate.amazon.com'
 
   ManualFederateSetup:
-    Condition: !Not [!Condition UseFederate]
+    Condition: NotUseFederate
     Description: Instructions for manual Federate setup
     Value: !Sub |
       To add Amazon Federate/Midway authentication:
-      
+
       1. Create a Federate service profile at:
          - Integ: https://integ.ep.federate.a2z.com/
          - Prod: https://prod.ep.federate.a2z.com/
-      
+
       2. Configure the service profile:
          - Service Name: Your service name
          - Protocol: OIDC
@@ -356,7 +570,7 @@ Outputs:
          - Redirect URI: https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
          - Claims: EMAIL, GIVEN_NAME, FAMILY_NAME
          - Groups: Configure allowed LDAP/ANT/POSIX groups
-      
+
       3. In Cognito Console:
          - Go to User Pool > Sign-in experience > Identity providers
          - Add identity provider > OpenID Connect
@@ -370,5 +584,5 @@ Outputs:
            * EMAIL → email
            * GIVEN_NAME → given_name
            * FAMILY_NAME → family_name
-      
+
       4. Update app client to include 'midway' in supported identity providers

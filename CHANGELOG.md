@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2025-11-17
+
+### Added
+
+- **Profile System v2.0**: Multi-deployment management from single machine
+  - Manage multiple AWS accounts, regions, or organizations
+  - Profile commands: `ccwb context list`, `ccwb context use`, `ccwb context show`
+  - Config commands: `ccwb config validate`, `ccwb config export`, `ccwb config import`
+  - Per-profile configuration files in `~/.ccwb/profiles/`
+  - Active profile tracking with easy switching
+  - Common use cases: production vs development, multi-region, multi-tenant
+- **Authenticated Landing Page Distribution**: Enterprise-grade package distribution
+  - IdP-gated self-service download portal (Okta/Azure AD/Auth0/Cognito)
+  - Platform detection with automatic OS recommendation
+  - Custom domain support with ACM certificates
+  - ALB access logs for audit trail
+  - Lambda-generated presigned URLs (1-hour expiry)
+  - CloudFormation template: `landing-page-distribution.yaml` (1,038 lines)
+- **Distribution Options**: Three methods for sharing packages
+  - Manual sharing: Zip dist/ folder, share via email/internal file sharing
+  - Presigned S3 URLs: Time-limited URLs (configurable 1-168 hours)
+  - Landing page: Self-service portal with IdP authentication
+- **QUICK_START.md**: Comprehensive deployment walkthrough (301 lines)
+  - Step-by-step deployment instructions
+  - Platform build requirements
+  - Distribution method comparison
+  - Basic troubleshooting
+- **Profile Documentation**: Complete documentation for profile system
+  - README section explaining profiles and use cases
+  - CLI_REFERENCE section with all 7 profile commands
+  - Migration notes for v1.x users
+
+### Changed
+
+- **Configuration Location** (BREAKING): Config moved from `source/.ccwb-config/` to `~/.ccwb/`
+  - Automatic migration on first run
+  - Timestamped backup created: `config.json.backup.YYYYMMDD_HHMMSS`
+  - Profile names and active profile preserved
+  - No manual steps required
+- **Configuration Schema** (BREAKING): Schema version 1.0 → 2.0
+  - Single config file → per-profile files
+  - Profile stored in `~/.ccwb/profiles/<profile-name>.json`
+  - Active profile tracked in `~/.ccwb/config.json`
+- **README Refactored**: Focused on architecture and decision-making (575 → 280 lines, 51% reduction)
+  - Clear distinction: IdP integration (NOT AWS SSO/IAM Identity Center)
+  - Removed deployment steps (→ QUICK_START.md)
+  - Removed end user sections (IT admin focus)
+  - New "What Gets Deployed" section with infrastructure overview
+  - Distribution options include manual sharing (0 minutes setup)
+  - Prerequisites split: "For Deployment" and "For End Users"
+  - Monitoring section reorganized by metrics categories
+- **Distribution Configuration**: `enable_distribution` → `distribution_type`
+  - Options: `manual`, `presigned-s3`, `landing-page`
+  - Configured during `ccwb init`
+  - `ccwb distribute` command works for all automated types
+- **Deploy Command**: Support for distribution stack deployment
+  - `ccwb deploy distribution` deploys landing page infrastructure
+  - Validates IdP configuration before deployment
+  - Handles Cognito User Pool automatic client creation
+
+### Migration
+
+**Automatic Migration from v1.x:**
+- Runs automatically on first `ccwb` command after upgrade
+- Creates timestamped backup of existing config
+- Migrates all profiles to new `~/.ccwb/profiles/` structure
+- Preserves profile names, active profile, and all settings
+- No manual intervention required
+
+**Verification:**
+```bash
+ccwb context list     # Verify profiles migrated
+ccwb context show     # Verify active profile preserved
+```
+
+**Rollback if needed:**
+```bash
+rm -rf ~/.ccwb
+cp ~/.ccwb-config/config.json.backup.TIMESTAMP ~/.ccwb-config/config.json
+```
+
+### Security
+
+- **Client Secret Storage**: IdP client secrets stored in AWS Secrets Manager
+  - Cognito User Pool: Automatic secret storage via CloudFormation
+  - Other IdPs: Manual secret entry during init, stored in Secrets Manager
+- **ALB Access Logs**: Automatic S3 logging for landing page authentication
+- **Presigned URL Expiration**: Configurable 1-168 hours (default 48 hours)
+- **S3 Bucket Policies**: Least privilege access for distribution buckets
+
+### Infrastructure
+
+- **Landing Page Stack**: Complete ALB + Lambda + S3 infrastructure
+  - Application Load Balancer with OIDC authentication
+  - Lambda function for presigned URL generation
+  - S3 bucket for package storage
+  - Security groups and VPC integration
+  - Optional custom domain with ACM certificate
+- **Distribution Bucket**: Created for both presigned-s3 and landing-page
+  - Lifecycle policies for object expiration
+  - Versioning enabled
+  - Server-side encryption
+
+### Documentation
+
+- **New Guides**:
+  - QUICK_START.md: Complete deployment walkthrough
+  - assets/docs/distribution/comparison.md: Distribution method comparison
+  - assets/docs/distribution/deployment-guide.md: Landing page setup
+- **Updated Guides**:
+  - README.md: Refactored for clarity, IT admin focus
+  - CLI_REFERENCE.md: Added profile management commands
+  - DEPLOYMENT.md: Updated with distribution options
+- **Provider Guides**: Landing page setup for all IdPs
+  - Okta web application configuration
+  - Azure AD app registration
+  - Auth0 regular web application
+  - Cognito User Pool web client (automated)
+
+### Deprecation
+
+- **Legacy Distribution Flag**: `enable_distribution` deprecated, use `distribution_type`
+  - Migration logic handles legacy field automatically
+  - No breaking change for existing deployments
+
 ## [1.1.4] - 2025-11-04
 
 ### Fixed

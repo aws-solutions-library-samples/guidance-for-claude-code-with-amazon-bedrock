@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Distribution infra - S3 bucket and IAM for package distribution'
+
+Parameters:
+  IdentityPoolName:
+    Type: String
+    Default: claude-code
+    Description: Name prefix for resources (from identity pool name)
+
+Resources:
+  # S3 Bucket for access logs
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${IdentityPoolName}-distribution-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: DistributionAccessLogs
+
+  # S3 Bucket for package distribution
+  DistributionBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${IdentityPoolName}-distribution-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: package-downloads/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldPackages
+            Status: Enabled
+            Prefix: packages/
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 7
+          - Id: DeleteOldWindowsBuilds
+            Status: Enabled
+            Prefix: windows-builds/
+            ExpirationInDays: 7
+            NoncurrentVersionExpirationInDays: 1
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: PackageDistribution
+
+  # IAM User for distribution (presigned URLs)
+  DistributionUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${IdentityPoolName}-distributor'
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: GeneratePresignedURLs
+
+  # Access key for distribution user
+  DistributionUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref DistributionUser
+
+  # Policy for distribution user - only read access to packages
+  DistributionUserPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DistributionUserS3ReadPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub '${DistributionBucket.Arn}/packages/*'
+      Users:
+        - !Ref DistributionUser
+
+  # Secret to store distribution user credentials
+  DistributionUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${IdentityPoolName}-distributor-credentials'
+      Description: IAM credentials for generating long-lived presigned URLs
+      SecretString: !Sub |
+        {
+          "AccessKeyId": "${DistributionUserAccessKey}",
+          "SecretAccessKey": "${DistributionUserAccessKey.SecretAccessKey}"
+        }
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: DistributionCredentials
+
+Outputs:
+  DistributionBucket:
+    Description: S3 bucket for package distribution
+    Value: !Ref DistributionBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionBucket'
+
+  DistributionBucketArn:
+    Description: ARN of the distribution bucket
+    Value: !GetAtt DistributionBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionBucketArn'
+
+  DistributionSecretArn:
+    Description: ARN of the Secrets Manager secret containing distribution credentials
+    Value: !Ref DistributionUserSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionSecretArn'
+
+  DistributionSecretName:
+    Description: Name of the Secrets Manager secret containing distribution credentials
+    Value: !Sub '${IdentityPoolName}-distributor-credentials'
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionSecretName'
+
+  LoggingBucket:
+    Description: S3 bucket for access logs
+    Value: !Ref LoggingBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-LoggingBucket'
