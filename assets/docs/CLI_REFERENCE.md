@@ -17,6 +17,14 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
+  - [Profile Management](#profile-management)
+    - [`context list` - List All Profiles](#context-list---list-all-profiles)
+    - [`context current` - Show Active Profile](#context-current---show-active-profile)
+    - [`context use` - Switch Active Profile](#context-use---switch-active-profile)
+    - [`context show` - Display Profile Details](#context-show---display-profile-details)
+    - [`config validate` - Validate Profile Configuration](#config-validate---validate-profile-configuration)
+    - [`config export` - Export Profile Configuration](#config-export---export-profile-configuration)
+    - [`config import` - Import Profile Configuration](#config-import---import-profile-configuration)
     - [`destroy` - Remove Infrastructure](#destroy---remove-infrastructure)
 
 ## Overview
@@ -451,6 +459,233 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+## Profile Management
+
+The following commands manage multiple deployment profiles (v2.0+). Profiles let you manage configurations for different AWS accounts, regions, or organizations from a single machine.
+
+### `context list` - List All Profiles
+
+Shows all available profiles with an indicator for the active profile.
+
+```bash
+poetry run ccwb context list
+```
+
+**What it does:**
+
+- Lists all profiles in `~/.ccwb/profiles/`
+- Displays profile name, AWS region, and stack name
+- Highlights the currently active profile
+- Shows profile count
+
+**Example output:**
+
+```
+Available Profiles:
+  * production (us-east-1, stack: claude-code-prod)
+    development (us-west-2, stack: claude-code-dev)
+    eu-deployment (eu-west-1, stack: claude-code-eu)
+
+Active profile: production
+Total profiles: 3
+```
+
+### `context current` - Show Active Profile
+
+Displays the currently active profile name.
+
+```bash
+poetry run ccwb context current
+```
+
+**What it does:**
+
+- Shows the name of the active profile
+- Exits with error if no active profile is set
+
+**Example output:**
+
+```
+Current profile: production
+```
+
+### `context use` - Switch Active Profile
+
+Changes the active profile to the specified one.
+
+```bash
+poetry run ccwb context use <profile-name>
+```
+
+**Arguments:**
+
+- `profile-name` - Name of the profile to activate (required)
+
+**What it does:**
+
+- Sets the specified profile as active
+- Validates that the profile exists
+- Updates global configuration file
+
+**Examples:**
+
+```bash
+# Switch to production profile
+poetry run ccwb context use production
+
+# Switch to development profile
+poetry run ccwb context use development
+```
+
+### `context show` - Display Profile Details
+
+Shows detailed configuration for a profile.
+
+```bash
+poetry run ccwb context show [profile-name]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to display (optional, defaults to active profile)
+
+**Options:**
+
+- `--json` - Output in JSON format
+
+**What it does:**
+
+- Displays full profile configuration including:
+  - AWS region and account
+  - OIDC provider settings
+  - Stack names
+  - Model selection
+  - Monitoring configuration
+- Masks sensitive values (client secrets)
+
+**Examples:**
+
+```bash
+# Show active profile details
+poetry run ccwb context show
+
+# Show specific profile
+poetry run ccwb context show production
+
+# Output as JSON
+poetry run ccwb context show --json
+```
+
+### `config validate` - Validate Profile Configuration
+
+Validates profile configuration for errors.
+
+```bash
+poetry run ccwb config validate [profile-name|all]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to validate (optional, defaults to active profile)
+- `all` - Validate all profiles
+
+**What it does:**
+
+- Checks required fields are present
+- Validates field formats (region, stack names, URLs)
+- Verifies AWS credentials exist
+- Reports validation errors with suggestions
+
+**Examples:**
+
+```bash
+# Validate active profile
+poetry run ccwb config validate
+
+# Validate specific profile
+poetry run ccwb config validate production
+
+# Validate all profiles
+poetry run ccwb config validate all
+```
+
+### `config export` - Export Profile Configuration
+
+Exports a profile configuration to a file (sanitized).
+
+```bash
+poetry run ccwb config export [profile-name] [options]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to export (optional, defaults to active profile)
+
+**Options:**
+
+- `--output <file>` - Output file path (default: `<profile-name>.json`)
+- `--include-secrets` - Include sensitive values (not recommended)
+
+**What it does:**
+
+- Exports profile configuration to JSON file
+- Removes sensitive values by default (client secrets)
+- Creates portable configuration file
+
+**Examples:**
+
+```bash
+# Export active profile (secrets removed)
+poetry run ccwb config export
+
+# Export specific profile to custom path
+poetry run ccwb config export production --output prod-config.json
+
+# Export with secrets (use caution)
+poetry run ccwb config export --include-secrets
+```
+
+### `config import` - Import Profile Configuration
+
+Imports a profile configuration from a file.
+
+```bash
+poetry run ccwb config import <file> [name]
+```
+
+**Arguments:**
+
+- `file` - Path to configuration file (required)
+- `name` - Name for imported profile (optional, uses name from file)
+
+**Options:**
+
+- `--overwrite` - Overwrite if profile already exists
+- `--set-active` - Set as active profile after import
+
+**What it does:**
+
+- Imports profile configuration from JSON file
+- Validates configuration before importing
+- Creates new profile in `~/.ccwb/profiles/`
+- Optionally sets as active profile
+
+**Examples:**
+
+```bash
+# Import profile with default name
+poetry run ccwb config import prod-config.json
+
+# Import with custom name
+poetry run ccwb config import config.json staging
+
+# Import and set as active
+poetry run ccwb config import config.json --set-active
+
+# Overwrite existing profile
+poetry run ccwb config import config.json production --overwrite
+```
 
 ### `destroy` - Remove Infrastructure
 

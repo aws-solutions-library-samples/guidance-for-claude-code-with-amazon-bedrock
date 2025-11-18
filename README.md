@@ -256,6 +256,24 @@ The wizard will guide you through:
 - Credential storage method (keyring or session files)
 - Optional monitoring setup with VPC configuration
 
+#### Understanding Profiles (v2.0+)
+
+**What are profiles?** Profiles let you manage multiple deployments from one machine (different AWS accounts, regions, or organizations).
+
+**Common use cases:**
+- Production vs development accounts
+- US vs EU regional deployments
+- Multiple customer/tenant deployments
+
+**Profile commands:**
+- `ccwb context list` - See all profiles
+- `ccwb context use <name>` - Switch between profiles
+- `ccwb context show` - View active profile details
+
+See [CLI Reference](assets/docs/CLI_REFERENCE.md) for complete command list.
+
+**Upgrading from v1.x:** Profile configuration automatically migrates from `source/.ccwb-config/` to `~/.ccwb/` on first run. Your profile names and active profile are preserved. A timestamped backup is created automatically.
+
 ### Step 2: Deploy Infrastructure
 
 Deploy the AWS CloudFormation stacks:
