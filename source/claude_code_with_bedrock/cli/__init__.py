@@ -7,6 +7,15 @@ from cleo.application import Application
 
 from .commands.builds import BuildsCommand
 from .commands.cleanup import CleanupCommand
+from .commands.context import (
+    ConfigExportCommand,
+    ConfigImportCommand,
+    ConfigValidateCommand,
+    ContextCurrentCommand,
+    ContextListCommand,
+    ContextShowCommand,
+    ContextUseCommand,
+)
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
@@ -33,6 +42,17 @@ def create_application() -> Application:
     application.add(DestroyCommand())
     application.add(CleanupCommand())
     # application.add(TokenCommand())  # Temporarily disabled
+
+    # Context management commands
+    application.add(ContextListCommand())
+    application.add(ContextCurrentCommand())
+    application.add(ContextUseCommand())
+    application.add(ContextShowCommand())
+
+    # Config management commands
+    application.add(ConfigValidateCommand())
+    application.add(ConfigExportCommand())
+    application.add(ConfigImportCommand())
 
     return application
 

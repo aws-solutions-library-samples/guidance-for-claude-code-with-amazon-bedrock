@@ -313,9 +313,9 @@ Recent Windows Builds
 | project:def456 | IN_PROGRESS | 2024-08-26 10:30 | - |
 ```
 
-### `distribute` - Create Distribution URLs
+### `distribute` - Share Packages via Distribution
 
-Creates secure presigned URLs for package distribution.
+Upload and distribute built packages via presigned S3 URLs or authenticated landing page.
 
 ```bash
 poetry run ccwb distribute [options]
@@ -324,36 +324,81 @@ poetry run ccwb distribute [options]
 **Options:**
 
 - `--expires-hours <hours>` - URL expiration time in hours (1-168) [default: "48"]
-- `--get-latest` - Retrieve the latest distribution URL
+- `--get-latest` - Retrieve the latest distribution URL (presigned-s3 only)
 - `--profile <name>` - Configuration profile to use [default: "default"]
+- `--package-path <path>` - Path to package directory [default: "dist"]
+- `--build-profile <name>` - Select build by profile name
+- `--timestamp <timestamp>` - Select build by timestamp (format: YYYY-MM-DD-HHMMSS)
+- `--latest` - Auto-select latest build without wizard
+- `--allowed-ips <ranges>` - Comma-separated IP ranges for access control (presigned-s3 only)
+- `--show-qr` - Display QR code for URL (requires qrcode library)
 
 **What it does:**
 
-- Uploads built packages to S3
-- Generates presigned URLs for secure distribution
+Behavior depends on your configured distribution type:
+
+**Presigned S3 URLs (Simple):**
+- Uploads packages to S3 bucket
+- Generates secure presigned URLs (default 48 hours)
 - Stores URLs in Parameter Store for team access
-- No AWS credentials required for end users
+- Share URLs via email/Slack
+- No authentication required for downloads
+
+**Landing Page (Enterprise):**
+- Uploads platform-specific packages (windows/linux/mac/all-platforms)
+- Updates S3 metadata (profile, timestamp, release date)
+- Provides landing page URL for authenticated access
+- Users authenticate via IdP (Okta/Azure/Auth0/Cognito)
+- Platform auto-detection and recommendations
 
 **Distribution workflow:**
 
-1. Build packages: `poetry run ccwb package --target-platform=all`
-2. Create distribution: `poetry run ccwb distribute`
-3. Share the generated URL with developers
-4. Developers download and run installer without AWS access
+1. Build packages: `poetry run ccwb package`
+2. Upload and distribute: `poetry run ccwb distribute`
+3. **Presigned-s3**: Share generated URLs with developers
+4. **Landing-page**: Direct users to your landing page URL
 
-**Example:**
+**Examples:**
 
 ```bash
-# Build and distribute
-poetry run ccwb package --target-platform=all --distribute
+# Distribute latest build (interactive build selection)
+poetry run ccwb distribute
 
-# Or separately
-poetry run ccwb package --target-platform=all
+# Distribute latest build automatically (skip wizard)
+poetry run ccwb distribute --latest
+
+# Distribute specific build by timestamp
+poetry run ccwb distribute --timestamp 2024-11-14-083022
+
+# Distribute with custom expiration (presigned-s3 only)
 poetry run ccwb distribute --expires-hours=72
 
-# Get existing URL
+# Get existing URL without re-uploading (presigned-s3 only)
 poetry run ccwb distribute --get-latest
+
+# Distribute with QR code for mobile sharing
+poetry run ccwb distribute --show-qr
 ```
+
+**Build Selection:**
+
+If you have multiple builds in `dist/`, the command will:
+1. Scan for organized profile/timestamp builds
+2. Show interactive wizard to select which build to distribute
+3. Display build date, size, and platforms included
+4. Allow selection by profile name or timestamp
+
+Use `--latest` to skip the wizard and auto-select the most recent build.
+
+**Platform-Specific Uploads (Landing Page):**
+
+For landing-page distribution, packages are organized by platform:
+- `packages/windows/latest.zip` - Windows package
+- `packages/linux/latest.zip` - Linux package
+- `packages/mac/latest.zip` - macOS package
+- `packages/all-platforms/latest.zip` - All platforms bundle
+
+Landing page auto-detects user's OS and recommends appropriate package.
 
 ### `status` - Check Deployment Status
 

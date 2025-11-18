@@ -118,10 +118,12 @@ class DestroyCommand(Command):
         console.print("\n[yellow]Manual cleanup may be required for:[/yellow]")
         console.print("1. CloudWatch LogGroups:")
         console.print(
-            f"   [cyan]aws logs delete-log-group --log-group-name /ecs/otel-collector --region {profile.aws_region}[/cyan]"
+            f"   [cyan]aws logs delete-log-group --log-group-name /ecs/otel-collector "
+            f"--region {profile.aws_region}[/cyan]"
         )
         console.print(
-            f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics --region {profile.aws_region}[/cyan]"
+            f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics "
+            f"--region {profile.aws_region}[/cyan]"
         )
         console.print("\n2. Check CloudFormation console for any DELETE_FAILED resources")
         console.print("\nFor more information, see: assets/docs/TROUBLESHOOTING.md")

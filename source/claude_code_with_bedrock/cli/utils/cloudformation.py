@@ -177,16 +177,16 @@ class CloudFormationManager:
             # Map to our custom exceptions
             if error_code == "ValidationError":
                 if "does not exist" in error_message:
-                    raise StackNotFoundError(f"Stack {stack_name} not found: {error_message}")
+                    raise StackNotFoundError(f"Stack {stack_name} not found: {error_message}") from e
                 else:
-                    raise TemplateValidationError(f"Template validation failed: {error_message}")
+                    raise TemplateValidationError(f"Template validation failed: {error_message}") from e
             elif error_code == "InsufficientCapabilitiesException":
-                raise PermissionError(f"Insufficient capabilities: {error_message}")
+                raise PermissionError(f"Insufficient capabilities: {error_message}") from None
             elif error_code == "AlreadyExistsException":
                 if "LogGroup" in error_message:
-                    raise ResourceConflictError(f"Resource already exists: {error_message}")
+                    raise ResourceConflictError(f"Resource already exists: {error_message}") from None
             else:
-                raise CloudFormationError(f"CloudFormation error: {error_message}")
+                raise CloudFormationError(f"CloudFormation error: {error_message}") from None
 
         except Exception as e:
             return StackDeploymentResult(success=False, error=str(e))
@@ -525,4 +525,4 @@ class CloudFormationManager:
             self.cf_client.validate_template(TemplateBody=template_body)
             return True
         except ClientError as e:
-            raise TemplateValidationError(f"Template validation failed: {e.response['Error']['Message']}")
+            raise TemplateValidationError(f"Template validation failed: {e.response['Error']['Message']}") from e

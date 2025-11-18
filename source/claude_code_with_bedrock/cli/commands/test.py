@@ -24,21 +24,33 @@ class TestCommand(Command):
 
     options = [
         option(
-            "profile", "p", description="AWS profile to test (default: ClaudeCode)", flag=False, default="ClaudeCode"
+            "profile", "p", description="Profile name to test (defaults to active profile)", flag=False, default=None
         ),
-        option("quick", description="Run quick tests only", flag=True),
-        option("api", description="Test actual Bedrock API calls (costs ~$0.001)", flag=True),
+        option("full", description="Test all allowed regions (default: tests 3 representative regions)", flag=True),
     ]
 
     def handle(self) -> int:
         """Execute the test command."""
         console = Console()
 
+        # Load configuration to get active profile
+        config = Config.load()
+        test_profile_name = self.option("profile") or config.active_profile
+
+        if not test_profile_name:
+            console.print("[red]No profile specified and no active profile set.[/red]")
+            console.print(
+                "Use [cyan]ccwb context use <profile>[/cyan] to set an active profile or use "
+                "[cyan]--profile <name>[/cyan]"
+            )
+            return 1
+
         # Welcome
         console.print(
             Panel.fit(
                 "[bold cyan]Claude Code Package Test[/bold cyan]\n\n"
-                "This will test the packaged distribution as an end user would experience it",
+                f"Testing profile: [bold]{test_profile_name}[/bold]\n"
+                "This will test authentication and verify Bedrock API access in your configured region",
                 border_style="cyan",
                 padding=(1, 2),
             )
@@ -125,7 +137,13 @@ class TestCommand(Command):
         # Read and display config details
         with open(config_path) as f:
             pkg_config = json.load(f)
-            profile_config = pkg_config.get("ClaudeCode", {})
+            # Try to read from the specified profile name, fall back to "ClaudeCode" for backward compatibility
+            profile_config = pkg_config.get(test_profile_name) or pkg_config.get("ClaudeCode", {})
+
+            if not profile_config:
+                console.print(f"[red]✗ Profile '{test_profile_name}' not found in config.json[/red]")
+                console.print(f"[dim]Available profiles: {', '.join(pkg_config.keys())}[/dim]")
+                return 1
 
             # Display configuration
             console.print("\n[bold]Configuration:[/bold]")
@@ -174,8 +192,11 @@ class TestCommand(Command):
         console.print(f"[dim]Using temporary profile: {test_profile}[/dim]")
 
         # Configure the test profile
+        # Set environment variable to tell credential binary which profile to use from config.json
+        # Use shell to set environment variable
+        credential_command = f"/bin/sh -c 'CCWB_PROFILE={test_profile_name} {credential_binary}'"
         aws_config_result = subprocess.run(
-            ["aws", "configure", "set", f"profile.{test_profile}.credential_process", str(credential_binary)],
+            ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
             capture_output=True,
         )
 
@@ -196,17 +217,19 @@ class TestCommand(Command):
         )
 
         # Load configuration for test parameters
-        config = Config.load()
-        profile = config.get_profile()
+        profile = config.get_profile(test_profile_name)
 
         if not profile:
-            console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
+            console.print(
+                f"[red]Profile '{test_profile_name}' not found in configuration. Run 'poetry run ccwb \
+                init' first.[/red]"
+            )
             return 1
 
         # Use test_profile instead of hardcoded "ClaudeCode"
         aws_profile = test_profile
-        quick_mode = self.option("quick")
-        with_api = self.option("api")
+        test_all_regions = self.option("full")
+        with_api = True  # Always test with API calls by default
 
         # Create test results table
         table = Table(title="Test Results", box=box.ROUNDED, show_header=True, header_style="bold cyan")
@@ -238,19 +261,51 @@ class TestCommand(Command):
                 test_results.append(("IAM Role", result["status"], result["details"]))
                 progress.update(task, completed=True)
 
-                # Test 4: Check Bedrock access in each region
-                if not quick_mode:
-                    for region in profile.allowed_bedrock_regions:
-                        task = progress.add_task(f"Testing Bedrock access in {region}...", total=None)
-                        result = self._test_bedrock_access(aws_profile, region, with_api)
-                        test_results.append((f"Bedrock - {region}", result["status"], result["details"]))
-                        progress.update(task, completed=True)
+                # Validate that selected_source_region is configured
+                if not profile.selected_source_region:
+                    test_results.append(
+                        ("Configuration", "✗", "selected_source_region not set - run 'ccwb init' to configure")
+                    )
+                    progress.stop()
+                    # Display results immediately and exit
+                    console.print("\n")
+                    table = Table(title="Test Results", box=box.ROUNDED, show_header=True, header_style="bold cyan")
+                    table.add_column("Test", style="white", no_wrap=True, min_width=24)
+                    table.add_column("Status", style="white", width=12)
+                    table.add_column("Details", style="dim", min_width=50, overflow="fold")
+                    for test_name, status, details in test_results:
+                        if status == "✓":
+                            status_display = "[green]✓ Pass[/green]"
+                        else:
+                            status_display = "[red]✗ Fail[/red]"
+                        table.add_row(test_name, status_display, details)
+                    console.print(table)
+                    console.print("\n[red]Configuration error: selected_source_region must be set[/red]")
+                    return 1
+
+                # Test 4: Determine which regions to test
+                if test_all_regions:
+                    # Test all allowed regions
+                    regions_to_test = profile.allowed_bedrock_regions
                 else:
-                    # In quick mode, just test primary region
-                    region = profile.allowed_bedrock_regions[0]
-                    task = progress.add_task(f"Testing Bedrock access in {region}...", total=None)
+                    # Test only the user's configured source region
+                    regions_to_test = [profile.selected_source_region]
+
+                # Test Bedrock access in configured region(s)
+                for region in regions_to_test:
+                    task = progress.add_task(f"Testing Bedrock API in {region}...", total=None)
                     result = self._test_bedrock_access(aws_profile, region, with_api)
                     test_results.append((f"Bedrock - {region}", result["status"], result["details"]))
+                    progress.update(task, completed=True)
+
+                # Test 5: Test inference profiles in configured source region
+                if not test_all_regions:
+                    # Only test inference profiles when testing configured region (not during full test)
+                    task = progress.add_task("Testing inference profiles...", total=None)
+                    result = self._test_inference_profiles(
+                        aws_profile, profile.selected_source_region, profile.selected_model
+                    )
+                    test_results.append(("Inference Profiles", result["status"], result["details"]))
                     progress.update(task, completed=True)
 
         # Display results
@@ -290,7 +345,9 @@ class TestCommand(Command):
                 console.print("3. You may need to request model access if not enabled")
                 console.print("\n[bold]To test with your admin credentials:[/bold]")
                 console.print(
-                    f"aws bedrock list-foundation-models --region {profile.allowed_bedrock_regions[0]} --query \"modelSummaries[?contains(modelId, 'claude')]\""
+                    f"aws bedrock list-foundation-models --region "
+                    f"{profile.allowed_bedrock_regions[0]} --query "
+                    f"\"modelSummaries[?contains(modelId, 'claude')]\""
                 )
 
             return 1
@@ -300,9 +357,9 @@ class TestCommand(Command):
         else:
             console.print("\n[green]All tests passed! Your setup is working correctly.[/green]")
 
-            if not with_api:
+            if not test_all_regions:
                 console.print(
-                    "\n[dim]Note: API invocation tests were skipped. Use --api to test actual Bedrock calls.[/dim]"
+                    "\n[dim]Note: Tested your configured source region. Use --full to test all allowed regions.[/dim]"
                 )
 
             console.print("\n[bold]Package test complete. Authentication and Bedrock access verified.[/bold]")
@@ -336,20 +393,33 @@ class TestCommand(Command):
         """Test if authentication works."""
         try:
             # Try to get caller identity
+            # Clear AWS credentials from environment to ensure credential_process is used
+            import os
+
+            test_env = os.environ.copy()
+            test_env.pop("AWS_ACCESS_KEY_ID", None)
+            test_env.pop("AWS_SECRET_ACCESS_KEY", None)
+            test_env.pop("AWS_SESSION_TOKEN", None)
+
             cmd = ["aws", "sts", "get-caller-identity", "--profile", profile_name]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            # Show credential process output in real-time
+            import sys
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,  # Show stderr (browser messages, auth progress) in real-time
+                text=True,
+                timeout=120,
+                env=test_env,
+            )
 
             if result.returncode == 0:
                 identity = json.loads(result.stdout)
                 return {"status": "✓", "details": f"Authenticated as {identity.get('UserId', 'unknown')[:20]}..."}
             else:
-                error_msg = result.stderr or result.stdout
-                if "Unable to locate credentials" in error_msg:
-                    return {"status": "✗", "details": "Credential process not configured"}
-                elif "BrowserError" in error_msg:
-                    return {"status": "✗", "details": "Browser authentication failed"}
-                else:
-                    return {"status": "✗", "details": error_msg[:100]}
+                return {"status": "✗", "details": f"Authentication failed (exit code {result.returncode})"}
         except subprocess.TimeoutExpired:
             return {"status": "✗", "details": "Authentication timed out"}
         except Exception as e:
@@ -358,8 +428,16 @@ class TestCommand(Command):
     def _test_iam_role(self, profile_name: str, config_profile) -> dict:
         """Test IAM role and permissions."""
         try:
+            # Clear AWS credentials from environment
+            import os
+
+            test_env = os.environ.copy()
+            test_env.pop("AWS_ACCESS_KEY_ID", None)
+            test_env.pop("AWS_SECRET_ACCESS_KEY", None)
+            test_env.pop("AWS_SESSION_TOKEN", None)
+
             cmd = ["aws", "sts", "get-caller-identity", "--profile", profile_name]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, env=test_env)
 
             if result.returncode == 0:
                 identity = json.loads(result.stdout)
@@ -404,9 +482,17 @@ class TestCommand(Command):
     def _test_bedrock_access(self, profile_name: str, region: str, with_api: bool = False) -> dict:
         """Test Bedrock access in a specific region."""
         try:
+            # Clear AWS credentials from environment
+            import os
+
+            test_env = os.environ.copy()
+            test_env.pop("AWS_ACCESS_KEY_ID", None)
+            test_env.pop("AWS_SECRET_ACCESS_KEY", None)
+            test_env.pop("AWS_SESSION_TOKEN", None)
+
             # First get the account we're using
             identity_cmd = ["aws", "sts", "get-caller-identity", "--profile", profile_name]
-            identity_result = subprocess.run(identity_cmd, capture_output=True, text=True)
+            identity_result = subprocess.run(identity_cmd, capture_output=True, text=True, env=test_env)
             account_id = "unknown"
             role_name = "unknown"
             if identity_result.returncode == 0:
@@ -430,7 +516,7 @@ class TestCommand(Command):
                 "--output",
                 "json",
             ]
-            result = subprocess.run(describe_cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(describe_cmd, capture_output=True, text=True, timeout=60, env=test_env)
 
             if result.returncode == 0:
                 models = json.loads(result.stdout)
@@ -447,7 +533,8 @@ class TestCommand(Command):
                                 # Validation errors often mean model isn't available in this region
                                 return {
                                     "status": "✓",
-                                    "details": f"Found {len(models)} Claude models (some models may not support invoke)",
+                                    "details": f"Found {len(models)} Claude models (some models may \
+                                    not support invoke)",
                                 }
                             elif "ThrottlingException" in error or "Rate limited" in error:
                                 # Rate limiting is not a failure
@@ -493,6 +580,72 @@ class TestCommand(Command):
                     return {"status": "✗", "details": first_line[:80]}
         except subprocess.TimeoutExpired:
             return {"status": "!", "details": "Request timed out (may be a network issue)"}
+        except Exception as e:
+            return {"status": "✗", "details": str(e)}
+
+    def _test_inference_profiles(self, profile_name: str, region: str, selected_model: str = None) -> dict:
+        """Test inference profiles access in the configured region."""
+        try:
+            # Clear AWS credentials from environment
+            import os
+
+            test_env = os.environ.copy()
+            test_env.pop("AWS_ACCESS_KEY_ID", None)
+            test_env.pop("AWS_SECRET_ACCESS_KEY", None)
+            test_env.pop("AWS_SESSION_TOKEN", None)
+
+            # List inference profiles
+            cmd = [
+                "aws",
+                "bedrock",
+                "list-inference-profiles",
+                "--profile",
+                profile_name,
+                "--region",
+                region,
+                "--output",
+                "json",
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=test_env)
+
+            if result.returncode == 0:
+                profiles = json.loads(result.stdout)
+                profile_summaries = profiles.get("inferenceProfileSummaries", [])
+
+                if profile_summaries:
+                    # Check if the selected model matches any inference profile
+                    if selected_model:
+                        matching_profiles = [
+                            p
+                            for p in profile_summaries
+                            if p.get("inferenceProfileId") == selected_model or selected_model in p.get("models", [])
+                        ]
+                        if matching_profiles:
+                            return {
+                                "status": "✓",
+                                "details": f"Found {len(profile_summaries)} profiles, selected model available",
+                            }
+
+                    return {"status": "✓", "details": f"Found {len(profile_summaries)} cross-region inference profiles"}
+                else:
+                    return {
+                        "status": "!",
+                        "details": "No inference profiles available (cross-region routing not configured)",
+                    }
+            else:
+                error_msg = result.stderr or result.stdout
+
+                # Parse specific error types
+                if "AccessDeniedException" in error_msg:
+                    return {"status": "✗", "details": "Access denied - check bedrock:ListInferenceProfiles permission"}
+                elif "UnrecognizedClientException" in error_msg:
+                    return {"status": "✗", "details": "Invalid credentials or role"}
+                else:
+                    # Show first line of error for clarity
+                    first_line = error_msg.split("\n")[0] if error_msg else "Unknown error"
+                    return {"status": "✗", "details": first_line[:80]}
+        except subprocess.TimeoutExpired:
+            return {"status": "!", "details": "Request timed out"}
         except Exception as e:
             return {"status": "✗", "details": str(e)}
 
@@ -546,6 +699,13 @@ class TestCommand(Command):
     def _test_model_invocation(self, profile_name: str, region: str, available_models: list = None) -> dict:
         """Test actual model invocation with Claude 3."""
         try:
+            # Clear AWS credentials from environment
+            import os
+
+            test_env = os.environ.copy()
+            test_env.pop("AWS_ACCESS_KEY_ID", None)
+            test_env.pop("AWS_SECRET_ACCESS_KEY", None)
+            test_env.pop("AWS_SESSION_TOKEN", None)
             # Pick a model to test - prefer Claude 3 Sonnet, but use what's available
             if available_models:
                 # Prefer these models in order
@@ -610,7 +770,7 @@ class TestCommand(Command):
                 "/tmp/bedrock-test-output.json",
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=test_env)
 
             if result.returncode == 0:
                 # Check if we got a response
@@ -654,7 +814,7 @@ class TestCommand(Command):
                 os.remove("/tmp/bedrock-test-output.json")
                 if "body_file" in locals():
                     os.remove(body_file)
-            except:
+            except Exception:
                 pass
 
     def _get_expected_account(self, config_profile) -> str:

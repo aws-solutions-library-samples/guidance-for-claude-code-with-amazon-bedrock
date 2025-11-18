@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: '( SO9610 ) ACM Certificate for Cognito Custom Domain - MUST BE DEPLOYED IN US-EAST-1'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Domain Configuration"
+        Parameters:
+          - CustomDomainName
+          - Route53HostedZoneId
+
+Parameters:
+  CustomDomainName:
+    Type: String
+    Description: Custom domain name for Cognito (e.g., auth.example.com)
+    AllowedPattern: '^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)*$'
+    ConstraintDescription: Must be a valid domain name
+
+  Route53HostedZoneId:
+    Type: String
+    Description: Route 53 Hosted Zone ID for DNS validation
+    AllowedPattern: '^Z[A-Z0-9]+$'
+    ConstraintDescription: Must be a valid Route 53 Hosted Zone ID
+
+  CreateParentDomainRecord:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create placeholder A record for parent domain if it doesn't exist (required by Cognito)
+
+  ParentDomainName:
+    Type: String
+    Description: Parent domain name (e.g., example.com) - will create placeholder A record if needed
+    AllowedPattern: '^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)*$'
+    ConstraintDescription: Must be a valid domain name
+
+Conditions:
+  ShouldCreateParentRecord: !Equals [!Ref CreateParentDomainRecord, 'true']
+
+Resources:
+  # Placeholder A record for parent domain
+  # Required by Cognito for custom subdomain validation
+  ParentDomainARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ShouldCreateParentRecord
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref ParentDomainName
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - 192.0.2.1  # RFC 5737 TEST-NET-1 documentation IP
+      Comment: !Sub 'Placeholder A record for Cognito custom domain validation - ${AWS::StackName}'
+
+  # ACM Certificate for custom domain
+  # CRITICAL: Must be in us-east-1 for Cognito custom domains
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref CustomDomainName
+      DomainValidationOptions:
+        - DomainName: !Ref CustomDomainName
+          HostedZoneId: !Ref Route53HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-certificate'
+        - Key: Purpose
+          Value: 'Cognito Custom Domain'
+        - Key: Domain
+          Value: !Ref CustomDomainName
+
+Outputs:
+  CertificateArn:
+    Description: ARN of the ACM certificate for Cognito custom domain
+    Value: !Ref Certificate
+    Export:
+      Name: !Sub '${AWS::StackName}-CertificateArn'
+
+  CustomDomainName:
+    Description: Custom domain name for Cognito
+    Value: !Ref CustomDomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainName'
+
+  UsageInstructions:
+    Description: How to use this certificate with Cognito User Pool stack
+    Value: !Sub |
+      This certificate is ready to use with Cognito User Pool custom domains.
+
+      To deploy the Cognito User Pool in a different region:
+
+      1. Use this certificate ARN when deploying Cognito stack:
+         ${Certificate}
+
+      2. Deploy the Cognito User Pool stack with parameters:
+         --parameter-overrides \
+           UseCustomDomain=true \
+           CustomDomainName=${CustomDomainName} \
+           CertificateArn=${Certificate}
+
+      3. After deployment, create a Route 53 A record (alias) pointing to the
+         CloudFront distribution provided by Cognito.
+
+      Note: This certificate must remain in us-east-1 and will be referenced
+      by the Cognito User Pool stack regardless of which region it deploys to.

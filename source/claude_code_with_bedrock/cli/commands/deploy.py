@@ -40,7 +40,9 @@ class DeployCommand(Command):
     ]
 
     options = [
-        option("profile", description="Configuration profile to use", flag=False, default="default"),
+        option(
+            "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
+        ),
         option("dry-run", description="Show what would be deployed without executing", flag=True),
         option("show-commands", description="Show AWS CLI commands instead of executing", flag=True),
     ]
@@ -62,12 +64,24 @@ class DeployCommand(Command):
         # Load configuration
         config = Config.load()
 
-        # Get profile name
+        # Get profile name (use active profile if not specified)
         profile_name = self.option("profile")
+        if not profile_name:
+            profile_name = config.active_profile
+            console.print(f"[dim]Using active profile: {profile_name}[/dim]\n")
+        else:
+            console.print(f"[dim]Using profile: {profile_name}[/dim]\n")
+
         profile = config.get_profile(profile_name)
 
         if not profile:
-            console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            if profile_name:
+                console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            else:
+                console.print(
+                    "[red]No active profile set. Run 'poetry run ccwb init' or "
+                    "'poetry run ccwb context use <profile>' first.[/red]"
+                )
             return 1
 
         # Get deployment options
@@ -138,12 +152,21 @@ class DeployCommand(Command):
                 )
                 return 1
         else:
-            # Deploy all configured stacks
+            # Deploy all configured stacks in dependency order
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
+
+            # Deploy networking first if needed (required by landing-page distribution and monitoring)
+            if profile.monitoring_enabled or (
+                profile.enable_distribution and profile.distribution_type == "landing-page"
+            ):
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+
+            # Deploy distribution after networking if it's landing-page type
             if profile.enable_distribution:
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+            # Deploy remaining monitoring stacks
             if profile.monitoring_enabled:
-                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 # Check if analytics is enabled (default to True for backward compatibility)
@@ -177,6 +200,32 @@ class DeployCommand(Command):
 
         console.print(table)
 
+        # Check for orphaned stacks (exist but disabled in config)
+        # Only check when deploying ALL stacks, not when deploying a specific stack
+        orphaned_stacks = []
+        if not stack_arg:  # Only check for orphaned stacks when deploying all stacks
+            orphaned_stacks = self._check_orphaned_stacks(stacks_to_deploy, profile, cf_manager, console)
+
+        if orphaned_stacks and not dry_run and not show_commands:
+            import questionary
+
+            console.print("\n[yellow]⚠️  Found stacks that exist but are disabled in your configuration:[/yellow]")
+            for stack_type, stack_name, status in orphaned_stacks:
+                console.print(f"  • {stack_type}: {stack_name} ({status})")
+
+            should_delete = questionary.confirm("Would you like to delete these orphaned stacks?", default=False).ask()
+
+            if should_delete:
+                console.print("\n[bold]Cleaning up orphaned stacks...[/bold]\n")
+                for stack_type, stack_name, _status in orphaned_stacks:
+                    try:
+                        console.print(f"[yellow]Deleting {stack_type} stack: {stack_name}...[/yellow]")
+                        cf_manager.delete_stack(stack_name)
+                        console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
+                    except Exception as e:
+                        console.print(f"[red]✗ Failed to delete {stack_type} stack: {e}[/red]")
+                console.print("")
+
         if dry_run:
             console.print("\n[yellow]Dry run mode - no changes will be made[/yellow]")
             return 0
@@ -208,7 +257,7 @@ class DeployCommand(Command):
         console.print("\n[bold green]Deployment complete![/bold green]")
 
         console.print("\n[bold]Stack Outputs:[/bold]")
-        self._show_stack_outputs(profile, console)
+        self._show_stack_outputs(profile, console, config)
 
         return 0
 
@@ -355,7 +404,8 @@ class DeployCommand(Command):
                         ]
                     )
                 elif provider_type == "cognito":
-                    # Extract domain prefix from full domain (e.g., "us-east-1p8mdr8zxe" from "us-east-1p8mdr8zxe.auth.us-east-1.amazoncognito.com")
+                    # Extract domain prefix from full domain
+                    # e.g., "us-east-1p8mdr8zxe" from "us-east-1p8mdr8zxe.auth.us-east-1.amazoncognito.com"
                     cognito_domain = (
                         profile.provider_domain.split(".")[0]
                         if "." in profile.provider_domain
@@ -386,16 +436,128 @@ class DeployCommand(Command):
                 )
 
             elif stack_type == "distribution":
-                template = project_root / "deployment" / "infrastructure" / "distribution.yaml"
                 stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
-                params = [f"IdentityPoolName={profile.identity_pool_name}"]
-                return deploy_with_cf(
-                    template,
-                    stack_name,
-                    params,
-                    ["CAPABILITY_NAMED_IAM"],
-                    task_description="Deploying distribution stack...",
-                )
+
+                # Select template based on distribution type
+                if profile.distribution_type == "landing-page":
+                    template = project_root / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
+
+                    # Get VPC outputs from networking stack
+                    networking_stack_name = profile.stack_names.get(
+                        "networking", f"{profile.identity_pool_name}-networking"
+                    )
+                    networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+
+                    if not networking_outputs:
+                        console.print(
+                            "[red]Error: Networking stack outputs not found. Deploy networking stack first.[/red]"
+                        )
+                        return 1
+
+                    vpc_id = networking_outputs.get("VpcId", "")
+                    # Networking stack only has public subnets (SubnetIds), use for both ALB and Lambda
+                    subnet_ids = networking_outputs.get("SubnetIds", "")
+
+                    if not vpc_id or not subnet_ids:
+                        console.print("[red]Error: Missing required VPC/subnet outputs from networking stack.[/red]")
+                        console.print("[yellow]Expected: VpcId, SubnetIds[/yellow]")
+                        console.print(f"[yellow]Got: {list(networking_outputs.keys())}[/yellow]")
+                        return 1
+
+                    # Use same subnets for both public (ALB) and private (Lambda)
+                    public_subnets = subnet_ids
+                    private_subnets = subnet_ids
+
+                    # Build parameters for landing page
+                    params = [
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"VpcId={vpc_id}",
+                        f"PublicSubnetIds={public_subnets}",
+                        f"PrivateSubnetIds={private_subnets}",
+                        f"IdPProvider={profile.distribution_idp_provider}",
+                    ]
+
+                    # Add IdP-specific parameters
+                    if profile.distribution_idp_provider == "okta":
+                        params.extend(
+                            [
+                                f"OktaDomain={profile.distribution_idp_domain}",
+                                f"OktaClientId={profile.distribution_idp_client_id}",
+                                f"OktaClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
+                    elif profile.distribution_idp_provider == "azure":
+                        # Extract tenant ID from domain or use full domain
+                        params.extend(
+                            [
+                                f"AzureTenantId={profile.distribution_idp_domain}",
+                                f"AzureClientId={profile.distribution_idp_client_id}",
+                                f"AzureClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
+                    elif profile.distribution_idp_provider == "auth0":
+                        params.extend(
+                            [
+                                f"Auth0Domain={profile.distribution_idp_domain}",
+                                f"Auth0ClientId={profile.distribution_idp_client_id}",
+                                f"Auth0ClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
+                    elif profile.distribution_idp_provider == "cognito":
+                        # Split domain to get user pool ID and domain prefix
+                        params.extend(
+                            [
+                                f"CognitoUserPoolId={profile.cognito_user_pool_id or ''}",
+                                f"CognitoUserPoolDomain={profile.distribution_idp_domain}",
+                                f"CognitoClientId={profile.distribution_idp_client_id}",
+                                f"CognitoClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
+
+                    # Add optional custom domain parameters
+                    if profile.distribution_custom_domain:
+                        params.append(f"CustomDomainName={profile.distribution_custom_domain}")
+                    if profile.distribution_hosted_zone_id:
+                        params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
+
+                    # Add deployment timestamp to force custom resource re-execution
+                    import datetime
+
+                    deployment_timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    params.append(f"DeploymentTimestamp={deployment_timestamp}")
+
+                    result = deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying landing page distribution stack...",
+                    )
+
+                    # Display outputs for landing page
+                    if result == 0:
+                        outputs = get_stack_outputs(stack_name, profile.aws_region)
+                        console.print("\n[bold green]✓ Landing page deployed successfully![/bold green]")
+                        console.print(f"\n[bold]Distribution URL:[/bold] {outputs.get('DistributionURL', 'N/A')}")
+                        console.print("\n[bold yellow]⚠️  Configure your IdP web application:[/bold yellow]")
+                        console.print(f"   [cyan]Redirect URI:[/cyan] {outputs.get('IdPRedirectURI', 'N/A')}")
+                        console.print(
+                            "\n   Add this redirect URI to your IdP web application settings "
+                            "before users can authenticate."
+                        )
+
+                    return result
+
+                else:  # presigned-s3 or legacy
+                    template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
+                    params = [f"IdentityPoolName={profile.identity_pool_name}"]
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying presigned S3 distribution stack...",
+                    )
 
             elif stack_type == "networking":
                 template = project_root / "deployment" / "infrastructure" / "networking.yaml"
@@ -411,6 +573,9 @@ class DeployCommand(Command):
                 )
 
             elif stack_type == "monitoring":
+                # Ensure ECS service linked role exists before deploying
+                self._ensure_ecs_service_linked_role(console)
+
                 template = project_root / "deployment" / "infrastructure" / "otel-collector.yaml"
                 stack_name = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
 
@@ -505,7 +670,7 @@ class DeployCommand(Command):
                     if "packaged_template_path" in locals():
                         try:
                             os.unlink(packaged_template_path)
-                        except:
+                        except Exception:
                             pass
 
             elif stack_type == "analytics":
@@ -612,7 +777,7 @@ class DeployCommand(Command):
                     if "packaged_template_path" in locals():
                         try:
                             os.unlink(packaged_template_path)
-                        except:
+                        except Exception:
                             pass
 
             elif stack_type == "codebuild":
@@ -640,7 +805,7 @@ class DeployCommand(Command):
         # Implementation remains the same as original for reference
         pass
 
-    def _show_stack_outputs(self, profile, console: Console) -> None:
+    def _show_stack_outputs(self, profile, console: Console, config: Config) -> None:
         """Show outputs from deployed stacks."""
         # Get auth stack outputs
         auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
@@ -657,6 +822,12 @@ class DeployCommand(Command):
             role_arn = outputs.get("FederatedRoleArn") or outputs.get("BedrockRoleArn", "N/A")
             console.print(f"• Role ARN: [cyan]{role_arn}[/cyan]")
             console.print(f"• OIDC Provider: [cyan]{outputs.get('OIDCProviderArn', 'N/A')}[/cyan]")
+
+            # Save federated_role_arn to profile for direct STS federation
+            direct_sts_role = outputs.get("DirectSTSRoleArn")
+            if direct_sts_role and direct_sts_role != "N/A" and direct_sts_role.startswith("arn:"):
+                profile.federated_role_arn = direct_sts_role
+                config.save_profile(profile)
 
         # Get networking outputs if enabled
         if profile.monitoring_enabled:
@@ -727,8 +898,72 @@ class DeployCommand(Command):
                     f"[yellow]Warning: Failed to update metrics aggregator environment variables: {str(e)}[/yellow]"
                 )
                 console.print(
-                    f"[dim]You may need to manually add QUOTA_TABLE={quota_table_name} to the metrics aggregator Lambda[/dim]"
+                    f"[dim]You may need to manually add QUOTA_TABLE={quota_table_name} "
+                    f"to the metrics aggregator Lambda[/dim]"
                 )
 
         except Exception as e:
             console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
+
+    def _check_orphaned_stacks(self, stacks_to_deploy, profile, cf_manager, console: Console) -> list:
+        """Check for stacks that exist but are disabled in config.
+
+        Returns:
+            List of (stack_type, stack_name, status) tuples for orphaned stacks.
+        """
+        # All possible stack types
+        all_stack_types = {
+            "auth": "Authentication Stack",
+            "distribution": "Distribution infrastructure",
+            "networking": "VPC Networking",
+            "monitoring": "OpenTelemetry Collector",
+            "dashboard": "CloudWatch Dashboard",
+            "analytics": "Analytics Pipeline",
+            "quota": "Quota Monitoring",
+            "codebuild": "CodeBuild",
+        }
+
+        # Stack types that are being deployed
+        deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
+
+        # Check for orphaned stacks
+        orphaned = []
+        for stack_type in all_stack_types:
+            if stack_type not in deploying_types:
+                # This stack type is not being deployed - check if it exists
+                stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
+                status = cf_manager.get_stack_status(stack_name)
+
+                if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
+                    orphaned.append((stack_type, stack_name, status))
+
+        return orphaned
+
+    def _ensure_ecs_service_linked_role(self, console: Console) -> None:
+        """Ensure ECS service linked role exists, create if needed."""
+        try:
+            import boto3
+
+            iam_client = boto3.client("iam")
+
+            # Check if role exists
+            try:
+                iam_client.get_role(RoleName="AWSServiceRoleForECS")
+                console.print("[dim]✓ ECS service linked role exists[/dim]")
+            except iam_client.exceptions.NoSuchEntityException:
+                # Role doesn't exist, create it
+                console.print("[yellow]Creating ECS service linked role...[/yellow]")
+                try:
+                    iam_client.create_service_linked_role(AWSServiceName="ecs.amazonaws.com")
+                    console.print("[green]✓ ECS service linked role created[/green]")
+                except iam_client.exceptions.InvalidInputException as e:
+                    # Role might already exist (race condition)
+                    if "has been taken in this account" in str(e):
+                        console.print("[dim]✓ ECS service linked role already exists[/dim]")
+                    else:
+                        raise
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not verify ECS service linked role: {str(e)}[/yellow]")
+            console.print("[dim]If deployment fails, manually create the role with:[/dim]")
+            console.print("[dim]aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com[/dim]")

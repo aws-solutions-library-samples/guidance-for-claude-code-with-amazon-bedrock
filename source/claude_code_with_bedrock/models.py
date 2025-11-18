@@ -159,7 +159,8 @@ CLAUDE_MODELS = {
         "profiles": {
             "us": {
                 "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                "description": "US CRIS - US East (N. Virginia), US East (Ohio), US West (Oregon), US West (N. California)",
+                "description": "US CRIS - US East (N. Virginia), US East (Ohio), US West (Oregon), US \
+                West (N. California)",
                 "source_regions": [
                     "us-east-1",  # N. Virginia
                     "us-east-2",  # Ohio

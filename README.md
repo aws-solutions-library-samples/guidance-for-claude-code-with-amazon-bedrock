@@ -347,6 +347,55 @@ This will:
 - Check Amazon Bedrock access
 - (Optional) Test actual API calls with `--api` flag
 
+### Step 5: Choose Distribution Method
+
+Select how to share packages with your users:
+
+#### Option 1: Simple Presigned URLs
+
+Best for small teams (<20 users) with simple distribution needs.
+
+```bash
+poetry run ccwb distribute
+```
+
+Generates presigned S3 URLs valid for 48 hours that can be shared via email or Slack.
+
+**Features:**
+
+- Quick setup (5 minutes)
+- No authentication required
+- Direct S3 download links
+- Ideal for internal teams
+
+#### Option 2: Authenticated Landing Page
+
+Best for larger teams (20-100 users) requiring IdP authentication and self-service access.
+
+```bash
+# Configure during init
+poetry run ccwb init
+# Select "landing-page" as distribution type
+
+# Deploy distribution infrastructure
+poetry run ccwb deploy distribution
+
+# Upload packages
+poetry run ccwb distribute
+```
+
+**Features:**
+
+- OIDC authentication (Okta, Azure AD, Auth0, Cognito)
+- Self-service download portal
+- Platform detection (auto-recommends correct OS package)
+- Custom domain support
+- Audit trail via ALB access logs
+
+Users visit your landing page (e.g., https://downloads.example.com), authenticate with SSO, and download packages for their platform.
+
+See [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed feature comparison and setup guides.
+
 ## End User Experience
 
 ### Installation
