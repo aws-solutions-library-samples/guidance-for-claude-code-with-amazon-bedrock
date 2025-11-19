@@ -42,6 +42,10 @@ Thumbs.db
 # Kiro settings (contains tokens)
 .kiro/settings/mcp.json
 
+# Local documentation and feedback
+FEEDBACK.md
+TESTING_PARTITION_SUPPORT.md
+
 # Temporary test files
 output.json
 *.bak
