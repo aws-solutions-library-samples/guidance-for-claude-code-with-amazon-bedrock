@@ -295,7 +295,7 @@ Resources:
             Resource: !GetAtt CloudTrailBucket.Arn
             Condition:
               StringEquals:
-                'AWS:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/claude-code-bedrock-trail'
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/claude-code-bedrock-trail'
           - Sid: AWSCloudTrailWrite
             Effect: Allow
             Principal:
@@ -305,7 +305,7 @@ Resources:
             Condition:
               StringEquals:
                 's3:x-amz-acl': bucket-owner-full-control
-                'AWS:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/claude-code-bedrock-trail'
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/claude-code-bedrock-trail'
 
   # IAM Role for CloudTrail to Write to CloudWatch Logs
   CloudTrailLogRole:
