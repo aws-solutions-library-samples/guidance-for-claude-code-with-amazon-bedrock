@@ -39,6 +39,9 @@ Thumbs.db
 # Claude Code settings
 .claude/
 
+# Kiro settings (contains tokens)
+.kiro/settings/mcp.json
+
 # Temporary test files
 output.json
 *.bak
