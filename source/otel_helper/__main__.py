@@ -208,11 +208,15 @@ def get_token_via_credential_process():
         logger.warning(f"Credential process not found at {credential_process}")
         return None
 
+    # Get profile name from AWS_PROFILE environment variable (set by Claude Code from settings.json)
+    # Fall back to "ClaudeCode" for backward compatibility
+    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+
     try:
-        # Run credential process with --get-monitoring-token flag
+        # Run credential process with --profile flag and --get-monitoring-token flag
         # This will return cached token or trigger auth if needed
         result = subprocess.run(
-            [credential_process, "--get-monitoring-token"],
+            [credential_process, "--profile", profile, "--get-monitoring-token"],
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout for auth if needed

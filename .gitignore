@@ -59,3 +59,4 @@ assets/docs/planning
 
 EPCC_*
 PRs/
+test_cognito_detection.py

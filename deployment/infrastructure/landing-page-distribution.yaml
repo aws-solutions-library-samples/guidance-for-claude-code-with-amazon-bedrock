@@ -1,0 +1,1038 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Authenticated distribution landing page with ALB + Lambda + OIDC + S3'
+
+Parameters:
+  IdentityPoolName:
+    Type: String
+    Description: Name prefix for resources (from identity pool name)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for ALB and Lambda
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for ALB (minimum 2 AZs)
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for Lambda (minimum 2 AZs)
+
+  IdPProvider:
+    Type: String
+    AllowedValues: [okta, azure, auth0, cognito]
+    Description: Identity provider type
+
+  # Okta parameters
+  OktaDomain:
+    Type: String
+    Default: ''
+    Description: Okta domain (e.g., company.okta.com)
+
+  OktaClientId:
+    Type: String
+    Default: ''
+    Description: Okta web application client ID
+
+  OktaClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for Okta client secret
+
+  # Azure AD parameters
+  AzureTenantId:
+    Type: String
+    Default: ''
+    Description: Azure AD tenant ID
+
+  AzureClientId:
+    Type: String
+    Default: ''
+    Description: Azure AD web application client ID
+
+  AzureClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for Azure client secret
+
+  # Auth0 parameters
+  Auth0Domain:
+    Type: String
+    Default: ''
+    Description: Auth0 domain (e.g., company.auth0.com)
+
+  Auth0ClientId:
+    Type: String
+    Default: ''
+    Description: Auth0 web application client ID
+
+  Auth0ClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for Auth0 client secret
+
+  # Cognito parameters
+  CognitoUserPoolId:
+    Type: String
+    Default: ''
+    Description: Cognito User Pool ID
+
+  CognitoUserPoolDomain:
+    Type: String
+    Default: ''
+    Description: Cognito User Pool domain prefix
+
+  CognitoClientId:
+    Type: String
+    Default: ''
+    Description: Cognito web application client ID
+
+  CognitoClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for Cognito client secret
+
+  # REQUIRED: Custom domain for HTTPS/OIDC authentication
+  CustomDomainName:
+    Type: String
+    Description: 'REQUIRED: Custom domain for landing page (e.g., downloads.example.com). ACM certificate must exist.'
+    AllowedPattern: '.+'
+    ConstraintDescription: 'Custom domain is required for authenticated landing page.'
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: '(Optional) Route53 hosted zone ID for automatic DNS configuration.'
+
+  DeploymentTimestamp:
+    Type: String
+    Default: 'initial'
+    Description: Timestamp to force custom resource re-execution on every deployment (auto-populated by deploy command)
+
+Conditions:
+  IsOkta: !Equals [!Ref IdPProvider, 'okta']
+  IsAzure: !Equals [!Ref IdPProvider, 'azure']
+  IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
+  IsCognito: !Equals [!Ref IdPProvider, 'cognito']
+  HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
+
+Resources:
+  # S3 Bucket for package distribution
+  DistributionBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${IdentityPoolName}-landing-page-dist-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: LandingPageDistribution
+
+  # S3 Bucket for ALB access logs
+  ALBLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${IdentityPoolName}-alb-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: ALBAccessLogs
+
+  # ALB Logs Bucket Policy
+  ALBLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ALBLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSLogDeliveryWrite
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::127311923021:root'  # ELB service account for us-east-1
+            Action: s3:PutObject
+            Resource: !Sub '${ALBLogsBucket.Arn}/*'
+          - Sid: AWSLogDeliveryAclCheck
+            Effect: Allow
+            Principal:
+              Service: logdelivery.elasticloadbalancing.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt ALBLogsBucket.Arn
+
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectMetadata
+                  - s3:ListBucket
+                  - s3:HeadObject
+                Resource:
+                  - !GetAtt DistributionBucket.Arn
+                  - !Sub '${DistributionBucket.Arn}/*'
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # Lambda CloudWatch Log Group with retention policy
+  LandingPageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IdentityPoolName}-landing-page'
+      RetentionInDays: 30
+
+  # Lambda Function for landing page
+  LandingPageFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LandingPageLogGroup
+    Properties:
+      FunctionName: !Sub '${IdentityPoolName}-landing-page'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref DistributionBucket
+      Code:
+        ZipFile: |
+          # ABOUTME: Lambda function for authenticated distribution landing page
+          # ABOUTME: Generates presigned download URLs for authenticated users
+
+          import os
+          import json
+          import base64
+          import boto3
+          from datetime import datetime, timedelta
+
+          s3_client = boto3.client('s3')
+          BUCKET_NAME = os.environ['S3_BUCKET_NAME']
+          PRESIGNED_URL_EXPIRY = 3600  # 1 hour
+
+          def lambda_handler(event, context):
+              """Handle authenticated requests from ALB and generate landing page"""
+              import uuid
+
+              try:
+                  # Check if this is a documentation request
+                  path = event.get('path', '/')
+                  if path.startswith('/docs'):
+                      return serve_documentation(path)
+
+                  # Extract user email from ALB authentication headers
+                  # ALB has already validated authentication - trust the header
+                  user_email = extract_user_email(event)
+
+                  # Detect user's OS from User-Agent
+                  detected_os = detect_os(event)
+
+                  # List packages in S3
+                  packages = list_packages()
+
+                  # Generate presigned URLs for each package
+                  download_urls = {}
+                  for platform in ['windows', 'linux', 'mac', 'all-platforms']:
+                      if platform in packages:
+                          download_urls[platform] = generate_presigned_url(
+                              f"packages/{platform}/latest.zip"
+                          )
+
+                  # Get metadata from first available package (prefer windows)
+                  metadata_source = packages.get('windows') or packages.get('mac') or packages.get('linux') or packages.get('all-platforms', {})
+                  profile = metadata_source.get('profile', 'Unknown')
+                  timestamp = metadata_source.get('timestamp', 'Unknown')
+                  release_datetime = metadata_source.get('release_datetime', 'Unknown')
+
+                  # Generate HTML page with OS detection
+                  html = generate_landing_page(user_email, download_urls, profile, timestamp, release_datetime, packages, detected_os)
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': html
+                  }
+
+              except Exception as e:
+                  import traceback
+                  error_id = str(uuid.uuid4())
+
+                  # Log full error details to CloudWatch only
+                  error_details = traceback.format_exc()
+                  print(f"ERROR_ID={error_id}: {error_details}")
+
+                  # Return generic error to user (no sensitive details)
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': f'<html><body><h1>Error</h1><p>An error occurred while generating the landing page.</p><p>Error ID: {error_id}</p><p>Please contact your IT administrator with this error ID.</p></body></html>'
+                  }
+
+          def extract_user_email(event):
+              """Extract user email from ALB OIDC headers - ALB has already validated authentication"""
+              # Priority 1: Extract email from ALB-verified JWT payload
+              # ALB has validated the JWT signature, so we can safely decode the payload
+              oidc_data = event.get('headers', {}).get('x-amzn-oidc-data', '')
+              if oidc_data:
+                  try:
+                      parts = oidc_data.split('.')
+                      if len(parts) == 3:
+                          payload_b64 = parts[1]
+                          padding = 4 - len(payload_b64) % 4
+                          if padding != 4:
+                              payload_b64 += '=' * padding
+                          payload = json.loads(base64.b64decode(payload_b64))
+                          email = payload.get('email') or payload.get('preferred_username') or payload.get('upn')
+                          if email:
+                              return email
+                  except Exception:
+                      pass
+
+              # Priority 2: Fallback to x-amzn-oidc-identity header (may be Cognito sub UUID)
+              user_identity = event.get('headers', {}).get('x-amzn-oidc-identity', '')
+              if user_identity:
+                  return user_identity
+
+              # Default fallback for non-authenticated requests
+              return 'authenticated-user@example.com'
+
+          def detect_os(event):
+              """Detect user's operating system from User-Agent header"""
+              user_agent = event.get('headers', {}).get('user-agent', '').lower()
+
+              # Check for macOS
+              if 'mac' in user_agent or 'darwin' in user_agent:
+                  return 'mac'
+              # Check for Windows
+              elif 'windows' in user_agent or 'win64' in user_agent or 'win32' in user_agent:
+                  return 'windows'
+              # Check for Linux
+              elif 'linux' in user_agent and 'android' not in user_agent:
+                  return 'linux'
+              # Default to all-platforms if unknown
+              else:
+                  return None
+
+          def list_packages():
+              """List available packages in S3 with metadata"""
+              packages = {}
+
+              for platform in ['windows', 'linux', 'mac', 'all-platforms']:
+                  try:
+                      response = s3_client.head_object(
+                          Bucket=BUCKET_NAME,
+                          Key=f"packages/{platform}/latest.zip"
+                      )
+                      metadata = response.get('Metadata', {})
+                      packages[platform] = {
+                          'size': response['ContentLength'],
+                          'profile': metadata.get('profile', 'Unknown'),
+                          'timestamp': metadata.get('timestamp', 'Unknown'),
+                          'release_date': metadata.get('release_date', metadata.get('release-date', 'Unknown')),
+                          'release_datetime': metadata.get('release_datetime', metadata.get('release-date', 'Unknown')),
+                      }
+                  except s3_client.exceptions.ClientError as e:
+                      if e.response['Error']['Code'] != '404':
+                          print(f"Error checking {platform}: {e}")
+
+              return packages
+
+          def generate_presigned_url(s3_key):
+              """Generate presigned URL for S3 object"""
+              try:
+                  return s3_client.generate_presigned_url(
+                      'get_object',
+                      Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+                      ExpiresIn=PRESIGNED_URL_EXPIRY
+                  )
+              except Exception as e:
+                  print(f"Error generating presigned URL for {s3_key}: {e}")
+                  return '#'
+
+          def serve_documentation(path):
+              """Serve documentation HTML from S3 docs/ prefix"""
+              # Remove leading /docs/ from path properly
+              if path.startswith('/docs/'):
+                  doc_path = path[6:]  # Remove '/docs/'
+              elif path.startswith('/docs'):
+                  doc_path = path[5:]  # Remove '/docs'
+              else:
+                  doc_path = path.lstrip('/')
+
+              # Default to index.html if no path specified
+              if not doc_path or doc_path == '':
+                  doc_path = 'index.html'
+
+              # Construct S3 key
+              s3_key = f"docs/{doc_path}"
+
+              try:
+                  response = s3_client.get_object(Bucket=BUCKET_NAME, Key=s3_key)
+                  content = response['Body'].read()
+
+                  # Determine content type based on file extension
+                  content_type = 'text/html; charset=utf-8'
+                  if doc_path.endswith('.css'):
+                      content_type = 'text/css'
+                  elif doc_path.endswith('.js'):
+                      content_type = 'application/javascript'
+                  elif doc_path.endswith('.png'):
+                      content_type = 'image/png'
+                  elif doc_path.endswith('.jpg') or doc_path.endswith('.jpeg'):
+                      content_type = 'image/jpeg'
+                  elif doc_path.endswith('.svg'):
+                      content_type = 'image/svg+xml'
+                  elif doc_path.endswith('.zip'):
+                      content_type = 'application/zip'
+
+                  # Binary files need base64 encoding
+                  is_binary = content_type in ['application/zip', 'image/png', 'image/jpeg', 'image/svg+xml']
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': content_type},
+                      'body': base64.b64encode(content).decode('utf-8') if is_binary else content.decode('utf-8'),
+                      'isBase64Encoded': is_binary
+                  }
+              except s3_client.exceptions.NoSuchKey:
+                  print(f"Documentation not found: {doc_path}")
+                  return {
+                      'statusCode': 404,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>404 - Documentation Not Found</h1><p>The requested documentation page does not exist.</p></body></html>'
+                  }
+              except Exception as e:
+                  import traceback
+                  import uuid
+                  error_id = str(uuid.uuid4())
+                  # Log full error to CloudWatch only
+                  print(f"ERROR_ID={error_id}: Error serving documentation - {traceback.format_exc()}")
+                  # Return generic error to user
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': f'<html><body><h1>Error</h1><p>Error loading documentation.</p><p>Error ID: {error_id}</p></body></html>'
+                  }
+
+          def format_size(size_bytes):
+              """Format bytes to human-readable size"""
+              if size_bytes < 1024:
+                  return f"{size_bytes} B"
+              elif size_bytes < 1024 * 1024:
+                  return f"{size_bytes / 1024:.1f} KB"
+              elif size_bytes < 1024 * 1024 * 1024:
+                  return f"{size_bytes / (1024 * 1024):.1f} MB"
+              else:
+                  return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+          def generate_landing_page(user_email, download_urls, profile, timestamp, release_datetime, packages, detected_os=None):
+              """Generate HTML landing page with OS detection"""
+
+              # Format release datetime
+              formatted_datetime = release_datetime
+              if release_datetime != 'Unknown':
+                  try:
+                      dt = datetime.strptime(release_datetime, '%Y-%m-%d %H:%M:%S')
+                      formatted_datetime = dt.strftime('%B %d, %Y at %I:%M %p')
+                  except:
+                      # If parsing fails, use as-is
+                      pass
+
+              # Format timestamp for display
+              formatted_timestamp = timestamp
+              if timestamp != 'Unknown':
+                  try:
+                      # Parse timestamp: YYYY-MM-DD-HHMMSS
+                      dt = datetime.strptime(timestamp, '%Y-%m-%d-%H%M%S')
+                      formatted_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+                  except:
+                      # If parsing fails, use as-is
+                      pass
+
+              # Generate platform cards
+              platform_cards = []
+              platforms = [
+                  ('windows', '🪟 Windows', 'Download Windows-specific package'),
+                  ('linux', '🐧 Linux', 'Download Linux-specific package'),
+                  ('mac', '🍎 macOS', 'Download macOS-specific package'),
+                  ('all-platforms', '📦 All Platforms', 'Download all packages in one bundle'),
+              ]
+
+              for platform_key, platform_title, platform_desc in platforms:
+                  if platform_key in download_urls:
+                      size_str = format_size(packages.get(platform_key, {}).get('size', 0))
+                      # Check if this platform matches the detected OS
+                      is_recommended = detected_os == platform_key
+                      recommended_badge = '<span class="recommended-badge">✨ Recommended for your system</span>' if is_recommended else ''
+                      card_class = 'platform-card recommended' if is_recommended else 'platform-card'
+                      platform_cards.append(f'''
+                      <div class="{card_class}">
+                          <h3>{platform_title} {recommended_badge}</h3>
+                          <p>{platform_desc}</p>
+                          <p class="file-size">{size_str}</p>
+                          <a href="{download_urls[platform_key]}" class="download-btn">Download</a>
+                      </div>
+                      ''')
+
+              if not platform_cards:
+                  platform_cards.append('''
+                  <div class="platform-card">
+                      <h3>⚠️ No Packages Available</h3>
+                      <p>No packages have been published yet. Contact your IT administrator.</p>
+                  </div>
+                  ''')
+
+              return f'''
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>Claude Code Distribution</title>
+                  <style>
+                      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                      body {{
+                          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                          min-height: 100vh;
+                          padding: 20px;
+                      }}
+                      .container {{
+                          max-width: 900px;
+                          margin: 0 auto;
+                          background: white;
+                          border-radius: 16px;
+                          box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                          padding: 40px;
+                      }}
+                      h1 {{
+                          color: #333;
+                          font-size: 32px;
+                          margin-bottom: 10px;
+                          display: flex;
+                          align-items: center;
+                          gap: 12px;
+                      }}
+                      .welcome {{
+                          color: #666;
+                          font-size: 16px;
+                          margin-bottom: 30px;
+                          padding: 12px 20px;
+                          background: #f8f9fa;
+                          border-radius: 8px;
+                          border-left: 4px solid #667eea;
+                      }}
+                      .release-date {{
+                          color: #888;
+                          font-size: 14px;
+                          margin-bottom: 30px;
+                          display: flex;
+                          align-items: center;
+                          gap: 8px;
+                      }}
+                      .platform-card {{
+                          border: 2px solid #e9ecef;
+                          padding: 24px;
+                          margin: 20px 0;
+                          border-radius: 12px;
+                          transition: all 0.3s ease;
+                          background: white;
+                      }}
+                      .platform-card:hover {{
+                          border-color: #667eea;
+                          box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+                          transform: translateY(-2px);
+                      }}
+                      .platform-card.recommended {{
+                          border: 2px solid #667eea;
+                          background: linear-gradient(135deg, #f8f9ff 0%, #fff 100%);
+                          box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+                      }}
+                      .recommended-badge {{
+                          display: inline-block;
+                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                          color: white;
+                          padding: 4px 12px;
+                          border-radius: 12px;
+                          font-size: 14px;
+                          font-weight: 600;
+                          margin-left: 8px;
+                      }}
+                      .platform-card h3 {{
+                          color: #333;
+                          margin-bottom: 8px;
+                          font-size: 20px;
+                      }}
+                      .platform-card p {{
+                          color: #666;
+                          margin-bottom: 16px;
+                      }}
+                      .file-size {{
+                          color: #888;
+                          font-size: 14px;
+                          font-weight: 600;
+                      }}
+                      .download-btn {{
+                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                          color: white;
+                          padding: 12px 32px;
+                          text-decoration: none;
+                          border-radius: 8px;
+                          display: inline-block;
+                          font-weight: 600;
+                          transition: all 0.3s ease;
+                          box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+                      }}
+                      .download-btn:hover {{
+                          transform: translateY(-2px);
+                          box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+                      }}
+                      .instructions {{
+                          margin-top: 40px;
+                          padding: 24px;
+                          background: #f8f9fa;
+                          border-radius: 12px;
+                          border: 1px solid #e9ecef;
+                      }}
+                      .instructions h4 {{
+                          color: #333;
+                          margin-bottom: 16px;
+                          font-size: 18px;
+                      }}
+                      .instructions ul {{
+                          margin-left: 24px;
+                          color: #666;
+                          line-height: 1.8;
+                      }}
+                      .instructions code {{
+                          background: #e9ecef;
+                          padding: 2px 8px;
+                          border-radius: 4px;
+                          font-family: 'Courier New', monospace;
+                          color: #d63384;
+                      }}
+                      .footer {{
+                          margin-top: 24px;
+                          padding-top: 24px;
+                          border-top: 1px solid #e9ecef;
+                          color: #888;
+                          font-size: 14px;
+                          text-align: center;
+                      }}
+                  </style>
+              </head>
+              <body>
+                  <div class="container">
+                      <h1>📦 Claude Code Distribution</h1>
+                      <div class="welcome">
+                          <strong>Welcome, {user_email}</strong>
+                      </div>
+                      <div class="release-date">
+                          📦 <strong>Profile:</strong> {profile}
+                      </div>
+                      <div class="release-date">
+                          📅 <strong>Release Date:</strong> {formatted_datetime}
+                      </div>
+                      <div class="release-date">
+                          🕐 <strong>Build Timestamp:</strong> {formatted_timestamp}
+                      </div>
+
+                      {''.join(platform_cards)}
+
+                      <div class="instructions">
+                          <h4>📋 Installation Instructions</h4>
+                          <ul>
+                              <li><strong>Windows:</strong> Extract the ZIP file and run <code>install.bat</code></li>
+                              <li><strong>Linux/Mac:</strong> Extract the ZIP file and run <code>./install.sh</code></li>
+                              <li>After installation, you can use the <code>claude</code> command from your terminal</li>
+                          </ul>
+                      </div>
+                  </div>
+              </body>
+              </html>
+              '''
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${IdentityPoolName}-landing-page-alb-sg'
+      GroupDescription: Security group for distribution landing page ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS from internet (authenticated access)
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Name
+          Value: !Sub '${IdentityPoolName}-landing-page-alb-sg'
+
+  # Application Load Balancer
+  DistributionALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: ALBLogsBucketPolicy
+    Properties:
+      Name: !Sub '${IdentityPoolName}-dist-alb'
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref PublicSubnetIds
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: 'true'
+        - Key: access_logs.s3.bucket
+          Value: !Ref ALBLogsBucket
+        - Key: access_logs.s3.prefix
+          Value: 'alb'
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # Target Group for Lambda
+  LambdaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: LambdaInvokePermission
+    Properties:
+      Name: !Sub '${IdentityPoolName}-landing-page-tg'
+      TargetType: lambda
+      Targets:
+        - Id: !GetAtt LandingPageFunction.Arn
+      HealthCheckEnabled: false
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # Lambda Invoke Permission for ALB
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LandingPageFunction
+      Action: lambda:InvokeFunction
+      Principal: elasticloadbalancing.amazonaws.com
+      SourceArn: !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
+
+  # ACM Certificate (required for HTTPS/OIDC)
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref CustomDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref CustomDomainName
+          HostedZoneId: !If [HasRoute53Zone, !Ref HostedZoneId, !Ref AWS::NoValue]
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # HTTPS Listener with OIDC Authentication (REQUIRED - uses custom domain)
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref DistributionALB
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref Certificate
+      DefaultActions:
+        # OIDC Authentication Action
+        - Type: authenticate-oidc
+          Order: 1
+          AuthenticateOidcConfig:
+            Issuer: !If
+              - IsOkta
+              - !Sub 'https://${OktaDomain}'
+              - !If
+                - IsAzure
+                - !Sub 'https://login.microsoftonline.com/${AzureTenantId}/v2.0'
+                - !If
+                  - IsAuth0
+                  - !Sub 'https://${Auth0Domain}'
+                  - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+            AuthorizationEndpoint: !If
+              - IsOkta
+              - !Sub 'https://${OktaDomain}/oauth2/v1/authorize'
+              - !If
+                - IsAzure
+                - !Sub 'https://login.microsoftonline.com/${AzureTenantId}/oauth2/v2.0/authorize'
+                - !If
+                  - IsAuth0
+                  - !Sub 'https://${Auth0Domain}/authorize'
+                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+            TokenEndpoint: !If
+              - IsOkta
+              - !Sub 'https://${OktaDomain}/oauth2/v1/token'
+              - !If
+                - IsAzure
+                - !Sub 'https://login.microsoftonline.com/${AzureTenantId}/oauth2/v2.0/token'
+                - !If
+                  - IsAuth0
+                  - !Sub 'https://${Auth0Domain}/oauth/token'
+                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+            UserInfoEndpoint: !If
+              - IsOkta
+              - !Sub 'https://${OktaDomain}/oauth2/v1/userinfo'
+              - !If
+                - IsAzure
+                - 'https://graph.microsoft.com/oidc/userinfo'
+                - !If
+                  - IsAuth0
+                  - !Sub 'https://${Auth0Domain}/userinfo'
+                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+            ClientId: !If
+              - IsOkta
+              - !Ref OktaClientId
+              - !If
+                - IsAzure
+                - !Ref AzureClientId
+                - !If
+                  - IsAuth0
+                  - !Ref Auth0ClientId
+                  - !Ref CognitoClientId
+            ClientSecret: !If
+              - IsOkta
+              - !Sub '{{resolve:secretsmanager:${OktaClientSecretArn}:SecretString}}'
+              - !If
+                - IsAzure
+                - !Sub '{{resolve:secretsmanager:${AzureClientSecretArn}:SecretString}}'
+                - !If
+                  - IsAuth0
+                  - !Sub '{{resolve:secretsmanager:${Auth0ClientSecretArn}:SecretString}}'
+                  - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+            SessionTimeout: 43200  # 12 hours
+            Scope: 'openid email profile'
+            OnUnauthenticatedRequest: authenticate
+        # Forward to Lambda
+        - Type: forward
+          Order: 2
+          TargetGroupArn: !Ref LambdaTargetGroup
+
+  # Route53 A Record (if custom domain with Route53)
+  DomainARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasRoute53Zone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref CustomDomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt DistributionALB.CanonicalHostedZoneID
+        DNSName: !GetAtt DistributionALB.DNSName
+        EvaluateTargetHealth: false
+
+  # Lambda function to update Cognito User Pool Client callback URLs
+  CognitoCallbackUpdaterRole:
+    Type: AWS::IAM::Role
+    Condition: IsCognito
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: UpdateCognitoClient
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:UpdateUserPoolClient
+                  - cognito-idp:DescribeUserPoolClient
+                Resource:
+                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+
+  CognitoCallbackUpdaterFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsCognito
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CognitoCallbackUpdaterRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          cognito = boto3.client('cognito-idp')
+
+          def handler(event, context):
+              logger.info(f"Event: {event}")
+
+              try:
+                  request_type = event['RequestType']
+
+                  if request_type == 'Delete':
+                      # On stack deletion, don't update callback URLs
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  # Get parameters
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  client_id = event['ResourceProperties']['ClientId']
+                  custom_domain = event['ResourceProperties']['CustomDomain']
+
+                  # Build callback URLs
+                  callback_url = f"https://{custom_domain}/oauth2/idpresponse"
+                  logout_url = f"https://{custom_domain}"
+
+                  logger.info(f"Updating Cognito client {client_id} in pool {user_pool_id}")
+                  logger.info(f"Callback URL: {callback_url}")
+                  logger.info(f"Logout URL: {logout_url}")
+
+                  # Get current client configuration
+                  response = cognito.describe_user_pool_client(
+                      UserPoolId=user_pool_id,
+                      ClientId=client_id
+                  )
+
+                  current_client = response['UserPoolClient']
+
+                  # Update callback URLs while preserving other settings
+                  update_params = {
+                      'UserPoolId': user_pool_id,
+                      'ClientId': client_id,
+                      'CallbackURLs': [callback_url],
+                      'LogoutURLs': [logout_url]
+                  }
+
+                  # Preserve required OAuth settings
+                  if 'AllowedOAuthFlows' in current_client:
+                      update_params['AllowedOAuthFlows'] = current_client['AllowedOAuthFlows']
+                  if 'AllowedOAuthScopes' in current_client:
+                      update_params['AllowedOAuthScopes'] = current_client['AllowedOAuthScopes']
+                  if 'AllowedOAuthFlowsUserPoolClient' in current_client:
+                      update_params['AllowedOAuthFlowsUserPoolClient'] = current_client['AllowedOAuthFlowsUserPoolClient']
+
+                  # Preserve or restore SupportedIdentityProviders
+                  if 'SupportedIdentityProviders' in current_client and current_client['SupportedIdentityProviders']:
+                      update_params['SupportedIdentityProviders'] = current_client['SupportedIdentityProviders']
+                  else:
+                      # If missing or null, default to COGNITO (should have been set by Cognito stack)
+                      logger.warning("SupportedIdentityProviders is null, setting default to ['COGNITO']")
+                      update_params['SupportedIdentityProviders'] = ['COGNITO']
+
+                  cognito.update_user_pool_client(**update_params)
+
+                  logger.info("Successfully updated Cognito client callback URLs")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'CallbackURL': callback_url,
+                      'LogoutURL': logout_url
+                  })
+
+              except Exception as e:
+                  logger.error(f"Error updating Cognito client: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': str(e)
+                  })
+
+  UpdateCognitoCallbackURLs:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: IsCognito
+    DependsOn:
+      - DistributionALB
+      - HTTPSListener
+    Properties:
+      ServiceToken: !GetAtt CognitoCallbackUpdaterFunction.Arn
+      UserPoolId: !Ref CognitoUserPoolId
+      ClientId: !Ref CognitoClientId
+      CustomDomain: !Ref CustomDomainName
+      Version: !Ref DeploymentTimestamp  # Changes on every deployment to force Lambda re-execution
+
+Outputs:
+  DistributionURL:
+    Description: Landing page URL for downloads (HTTPS with custom domain required)
+    Value: !Sub 'https://${CustomDomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionURL'
+
+  IdPRedirectURI:
+    Description: Configure this redirect URI in your IdP web application
+    Value: !Sub 'https://${CustomDomainName}/oauth2/idpresponse'
+    Export:
+      Name: !Sub '${AWS::StackName}-IdPRedirectURI'
+
+  CognitoCallbackStatus:
+    Condition: IsCognito
+    Description: Cognito User Pool Client callback URLs
+    Value: !If
+      - IsCognito
+      - !Sub |
+          ✓ Automatically updated!
+          Callback URL: https://${CustomDomainName}/oauth2/idpresponse
+          Logout URL: https://${CustomDomainName}
+
+          The Cognito web client (${CognitoClientId}) has been automatically configured.
+          No manual updates required!
+      - 'N/A'
+
+  DistributionBucket:
+    Description: S3 bucket for package uploads
+    Value: !Ref DistributionBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionBucket'
+
+  DistributionBucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt DistributionBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionBucketArn'

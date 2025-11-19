@@ -40,7 +40,9 @@ class PackageCommand(Command):
         option(
             "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
         ),
-        option("profile", description="Configuration profile to use", flag=False, default="default"),
+        option(
+            "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
+        ),
         option(
             "status",
             description="[DEPRECATED] Use 'ccwb builds' instead. Check build status by ID or 'latest'",
@@ -69,7 +71,8 @@ class PackageCommand(Command):
 
         # Load configuration first (needed to check CodeBuild status)
         config = Config.load()
-        profile_name = self.option("profile")
+        # Use specified profile or default to active profile
+        profile_name = self.option("profile") or config.active_profile
         profile = config.get_profile(profile_name)
 
         if not profile:
@@ -164,12 +167,12 @@ class PackageCommand(Command):
             )
         )
 
-        # Use default values
-        output_dir = Path("./dist")
+        # Create timestamped output directory under profile name
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        output_dir = Path("./dist") / profile_name / timestamp
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Create embedded configuration based on federation type
         embedded_config = {
@@ -335,7 +338,7 @@ class PackageCommand(Command):
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
-        self._create_config(output_dir, profile, federation_identifier, federation_type)
+        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -347,7 +350,7 @@ class PackageCommand(Command):
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by)
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name)
 
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
@@ -1253,7 +1256,8 @@ RUN pyinstaller \
                     for build in builds_response.get("builds", []):
                         if build["buildStatus"] == "IN_PROGRESS":
                             console.print(
-                                f"[yellow]Windows build already in progress (started {build['startTime'].strftime('%Y-%m-%d %H:%M')})[/yellow]"
+                                f"[yellow]Windows build already in progress (started "
+                                f"{build['startTime'].strftime('%Y-%m-%d %H:%M')})[/yellow]"
                             )
                             console.print("Check status: [cyan]poetry run ccwb builds[/cyan]")
                             console.print("[dim]Note: Package will be created without Windows binaries[/dim]")
@@ -1352,18 +1356,17 @@ RUN pyinstaller \
         console.print("\n[bold]Next steps:[/bold]")
         console.print("  1. Wait for build to complete (you can continue working)")
         console.print("  2. Run [cyan]poetry run ccwb builds[/cyan] to check completion status")
+        console.print("  3. Once complete, run [cyan]poetry run ccwb distribute[/cyan]")
+        console.print("     This will download Windows binaries and create your distribution package")
 
-        # Get profile to check if distribution is enabled
+        # Get profile to show distribution-specific info
         config = Config.load()
         profile_obj = config.get_profile(self.option("profile"))
 
         if profile_obj and profile_obj.enable_distribution:
-            console.print("  3. Once complete, run [cyan]poetry run ccwb distribute[/cyan]")
-            console.print("     This will download Windows binaries and create the distribution package")
+            console.print("\n[dim]Note: Package will be uploaded to S3 with presigned URL or landing page[/dim]")
         else:
-            console.print("  3. Once complete, run [cyan]poetry run ccwb builds --status latest --download[/cyan]")
-            console.print("     This will download Windows binaries from S3 into your dist folder")
-            console.print("  4. Share the complete dist folder with your users for installation")
+            console.print("\n[dim]Note: Package will be saved locally in the dist/ folder[/dim]")
 
         console.print("\n[dim]View logs in AWS Console:[/dim]")
         console.print(
@@ -1649,11 +1652,24 @@ RUN pyinstaller \
         return output_dir / binary_name
 
     def _create_config(
-        self, output_dir: Path, profile, federation_identifier: str, federation_type: str = "cognito"
+        self,
+        output_dir: Path,
+        profile,
+        federation_identifier: str,
+        federation_type: str = "cognito",
+        profile_name: str = "ClaudeCode",
     ) -> Path:
-        """Create the configuration file."""
+        """Create the configuration file.
+
+        Args:
+            output_dir: Directory to write config.json to
+            profile: Profile object with configuration
+            federation_identifier: Identity pool ID or role ARN
+            federation_type: "cognito" or "direct"
+            profile_name: Name to use as key in config.json (defaults to "ClaudeCode" for backward compatibility)
+        """
         config = {
-            "ClaudeCode": {
+            profile_name: {
                 "provider_domain": profile.provider_domain,
                 "client_id": profile.client_id,
                 "aws_region": profile.aws_region,
@@ -1665,20 +1681,20 @@ RUN pyinstaller \
 
         # Add the appropriate federation field based on type
         if federation_type == "direct":
-            config["ClaudeCode"]["federated_role_arn"] = federation_identifier
-            config["ClaudeCode"]["federation_type"] = "direct"
-            config["ClaudeCode"]["max_session_duration"] = profile.max_session_duration
+            config[profile_name]["federated_role_arn"] = federation_identifier
+            config[profile_name]["federation_type"] = "direct"
+            config[profile_name]["max_session_duration"] = profile.max_session_duration
         else:
-            config["ClaudeCode"]["identity_pool_id"] = federation_identifier
-            config["ClaudeCode"]["federation_type"] = "cognito"
+            config[profile_name]["identity_pool_id"] = federation_identifier
+            config[profile_name]["federation_type"] = "cognito"
 
         # Add cognito_user_pool_id if it's a Cognito provider
         if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
-            config["ClaudeCode"]["cognito_user_pool_id"] = profile.cognito_user_pool_id
+            config[profile_name]["cognito_user_pool_id"] = profile.cognito_user_pool_id
 
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
-            config["ClaudeCode"]["selected_model"] = profile.selected_model
+            config[profile_name]["selected_model"] = profile.selected_model
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -1870,33 +1886,65 @@ fi
 
 # Update AWS config
 echo
-echo "Configuring AWS profile..."
+echo "Configuring AWS profiles..."
 mkdir -p ~/.aws
 
-# Remove old profile if exists
-sed -i.bak '/\\[profile ClaudeCode\\]/,/^$/d' ~/.aws/config 2>/dev/null || true
+# Read all profiles from config.json
+PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
+
+if [ -z "$PROFILES" ]; then
+    echo "❌ No profiles found in config.json"
+    exit 1
+fi
+
+echo "Found profiles: $PROFILES"
+echo
 
 # Get region from package settings (for Bedrock calls, not infrastructure)
 if [ -f "claude-settings/settings.json" ]; then
-    REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+    DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
+    'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
 else
-    REGION="{profile.aws_region}"
+    DEFAULT_REGION="{profile.aws_region}"
 fi
 
-# Add new profile
-cat >> ~/.aws/config << EOF
-[profile ClaudeCode]
-credential_process = $HOME/claude-code-with-bedrock/credential-process
-region = $REGION
+# Configure each profile
+for PROFILE_NAME in $PROFILES; do
+    echo "Configuring AWS profile: $PROFILE_NAME"
+
+    # Remove old profile if exists
+    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+
+    # Get profile-specific region from config.json
+    PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
+    {{}}).get('aws_region', '$DEFAULT_REGION'))")
+
+    # Add new profile with --profile flag (cross-platform, no shell required)
+    cat >> ~/.aws/config << EOF
+[profile $PROFILE_NAME]
+credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+region = $PROFILE_REGION
 EOF
+    echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+done
 
 echo
 echo "======================================"
 echo "✓ Installation complete!"
 echo "======================================"
 echo
+echo "Available profiles:"
+for PROFILE_NAME in $PROFILES; do
+    echo "  - $PROFILE_NAME"
+done
+echo
 echo "To use Claude Code authentication:"
-echo "  export AWS_PROFILE=ClaudeCode"
+echo "  export AWS_PROFILE=<profile-name>"
+echo "  aws sts get-caller-identity"
+echo
+echo "Example:"
+FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
+echo "  export AWS_PROFILE=$FIRST_PROFILE"
 echo "  aws sts get-caller-identity"
 echo
 echo "Note: Authentication will automatically open your browser when needed."
@@ -1985,38 +2033,41 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholder
-            powershell -Command "$path = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $path | Set-Content '%USERPROFILE%\\.claude\\settings.json'"
+            powershell -Command "$path = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe'
+            powershell -Command "
+            $path = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' -replace '\\\\\\\\', '/';
+            (Get-Content 'claude-settings\\\\settings.json') -replace '__OTEL_HELPER_PATH__', $path |
+            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
             echo OK Claude Code settings configured
         )
     )
 )
 
-REM Configure AWS profile
+REM Configure AWS profiles
 echo.
-echo Configuring AWS profile...
+echo Configuring AWS profiles...
 
-REM Remove existing profile if it exists
-aws configure set credential_process "" --profile ClaudeCode 2>nul
+REM Read profiles from config.json using PowerShell
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
+$config.PSObject.Properties.Name"') do (
+    echo Configuring AWS profile: %%p
 
-REM Set new credential process
-aws configure set credential_process "\"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe\"" --profile ClaudeCode
+    REM Get profile-specific region
+    for /f %%r in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json;
+    $config.'%%p'.aws_region"') do set PROFILE_REGION=%%r
 
-REM Set region
-aws configure set region {profile.selected_source_region or profile.aws_region} --profile ClaudeCode
+    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
+    aws configure set credential_process "\"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe\"
+    --profile %%p" --profile %%p
 
-echo OK AWS profile configured
-echo.
+    REM Set region
+    if defined PROFILE_REGION (
+        aws configure set region %PROFILE_REGION% --profile %%p
+    ) else (
+        aws configure set region {profile.aws_region} --profile %%p
+    )
 
-REM Test authentication
-echo Testing authentication...
-echo.
-
-aws sts get-caller-identity --profile ClaudeCode >nul 2>&1
-if %errorlevel% equ 0 (
-    echo OK Authentication successful!
-    aws sts get-caller-identity --profile ClaudeCode
-) else (
-    echo WARNING: Authentication test failed. You may need to authenticate when first using the profile.
+    echo   OK Created AWS profile '%%p'
 )
 
 echo.
@@ -2024,9 +2075,22 @@ echo ======================================
 echo Installation complete!
 echo ======================================
 echo.
+echo Available profiles:
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
+$config.PSObject.Properties.Name"') do (
+    echo   - %%p
+)
+echo.
 echo To use Claude Code authentication:
-echo   set AWS_PROFILE=ClaudeCode
+echo   set AWS_PROFILE=^<profile-name^>
 echo   aws sts get-caller-identity
+echo.
+echo Example:
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
+$config.PSObject.Properties.Name | Select-Object -First 1"') do (
+    echo   set AWS_PROFILE=%%p
+    echo   aws sts get-caller-identity
+)
 echo.
 echo Note: Authentication will automatically open your browser when needed.
 echo.
@@ -2144,7 +2208,8 @@ aws sts get-caller-identity
 ## Troubleshooting
 
 ### macOS Keychain Access Popup
-On first use, macOS will ask for permission to access the keychain. This is normal and required for secure credential storage. Click "Always Allow" to avoid repeated prompts.
+On first use, macOS will ask for permission to access the keychain. This is normal and required for \
+secure credential storage. Click "Always Allow" to avoid repeated prompts.
 
 ### Authentication Issues
 If you encounter issues with authentication:
@@ -2184,7 +2249,8 @@ Configuration Details:
 
 ## Analytics Dashboard
 
-Your organization has enabled advanced analytics for Claude Code usage. You can access detailed metrics and reports through AWS Athena.
+Your organization has enabled advanced analytics for Claude Code usage. You can access detailed metrics \
+and reports through AWS Athena.
 
 To view analytics:
 1. Open the AWS Console in region {profile.aws_region}
@@ -2205,7 +2271,9 @@ Available metrics include:
         with open(output_dir / "README.md", "w") as f:
             f.write(readme_content)
 
-    def _create_claude_settings(self, output_dir: Path, profile, include_coauthored_by: bool = True):
+    def _create_claude_settings(
+        self, output_dir: Path, profile, include_coauthored_by: bool = True, profile_name: str = "ClaudeCode"
+    ):
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
 
@@ -2220,7 +2288,8 @@ Available metrics include:
                     # Set AWS_REGION based on cross-region profile for correct Bedrock endpoint
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     "CLAUDE_CODE_USE_BEDROCK": "1",
-                    "AWS_PROFILE": "ClaudeCode",
+                    # AWS_PROFILE is used by both AWS SDK and otel-helper
+                    "AWS_PROFILE": profile_name,
                 }
             }
 
@@ -2231,7 +2300,7 @@ Available metrics include:
 
             # Add awsAuthRefresh for session-based credential storage
             if profile.credential_storage == "session":
-                settings["awsAuthRefresh"] = "~/claude-code-with-bedrock/credential-process"
+                settings["awsAuthRefresh"] = f"~/claude-code-with-bedrock/credential-process --profile {profile_name}"
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:
@@ -2285,7 +2354,8 @@ Available metrics include:
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                                 # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
+                                cost_center=default,organization=default",
                             }
                         )
 

@@ -212,23 +212,34 @@ class BuildsCommand(Command):
 
                 # Download artifacts if --download flag is provided
                 if self.option("download"):
-                    console.print("\n[cyan]Downloading Windows artifacts to dist folder...[/cyan]")
+                    console.print("\n[cyan]Finding latest package directory...[/cyan]")
                     from pathlib import Path
 
-                    dist_folder = Path("./dist")
-                    dist_folder.mkdir(parents=True, exist_ok=True)
+                    # Find the correct package directory to download into
+                    target_dir = self._find_latest_package_directory(console)
 
-                    if self._download_windows_artifacts(profile, dist_folder, console):
-                        console.print("[green]✓ Downloaded Windows artifacts to dist folder[/green]")
-                        console.print(f"\nArtifacts location: {dist_folder.absolute()}")
+                    if not target_dir:
+                        console.print("[red]✗ No package directory found in dist/[/red]")
+                        console.print("[yellow]Run 'poetry run ccwb package' first to create a package[/yellow]")
+                        return 1
+
+                    console.print(f"[dim]Target: {target_dir.relative_to(Path.cwd())}[/dim]")
+                    console.print("\n[cyan]Downloading Windows artifacts...[/cyan]")
+
+                    if self._download_windows_artifacts(profile, target_dir, console):
+                        console.print("[green]✓ Downloaded Windows artifacts[/green]")
+                        console.print(f"Location: {target_dir.relative_to(Path.cwd())}")
+                        console.print("\n[bold]Next steps:[/bold]")
+                        console.print("  Run: [cyan]poetry run ccwb distribute[/cyan]")
+                        console.print("  This will create your distribution package with Windows binaries included")
                     else:
                         console.print("[red]✗ Failed to download artifacts[/red]")
                 else:
                     console.print("\nNext steps:")
-                    console.print("  Run: [cyan]poetry run ccwb builds --download[/cyan]")
-                    console.print("  This will download Windows artifacts directly to your dist folder")
-                    console.print("\n  Or run: [cyan]poetry run ccwb distribute[/cyan]")
-                    console.print("  This will download artifacts and create distribution package")
+                    console.print("  Run: [cyan]poetry run ccwb distribute[/cyan]")
+                    console.print("  This will download Windows artifacts and create distribution package")
+                    console.print("\n  Or run: [cyan]poetry run ccwb builds --status latest --download[/cyan]")
+                    console.print("  This will download Windows artifacts to your latest package directory")
             else:
                 console.print(f"[red]✗ Build {status.lower()}[/red]")
                 if "phases" in build:
@@ -248,6 +259,39 @@ class BuildsCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
+
+    def _find_latest_package_directory(self, console: Console):
+        """Find the latest package directory in dist/."""
+        from pathlib import Path
+
+        dist_dir = Path("./dist")
+        if not dist_dir.exists():
+            return None
+
+        # Scan for organized structure: dist/<profile>/<timestamp>/
+        latest_dir = None
+        latest_timestamp = None
+
+        for profile_dir in dist_dir.iterdir():
+            if not profile_dir.is_dir():
+                continue
+
+            # Look for timestamp directories within this profile
+            for timestamp_dir in profile_dir.iterdir():
+                if not timestamp_dir.is_dir():
+                    continue
+
+                # Check if this looks like a package directory (has config.json)
+                if (timestamp_dir / "config.json").exists():
+                    # Use directory name as timestamp for comparison
+                    timestamp = timestamp_dir.name
+
+                    # Keep track of the latest
+                    if latest_timestamp is None or timestamp > latest_timestamp:
+                        latest_timestamp = timestamp
+                        latest_dir = timestamp_dir
+
+        return latest_dir
 
     def _download_windows_artifacts(self, profile, package_path, console: Console) -> bool:
         """Download Windows build artifacts from S3."""

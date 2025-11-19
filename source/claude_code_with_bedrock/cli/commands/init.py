@@ -58,7 +58,15 @@ class InitCommand(Command):
     name = "init"
     description = "Interactive setup wizard for first-time deployment"
 
-    options = [option("profile", "p", description="Configuration profile name", flag=False, default="default")]
+    options = [
+        option(
+            "profile",
+            "p",
+            description="Configuration profile name (optional, will prompt if not specified)",
+            flag=False,
+            default=None,
+        )
+    ]
 
     def handle(self) -> int:
         """Execute the init command."""
@@ -78,17 +86,45 @@ class InitCommand(Command):
     def _handle_with_progress(self, console: Console, progress: WizardProgress) -> int:
         """Handle the command with progress tracking."""
 
-        # Check for existing deployment first
-        existing_config = self._check_existing_deployment()
+        # Step 1: Select or create profile
+        profile_name, is_new_profile, user_action = self._select_or_create_profile(console)
+
+        if not profile_name:
+            # User cancelled or switched profiles (no init needed)
+            return 0
+
+        # Check for existing deployment for this profile
+        existing_config = self._check_existing_deployment(profile_name)
+
+        # If user explicitly chose "Update existing profile", skip the second prompt
+        if existing_config and user_action == "update":
+            config = self._gather_configuration(progress, existing_config)
+            if not config:
+                return 1
+            if not self._review_configuration(config):
+                return 1
+            self._save_configuration(config, profile_name)
+            console.print(f"\n[green]✓ Profile '{profile_name}' updated successfully![/green]")
+            console.print("\nNext steps:")
+            console.print("• Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]")
+            console.print("• Create package: [cyan]poetry run ccwb package[/cyan]")
+            console.print("• Test authentication: [cyan]poetry run ccwb test[/cyan]")
+            return 0
+
+        # Otherwise, show the configuration summary and ask what to do
         if existing_config:
             # Check if we found stacks or just configuration
             stacks_exist = existing_config.get("_stacks_found", True)
 
-            console.print("\n[green]Found existing configuration![/green]")
+            console.print(f"\n[green]Found existing configuration for profile '{profile_name}'![/green]")
             self._show_existing_deployment(existing_config)
 
             if not stacks_exist:
-                console.print("\n[yellow]Note: Stacks are not deployed in the current AWS account[/yellow]")
+                console.print(
+                    f"\n[yellow]Note: Stacks for profile '{profile_name}' are not deployed in the "
+                    f"current AWS account[/yellow]"
+                )
+                console.print("[dim]This profile may be configured for a different AWS account.[/dim]")
 
             action = questionary.select(
                 "\nWhat would you like to do?",
@@ -108,8 +144,8 @@ class InitCommand(Command):
                     return 1
                 if not self._review_configuration(config):
                     return 1
-                self._save_configuration(config)
-                console.print("\n[green]✓ Configuration updated successfully![/green]")
+                self._save_configuration(config, profile_name)
+                console.print(f"\n[green]✓ Profile '{profile_name}' updated successfully![/green]")
                 console.print("\nNext steps:")
                 console.print("• Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]")
                 console.print("• Create package: [cyan]poetry run ccwb package[/cyan]")
@@ -143,8 +179,7 @@ class InitCommand(Command):
             "[bold cyan]Welcome to Claude Code with Bedrock Setup![/bold cyan]\n\n"
             "This wizard will help you deploy Claude Code using Amazon Bedrock with:\n"
             "  • Secure authentication via your identity provider\n"
-            "  • Usage monitoring and dashboards\n"
-            "  • Cost tracking and controls",
+            "  • Usage monitoring and dashboards",
             border_style="cyan",
             padding=(1, 2),
         )
@@ -163,17 +198,18 @@ class InitCommand(Command):
             return 1
 
         # Save configuration
-        self._save_configuration(config)
+        self._save_configuration(config, profile_name)
         progress.clear()  # Clear progress since we're done
 
         # Success message
         success_panel = Panel.fit(
-            "[bold green]✓ Configuration complete![/bold green]\n\n"
+            f"[bold green]✓ Profile '{profile_name}' created successfully![/bold green]\n\n"
             "Your configuration has been saved.\n\n"
             "Next steps:\n"
             "1. Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]\n"
             "2. Create package: [cyan]poetry run ccwb package[/cyan]\n"
-            "3. Test authentication: [cyan]poetry run ccwb test[/cyan]",
+            "3. Test authentication: [cyan]poetry run ccwb test[/cyan]\n"
+            f"4. View profile: [cyan]poetry run ccwb context show {profile_name}[/cyan]",
             border_style="green",
             padding=(1, 2),
         )
@@ -248,7 +284,8 @@ class InitCommand(Command):
                 "Enter your OIDC provider domain:",
                 validate=lambda x: validate_oidc_provider_domain(x)
                 or "Invalid provider domain format (e.g., company.okta.com)",
-                instruction="(e.g., company.okta.com, company.auth0.com, login.microsoftonline.com/{tenant-id}/v2.0, or my-app.auth.us-east-1.amazoncognito.com)",
+                instruction="(e.g., company.okta.com, company.auth0.com, login.microsoftonline.com/{ \
+                tenant-id}/v2.0, or my-app.auth.us-east-1.amazoncognito.com)",
                 default=config.get("okta", {}).get("domain", ""),
             ).ask()
 
@@ -293,7 +330,7 @@ class InitCommand(Command):
                         provider_type = "cognito"
             except Exception:
                 pass  # Continue to manual selection if parsing fails
-                
+
             # For Cognito, we must ask for the User Pool ID
             # Cannot reliably extract from domain due to case sensitivity
             if provider_type == "cognito":
@@ -342,7 +379,11 @@ class InitCommand(Command):
             if not credential_storage:
                 return None
 
-            config["okta"] = {"domain": provider_domain, "client_id": client_id}
+            # Preserve existing okta settings, only update domain/client_id
+            if "okta" not in config:
+                config["okta"] = {}
+            config["okta"]["domain"] = provider_domain
+            config["okta"]["client_id"] = client_id
             config["credential_storage"] = credential_storage
             config["provider_type"] = provider_type
             if cognito_user_pool_id:
@@ -432,15 +473,16 @@ class InitCommand(Command):
             if not stack_base_name:
                 return None
 
-            config["aws"] = {
-                "region": region,
-                "identity_pool_name": stack_base_name,  # Keep same field name for compatibility
-                "stacks": {
-                    "auth": f"{stack_base_name}-stack",
-                    "monitoring": f"{stack_base_name}-monitoring",
-                    "dashboard": f"{stack_base_name}-dashboard",
-                    "analytics": f"{stack_base_name}-analytics",
-                },
+            # Preserve existing AWS settings, only update region/identity_pool_name/stacks
+            if "aws" not in config:
+                config["aws"] = {}
+            config["aws"]["region"] = region
+            config["aws"]["identity_pool_name"] = stack_base_name  # Keep same field name for compatibility
+            config["aws"]["stacks"] = {
+                "auth": f"{stack_base_name}-stack",
+                "monitoring": f"{stack_base_name}-monitoring",
+                "dashboard": f"{stack_base_name}-dashboard",
+                "analytics": f"{stack_base_name}-analytics",
             }
 
             # Save progress
@@ -453,28 +495,45 @@ class InitCommand(Command):
 
             # Monitoring
             console.print("\n[bold]Monitoring and Usage Dashboards[/bold]")
-            console.print("Track Claude Code usage, costs, and performance metrics in CloudWatch")
+            console.print("Track Claude Code usage and performance metrics in CloudWatch")
             enable_monitoring = questionary.confirm(
                 "Enable monitoring?", default=config.get("monitoring", {}).get("enabled", True)
             ).ask()
 
-            config["monitoring"] = {"enabled": enable_monitoring}
+            # Preserve existing monitoring settings, only update enabled flag
+            if "monitoring" not in config:
+                config["monitoring"] = {}
+            config["monitoring"]["enabled"] = enable_monitoring
 
             # If monitoring is enabled, configure VPC
             if enable_monitoring:
-                vpc_config = self._configure_vpc(config.get("aws", {}).get("region", get_current_region()))
+                # Pass existing vpc_config if available
+                existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
+                vpc_config = self._configure_vpc(
+                    config.get("aws", {}).get("region", get_current_region()), existing_vpc_config
+                )
                 if not vpc_config:
                     return None
                 config["monitoring"]["vpc_config"] = vpc_config
 
                 # Optional: Configure HTTPS with custom domain
                 console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=False).ask()
+
+                # Check if HTTPS is already configured
+                existing_custom_domain = config["monitoring"].get("custom_domain")
+                existing_zone_id = config["monitoring"].get("hosted_zone_id")
+                already_configured = bool(existing_custom_domain and existing_zone_id)
+
+                if already_configured:
+                    console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
+
+                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=already_configured).ask()
 
                 if enable_https:
                     custom_domain = questionary.text(
                         "Enter custom domain name (e.g., telemetry.company.com):",
                         validate=lambda x: len(x) > 0 and "." in x,
+                        default=existing_custom_domain if existing_custom_domain else "",
                     ).ask()
 
                     # Get Route53 hosted zones
@@ -483,8 +542,19 @@ class InitCommand(Command):
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
                         ]
+
+                        # Pre-select existing zone if available
+                        default_zone = None
+                        if existing_zone_id:
+                            for choice in zone_choices:
+                                if existing_zone_id in choice:
+                                    default_zone = choice
+                                    break
+
                         selected_zone = questionary.select(
-                            "Select Route53 hosted zone for the domain:", choices=zone_choices
+                            "Select Route53 hosted zone for the domain:",
+                            choices=zone_choices,
+                            default=default_zone if default_zone else zone_choices[0],
                         ).ask()
 
                         # Extract zone ID
@@ -496,6 +566,10 @@ class InitCommand(Command):
                     else:
                         console.print("[yellow]No Route53 hosted zones found. HTTPS requires a hosted zone.[/yellow]")
                         console.print("[dim]You can add these parameters manually during deployment.[/dim]")
+                else:
+                    # User disabled HTTPS, clear any existing config
+                    config["monitoring"]["custom_domain"] = None
+                    config["monitoring"]["hosted_zone_id"] = None
 
                 # Analytics configuration (only if monitoring is enabled)
                 console.print("\n[bold]Analytics Pipeline[/bold]")
@@ -505,7 +579,10 @@ class InitCommand(Command):
                     default=config.get("analytics", {}).get("enabled", True),
                 ).ask()
 
-                config["analytics"] = {"enabled": enable_analytics}
+                # Preserve existing analytics settings, only update enabled flag
+                if "analytics" not in config:
+                    config["analytics"] = {}
+                config["analytics"]["enabled"] = enable_analytics
 
                 if enable_analytics:
                     console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
@@ -518,7 +595,10 @@ class InitCommand(Command):
                     default=config.get("quota", {}).get("enabled", False),
                 ).ask()
 
-                config["quota"] = {"enabled": enable_quota_monitoring}
+                # Preserve existing quota settings, only update enabled flag
+                if "quota" not in config:
+                    config["quota"] = {}
+                config["quota"]["enabled"] = enable_quota_monitoring
 
                 if enable_quota_monitoring:
                     console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
@@ -542,7 +622,6 @@ class InitCommand(Command):
                     console.print(f"  • Monthly limit: {monthly_limit:,} tokens per user")
                     console.print(f"  • Warning at: {warning_80:,} tokens (80%)")
                     console.print(f"  • Critical at: {warning_90:,} tokens (90%)")
-                    console.print(f"  • Estimated cost limit: ~${monthly_limit * 0.000015:.0f} per user per month")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -554,22 +633,264 @@ class InitCommand(Command):
             "Enable Windows builds?", default=config.get("codebuild", {}).get("enabled", False)
         ).ask()
 
-        config["codebuild"] = {"enabled": enable_codebuild}
+        # Preserve existing codebuild settings, only update enabled flag
+        if "codebuild" not in config:
+            config["codebuild"] = {}
+        config["codebuild"]["enabled"] = enable_codebuild
 
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
 
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
-        console.print("Share packages via presigned URLs (S3 storage costs apply)")
-        enable_distribution = questionary.confirm(
-            "Enable distribution?", default=config.get("distribution", {}).get("enabled", False)
+        console.print("Choose how to distribute Claude Code packages to end users:")
+        console.print("  • Presigned S3 URLs: Simple, no authentication (good for < 20 users)")
+        console.print("  • Landing Page: IdP authentication with web UI (good for 20-100 users)")
+
+        distribution_choices = [
+            questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
+            questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
+            questionary.Choice("Disabled", value=None),
+        ]
+
+        # Get saved value or default to None
+        saved_dist_type = config.get("distribution", {}).get("type")
+        default_choice = saved_dist_type if saved_dist_type else None
+
+        distribution_type = questionary.select(
+            "Distribution method:",
+            choices=distribution_choices,
+            default=default_choice,
         ).ask()
 
-        config["distribution"] = {"enabled": enable_distribution}
+        # Preserve existing distribution settings, only update enabled/type
+        if "distribution" not in config:
+            config["distribution"] = {}
+        config["distribution"]["enabled"] = distribution_type is not None
+        config["distribution"]["type"] = distribution_type
 
-        if enable_distribution:
-            console.print("[green]✓[/green] Distribution infrastructure will be deployed")
+        # If landing-page selected, prompt for additional configuration
+        if distribution_type == "landing-page":
+            console.print("\n[bold]Landing Page Configuration[/bold]")
+            console.print("Configure IdP authentication for the distribution landing page")
+
+            # IdP provider selection
+            idp_choices = [
+                questionary.Choice("Okta", value="okta"),
+                questionary.Choice("Azure AD / Entra ID", value="azure"),
+                questionary.Choice("Auth0", value="auth0"),
+                questionary.Choice("AWS Cognito User Pool", value="cognito"),
+            ]
+
+            idp_provider = questionary.select(
+                "Identity provider for web authentication:",
+                choices=idp_choices,
+                default=config.get("distribution", {}).get("idp_provider", "okta"),
+            ).ask()
+
+            # Auto-detection for Cognito User Pool
+            cognito_auto_configured = False
+            if idp_provider == "cognito":
+                from claude_code_with_bedrock.cli.utils.aws import (
+                    detect_cognito_stack,
+                    validate_cognito_stack_for_distribution,
+                )
+
+                console.print("\n[bold]Cognito Configuration Detection[/bold]")
+                console.print("Searching for deployed Cognito User Pool stack...")
+
+                # Try to auto-detect Cognito stack
+                cognito_stack_info = detect_cognito_stack(region)
+
+                if cognito_stack_info:
+                    console.print(f"[green]✓[/green] Found Cognito stack: {cognito_stack_info['stack_name']}")
+
+                    # Validate it has distribution support
+                    is_valid, message = validate_cognito_stack_for_distribution(
+                        cognito_stack_info["stack_name"], region
+                    )
+
+                    if is_valid:
+                        console.print(f"[green]✓[/green] {message}")
+
+                        # Show detected values
+                        outputs = cognito_stack_info["outputs"]
+                        console.print("\n[cyan]Detected Configuration:[/cyan]")
+                        console.print(f"  • User Pool ID: {outputs.get('UserPoolId', 'N/A')}")
+
+                        # Extract domain prefix from full domain
+                        full_domain = outputs.get("UserPoolDomain", "")
+                        domain_prefix = full_domain.split(".")[0] if full_domain else "N/A"
+                        console.print(f"  • Domain: {domain_prefix}")
+
+                        console.print(f"  • Client ID: {outputs.get('DistributionWebClientId', 'N/A')}")
+                        console.print(f"  • Secret ARN: {outputs.get('DistributionWebClientSecretArn', 'N/A')}")
+
+                        use_detected = questionary.confirm("\nUse these detected values?", default=True).ask()
+
+                        if use_detected:
+                            # Auto-populate configuration
+                            idp_domain = domain_prefix
+                            idp_client_id = outputs["DistributionWebClientId"]
+                            secret_arn = outputs["DistributionWebClientSecretArn"]
+
+                            # Store in config immediately
+                            config.setdefault("distribution", {}).update(
+                                {
+                                    "idp_provider": "cognito",
+                                    "idp_domain": idp_domain,
+                                    "idp_client_id": idp_client_id,
+                                    "idp_client_secret_arn": secret_arn,
+                                }
+                            )
+
+                            # Also store Cognito User Pool ID for auth
+                            if "cognito_user_pool_id" not in config:
+                                config["cognito_user_pool_id"] = outputs["UserPoolId"]
+
+                            console.print("[green]✓[/green] Configuration auto-populated from stack outputs")
+                            cognito_auto_configured = True
+                        else:
+                            console.print("[yellow]Manual configuration selected[/yellow]")
+                    else:
+                        console.print(f"[yellow]⚠[/yellow] {message}")
+                        console.print("[yellow]Falling back to manual configuration...[/yellow]")
+                else:
+                    console.print("[yellow]No Cognito User Pool stack detected[/yellow]")
+                    console.print("You can either:")
+                    console.print("  1. Deploy the Cognito stack first")
+                    console.print("  2. Enter configuration manually")
+
+            # Only prompt for manual configuration if not auto-configured
+            if not cognito_auto_configured:
+                # IdP domain
+                idp_domain = questionary.text(
+                    "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
+                    default=config.get("distribution", {}).get("idp_domain", ""),
+                ).ask()
+
+                # Web app client ID
+                idp_client_id = questionary.text(
+                    "Web application client ID (separate from CLI native app):",
+                    default=config.get("distribution", {}).get("idp_client_id", ""),
+                ).ask()
+
+                # Web app client secret
+                idp_client_secret = questionary.password(
+                    "Web application client secret:",
+                ).ask()
+
+            # Store secret in AWS Secrets Manager (only if not auto-configured)
+            import boto3
+
+            if not cognito_auto_configured:
+                try:
+                    secrets_client = boto3.client("secretsmanager", region_name=region)
+                    account_id = boto3.client("sts").get_caller_identity()["Account"]
+
+                    secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
+
+                    # Try to create or update secret
+                    try:
+                        secret_response = secrets_client.create_secret(
+                            Name=secret_name,
+                            SecretString=idp_client_secret,
+                            Description=f"IdP client secret for "
+                            f"{config['aws']['identity_pool_name']} distribution landing page",
+                        )
+                        secret_arn = secret_response["ARN"]
+                    except secrets_client.exceptions.ResourceExistsException:
+                        # Secret already exists, update it
+                        secret_response = secrets_client.update_secret(
+                            SecretId=secret_name,
+                            SecretString=idp_client_secret,
+                        )
+                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+
+                    console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
+
+                except Exception as e:
+                    console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
+                    console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
+                    secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+
+            # Custom domain (REQUIRED for authenticated landing page)
+            console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
+            console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
+            console.print("You will need:")
+            console.print("  • A custom domain (e.g., downloads.company.com)")
+            console.print("  • An ACM certificate for this domain in the same region")
+
+            custom_domain = questionary.text(
+                "Custom domain (e.g., downloads.company.com):",
+                default=config.get("distribution", {}).get("custom_domain", ""),
+                validate=lambda text: len(text.strip()) > 0
+                or "Custom domain is required for authenticated landing page",
+            ).ask()
+
+            # Check for Route53 hosted zones
+            console.print("\n[bold]Route53 Configuration[/bold]")
+            console.print("Looking for Route53 hosted zones...")
+
+            hosted_zone_id = None
+            try:
+                route53_client = boto3.client("route53")
+                zones_response = route53_client.list_hosted_zones()
+                hosted_zones = zones_response.get("HostedZones", [])
+
+                if hosted_zones:
+                    console.print(f"Found {len(hosted_zones)} hosted zone(s)")
+
+                    # Get existing hosted zone if configured
+                    existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
+
+                    # Create zone choices
+                    zone_choices = [
+                        questionary.Choice(
+                            f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
+                        )
+                        for zone in hosted_zones
+                    ]
+                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+
+                    # Find the default choice based on existing zone
+                    default_choice = None
+                    if existing_zone_id:
+                        for choice in zone_choices:
+                            if choice.value == existing_zone_id:
+                                default_choice = choice
+                                break
+
+                    hosted_zone_id = questionary.select(
+                        "Select Route53 hosted zone:",
+                        choices=zone_choices,
+                        default=default_choice if default_choice else zone_choices[0],
+                    ).ask()
+                else:
+                    console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
+                    console.print("You can still use custom domain if it's managed externally")
+                    hosted_zone_id = None
+
+            except Exception as e:
+                console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
+                hosted_zone_id = None
+
+            # Save landing page configuration
+            config["distribution"].update(
+                {
+                    "idp_provider": idp_provider,
+                    "idp_domain": idp_domain,
+                    "idp_client_id": idp_client_id,
+                    "idp_client_secret_arn": secret_arn,
+                    "custom_domain": custom_domain,
+                    "hosted_zone_id": hosted_zone_id,
+                }
+            )
+
+            console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
+
+        elif distribution_type == "presigned-s3":
+            console.print("[green]✓[/green] Presigned S3 distribution will be deployed")
 
         # Bedrock model and cross-region configuration
         if not skip_bedrock:
@@ -592,7 +913,7 @@ class InitCommand(Command):
             if saved_model:
                 # Find the key for the saved model by checking all model IDs
                 for key, model_info in CLAUDE_MODELS.items():
-                    for profile_key, profile_config in model_info["profiles"].items():
+                    for _profile_key, profile_config in model_info["profiles"].items():
                         if profile_config["model_id"] == saved_model:
                             saved_model_key = key
                             break
@@ -605,6 +926,8 @@ class InitCommand(Command):
                 # Build region list from available profiles
                 available_profiles = get_available_profiles_for_model(model_key)
                 regions = []
+                if "global" in available_profiles:
+                    regions.append("Global")
                 if "us" in available_profiles:
                     regions.append("US")
                 if "europe" in available_profiles:
@@ -619,8 +942,8 @@ class InitCommand(Command):
                         title=choice_text,
                         value=model_key,
                         checked=(
-                            model_key == saved_model_key or (not saved_model_key and model_key == "opus-4-1")
-                        ),  # Default to Opus 4.1
+                            model_key == saved_model_key or (not saved_model_key and model_key == "sonnet-4-5")
+                        ),  # Default to Sonnet 4.5
                     )
                 )
 
@@ -683,7 +1006,8 @@ class InitCommand(Command):
             # Use the destination regions from the model profile
             if not destination_regions:
                 console.print(
-                    f"[red]Error:[/red] No destination regions configured for {selected_model_key} with {selected_profile} profile"
+                    f"[red]Error:[/red] No destination regions configured for {selected_model_key} "
+                    f"with {selected_profile} profile"
                 )
                 raise ValueError("No destination regions configured for model/profile combination")
 
@@ -738,7 +1062,8 @@ class InitCommand(Command):
             profile_description = get_profile_description(selected_model_key, selected_profile)
 
             console.print(
-                f"\n[green]✓[/green] Configured {selected_model['name']} with {profile_name} Cross-Region ({profile_description})"
+                f"\n[green]✓[/green] Configured {selected_model['name']} with {profile_name} "
+                f"Cross-Region ({profile_description})"
             )
 
             # Save progress
@@ -836,18 +1161,34 @@ class InitCommand(Command):
             console.print("• CodeBuild project for Windows binary builds")
             console.print("• S3 bucket for build artifacts")
         if config.get("distribution", {}).get("enabled", False):
-            console.print("• S3 bucket for package distribution")
-            console.print("• IAM user for presigned URL generation")
-            console.print("• Secrets Manager secret for credentials")
+            dist_type = config.get("distribution", {}).get("type")
+            if dist_type == "landing-page":
+                console.print("• Authenticated landing page distribution (ALB + Lambda + S3)")
+                idp_provider = config.get("distribution", {}).get("idp_provider", "")
+                console.print(f"• IdP authentication: {idp_provider.upper() if idp_provider else 'configured'}")
+                if config.get("distribution", {}).get("custom_domain"):
+                    console.print(f"• Custom domain: {config['distribution']['custom_domain']}")
+            elif dist_type == "presigned-s3":
+                console.print("• Presigned S3 URL distribution")
+                console.print("• IAM user for presigned URL generation")
+                console.print("• Secrets Manager secret for credentials")
 
         return True
 
-    def _deploy(self, config: dict[str, Any]) -> int:
-        """Deploy the infrastructure."""
+    def _deploy(self, config: dict[str, Any], profile_name: str = "default") -> int:
+        """Deploy the infrastructure.
+
+        Args:
+            config: Configuration data
+            profile_name: Name of the profile to save
+
+        Returns:
+            Exit code
+        """
         console = Console()
 
         # Save configuration first
-        self._save_configuration(config)
+        self._save_configuration(config, profile_name)
 
         # Create a progress display
         console.print("\n[bold]Deploying infrastructure...[/bold]")
@@ -935,12 +1276,24 @@ class InitCommand(Command):
 
         return 0
 
-    def _save_configuration(self, config_data: dict[str, Any]) -> None:
-        """Save configuration to file."""
-        # Get profile name from option
-        profile_name = self.option("profile")
+    def _save_configuration(self, config_data: dict[str, Any], profile_name: str) -> None:
+        """Save configuration to file.
 
+        Args:
+            config_data: Configuration data to save
+            profile_name: Name of the profile to save
+        """
         config = Config.load()
+
+        # Build monitoring_config with all monitoring settings
+        monitoring_dict = config_data.get("monitoring", {})
+        monitoring_config = {}
+        if monitoring_dict.get("vpc_config"):
+            monitoring_config["vpc_config"] = monitoring_dict["vpc_config"]
+        if monitoring_dict.get("custom_domain"):
+            monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
+        if monitoring_dict.get("hosted_zone_id"):
+            monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
         profile = Profile(
             name=profile_name,
@@ -951,7 +1304,7 @@ class InitCommand(Command):
             identity_pool_name=config_data["aws"]["identity_pool_name"],
             stack_names=config_data["aws"]["stacks"],
             monitoring_enabled=config_data["monitoring"]["enabled"],
-            monitoring_config=config_data.get("monitoring", {}).get("vpc_config", {}),
+            monitoring_config=monitoring_config,
             analytics_enabled=(
                 config_data.get("analytics", {}).get("enabled", True)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -967,6 +1320,13 @@ class InitCommand(Command):
             max_session_duration=config_data.get("max_session_duration", 28800),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
             enable_distribution=config_data.get("distribution", {}).get("enabled", False),
+            distribution_type=config_data.get("distribution", {}).get("type"),
+            distribution_idp_provider=config_data.get("distribution", {}).get("idp_provider"),
+            distribution_idp_domain=config_data.get("distribution", {}).get("idp_domain"),
+            distribution_idp_client_id=config_data.get("distribution", {}).get("idp_client_id"),
+            distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
+            distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
+            distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
             quota_monitoring_enabled=(
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -978,6 +1338,8 @@ class InitCommand(Command):
         )
 
         config.add_profile(profile)
+        # Set as active profile when creating/updating
+        config.set_active_profile(profile_name)
         config.save()
 
     def _check_aws_cli(self) -> bool:
@@ -987,7 +1349,7 @@ class InitCommand(Command):
 
             result = subprocess.run(["aws", "--version"], capture_output=True)
             return result.returncode == 0
-        except:
+        except Exception:
             return False
 
     def _check_aws_credentials(self) -> bool:
@@ -995,7 +1357,7 @@ class InitCommand(Command):
         try:
             boto3.client("sts").get_caller_identity()
             return True
-        except:
+        except Exception:
             return False
 
     def _check_python_version(self) -> bool:
@@ -1026,7 +1388,7 @@ class InitCommand(Command):
             # For now, return the known list without checking each one
             # (checking each region takes time and requires permissions)
             return bedrock_regions
-        except:
+        except Exception:
             # Return default list if we can't check
             return [
                 "us-east-1",
@@ -1159,12 +1521,19 @@ class InitCommand(Command):
             console.print(f"[red]Deployment error: {e}[/red]")
             return False
 
-    def _check_existing_deployment(self) -> dict[str, Any]:
-        """Check if there's an existing deployment and return its configuration."""
+    def _check_existing_deployment(self, profile_name: str) -> dict[str, Any]:
+        """Check if there's an existing deployment and return its configuration.
+
+        Args:
+            profile_name: Name of the profile to check
+
+        Returns:
+            Configuration dict if profile exists, None otherwise
+        """
         try:
-            # First check if we have a saved configuration
+            # Check if we have a saved configuration for this profile
             config = Config.load()
-            profile = config.get_profile("default")
+            profile = config.get_profile(profile_name)
 
             if not profile:
                 return None
@@ -1203,8 +1572,21 @@ class InitCommand(Command):
                     "stacks": profile.stack_names,
                     "allowed_bedrock_regions": profile.allowed_bedrock_regions,
                 },
-                "monitoring": {"enabled": profile.monitoring_enabled},
+                "monitoring": {
+                    "enabled": profile.monitoring_enabled,
+                    "vpc_config": profile.monitoring_config.get("vpc_config") if profile.monitoring_config else None,
+                    "custom_domain": profile.monitoring_config.get("custom_domain")
+                    if profile.monitoring_config
+                    else None,
+                    "hosted_zone_id": profile.monitoring_config.get("hosted_zone_id")
+                    if profile.monitoring_config
+                    else None,
+                },
             }
+
+            # Add provider type if present (critical to preserve during updates)
+            if hasattr(profile, "provider_type") and profile.provider_type:
+                existing_config["provider_type"] = profile.provider_type
 
             # Add federation type if present (critical to preserve during updates)
             if hasattr(profile, "federation_type") and profile.federation_type:
@@ -1232,11 +1614,25 @@ class InitCommand(Command):
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
-                existing_config["distribution"] = {"enabled": profile.enable_distribution}
+                existing_config["distribution"] = {
+                    "enabled": profile.enable_distribution,
+                    "type": getattr(profile, "distribution_type", None),
+                    "idp_provider": getattr(profile, "distribution_idp_provider", None),
+                    "idp_domain": getattr(profile, "distribution_idp_domain", None),
+                    "idp_client_id": getattr(profile, "distribution_idp_client_id", None),
+                    "idp_client_secret_arn": getattr(profile, "distribution_idp_client_secret_arn", None),
+                    "custom_domain": getattr(profile, "distribution_custom_domain", None),
+                    "hosted_zone_id": getattr(profile, "distribution_hosted_zone_id", None),
+                }
 
             # Add quota monitoring configuration if present
             if hasattr(profile, "quota_monitoring_enabled"):
-                existing_config["quota"] = {"enabled": profile.quota_monitoring_enabled}
+                existing_config["quota"] = {
+                    "enabled": profile.quota_monitoring_enabled,
+                    "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
+                    "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
+                    "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                }
 
             # Add analytics configuration if present
             if hasattr(profile, "analytics_enabled"):
@@ -1263,9 +1659,8 @@ class InitCommand(Command):
         if "okta" in config and "client_id" in config["okta"]:
             console.print(f"• Client ID: [cyan]{config['okta']['client_id']}[/cyan]")
 
-        console.print(
-            f"• Credential Storage: [cyan]{'Keyring' if config.get('credential_storage') == 'keyring' else 'Session Files'}[/cyan]"
-        )
+        cred_storage = "Keyring" if config.get("credential_storage") == "keyring" else "Session Files"
+        console.print(f"• Credential Storage: [cyan]{cred_storage}[/cyan]")
         console.print(f"• AWS Region: [cyan]{config['aws']['region']}[/cyan]")
         console.print(f"• Identity Pool: [cyan]{config['aws']['identity_pool_name']}[/cyan]")
 
@@ -1316,7 +1711,7 @@ class InitCommand(Command):
                 valid_statuses = ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]
                 return status in valid_statuses
             return False
-        except:
+        except Exception:
             return False
 
     def _get_stack_outputs(self, stack_name: str, region: str) -> dict[str, str]:
@@ -1344,7 +1739,7 @@ class InitCommand(Command):
                     outputs[output["OutputKey"]] = output["OutputValue"]
                 return outputs
             return {}
-        except:
+        except Exception:
             return {}
 
     def _get_hosted_zones(self) -> list[dict[str, Any]]:
@@ -1358,12 +1753,26 @@ class InitCommand(Command):
         except Exception:
             return []
 
-    def _configure_vpc(self, region: str) -> dict[str, Any]:
+    def _configure_vpc(self, region: str, existing_vpc_config: dict[str, Any] = None) -> dict[str, Any]:
         """Configure VPC for monitoring stack."""
         console = Console()
 
         console.print("\n[bold]VPC Configuration for Monitoring[/bold]")
         console.print("The monitoring stack requires a VPC for the OpenTelemetry collector.")
+
+        # If we already have a VPC config, show it and ask if user wants to keep it
+        if existing_vpc_config:
+            if existing_vpc_config.get("create_vpc"):
+                console.print("[dim]Current configuration: Create new VPC (managed by stack)[/dim]")
+            elif existing_vpc_config.get("vpc_id"):
+                vpc_id = existing_vpc_config.get("vpc_id")
+                subnet_ids = existing_vpc_config.get("subnet_ids", [])
+                console.print(f"[dim]Current configuration: VPC {vpc_id} with {len(subnet_ids)} subnets[/dim]")
+
+            keep_config = questionary.confirm("Keep existing VPC configuration?", default=True).ask()
+
+            if keep_config:
+                return existing_vpc_config
 
         # Check if monitoring stack already exists with a VPC
         monitoring_stack = None
@@ -1495,3 +1904,142 @@ class InitCommand(Command):
                 subnet_ids = [s.strip() for s in subnet_ids_str.split(",")]
 
                 return {"create_vpc": False, "vpc_id": vpc_id, "subnet_ids": subnet_ids}
+
+    def _prompt_for_profile_name(self, console: Console) -> str | None:
+        """Prompt user for a profile name with validation.
+
+        Args:
+            console: Rich console for output
+
+        Returns:
+            Profile name if valid, None if cancelled
+        """
+        console.print("\n[bold cyan]Profile Name[/bold cyan]")
+        console.print("Choose a descriptive name for this deployment profile.")
+        console.print("[dim]Suggested format: {project}-{environment}-{region}[/dim]")
+        console.print("[dim]Examples: acme-prod-us-east-1, internal-dev-us-west-2[/dim]\n")
+
+        while True:
+            profile_name = questionary.text(
+                "Profile name:",
+                validate=lambda x: bool(x) or "Profile name cannot be empty",
+            ).ask()
+
+            if profile_name is None:  # User cancelled
+                return None
+
+            # Validate profile name
+            if not Config._is_valid_profile_name(profile_name):
+                console.print(
+                    "[red]Invalid profile name.[/red] " "Must be alphanumeric with hyphens only, max 64 characters.\n"
+                )
+                continue
+
+            # Check if profile already exists
+            config = Config.load()
+            if profile_name in config.list_profiles():
+                console.print(f"[red]Profile '{profile_name}' already exists.[/red]\n")
+                overwrite = questionary.confirm(f"Update existing profile '{profile_name}'?", default=False).ask()
+                if overwrite:
+                    return profile_name
+                else:
+                    continue
+
+            return profile_name
+
+    def _select_or_create_profile(self, console: Console) -> tuple[str, bool, str]:
+        """Interactive profile selection or creation.
+
+        Args:
+            console: Rich console for output
+
+        Returns:
+            Tuple of (profile_name, is_new_profile, action) where action is "create", "update", or "switch"
+        """
+        config = Config.load()
+        existing_profiles = config.list_profiles()
+
+        # If --profile flag was provided, use it
+        profile_option = self.option("profile")
+        if profile_option and profile_option != "default":
+            # Check if profile exists
+            if profile_option in existing_profiles:
+                console.print(f"\n[cyan]Using profile:[/cyan] {profile_option}")
+                return (profile_option, False, "update")  # Assume user wants to update when using --profile flag
+            else:
+                console.print(f"\n[cyan]Creating new profile:[/cyan] {profile_option}")
+                # Validate the profile name
+                if not Config._is_valid_profile_name(profile_option):
+                    console.print(
+                        f"[red]Invalid profile name '{profile_option}'.[/red] "
+                        "Must be alphanumeric with hyphens only, max 64 characters."
+                    )
+                    return (None, False, "cancelled")
+                return (profile_option, True, "create")
+
+        # No profiles exist - first time setup
+        if not existing_profiles:
+            console.print("\n[cyan]No profiles found. Let's create your first profile![/cyan]")
+            profile_name = self._prompt_for_profile_name(console)
+            if not profile_name:
+                return (None, False, "cancelled")
+            return (profile_name, True, "create")
+
+        # Profiles exist - offer choices
+        console.print(f"\n[cyan]Found {len(existing_profiles)} existing profile(s):[/cyan]")
+        for profile in existing_profiles:
+            is_active = profile == config.active_profile
+            marker = "★" if is_active else " "
+            console.print(f"  {marker} {profile}")
+
+        choices = [
+            "Create new profile for different account/region",
+            "Update existing profile",
+            "Switch to existing profile (no changes)",
+        ]
+
+        action = questionary.select(
+            "\nWhat would you like to do?",
+            choices=choices,
+        ).ask()
+
+        if action is None:  # User cancelled
+            return (None, False, "cancelled")
+
+        if action == choices[0]:  # Create new
+            profile_name = self._prompt_for_profile_name(console)
+            if not profile_name:
+                return (None, False, "cancelled")
+            return (profile_name, True, "create")
+
+        elif action == choices[1]:  # Update existing
+            if len(existing_profiles) == 1:
+                profile_name = existing_profiles[0]
+                console.print(f"\n[cyan]Updating profile:[/cyan] {profile_name}")
+            else:
+                profile_name = questionary.select(
+                    "\nSelect profile to update:",
+                    choices=existing_profiles,
+                ).ask()
+                if profile_name is None:
+                    return (None, False, "cancelled")
+            return (profile_name, False, "update")
+
+        else:  # Switch to existing
+            if len(existing_profiles) == 1:
+                profile_name = existing_profiles[0]
+            else:
+                profile_name = questionary.select(
+                    "\nSelect profile to activate:",
+                    choices=existing_profiles,
+                ).ask()
+                if profile_name is None:
+                    return (None, False, "cancelled")
+
+            # Switch active profile
+            config.set_active_profile(profile_name)
+            console.print(f"\n[green]✓ Switched to profile:[/green] {profile_name}")
+            console.print("\nNext steps:")
+            console.print("• Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]")
+            console.print("• View profile details: [cyan]poetry run ccwb context show[/cyan]")
+            return (None, False, "switch")

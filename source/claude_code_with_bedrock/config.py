@@ -20,6 +20,7 @@ class Profile:
     credential_storage: str  # Storage method: "keyring" (OS keyring) or "session" (~/.aws/credentials)
     aws_region: str
     identity_pool_name: str
+    schema_version: str = "2.0"  # Configuration schema version
     stack_names: dict[str, str] = field(default_factory=dict)
     monitoring_enabled: bool = True
     monitoring_config: dict[str, Any] = field(default_factory=dict)
@@ -37,7 +38,16 @@ class Profile:
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
-    enable_distribution: bool = False  # Enable package distribution features (S3 + presigned URLs)
+    enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
+
+    # Distribution platform configuration
+    distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
+    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
+    distribution_idp_client_id: str | None = None  # Web application client ID
+    distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
+    distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
+    distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
@@ -71,6 +81,10 @@ class Profile:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Profile":
         """Create profile from dictionary with migration support."""
+        # Set schema_version if not present (migrating from v1.0)
+        if "schema_version" not in data:
+            data["schema_version"] = "2.0"
+
         # Migrate old field names to new ones
         if "okta_domain" in data and "provider_domain" not in data:
             data["provider_domain"] = data.pop("okta_domain")
@@ -117,6 +131,12 @@ class Profile:
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 
+        # Migrate legacy distribution configuration
+        if "enable_distribution" in data and data.get("enable_distribution"):
+            # If distribution was enabled but no type specified, default to presigned-s3
+            if "distribution_type" not in data or data["distribution_type"] is None:
+                data["distribution_type"] = "presigned-s3"
+
         # Set default cross-region profile if not present
         if "cross_region_profile" not in data:
             # Default to 'us' for existing deployments with US regions
@@ -131,91 +151,252 @@ class Profile:
 class Config:
     """Configuration manager for Claude Code with Bedrock."""
 
-    CONFIG_DIR = Path(__file__).parent.parent / ".ccwb-config"
+    # New location in user home directory
+    CONFIG_DIR = Path.home() / ".ccwb"
     CONFIG_FILE = CONFIG_DIR / "config.json"
+    PROFILES_DIR = CONFIG_DIR / "profiles"
 
-    def __init__(self):
+    # Legacy location for migration
+    LEGACY_CONFIG_DIR = Path(__file__).parent.parent / ".ccwb-config"
+    LEGACY_CONFIG_FILE = LEGACY_CONFIG_DIR / "config.json"
+
+    def __init__(self, active_profile: str | None = None, schema_version: str = "2.0"):
         """Initialize configuration."""
-        self.profiles: dict[str, Profile] = {}
-        self.default_profile: str | None = None
+        self.active_profile = active_profile
+        self.schema_version = schema_version
         self._ensure_config_dir()
 
     def _ensure_config_dir(self) -> None:
-        """Ensure configuration directory exists."""
+        """Ensure configuration directories exist."""
         self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def load(cls) -> "Config":
-        """Load configuration from file."""
-        config = cls()
+        """Load global configuration from file, with auto-migration from legacy location."""
+        # Check if migration is needed
+        if not cls.CONFIG_FILE.exists() and cls.LEGACY_CONFIG_FILE.exists():
+            from .migration import migrate_legacy_config
 
+            migrate_legacy_config()
+
+        # Load global config
         if cls.CONFIG_FILE.exists():
             try:
                 with open(cls.CONFIG_FILE) as f:
                     data = json.load(f)
 
-                # Load profiles
-                for profile_name, profile_data in data.get("profiles", {}).items():
-                    config.profiles[profile_name] = Profile.from_dict(profile_data)
-
-                config.default_profile = data.get("default_profile")
+                return cls(
+                    active_profile=data.get("active_profile"),
+                    schema_version=data.get("schema_version", "2.0"),
+                )
 
             except Exception as e:
-                # If config is corrupted, start fresh
                 print(f"Warning: Could not load config: {e}")
-
-        return config
+                return cls()
+        else:
+            return cls()
 
     def save(self) -> None:
-        """Save configuration to file."""
+        """Save global configuration to file."""
         data = {
-            "version": "1.0",
-            "default_profile": self.default_profile,
-            "profiles": {name: profile.to_dict() for name, profile in self.profiles.items()},
+            "schema_version": self.schema_version,
+            "active_profile": self.active_profile,
+            "profiles_dir": str(self.PROFILES_DIR),
         }
 
         with open(self.CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
-    def add_profile(self, profile: Profile) -> None:
-        """Add or update a profile."""
+    def load_profile(self, name: str | None = None) -> Profile:
+        """Load a specific profile or the active profile.
+
+        Args:
+            name: Profile name to load. If None, loads active profile.
+
+        Returns:
+            Profile object.
+
+        Raises:
+            ValueError: If no profile specified and no active profile set.
+            FileNotFoundError: If profile file doesn't exist.
+        """
+        profile_name = name or self.active_profile
+
+        if not profile_name:
+            raise ValueError("No profile specified and no active profile set")
+
+        profile_path = self.PROFILES_DIR / f"{profile_name}.json"
+
+        if not profile_path.exists():
+            raise FileNotFoundError(f"Profile not found: {profile_name}")
+
+        try:
+            with open(profile_path) as f:
+                data = json.load(f)
+
+            return Profile.from_dict(data)
+
+        except Exception as e:
+            raise ValueError(f"Could not load profile {profile_name}: {e}") from e
+
+    def save_profile(self, profile: Profile) -> None:
+        """Save a profile to its individual file.
+
+        Args:
+            profile: Profile to save.
+        """
+        # Validate profile name
+        if not self._is_valid_profile_name(profile.name):
+            raise ValueError(
+                f"Invalid profile name: {profile.name}. "
+                "Name must be alphanumeric with hyphens only, max 64 characters."
+            )
+
+        # Update timestamp
         profile.updated_at = datetime.utcnow().isoformat()
-        self.profiles[profile.name] = profile
 
-        # Set as default if it's the first profile
-        if len(self.profiles) == 1:
-            self.default_profile = profile.name
+        # Ensure profile directory exists
+        self.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
-    def get_profile(self, name: str | None = None) -> Profile | None:
-        """Get a profile by name or the default profile."""
-        if name:
-            return self.profiles.get(name)
-        elif self.default_profile:
-            return self.profiles.get(self.default_profile)
-        return None
+        # Save to file
+        profile_path = self.PROFILES_DIR / f"{profile.name}.json"
+
+        with open(profile_path, "w") as f:
+            json.dump(profile.to_dict(), f, indent=2)
+
+        # Set as active if it's the first profile
+        if not self.active_profile and not self.list_profiles():
+            self.active_profile = profile.name
+            self.save()
+        elif not self.active_profile:
+            # If no active profile set, set this one
+            self.active_profile = profile.name
+            self.save()
 
     def list_profiles(self) -> list[str]:
-        """List all profile names."""
-        return list(self.profiles.keys())
+        """List all available profile names.
+
+        Returns:
+            Sorted list of profile names.
+        """
+        if not self.PROFILES_DIR.exists():
+            return []
+
+        return sorted([p.stem for p in self.PROFILES_DIR.glob("*.json")])
 
     def delete_profile(self, name: str) -> bool:
-        """Delete a profile."""
-        if name in self.profiles:
-            del self.profiles[name]
+        """Delete a profile.
 
-            # Update default if needed
-            if self.default_profile == name:
-                self.default_profile = list(self.profiles.keys())[0] if self.profiles else None
+        Args:
+            name: Name of profile to delete.
 
-            return True
-        return False
+        Returns:
+            True if deleted, False if profile doesn't exist.
+        """
+        profile_path = self.PROFILES_DIR / f"{name}.json"
+
+        if not profile_path.exists():
+            return False
+
+        profile_path.unlink()
+
+        # Auto-switch if deleting active profile
+        if self.active_profile == name:
+            remaining_profiles = self.list_profiles()
+            if remaining_profiles:
+                self.active_profile = remaining_profiles[0]
+                print(f"⚠️  Warning: Active profile '{name}' deleted. Switched to '{self.active_profile}'")
+            else:
+                self.active_profile = None
+                print(f"⚠️  Warning: Active profile '{name}' deleted. No profiles remaining.")
+            self.save()
+
+        return True
+
+    def set_active_profile(self, name: str) -> bool:
+        """Set the active profile.
+
+        Args:
+            name: Name of profile to set as active.
+
+        Returns:
+            True if set successfully, False if profile doesn't exist.
+        """
+        profile_path = self.PROFILES_DIR / f"{name}.json"
+
+        if not profile_path.exists():
+            return False
+
+        self.active_profile = name
+        self.save()
+        return True
+
+    def get_profile(self, name: str | None = None) -> Profile | None:
+        """Get a profile by name or the active profile (compatibility method).
+
+        Args:
+            name: Profile name to load. If None, loads active profile.
+
+        Returns:
+            Profile object or None if not found.
+        """
+        try:
+            return self.load_profile(name)
+        except (ValueError, FileNotFoundError):
+            return None
+
+    @staticmethod
+    def _is_valid_profile_name(name: str) -> bool:
+        """Validate profile name.
+
+        Args:
+            name: Profile name to validate.
+
+        Returns:
+            True if valid, False otherwise.
+        """
+        import re
+
+        if not name or len(name) > 64:
+            return False
+
+        # Allow alphanumeric and hyphens only
+        return bool(re.match(r"^[a-zA-Z0-9\-]+$", name))
+
+    # Compatibility methods for legacy code
+    def add_profile(self, profile: Profile) -> None:
+        """Add or update a profile (compatibility method)."""
+        self.save_profile(profile)
+
+    @property
+    def default_profile(self) -> str | None:
+        """Legacy property for backward compatibility."""
+        return self.active_profile
+
+    @default_profile.setter
+    def default_profile(self, value: str | None) -> None:
+        """Legacy property setter for backward compatibility."""
+        self.active_profile = value
 
     def set_default_profile(self, name: str) -> bool:
-        """Set the default profile."""
-        if name in self.profiles:
-            self.default_profile = name
-            return True
-        return False
+        """Set the default profile (compatibility method)."""
+        return self.set_active_profile(name)
+
+    @property
+    def profiles(self) -> dict[str, Profile]:
+        """Legacy property to load all profiles (compatibility method).
+
+        WARNING: This loads all profiles into memory. For large numbers of profiles,
+        prefer using load_profile() to load individual profiles on demand.
+        """
+        result = {}
+        for profile_name in self.list_profiles():
+            try:
+                result[profile_name] = self.load_profile(profile_name)
+            except Exception:
+                pass  # Skip profiles that fail to load
+        return result
 
     def get_aws_config_for_profile(self, profile_name: str | None = None) -> dict[str, Any]:
         """Get AWS configuration for CloudFormation deployment."""

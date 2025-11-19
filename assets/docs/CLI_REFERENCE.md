@@ -17,6 +17,14 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
+  - [Profile Management](#profile-management)
+    - [`context list` - List All Profiles](#context-list---list-all-profiles)
+    - [`context current` - Show Active Profile](#context-current---show-active-profile)
+    - [`context use` - Switch Active Profile](#context-use---switch-active-profile)
+    - [`context show` - Display Profile Details](#context-show---display-profile-details)
+    - [`config validate` - Validate Profile Configuration](#config-validate---validate-profile-configuration)
+    - [`config export` - Export Profile Configuration](#config-export---export-profile-configuration)
+    - [`config import` - Import Profile Configuration](#config-import---import-profile-configuration)
     - [`destroy` - Remove Infrastructure](#destroy---remove-infrastructure)
 
 ## Overview
@@ -313,9 +321,9 @@ Recent Windows Builds
 | project:def456 | IN_PROGRESS | 2024-08-26 10:30 | - |
 ```
 
-### `distribute` - Create Distribution URLs
+### `distribute` - Share Packages via Distribution
 
-Creates secure presigned URLs for package distribution.
+Upload and distribute built packages via presigned S3 URLs or authenticated landing page.
 
 ```bash
 poetry run ccwb distribute [options]
@@ -324,36 +332,81 @@ poetry run ccwb distribute [options]
 **Options:**
 
 - `--expires-hours <hours>` - URL expiration time in hours (1-168) [default: "48"]
-- `--get-latest` - Retrieve the latest distribution URL
+- `--get-latest` - Retrieve the latest distribution URL (presigned-s3 only)
 - `--profile <name>` - Configuration profile to use [default: "default"]
+- `--package-path <path>` - Path to package directory [default: "dist"]
+- `--build-profile <name>` - Select build by profile name
+- `--timestamp <timestamp>` - Select build by timestamp (format: YYYY-MM-DD-HHMMSS)
+- `--latest` - Auto-select latest build without wizard
+- `--allowed-ips <ranges>` - Comma-separated IP ranges for access control (presigned-s3 only)
+- `--show-qr` - Display QR code for URL (requires qrcode library)
 
 **What it does:**
 
-- Uploads built packages to S3
-- Generates presigned URLs for secure distribution
+Behavior depends on your configured distribution type:
+
+**Presigned S3 URLs (Simple):**
+- Uploads packages to S3 bucket
+- Generates secure presigned URLs (default 48 hours)
 - Stores URLs in Parameter Store for team access
-- No AWS credentials required for end users
+- Share URLs via email/Slack
+- No authentication required for downloads
+
+**Landing Page (Enterprise):**
+- Uploads platform-specific packages (windows/linux/mac/all-platforms)
+- Updates S3 metadata (profile, timestamp, release date)
+- Provides landing page URL for authenticated access
+- Users authenticate via IdP (Okta/Azure/Auth0/Cognito)
+- Platform auto-detection and recommendations
 
 **Distribution workflow:**
 
-1. Build packages: `poetry run ccwb package --target-platform=all`
-2. Create distribution: `poetry run ccwb distribute`
-3. Share the generated URL with developers
-4. Developers download and run installer without AWS access
+1. Build packages: `poetry run ccwb package`
+2. Upload and distribute: `poetry run ccwb distribute`
+3. **Presigned-s3**: Share generated URLs with developers
+4. **Landing-page**: Direct users to your landing page URL
 
-**Example:**
+**Examples:**
 
 ```bash
-# Build and distribute
-poetry run ccwb package --target-platform=all --distribute
+# Distribute latest build (interactive build selection)
+poetry run ccwb distribute
 
-# Or separately
-poetry run ccwb package --target-platform=all
+# Distribute latest build automatically (skip wizard)
+poetry run ccwb distribute --latest
+
+# Distribute specific build by timestamp
+poetry run ccwb distribute --timestamp 2024-11-14-083022
+
+# Distribute with custom expiration (presigned-s3 only)
 poetry run ccwb distribute --expires-hours=72
 
-# Get existing URL
+# Get existing URL without re-uploading (presigned-s3 only)
 poetry run ccwb distribute --get-latest
+
+# Distribute with QR code for mobile sharing
+poetry run ccwb distribute --show-qr
 ```
+
+**Build Selection:**
+
+If you have multiple builds in `dist/`, the command will:
+1. Scan for organized profile/timestamp builds
+2. Show interactive wizard to select which build to distribute
+3. Display build date, size, and platforms included
+4. Allow selection by profile name or timestamp
+
+Use `--latest` to skip the wizard and auto-select the most recent build.
+
+**Platform-Specific Uploads (Landing Page):**
+
+For landing-page distribution, packages are organized by platform:
+- `packages/windows/latest.zip` - Windows package
+- `packages/linux/latest.zip` - Linux package
+- `packages/mac/latest.zip` - macOS package
+- `packages/all-platforms/latest.zip` - All platforms bundle
+
+Landing page auto-detects user's OS and recommends appropriate package.
 
 ### `status` - Check Deployment Status
 
@@ -406,6 +459,233 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+## Profile Management
+
+The following commands manage multiple deployment profiles (v2.0+). Profiles let you manage configurations for different AWS accounts, regions, or organizations from a single machine.
+
+### `context list` - List All Profiles
+
+Shows all available profiles with an indicator for the active profile.
+
+```bash
+poetry run ccwb context list
+```
+
+**What it does:**
+
+- Lists all profiles in `~/.ccwb/profiles/`
+- Displays profile name, AWS region, and stack name
+- Highlights the currently active profile
+- Shows profile count
+
+**Example output:**
+
+```
+Available Profiles:
+  * production (us-east-1, stack: claude-code-prod)
+    development (us-west-2, stack: claude-code-dev)
+    eu-deployment (eu-west-1, stack: claude-code-eu)
+
+Active profile: production
+Total profiles: 3
+```
+
+### `context current` - Show Active Profile
+
+Displays the currently active profile name.
+
+```bash
+poetry run ccwb context current
+```
+
+**What it does:**
+
+- Shows the name of the active profile
+- Exits with error if no active profile is set
+
+**Example output:**
+
+```
+Current profile: production
+```
+
+### `context use` - Switch Active Profile
+
+Changes the active profile to the specified one.
+
+```bash
+poetry run ccwb context use <profile-name>
+```
+
+**Arguments:**
+
+- `profile-name` - Name of the profile to activate (required)
+
+**What it does:**
+
+- Sets the specified profile as active
+- Validates that the profile exists
+- Updates global configuration file
+
+**Examples:**
+
+```bash
+# Switch to production profile
+poetry run ccwb context use production
+
+# Switch to development profile
+poetry run ccwb context use development
+```
+
+### `context show` - Display Profile Details
+
+Shows detailed configuration for a profile.
+
+```bash
+poetry run ccwb context show [profile-name]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to display (optional, defaults to active profile)
+
+**Options:**
+
+- `--json` - Output in JSON format
+
+**What it does:**
+
+- Displays full profile configuration including:
+  - AWS region and account
+  - OIDC provider settings
+  - Stack names
+  - Model selection
+  - Monitoring configuration
+- Masks sensitive values (client secrets)
+
+**Examples:**
+
+```bash
+# Show active profile details
+poetry run ccwb context show
+
+# Show specific profile
+poetry run ccwb context show production
+
+# Output as JSON
+poetry run ccwb context show --json
+```
+
+### `config validate` - Validate Profile Configuration
+
+Validates profile configuration for errors.
+
+```bash
+poetry run ccwb config validate [profile-name|all]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to validate (optional, defaults to active profile)
+- `all` - Validate all profiles
+
+**What it does:**
+
+- Checks required fields are present
+- Validates field formats (region, stack names, URLs)
+- Verifies AWS credentials exist
+- Reports validation errors with suggestions
+
+**Examples:**
+
+```bash
+# Validate active profile
+poetry run ccwb config validate
+
+# Validate specific profile
+poetry run ccwb config validate production
+
+# Validate all profiles
+poetry run ccwb config validate all
+```
+
+### `config export` - Export Profile Configuration
+
+Exports a profile configuration to a file (sanitized).
+
+```bash
+poetry run ccwb config export [profile-name] [options]
+```
+
+**Arguments:**
+
+- `profile-name` - Profile to export (optional, defaults to active profile)
+
+**Options:**
+
+- `--output <file>` - Output file path (default: `<profile-name>.json`)
+- `--include-secrets` - Include sensitive values (not recommended)
+
+**What it does:**
+
+- Exports profile configuration to JSON file
+- Removes sensitive values by default (client secrets)
+- Creates portable configuration file
+
+**Examples:**
+
+```bash
+# Export active profile (secrets removed)
+poetry run ccwb config export
+
+# Export specific profile to custom path
+poetry run ccwb config export production --output prod-config.json
+
+# Export with secrets (use caution)
+poetry run ccwb config export --include-secrets
+```
+
+### `config import` - Import Profile Configuration
+
+Imports a profile configuration from a file.
+
+```bash
+poetry run ccwb config import <file> [name]
+```
+
+**Arguments:**
+
+- `file` - Path to configuration file (required)
+- `name` - Name for imported profile (optional, uses name from file)
+
+**Options:**
+
+- `--overwrite` - Overwrite if profile already exists
+- `--set-active` - Set as active profile after import
+
+**What it does:**
+
+- Imports profile configuration from JSON file
+- Validates configuration before importing
+- Creates new profile in `~/.ccwb/profiles/`
+- Optionally sets as active profile
+
+**Examples:**
+
+```bash
+# Import profile with default name
+poetry run ccwb config import prod-config.json
+
+# Import with custom name
+poetry run ccwb config import config.json staging
+
+# Import and set as active
+poetry run ccwb config import config.json --set-active
+
+# Overwrite existing profile
+poetry run ccwb config import config.json production --overwrite
+```
 
 ### `destroy` - Remove Infrastructure
 
