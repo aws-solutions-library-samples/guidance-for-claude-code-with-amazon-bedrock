@@ -331,8 +331,25 @@ class CloudFormationManager:
 
                             self.s3_client.put_object(Bucket=s3_bucket, Key=s3_key, Body=nested_packaged)
 
-                            # Update template
-                            resource["Properties"]["TemplateURL"] = f"https://{s3_bucket}.s3.amazonaws.com/{s3_key}"
+                            # Update template with partition-aware S3 URL
+                            # Get bucket region to construct correct endpoint
+                            try:
+                                bucket_location = self.s3_client.get_bucket_location(Bucket=s3_bucket)
+                                bucket_region = bucket_location.get('LocationConstraint') or 'us-east-1'
+                                
+                                # Determine partition from region
+                                if bucket_region.startswith('us-gov-'):
+                                    s3_domain = f"s3.{bucket_region}.amazonaws.com"
+                                elif bucket_region.startswith('cn-'):
+                                    s3_domain = f"s3.{bucket_region}.amazonaws.com.cn"
+                                else:
+                                    # Commercial partition - use regional endpoint
+                                    s3_domain = f"s3.{bucket_region}.amazonaws.com" if bucket_region != 'us-east-1' else "s3.amazonaws.com"
+                                
+                                resource["Properties"]["TemplateURL"] = f"https://{s3_bucket}.{s3_domain}/{s3_key}"
+                            except Exception:
+                                # Fallback to path-style URL which works across partitions
+                                resource["Properties"]["TemplateURL"] = f"https://s3.{self.region}.amazonaws.com/{s3_bucket}/{s3_key}"
 
         # Return packaged template as YAML with CloudFormation intrinsic functions preserved
         return cfn_flip.dump_yaml(template)
