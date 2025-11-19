@@ -103,8 +103,8 @@ Resources:
               - 'bedrock-runtime:ConverseStream'
               - 'bedrock-runtime:Converse'
             Resource:
-              - 'arn:aws:bedrock:*::foundation-model/*'
-              - 'arn:aws:bedrock:*:*:inference-profile/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
@@ -118,7 +118,7 @@ Resources:
               - 'bedrock-runtime:ConverseStream'
               - 'bedrock-runtime:Converse'
             Resource:
-              - 'arn:aws:bedrock:::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
           - Sid: AllowBedrockListRegional
             Effect: Allow
             Action:

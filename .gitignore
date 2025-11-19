@@ -12,6 +12,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Virtual environments
+.venv/
+venv/
+
 
 # IDE
 .vscode/
