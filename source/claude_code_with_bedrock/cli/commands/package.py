@@ -71,8 +71,8 @@ class PackageCommand(Command):
 
         # Load configuration first (needed to check CodeBuild status)
         config = Config.load()
-        # Use specified profile or default to active profile
-        profile_name = self.option("profile") or config.active_profile
+        # Use specified profile or default to active profile, or fall back to "ClaudeCode"
+        profile_name = self.option("profile") or config.active_profile or "ClaudeCode"
         profile = config.get_profile(profile_name)
 
         if not profile:
