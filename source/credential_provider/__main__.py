@@ -75,7 +75,7 @@ PROVIDER_CONFIGS = {
 class MultiProviderAuth:
     def __init__(self, profile=None):
         # Load configuration from environment or config file
-        self.profile = profile or "default"
+        self.profile = profile or "ClaudeCode"
 
         # Debug mode - set before loading config since _load_config may use _debug_print
         self.debug = os.getenv("COGNITO_AUTH_DEBUG", "").lower() in ("1", "true", "yes")

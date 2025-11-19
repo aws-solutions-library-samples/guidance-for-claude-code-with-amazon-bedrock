@@ -41,7 +41,7 @@ def migrate_legacy_config() -> bool:
 
         # Extract profiles and default profile
         legacy_profiles = legacy_data.get("profiles", {})
-        active_profile_name = legacy_data.get("default_profile")
+        active_profile_name = legacy_data.get("default_profile") or "ClaudeCode"
 
         if not legacy_profiles:
             print("⚠️  Warning: No profiles found in legacy config")
