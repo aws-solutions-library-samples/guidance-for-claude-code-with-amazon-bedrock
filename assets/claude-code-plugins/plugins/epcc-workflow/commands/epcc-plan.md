@@ -1,13 +1,15 @@
 ---
 name: epcc-plan
 description: Plan phase of EPCC workflow - strategic design before implementation
-version: 1.0.0
+version: 2.1.0
 argument-hint: "[feature-or-task-to-plan]"
 ---
 
 # EPCC Plan Command
 
-You are in the **PLAN** phase of the Explore-Plan-Code-Commit workflow. Transform exploration insights into actionable strategy.
+You are in the **PLAN** phase of the Explore-Plan-Code-Commit workflow. Transform exploration insights into actionable strategy through **collaborative planning**.
+
+@../docs/EPCC_BEST_PRACTICES.md - Comprehensive guide covering clarification strategies, error handling planning, sub-agent delegation patterns, and interactive phase best practices
 
 ⚠️ **IMPORTANT**: This phase is for PLANNING ONLY. Do NOT write any implementation code. Focus exclusively on:
 - Creating detailed plans
@@ -20,7 +22,113 @@ All implementation will happen in the CODE phase.
 ## Planning Target
 $ARGUMENTS
 
-If no specific feature or task was provided above, ask the user: "What feature or task would you like to plan?"
+---
+
+## 🏗️ Phase Architecture
+
+**Mechanism**: Slash command with direct injection (fast, interactive, user-controlled)
+
+**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Interactive Phase Best Practices" for architecture details and CLAUDE.md leverage patterns.
+
+---
+
+## 🎯 Planning Mode: Interactive & Collaborative
+
+This command operates in **collaborative planning mode**, similar to Claude Code's native planning mode:
+
+### Phase 1: Clarification & Requirements Gathering
+
+**ALWAYS start by clarifying requirements**, even if the user provided a task description:
+
+1. **Ask clarifying questions** if ANY of these are unclear:
+   - What specific problem does this solve?
+   - Who are the users/stakeholders?
+   - What are the constraints (time, resources, technology)?
+   - Are there existing systems to integrate with?
+   - What's the priority/urgency?
+   - What are acceptable trade-offs?
+
+2. **Identify ambiguities** in the request:
+   - Multiple valid approaches? Ask which direction to pursue
+   - Unclear scope? Ask about boundaries and non-goals
+   - Missing context? Request specific information
+   - Technology choices? Ask about preferences or constraints
+
+3. **Confirm understanding** before proceeding
+
+**Example**:
+```
+User: "Plan user authentication feature"
+
+You: "I'll help plan the authentication feature. Let me clarify a few things:
+
+1. Authentication method - are you looking for:
+   - Traditional email/password?
+   - OAuth (Google, GitHub)?
+   - Multi-factor authentication?
+
+2. User management - do you need:
+   - User registration?
+   - Password reset?
+   - Role-based access control?
+
+3. Integration - should this work with:
+   - Existing user database?
+   - Third-party auth providers?
+
+4. Scope - should I focus on:
+   - Backend API only?
+   - Full stack (backend + frontend)?
+
+Please let me know your preferences."
+```
+
+## Clarification Strategy
+
+This phase is **collaborative** - balancing technical decisions with user input. Focus on architecture and approach.
+
+**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Clarification Decision Framework" for complete guidance.
+
+### PLAN Phase Guidelines
+
+**Expected questions**: 6-15 (varies by complexity)
+
+**✅ Ask when:**
+- Multiple valid technical approaches (architecture, technology stack)
+- Unclear technical constraints from EPCC_EXPLORE.md
+- Ambiguous scope boundaries (what's in/out?)
+- Trade-offs need decisions (complexity vs performance)
+- User preferences unknown (which option?)
+
+**❌ Don't ask when:**
+- EPCC_EXPLORE.md already documents it (read first)
+- PRD.md already clarified it (check requirements if available)
+- It's an implementation detail (defer to CODE phase)
+- You can document multiple options (present alternatives)
+
+### Key Patterns
+
+**Check exploration first**: Read EPCC_EXPLORE.md → use constraints found → ask about gaps
+
+**Draft-driven**: Create draft with documented assumptions → present → iterate → finalize only after approval
+
+**Technical decisions**: 2-4 clear options → use AskUserQuestion → avoid asking about code-level details
+
+### Phase 2: Draft Plan Creation
+
+Once requirements are clear:
+
+1. **Create initial plan** using the planning framework below
+2. **Present as DRAFT** for review
+3. **Explicitly ask for feedback**: "Does this approach make sense? Any concerns or changes?"
+4. **Iterate based on feedback** - refine until approved
+
+### Phase 3: Plan Finalization
+
+Only after user approval:
+
+1. **Finalize the plan** in EPCC_PLAN.md
+2. **Summarize next steps**: "Plan is ready. Run `/epcc-code` to begin implementation."
 
 ## 📋 Planning Objectives
 
@@ -37,24 +145,108 @@ If no specific feature or task was provided above, ask the user: "What feature o
 - **System changes**: Think hard about ripple effects
 - **Architecture decisions**: Ultrathink about long-term implications
 
-## Parallel Planning Subagents
+## Parallel Planning Subagents (Optional)
 
-Deploy specialized planning agents you have access to:
+For **very complex planning tasks**, you MAY deploy specialized planning agents **in parallel**.
+
+**Launch simultaneously** (all in same response):
+
+```
+# ✅ GOOD: Parallel planning (agents analyze different aspects)
+@system-designer Design high-level architecture for authentication feature.
+
+Requirements from PRD.md (if available):
+- JWT-based authentication
+- User login/logout
+- Token refresh mechanism
+- Rate limiting on login attempts
+
+Constraints from EPCC_EXPLORE.md:
+- Existing framework: Express.js + TypeScript
+- Database: PostgreSQL
+- Current architecture: Layered (routes → services → repositories)
+
+Design:
+- Component structure and boundaries
+- Service layer architecture
+- Data flow diagrams
+- Database schema for users/sessions
+- API endpoint structure
+
+Return: Architecture diagram, component descriptions, integration points.
+
+@tech-evaluator Evaluate technology choices for authentication implementation.
+
+Requirements:
+- JWT library selection
+- Password hashing library
+- Rate limiting approach
+- Session storage options
+
+Compare options:
+- JWT: jsonwebtoken vs jose
+- Hashing: bcrypt vs argon2
+- Rate limiting: express-rate-limit vs rate-limiter-flexible
+- Sessions: Redis vs in-memory vs database
+
+Evaluate: Performance, security, maintenance, community support, learning curve.
+Return: Recommendation table with pros/cons and final choices.
+
+@security-reviewer Assess security considerations for authentication feature.
+
+Requirements:
+- Secure password storage
+- JWT token security
+- Rate limiting effectiveness
+- Session management security
+
+Analyze risks:
+- OWASP Top 10 relevance
+- Common authentication vulnerabilities
+- Token storage best practices
+- Brute force prevention
+
+Return: Security requirements checklist, threat model, mitigation strategies.
+
+# All three analyze different planning aspects concurrently
+```
+
+**Available agents:**
 @system-designer @tech-evaluator @business-analyst @security-reviewer @qa-engineer @project-manager
 
-**Agent Instructions**: Each agent must ONLY plan and document. Save all implementation for the CODE phase:
-- @system-designer: Design system architecture and component interactions (NO CODING - only design)
-- @tech-evaluator: Evaluate technology choices and build vs buy decisions (NO IMPLEMENTATION)
-- @business-analyst: Break down requirements into manageable tasks (NO IMPLEMENTATION)
-- @security-reviewer: Assess risks and identify potential vulnerabilities (NO FIXES - only identify)
-- @qa-engineer: Plan comprehensive testing strategy (NO TEST WRITING - only strategy)
-- @project-manager: Calculate realistic timelines and resource allocation (PLANNING ONLY)
+**Full agent reference**: See `../docs/EPCC_BEST_PRACTICES.md` → "Agent Capabilities Overview" for agents in other phases (CODE, EXPLORE, COMMIT).
 
-MOTE:
-- You can find details about the codebase in EPCC_EXPLORE.md if it exists.
-- You can find details about Product Requirements in EPCC_PRD.md if it exists.
+**IMPORTANT**: Only use subagents for genuinely complex planning tasks. For straightforward features, handle planning directly in conversation.
+
+## Project Type: Greenfield vs Brownfield
+
+**Brownfield Projects** (existing codebase):
+- EPCC_EXPLORE.md will exist (from `/epcc-explore`)
+- Use exploration findings for patterns, constraints, and conventions
+- Follow existing architectural patterns
+- Reuse identified components
+
+**Greenfield Projects** (new codebase):
+- EPCC_EXPLORE.md may not exist (skipped exploration)
+- Plan with more flexibility (no existing constraints)
+- Define patterns from scratch or industry best practices
+- Focus on PRD.md requirements (if available) or user-provided requirements
+
+**Check for exploration findings:**
+```bash
+if [ -f "EPCC_EXPLORE.md" ]; then
+    # Brownfield: Use exploration findings
+    echo "Found exploration - planning with existing codebase context"
+else
+    # Greenfield: Plan from PRD only
+    echo "No exploration found - planning greenfield implementation"
+fi
+```
 
 ## Planning Framework
+
+**If EPCC_EXPLORE.md exists:** Use exploration findings as the foundation for your plan.
+**If EPCC_EXPLORE.md doesn't exist:** Base your plan on PRD.md (if available) or user-provided requirements and industry best practices.
 
 ### Step 1: Define Objectives
 
@@ -75,7 +267,6 @@ MOTE:
 ### Non-Goals (What We're NOT Doing)
 - Not implementing X (will be done later)
 - Not changing Y (out of scope)
-- Not optimizing Z (separate task)
 ```
 
 ### Step 2: Design the Approach
@@ -84,12 +275,7 @@ MOTE:
 ## Technical Approach
 
 ### High-Level Architecture
-```
-[Component A] --> [Component B] --> [Component C]
-     |                |                  |
-     v                v                  v
-[Database]      [Cache Layer]      [External API]
-```
+[Component diagram or description showing how pieces fit together]
 
 ### Design Decisions
 | Decision | Option Chosen | Rationale |
@@ -108,32 +294,28 @@ MOTE:
 
 ### Step 3: Task Breakdown
 
-Use TodoWrite to create trackable tasks (DO NOT implement these tasks now - only document them):
+Document tasks in the plan (will be added to TodoWrite during CODE phase):
 
-```python
-tasks = [
-    {
-        "id": "1",
-        "content": "Set up database schema",
-        "estimate": "2 hours",
-        "dependencies": [],
-        "priority": "high"
-    },
-    {
-        "id": "2", 
-        "content": "Implement authentication middleware",
-        "estimate": "3 hours",
-        "dependencies": ["1"],
-        "priority": "high"
-    },
-    {
-        "id": "3",
-        "content": "Create API endpoints",
-        "estimate": "4 hours",
-        "dependencies": ["1", "2"],
-        "priority": "medium"
-    }
-]
+```markdown
+## Task Breakdown
+
+### Phase 1: Foundation (6 hours)
+1. **Database Schema** (2h)
+   - Design user tables
+   - Create migration scripts
+   - Add indexes
+   - Dependencies: None
+   - Risk: Low
+
+2. **Authentication Middleware** (3h)
+   - Implement JWT validation
+   - Add request interceptors
+   - Error handling
+   - Dependencies: Task 1
+   - Risk: Medium
+
+### Phase 2: Core Features (8 hours)
+[Continue breakdown...]
 ```
 
 ### Step 4: Risk Assessment
@@ -146,7 +328,6 @@ tasks = [
 | Database migration fails | Low | High | Create rollback script, test in staging |
 | API rate limits exceeded | Medium | Medium | Implement caching, request batching |
 | Performance degradation | Low | High | Load testing, monitoring, optimization plan |
-| Security vulnerability | Low | Critical | Security review, penetration testing |
 ```
 
 ### Step 5: Test Strategy
@@ -171,21 +352,54 @@ tasks = [
 - [ ] Error scenario tests
 - [ ] Performance tests
 - Coverage target: Critical paths
+```
 
-### Security Tests
-- [ ] Authentication tests
-- [ ] Authorization tests
-- [ ] Input validation tests
-- [ ] SQL injection tests
+### Step 6: Define Error Handling Strategy
+
+**CRITICAL**: Plan agent-compatible error handling.
+
+```markdown
+## Error Handling Strategy
+
+### Requirements (Agent-Observable Errors)
+
+**All scripts/services MUST:**
+- Exit code 0 (success) or 2 (error)
+- Write errors to stderr (not stdout)
+- Provide clear, actionable error messages
+
+**Why**: Enables Claude Code, sub-agents, and automation to observe and respond to errors.
+
+### Planning Checklist
+
+- [ ] Error handling strategy defined for each component
+- [ ] Exit codes specified (0=success, 2=error)
+- [ ] Error message formats planned
+- [ ] Test strategy includes error path validation
+
+### From EXPLORE Phase
+
+Check EPCC_EXPLORE.md for:
+- Existing error handling patterns to follow
+- Project-specific error conventions
+- Patterns that need updating for agent compatibility
+
+**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Agent-Compatible Error Handling" for:
+- Complete rationale and implementation patterns
+- Language-specific examples (Python, Node.js, Go, Bash)
+- Testing strategies for agent observability
+- Integration guidance across EPCC phases
 ```
 
 ## Planning Deliverables
 
 ### Output File: EPCC_PLAN.md
 
-All planning documentation will be generated in `EPCC_PLAN.md` in the project root.
+Generate plan in `EPCC_PLAN.md` **ONLY AFTER USER APPROVAL**.
 
-### 1. Implementation Plan Structure
+### Plan Structure
+
+Include these sections with **actual plan details**:
 
 ```markdown
 # Implementation Plan: [Feature Name]
@@ -194,15 +408,13 @@ All planning documentation will be generated in `EPCC_PLAN.md` in the project ro
 - **Objective**: [What we're building]
 - **Timeline**: [Estimated duration]
 - **Priority**: [High/Medium/Low]
-- **Owner**: [Responsible party]
+- **Status**: Draft / Approved
 
 ## Approach
 [Detailed technical approach]
 
 ## Task Breakdown
-1. [ ] Task 1 (2h) - Description
-2. [ ] Task 2 (3h) - Description
-3. [ ] Task 3 (4h) - Description
+[Detailed task list with estimates, dependencies, risks]
 
 ## Dependencies
 - External: [List external dependencies]
@@ -220,75 +432,86 @@ All planning documentation will be generated in `EPCC_PLAN.md` in the project ro
 ## Testing Strategy
 [Test plan summary]
 
+## Technical Design
+[API design, data models, database schema]
+
+## Security Considerations
+[Authentication, authorization, data validation, encryption methods]
+
 ## Rollout Plan
 - Phase 1: [Description]
 - Phase 2: [Description]
 - Rollback procedure: [Description]
 ```
 
-### 2. Task List (included in EPCC_PLAN.md)
+## Handling Ambiguity (CRITICAL)
 
-Tasks will be documented in EPCC_PLAN.md and can also be tracked via TodoWrite:
+**Before creating EPCC_PLAN.md, ensure clarity:**
 
-```bash
-# Create task list
-TodoWrite.create([
-    "Database schema design",
-    "API endpoint implementation",
-    "Authentication setup",
-    "Frontend integration",
-    "Testing",
-    "Documentation"
-])
+### Multiple Valid Approaches?
+
+Use AskUserQuestion tool to present options:
+
+```
+AskUserQuestion(
+    questions=[{
+        "question": "Which authentication approach should we use?",
+        "header": "Auth method",
+        "options": [
+            {
+                "label": "JWT tokens",
+                "description": "Stateless, scalable, good for APIs"
+            },
+            {
+                "label": "Session-based",
+                "description": "Traditional, simpler, good for web apps"
+            },
+            {
+                "label": "OAuth only",
+                "description": "Delegate to third parties (Google, GitHub)"
+            }
+        ],
+        "multiSelect": false
+    }]
+)
 ```
 
-### 3. Technical Design Document (included in EPCC_PLAN.md)
+### Unclear Requirements?
 
-```markdown
-# Technical Design: [Feature Name]
+Ask directly:
 
-## Architecture
-[Detailed architecture diagram and explanation]
+```
+I need clarification on a few points before creating the plan:
 
-## API Design
-### Endpoints
-- `POST /api/resource` - Create resource
-- `GET /api/resource/:id` - Get resource
-- `PUT /api/resource/:id` - Update resource
-- `DELETE /api/resource/:id` - Delete resource
+1. **User registration**: Should users self-register, or will accounts be created by admins?
+2. **Password requirements**: Any specific complexity requirements?
+3. **Session duration**: How long should auth tokens remain valid?
 
-### Data Models
-```json
-{
-  "resource": {
-    "id": "uuid",
-    "name": "string",
-    "created_at": "timestamp",
-    "updated_at": "timestamp"
-  }
-}
+Please let me know so I can create an accurate plan.
 ```
 
-## Database Schema
-```sql
-CREATE TABLE resources (
-    id UUID PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-```
+### Unknown Technical Constraints?
 
-## Security Considerations
-- Authentication: [Method]
-- Authorization: [Method]
-- Data validation: [Method]
-- Encryption: [Method]
+Investigate EPCC_EXPLORE.md first, then ask:
+
+```
+I've checked EPCC_EXPLORE.md and found:
+- Existing database: PostgreSQL 14
+- Current auth: None (new implementation)
+- Framework: Express.js with TypeScript
+
+Questions:
+1. Can we add new dependencies (e.g., passport.js, bcrypt)?
+2. Are there company security policies I should follow?
+3. Should this integrate with any existing services?
 ```
 
 ## Planning Best Practices
 
 ### DO:
+- ✅ **Ask questions FIRST** before planning
+- ✅ **Present draft plans** for approval
+- ✅ **Iterate based on feedback**
 - ✅ Break tasks into < 4 hour chunks
 - ✅ Include testing in every task
 - ✅ Consider edge cases explicitly
@@ -296,18 +519,65 @@ CREATE TABLE resources (
 - ✅ Plan for rollback
 
 ### DON'T:
+- ❌ **Assume requirements** without clarification
+- ❌ **Finalize plan** without user approval
 - ❌ Skip risk assessment
 - ❌ Underestimate complexity
 - ❌ Ignore dependencies
 - ❌ Plan without exploration
 - ❌ Forget documentation tasks
+- ❌ **Write implementation code**
+
+## Planning Workflow
+
+```
+┌─────────────────────────────────────┐
+│ 1. CLARIFY REQUIREMENTS             │
+│    - Ask questions                  │
+│    - Identify ambiguities           │
+│    - Gather constraints             │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│ 2. CREATE DRAFT PLAN                │
+│    - Define objectives              │
+│    - Design approach                │
+│    - Break down tasks               │
+│    - Assess risks                   │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│ 3. PRESENT FOR REVIEW                │
+│    - Show draft plan                │
+│    - Ask for feedback               │
+│    - Highlight key decisions        │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│ 4. ITERATE (if needed)              │
+│    - Refine based on feedback       │
+│    - Adjust approach                │
+│    - Re-present changes             │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│ 5. FINALIZE PLAN                    │
+│    - Write EPCC_PLAN.md             │
+│    - Confirm next steps             │
+│    - Ready for /epcc-code           │
+└─────────────────────────────────────┘
+```
 
 ## Planning Checklist
 
-Before proceeding to CODE phase, ensure all plans are documented in `EPCC_PLAN.md`.
+**Before presenting draft plan:**
+- [ ] All requirements clarified
+- [ ] Ambiguities resolved
+- [ ] Technical constraints understood
+- [ ] User preferences known
 
-**REMINDER**: No code should be written during this phase. If you're tempted to implement something, document it as a task instead:
-
+**Before finalizing EPCC_PLAN.md:**
+- [ ] User approved the approach
 - [ ] Objectives clearly defined
 - [ ] Approach thoroughly designed
 - [ ] Tasks broken down and estimated
@@ -322,18 +592,17 @@ Before proceeding to CODE phase, ensure all plans are documented in `EPCC_PLAN.m
 ## Usage Examples
 
 ```bash
-# Basic planning
+# Basic planning (will prompt for clarification)
 /epcc-plan "Plan user authentication feature"
 
-# Detailed planning with risk assessment
-/epcc-plan --detailed --with-risks "Plan payment processing"
+# Complex feature (will ask detailed questions)
+/epcc-plan "Plan payment processing system"
 
-# Quick planning for small feature
-/epcc-plan --quick "Plan UI tooltip addition"
+# Small feature (minimal clarification needed)
+/epcc-plan "Add email validation to signup form"
 
-# Planning with specific focus
-/epcc-plan --focus backend "Plan API refactoring"
-/epcc-plan --focus security "Plan security improvements"
+# Architecture change (will ask about scope and approach)
+/epcc-plan "Migrate from REST to GraphQL"
 ```
 
 ## Integration with Other Phases
@@ -347,6 +616,7 @@ Before proceeding to CODE phase, ensure all plans are documented in `EPCC_PLAN.m
 - Provide clear task list in `EPCC_PLAN.md`
 - Define acceptance criteria in plan document
 - Specify test requirements
+- Run `/epcc-code` to begin implementation
 
 ### To COMMIT:
 - Reference `EPCC_PLAN.md` in commit message
@@ -355,7 +625,7 @@ Before proceeding to CODE phase, ensure all plans are documented in `EPCC_PLAN.m
 
 ## Final Output
 
-Upon completion, generate `EPCC_PLAN.md` containing:
+Upon **user approval**, generate `EPCC_PLAN.md` containing:
 - Implementation overview and objectives
 - Technical approach and architecture
 - Complete task breakdown with estimates
@@ -363,7 +633,20 @@ Upon completion, generate `EPCC_PLAN.md` containing:
 - Testing strategy and success criteria
 - Dependencies and timeline
 
-Remember: **A good plan is half the implementation!**
+Then confirm:
+```markdown
+✅ Plan finalized and saved to EPCC_PLAN.md
 
-🚫 **DO NOT**: Write code, create files, implement features, or fix bugs
-✅ **DO**: Plan, document, design, assess risks, break down tasks, and save everything to EPCC_PLAN.md
+Next steps:
+1. Review the plan if needed
+2. Run `/epcc-code` to begin implementation
+3. Tasks will be tracked using TodoWrite during CODE phase
+
+Ready to proceed?
+```
+
+Remember: **A good plan is half the implementation, but collaboration makes it great!**
+
+🚫 **DO NOT**: Write code, create files, implement features, fix bugs, or finalize plans without approval
+
+✅ **DO**: Ask questions, clarify requirements, present drafts, iterate on feedback, collaborate with the user

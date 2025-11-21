@@ -1,7 +1,7 @@
 {
   "name": "epcc-workflow",
-  "version": "1.0.0",
-  "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents for exploration, planning, coding, and commit phases",
+  "version": "2.1.0",
+  "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents and PRD requirements gathering for exploration, planning, coding, and commit phases",
   "author": {
     "name": "AWS Solutions Library"
   }
