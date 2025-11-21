@@ -1,7 +1,7 @@
 ---
 name: epcc-explore
 description: Explore phase of EPCC workflow - understand thoroughly before acting
-version: 1.0.0
+version: 2.1.0
 argument-hint: "[area-to-explore] [--deep|--quick]"
 ---
 
@@ -9,33 +9,207 @@ argument-hint: "[area-to-explore] [--deep|--quick]"
 
 You are in the **EXPLORE** phase of the Explore-Plan-Code-Commit workflow. Your mission is to understand thoroughly before taking any action.
 
+@../docs/EPCC_BEST_PRACTICES.md - Comprehensive guide covering clarification strategies, error handling patterns, sub-agent delegation, and EPCC workflow optimization
+
 ⚠️ **IMPORTANT**: This phase is for EXPLORATION ONLY. Do NOT write any implementation code. Focus exclusively on:
 - Reading and understanding existing code
 - Analyzing patterns and architecture
 - Identifying constraints and dependencies
 - Documenting everything in EPCC_EXPLORE.md
 
-All implementation will happen in the CODE phase. Use the following subagents in parallel for this explore phase:
+All implementation will happen in the CODE phase.
 
-## Parallel Exploration Subagents
-
-IMPORTANT: Use the following subagents in parallel for this explore phase:
-@code-archaeologist @system-designer @business-analyst @test-generator @documentation-agent
-
-**Agent Instructions**: Each agent must ONLY explore and document findings. Save all implementation ideas for the CODE phase:
-- @code-archaeologist: Analyze legacy code structure and uncover hidden patterns (NO CODING - only analysis)
-- @system-designer: Identify design patterns and architectural conventions (NO IMPLEMENTATION - only observation)  
-- @business-analyst: Map dependencies and process flows (NO CHANGES - only documentation)
-- @test-generator: Explore existing tests and coverage gaps (NO TEST WRITING - only assessment)
-- @documentation-agent: Review and analyze all documentation (NO NEW DOCS - only review)
-
-Note: This is the first phase - findings will be documented in EPCC_EXPLORE.md for use in subsequent phases. Always check for CLAUDE.md files first as they contain critical project-specific instructions.
-
-
-## Exploration Focus
+## Exploration Target
 $ARGUMENTS
 
-If no specific area was provided above, perform a general exploration of the entire codebase. If an area was specified, focus your exploration on that specific component, feature, or file.
+### Exploration Thoroughness
+
+Parse thoroughness level from arguments:
+- `--quick`: Fast surface-level exploration (2-3 key areas, basic patterns)
+- `--deep` or `--thorough`: Comprehensive analysis (multiple locations, cross-referencing, detailed patterns)
+- **Default** (no flag): Medium thoroughness (balanced exploration)
+
+## 🎯 Autonomous Exploration Mode
+
+This command operates as an **autonomous exploration agent**, similar to Claude Code's Explore subagent:
+
+### Exploration Characteristics
+
+1. **Self-Directed Search**: Automatically tries multiple search strategies if initial attempts don't find relevant information
+2. **Comprehensive Coverage**: Systematically explores all relevant areas without needing step-by-step guidance
+3. **Pattern Recognition**: Identifies and documents coding patterns, architectural decisions, and conventions
+4. **Persistent Investigation**: Doesn't give up easily - tries different file patterns, search terms, and approaches
+5. **Complete Report**: Delivers a single, comprehensive exploration report in EPCC_EXPLORE.md
+
+## When to Ask Questions
+
+This phase is designed to be **autonomous** - you should explore independently without frequent user interaction.
+
+### Rarely Ask (Exploration is Self-Directed)
+
+✅ **Only ask when:**
+- **Exploration target is genuinely unclear** ("explore authentication" but no auth code found anywhere)
+- **Multiple conflicting patterns exist** and unclear which is canonical
+- **Completely blocked** after trying multiple search strategies
+- **Critical information is missing** that prevents meaningful exploration (e.g., can't access certain directories)
+
+❌ **Don't ask when:**
+- First search doesn't find something (try alternative approaches first)
+- Multiple patterns exist (document all of them)
+- Code is messy or unclear (document what you find)
+- You're unsure which pattern is best (document options, let PLAN decide)
+- Exploration is taking longer than expected (be thorough)
+
+### Problem-Solving Approach
+
+**Instead of asking, try:**
+
+1. **Multiple search strategies**: If `grep authentication` fails, try `grep auth`, `find . -name "*auth*"`, check common directories
+2. **Follow the trail**: Found one file? Check its imports, look for similar files in same directory
+3. **Document uncertainty**: "Pattern X found in 3 places, Pattern Y in 2 places. Both appear active."
+4. **Note gaps**: "No authentication code found after checking [list of searches]. This appears to be a greenfield area."
+
+### When to Use AskUserQuestion Tool
+
+**Almost never in EXPLORE phase.** This phase is autonomous by design.
+
+**Rare exception**: If exploration target is ambiguous AND you've tried reasonable interpretations:
+```
+User: "explore the payment system"
+You've searched: payment*, billing*, transaction*, checkout*, stripe*, paypal*
+Found: Nothing related to payments
+Then ask: "I searched extensively but found no payment-related code. Should I:
+  - Explore a different area?
+  - Treat this as greenfield (no existing payment code)?
+  - Search with different terms?"
+```
+
+### Clarification Pattern
+
+**Pattern: Try → Try → Try → Document**
+```
+1. Try search approach A → No results
+2. Try search approach B → No results
+3. Try search approach C → No results
+4. Document: "Searched for X using [approaches]. No matches found. This appears greenfield."
+```
+
+NOT: ~~Try once → Ask user~~
+
+Remember: You're an **autonomous explorer**. Be persistent, try multiple approaches, and document what you find (or don't find). Save questions for genuine blockers, not first obstacles.
+
+## Handling Ambiguity (CRITICAL)
+
+**EXPLORE phase is autonomous by design - avoid asking questions unless truly blocked.**
+
+Before escalating to AskUserQuestion, ensure you've exhausted autonomous exploration:
+
+### Unclear Exploration Target?
+
+**Try multiple interpretations first:**
+
+```
+User: "explore the payment system"
+
+Step 1: Try broad searches
+- grep -r "payment" .
+- find . -name "*payment*"
+- grep -r "billing\|transaction\|checkout" .
+
+Step 2: Try platform-specific patterns
+- Stripe: grep -r "stripe"
+- PayPal: grep -r "paypal"
+- Generic: grep -r "charge\|invoice\|subscription"
+
+Step 3: Check configuration
+- Look for API keys in .env files
+- Check package.json/requirements.txt for payment libraries
+
+Step 4: Document findings
+If nothing found: "Searched extensively (payment*, billing*, stripe*, etc.). No payment code found. This appears to be a greenfield area."
+If multiple found: "Found two payment implementations: legacy (src/billing/) and new (src/payments/). Both appear active."
+```
+
+**Only ask if genuinely blocked:**
+
+Use AskUserQuestion tool with proper format:
+```json
+{
+  "questions": [{
+    "question": "I found no payment-related code after extensive searching. How should I proceed?",
+    "header": "Next Step",
+    "multiSelect": false,
+    "options": [
+      {
+        "label": "Treat as greenfield",
+        "description": "Document that no payment code exists yet"
+      },
+      {
+        "label": "Different search terms",
+        "description": "Provide specific terms or file paths to search"
+      },
+      {
+        "label": "Different feature area",
+        "description": "Explore a different part of the codebase instead"
+      }
+    ]
+  }]
+}
+```
+
+### Multiple Conflicting Patterns Exist?
+
+**Document all patterns, don't ask which to choose:**
+
+```markdown
+## 8. Multiple Patterns Found
+
+**Authentication Implementation:**
+
+Pattern A: JWT-based (src/auth/jwt/)
+- Used in: API endpoints (3 files)
+- Last modified: 2025-10-15
+- Pros: Stateless, scalable
+- Status: Appears to be current standard
+
+Pattern B: Session-based (src/auth/sessions/)
+- Used in: Legacy admin panel (2 files)
+- Last modified: 2024-03-20
+- Pros: Simpler
+- Status: Possibly deprecated (no recent changes)
+
+**Recommendation**: Pattern A (JWT) appears to be the current standard based on recent activity.
+```
+
+**See Also**: EPCC_BEST_PRACTICES.md "Clarification Decision Framework" (lines 2323-2475)
+
+### Exploration Strategy
+
+**BE SYSTEMATIC AND THOROUGH:**
+
+1. **Try multiple search approaches** if first attempt yields no results:
+   - Different file patterns (*.py, *auth*, authentication*)
+   - Various naming conventions (camelCase, snake_case, kebab-case)
+   - Related terms and synonyms
+   - Directory-specific searches
+
+2. **Follow the trail**:
+   - If you find a relevant file, check its imports/dependencies
+   - Look for related files in the same directory
+   - Search for similar patterns in other modules
+   - Trace relationships between components
+
+3. **Be comprehensive**:
+   - Don't stop at the first match
+   - Explore multiple examples of the same pattern
+   - Check both implementation and test files
+   - Review configuration and documentation
+
+4. **Document as you go**:
+   - Track what you've searched and what you found
+   - Note patterns and conventions
+   - Identify gaps or unclear areas
+   - Record assumptions that need validation
 
 ## 🔍 Exploration Objectives
 
@@ -45,275 +219,536 @@ If no specific area was provided above, perform a general exploration of the ent
 4. **Discover Constraints**: Technical, business, and operational limitations
 5. **Review Similar Code**: Find existing implementations to learn from
 6. **Assess Complexity**: Understand the scope and difficulty
+7. **Document Dependencies**: Map internal and external dependencies
+8. **Evaluate Test Coverage**: Understand testing approaches and gaps
 
-## Extended Thinking Strategy
+## Thoroughness-Based Exploration Depth
 
-- **Quick exploration**: Basic project overview
-- **Deep dive**: Think about architectural decisions and patterns
-- **Complex systems**: Think hard about interdependencies and side effects
-- **Legacy code**: Ultrathink about historical context and migration paths
+### Quick Exploration (--quick)
+Focus on:
+- Project structure overview
+- Main entry points
+- Key dependencies (package.json, requirements.txt, etc.)
+- Basic patterns (1-2 examples)
+- CLAUDE.md instructions
+- ~5-10 file reads maximum
 
+### Medium Exploration (default)
+Include Quick items plus:
+- Multiple pattern examples (3-5 per pattern)
+- Related component exploration
+- Test file review
+- Configuration analysis
+- Cross-referencing between modules
+- ~15-25 file reads
+
+### Deep Exploration (--deep/--thorough)
+Include Medium items plus:
+- Exhaustive pattern documentation
+- Full dependency tree mapping
+- Historical context (git log, commit history)
+- Edge case handling analysis
+- Performance consideration review
+- Security pattern assessment
+- Complete test coverage analysis
+- ~30-50+ file reads
+
+## Parallel Exploration Subagents (Optional for Complex Exploration)
+
+For **very large codebases or complex exploration tasks**, you MAY deploy specialized exploration agents **in parallel to save time**.
+
+**Launch simultaneously** (all in same response):
+
+```
+# ✅ GOOD: Parallel exploration (agents explore different aspects)
+@code-archaeologist Analyze authentication system architecture and data flow.
+
+Target: Authentication implementation across codebase
+Focus areas:
+- Token generation and validation flow
+- Session management approach
+- Password hashing implementation
+- Rate limiting mechanisms
+
+Trace: User login → token creation → validation → protected endpoint access
+Document: Component interactions, data flow, security patterns, technical debt areas.
+
+@system-designer Document authentication system architecture and component design.
+
+Target: Authentication system structure
+Analyze:
+- Component boundaries and responsibilities
+- Service layer architecture
+- Database schema for auth
+- API endpoint design
+
+Generate: Architecture diagram, component relationships, data models, integration points.
+
+@business-analyst Identify authentication business requirements and user workflows.
+
+Target: Authentication feature scope and purpose
+Analyze:
+- User registration and login flows
+- Password reset mechanisms
+- Multi-factor authentication support
+- Role-based access control
+
+Document: User stories, business rules, workflow diagrams, requirement gaps.
+
+# All three explore different aspects concurrently
+```
+
+**Available agents:**
+@code-archaeologist @system-designer @business-analyst @test-generator @documentation-agent
+
+**Full agent reference**: See `../docs/EPCC_BEST_PRACTICES.md` → "Agent Capabilities Overview" for agents in other phases (CODE, PLAN, COMMIT).
+
+**IMPORTANT**: Only use subagents for codebases with 100+ files or highly complex systems. For typical projects, handle exploration directly and autonomously.
 
 ## Exploration Methodology
 
-### Step 1: Review Project Instructions (CLAUDE.md)
-```bash
-# Check for CLAUDE.md files with project-specific instructions
-# These files contain critical project conventions and requirements
+### Phase 1: Project Context & Instructions
 
-# Check for project-level CLAUDE.md
-if [ -f "CLAUDE.md" ]; then
-    echo "Found project CLAUDE.md - reviewing project-specific instructions"
-    cat CLAUDE.md
-fi
+**ALWAYS START HERE:**
 
-# Check for .claude/CLAUDE.md
-if [ -f ".claude/CLAUDE.md" ]; then
-    echo "Found .claude/CLAUDE.md - reviewing additional instructions"
-    cat .claude/CLAUDE.md
-fi
+Check for CLAUDE.md files in this order:
+1. Project root CLAUDE.md
+2. .claude/CLAUDE.md
+3. User global ~/.claude/CLAUDE.md
 
-# Check for user's global CLAUDE.md
-if [ -f "~/.claude/CLAUDE.md" ]; then
-    echo "Found global CLAUDE.md - reviewing user preferences"
-    cat ~/.claude/CLAUDE.md
-fi
-```
+Document ALL instructions found - these are mandatory requirements for the project.
 
-### Step 2: Project Structure Analysis
-```bash
-# Get high-level overview
-tree -L 3 -I 'node_modules|__pycache__|.git|dist|build'
+### Phase 2: Project Structure Discovery
 
-# Identify key directories
-ls -la src/ tests/ docs/ config/
+Use multiple approaches to understand structure:
+- Directory listings (ls, tree if available)
+- File finding (find, Glob)
+- Key file identification (entry points, configs)
 
-# Find main entry points
-grep -r "if __name__ == '__main__'" . --include="*.py"
-grep -r "export default" . --include="*.js" --include="*.ts"
-```
+Adapt if one approach fails - try another.
 
-### Step 3: Technology Stack Discovery
-```bash
-# Identify frameworks and libraries (READ ONLY - do not modify any files)
-# Check for package files
-if [ -f "package.json" ]; then echo "Found Node.js project"; fi
-if [ -f "requirements.txt" ]; then echo "Found Python project"; fi
-if [ -f "Gemfile" ]; then echo "Found Ruby project"; fi
-if [ -f "pom.xml" ]; then echo "Found Java project"; fi
-if [ -f "Cargo.toml" ]; then echo "Found Rust project"; fi
-if [ -f "go.mod" ]; then echo "Found Go project"; fi
+### Phase 3: Technology Stack Identification
 
-# Document findings in EPCC_EXPLORE.md, do not create new files
-```
+Systematically check for different project types:
+- Python: pyproject.toml, requirements.txt, setup.py, Pipfile, poetry.lock
+- JavaScript/TypeScript: package.json, tsconfig.json, yarn.lock, pnpm-lock.yaml
+- Other languages: Gemfile, pom.xml, build.gradle, Cargo.toml, go.mod, composer.json
 
-### Step 4: Pattern Recognition
-```bash
-# Identify coding patterns (OBSERVATION ONLY - do not implement any patterns)
-# Look for architectural patterns
-grep -r "Controller" --include="*.py" --include="*.js" | head -10
-grep -r "Service" --include="*.py" --include="*.js" | head -10
-grep -r "Repository" --include="*.py" --include="*.js" | head -10
+Document frameworks, libraries, versions, and tools found.
 
-# Document patterns found in EPCC_EXPLORE.md
-# DO NOT create new pattern implementations
-```
+### Phase 4: Pattern Recognition (Multi-Strategy Search)
 
-### Step 5: Constraint Identification
-- Performance requirements (latency, throughput)
-- Security requirements (authentication, encryption)
-- Compatibility requirements (browsers, platforms)
-- Regulatory requirements (GDPR, HIPAA)
-- Technical debt and limitations
+**Use persistent, multi-attempt searching:**
 
-### Step 6: Similar Implementation Search
-```bash
-# Find similar features or patterns
-grep -r "authentication" --include="*.py" --include="*.js"
-grep -r "similar_feature_name" --include="*.py" --include="*.js"
+Example: Finding authentication patterns
+1. Direct file search: `find . -name "*auth*"`
+2. Content search: `grep -r "authenticate|login|session"`
+3. Class/function search: `grep -r "class.*Auth|def.*login"`
+4. Import search: `grep -r "from.*auth import"`
+5. Directory check: `ls src/auth/ app/auth/`
 
-# Look for existing solutions
-find . -name "*auth*" -o -name "*login*" -o -name "*session*"
-```
+**Document what you tried and what worked:**
+- Track successful search strategies
+- Note what didn't work and why
+- Record patterns found with file locations
+
+### Phase 5: Architectural Pattern Discovery
+
+Look for common patterns systematically:
+- MVC/MVT Pattern
+- Repository Pattern
+- Service Layer Pattern
+- Factory Pattern
+- Middleware/Decorator Pattern
+- Observer/Event Pattern
+
+Document each pattern with:
+- Where it's used (file paths)
+- How many implementations
+- Example usage
+- When to use it
+
+### Phase 6: Dependency Mapping
+
+Trace both external and internal dependencies:
+- **External**: From package manifests (package.json, requirements.txt, etc.)
+- **Internal**: Module imports, component relationships, data flow
+
+Create dependency graphs showing relationships.
+
+### Phase 7: Constraint & Risk Identification
+
+Actively search for constraints:
+- Performance constraints (timeouts, rate limits, caching)
+- Security constraints (CORS, CSRF, authentication, encryption)
+- Version constraints (language versions, compatibility)
+- Environment constraints (env vars, deployment requirements)
+
+### Phase 8: Similar Implementation Search
+
+If exploring a specific feature, find similar existing code:
+- Search for related functionality
+- Find integration examples
+- Review existing third-party integrations
+- Identify reusable components
 
 ## Exploration Deliverables
 
 ### Output File: EPCC_EXPLORE.md
 
-All exploration findings will be documented in `EPCC_EXPLORE.md` in the project root.
+Generate a comprehensive exploration report in `EPCC_EXPLORE.md` in the project root.
 
-### 1. Exploration Report Structure
+### Report Structure
+
+Include these sections with **actual findings from your exploration**:
+
 ```markdown
-# Exploration Report: [Feature/Area]
+# Exploration Report: [Area/Feature]
+
+**Date**: [Current date]
+**Scope**: [Quick/Medium/Deep]
+**Focus**: [Specific area or "Full codebase"]
+**Status**: ✅ Complete
+
+---
 
 ## Executive Summary
-- Project type: [Web app/API/Library/etc.]
-- Primary language: [Python/JavaScript/etc.]
-- Architecture: [Monolith/Microservices/etc.]
-- Current state: [Production/Development/Legacy]
 
-## Project Structure
+**TL;DR**: [2-3 sentence summary of key findings]
+
+### Quick Facts
+[Project type, language, framework, architecture, state, test coverage]
+
+---
+
+## 1. Project Instructions (CLAUDE.md)
+
+[Document ALL instructions found in CLAUDE.md files]
+
+**Key Takeaways**:
+[List critical requirements and conventions]
+
+---
+
+## 2. Project Structure
+
+[Directory tree with descriptions]
+
+### Entry Points
+[List main entry points]
+
+### Key Directories
+[Describe important directories with file counts and purpose]
+
+---
+
+## 3. Technology Stack
+
+### Runtime
+[Language version and runtime details]
+
+### Frameworks & Libraries
+[Core frameworks, libraries, versions]
+
+### Testing
+[Test frameworks and tools]
+
+### Development Tools
+[Linters, formatters, type checkers, build tools]
+
+### Infrastructure
+[Deployment, CI/CD, monitoring, hosting]
+
+---
+
+## 4. Architectural Patterns
+
+[Document each pattern found with:]
+- Pattern name and description
+- Location in codebase (with file paths)
+- Number of implementations
+- Example usage (code snippet or reference)
+- When to use this pattern
+
+---
+
+## 5. Dependencies
+
+### External Dependencies
+[List from package manifests with versions and purpose]
+
+### Internal Dependencies
+[Module relationships and data flow]
+
+### Dependency Risks
+[Circular dependencies, tight coupling, external API risks]
+
+---
+
+## 6. Code Quality & Testing
+
+### Test Coverage
+[Overall coverage and per-component breakdown]
+
+### Testing Approach
+[Types of tests, frameworks, patterns used]
+
+### Test Patterns Found
+[Document test fixtures, factories, parametrization approaches]
+
+---
+
+## 7. Constraints & Limitations
+
+### Technical Constraints
+[Language versions, platform requirements, resource limits]
+
+### Business Constraints
+[Compliance requirements, regulations]
+
+### Performance Constraints
+[Response time targets, throughput requirements]
+
+### Operational Constraints
+[Deployment requirements, monitoring needs]
+
+---
+
+## 8. Security Considerations
+
+### Authentication & Authorization
+[Methods used, implementation locations]
+
+### Security Patterns Found
+[Input validation, SQL injection prevention, XSS prevention, etc.]
+
+### Security Gaps Identified
+[Potential vulnerabilities or missing protections]
+
+---
+
+## 8.5. Error Handling Patterns
+
+**IMPORTANT**: Document error handling for agent compatibility.
+
+### Quick Assessment
+
+**Search for patterns:**
+```bash
+# Exit codes: Python (sys.exit), Node.js (process.exit), Go (os.Exit), Bash (exit)
+# Error output: Python (sys.stderr), Node.js (console.error), Go (os.Stderr)
 ```
-project/
-├── src/           # Main application code
-├── tests/         # Test suites
-├── docs/          # Documentation
-└── config/        # Configuration files
+
+**Document findings:**
+- **Exit codes**: Do scripts use exit code 0 (success) and 2 (error)?
+- **Error output**: Do errors go to stderr (agent-observable)?
+- **Message quality**: Are errors clear and actionable?
+
+### Agent Compatibility State
+
+**Check one:**
+- [ ] ✅ Agent-compatible: Exit code 2, stderr, clear messages
+- [ ] ⚠️ Partially compatible: Mixed patterns
+- [ ] ❌ Not compatible: Silent failures, stdout errors, implicit exits
+
+**Document examples of patterns found** (both good and problematic)
+
+### Recommendations
+
+**For new code:**
+- Follow existing agent-compatible patterns if found
+- Establish exit code 2 + stderr convention if greenfield
+- Document pattern locations for CODE phase
+
+**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Agent-Compatible Error Handling" for:
+- Complete assessment criteria and search patterns
+- Language-specific examples (Python, Node.js, Go, Bash)
+- Good vs problematic pattern examples
+- Transition strategies for mixed codebases
+
+---
+
+## 9. Similar Implementations
+
+[For the feature being explored]
+
+**Found Similar Pattern**: [Description]
+- **Location**: [File paths]
+- **Pattern**: [Approach used]
+- **Reusable Components**: [What can be reused]
+
+**Learnings**:
+[What can be learned from existing implementations]
+
+**Can Reuse**:
+[Specific components or patterns to reuse]
+
+**Must Adapt**:
+[What needs to change for new implementation]
+
+---
+
+## 10. Exploration Challenges & Gaps
+
+### Challenges Encountered
+[Problems during exploration]
+
+### Information Gaps
+[What couldn't be found or is unclear]
+
+### Areas Requiring Clarification
+[Questions for the team or user]
+
+---
+
+## 11. Recommendations
+
+### For Implementation
+[Actionable recommendations for coding phase]
+
+### For Code Quality
+[Suggestions for improving codebase]
+
+### For Architecture
+[Architectural improvements if needed]
+
+---
+
+## 12. Next Steps
+
+### For PLAN Phase
+[Guidance for planning based on findings]
+
+### For CODE Phase
+[Patterns to follow, components to reuse, constraints to respect]
+
+### For COMMIT Phase
+[Standards to maintain, checks to run]
+
+---
+
+## Appendix: File Reference
+
+### Key Files Reviewed
+[List important files examined with brief descriptions]
+
+### Files Requiring Attention
+[Files with TODOs, unclear purpose, or potential issues]
+
+---
+
+**End of Exploration Report**
 ```
 
-## Project Instructions (from CLAUDE.md)
-- Key conventions: [Summarize from CLAUDE.md]
-- Required practices: [List from CLAUDE.md]
-- Specific tools: [Tools specified in CLAUDE.md]
-- Custom workflows: [Any custom workflows defined]
+**Important**: Fill each section with **actual findings** from your exploration, not placeholders or examples. Include:
+- Specific file paths with line numbers
+- Actual code patterns found
+- Real metrics and statistics
+- Concrete recommendations based on what you discovered
 
-## Key Components
-1. **Component A**: Description and purpose
-2. **Component B**: Description and purpose
+## Exploration Best Practices
 
-## Patterns & Conventions
-- Coding style: [PEP8/Airbnb/etc. - check CLAUDE.md]
-- Design patterns: [MVC/Repository/etc.]
-- Testing approach: [TDD/BDD/etc. - verify against CLAUDE.md]
+### DO:
+- ✅ **Try multiple search strategies** if first attempt fails
+- ✅ **Read CLAUDE.md files first** - they contain critical requirements
+- ✅ **Document your search process** - helps identify gaps
+- ✅ **Follow the trail** - check imports and related files
+- ✅ **Be comprehensive** - explore multiple examples of patterns
+- ✅ **Note what you DON'T find** - gaps are important information
+- ✅ **Provide file references** - specific line numbers help later phases
 
-## Dependencies
-### External
-- Framework: version
-- Library: version
-
-### Internal
-- Module A depends on Module B
-- Service X requires Service Y
-
-## Constraints & Limitations
-- Technical: [List technical constraints]
-- Business: [List business rules]
-- Performance: [List performance requirements]
-
-## Risks & Challenges
-1. **Risk**: Description (Impact: High/Medium/Low)
-2. **Challenge**: Description (Complexity: High/Medium/Low)
-
-## Recommendations
-- Suggested approach for implementation
-- Areas requiring special attention
-- Potential improvements identified
-```
-
-### 2. Codebase Map (included in EPCC_EXPLORE.md)
-```json
-{
-  "structure": {
-    "entry_points": ["src/main.py", "src/app.js"],
-    "core_modules": ["auth", "database", "api"],
-    "utilities": ["helpers", "validators", "formatters"],
-    "tests": {
-      "unit": "tests/unit",
-      "integration": "tests/integration",
-      "e2e": "tests/e2e"
-    }
-  },
-  "metrics": {
-    "total_files": 150,
-    "lines_of_code": 10000,
-    "test_coverage": "75%",
-    "complexity": "moderate"
-  },
-  "dependencies": {
-    "production": ["framework v1.0", "library v2.3"],
-    "development": ["testing-lib v3.0", "linter v1.5"]
-  }
-}
-```
+### DON'T:
+- ❌ **Give up after one search** - try different terms and patterns
+- ❌ **Skip CLAUDE.md** - missing project requirements causes rework
+- ❌ **Assume patterns** - verify with actual code examples
+- ❌ **Ignore test files** - they reveal intended behavior
+- ❌ **Write code** - this is exploration only
+- ❌ **Leave gaps undocumented** - note what's missing or unclear
 
 ## Exploration Checklist
 
-Before proceeding to PLAN phase, ensure all findings are documented in `EPCC_EXPLORE.md`.
+Before finalizing EPCC_EXPLORE.md:
 
-**REMINDER**: No code should be written during this phase. If you discover issues or have implementation ideas, document them in EPCC_EXPLORE.md for later phases:
+**Context & Instructions**:
+- [ ] Checked for CLAUDE.md in project root
+- [ ] Checked for .claude/CLAUDE.md
+- [ ] Checked for ~/.claude/CLAUDE.md
+- [ ] Documented all project-specific requirements
 
-- [ ] CLAUDE.md files reviewed and understood
+**Structure & Technology**:
 - [ ] Project structure fully mapped
-- [ ] All dependencies identified
-- [ ] Coding patterns documented
-- [ ] Similar implementations reviewed
-- [ ] Constraints clearly understood
-- [ ] Risks and challenges assessed
+- [ ] Entry points identified
+- [ ] Technology stack documented
+- [ ] All dependencies listed (external + internal)
+
+**Patterns & Conventions**:
+- [ ] Coding patterns documented (with examples)
+- [ ] Naming conventions identified
+- [ ] Architectural patterns mapped
+- [ ] Team conventions understood
+
+**Code Quality**:
 - [ ] Testing approach understood
-- [ ] Deployment process reviewed
-- [ ] Documentation reviewed
-- [ ] Team conventions identified (including CLAUDE.md instructions)
+- [ ] Test coverage assessed
+- [ ] Code quality tools identified
 
-## Interactive Exploration Mode
+**Constraints & Risks**:
+- [ ] Technical constraints documented
+- [ ] Business constraints identified
+- [ ] Security patterns reviewed
+- [ ] Performance requirements understood
+- [ ] Gaps and risks documented
 
-```bash
-# Start interactive exploration
-/epcc-explore --interactive
+**Similar Implementations**:
+- [ ] Related code found and reviewed
+- [ ] Reusable components identified
+- [ ] Patterns to follow documented
 
-# This will prompt:
-1. What aspect to explore? [structure/patterns/dependencies/tests]
-2. How deep? [quick/thorough/exhaustive]
-3. Focus area? [backend/frontend/database/all]
-```
-
-## Common Exploration Patterns
-
-### For New Features
-1. Find similar existing features
-2. Understand the current architecture
-3. Identify integration points
-4. Review relevant tests
-
-### For Bug Fixes
-1. Locate the problematic code
-2. Understand the surrounding context
-3. Find related code that might be affected
-4. Review existing tests for the area
-
-### For Refactoring
-1. Map current implementation
-2. Identify all dependencies
-3. Find all usages
-4. Understand test coverage
+**Completeness**:
+- [ ] Search strategies documented
+- [ ] Information gaps identified
+- [ ] Recommendations provided
+- [ ] Next steps outlined
 
 ## Usage Examples
 
 ```bash
-# Basic exploration
-/epcc-explore
+# Quick exploration of entire codebase
+/epcc-explore --quick
 
-# Focused exploration
-/epcc-explore --focus authentication
-/epcc-explore --focus database --deep
+# Medium exploration (default) of specific area
+/epcc-explore authentication
 
-# Specific file exploration
-/epcc-explore --file src/auth/login.py
+# Deep exploration of specific feature
+/epcc-explore payment-processing --deep
 
-# Pattern search
-/epcc-explore --patterns MVC,REST
-
-# Dependency analysis
-/epcc-explore --dependencies
+# Thorough exploration of multiple areas
+/epcc-explore "API routes and database models" --thorough
 ```
 
-## Integration with Next Phases
+## Integration with Other Phases
 
-The exploration phase outputs in `EPCC_EXPLORE.md` feed directly into:
-- **PLAN**: Use findings from EPCC_EXPLORE.md to create realistic plans
-- **CODE**: Reference patterns and conventions documented in EPCC_EXPLORE.md
-- **COMMIT**: Ensure consistency with project standards identified in EPCC_EXPLORE.md
+### To PLAN Phase:
+- EPCC_EXPLORE.md provides complete context
+- Patterns to follow documented
+- Constraints identified
+- Similar implementations found
 
-## Final Output
+### To CODE Phase:
+- Conventions to follow established
+- Reusable components identified
+- Test patterns documented
+- File organization understood
 
-Upon completion, generate `EPCC_EXPLORE.md` containing:
-- Executive summary
-- Project structure analysis
-- Key components and patterns
-- Dependencies and constraints
-- Risks and recommendations
-- Complete exploration checklist
+### To COMMIT Phase:
+- Project standards documented
+- Team conventions known
+- Required checks identified
 
-Remember: **Time spent exploring saves time coding!**
+## Remember
+
+**Time spent exploring saves time coding!**
 
 🚫 **DO NOT**: Write code, create files, implement features, fix bugs, or modify anything
-✅ **DO**: Read, analyze, understand, document findings, and save everything to EPCC_EXPLORE.md
+
+✅ **DO**: Be persistent, try multiple approaches, follow the trail, document thoroughly, save to EPCC_EXPLORE.md
