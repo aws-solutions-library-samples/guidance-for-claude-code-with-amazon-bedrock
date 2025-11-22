@@ -247,7 +247,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -275,8 +275,8 @@ Resources:
                   - logs:PutLogEvents
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
         # We keep the CloudWatch permissions but remove the AssumeRole permission
         # that was related to the overly permissive trust policy
         - PolicyName: SSMParameterAccess
@@ -288,7 +288,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
   # SSM Parameter for Configuration
   OTelConfig:

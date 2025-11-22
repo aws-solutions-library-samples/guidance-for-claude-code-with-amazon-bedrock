@@ -12,6 +12,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Virtual environments
+.venv/
+venv/
+
 
 # IDE
 .vscode/
@@ -34,6 +38,13 @@ Thumbs.db
 
 # Claude Code settings
 .claude/
+
+# Kiro settings (contains tokens)
+.kiro/settings/mcp.json
+
+# Local documentation and feedback
+FEEDBACK.md
+TESTING_PARTITION_SUPPORT.md
 
 # Temporary test files
 output.json

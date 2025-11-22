@@ -9,7 +9,7 @@ and cross-region inference configurations in one place for easy maintenance.
 """
 
 # Default regions for AWS profile based on cross-region profile
-DEFAULT_REGIONS = {"us": "us-east-1", "europe": "eu-west-3", "apac": "ap-northeast-1"}
+DEFAULT_REGIONS = {"us": "us-east-1", "europe": "eu-west-3", "apac": "ap-northeast-1", "us-gov": "us-gov-west-1"}
 
 # Claude model configurations
 # Each model defines its availability across different cross-region profiles
@@ -274,6 +274,18 @@ CLAUDE_MODELS = {
             },
         },
     },
+    "sonnet-4-5-govcloud": {
+        "name": "Claude Sonnet 4.5 (GovCloud)",
+        "base_model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "profiles": {
+            "us-gov": {
+                "model_id": "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "description": "US GovCloud regions",
+                "source_regions": ["us-gov-west-1", "us-gov-east-1"],
+                "destination_regions": ["us-gov-west-1", "us-gov-east-1"],
+            },
+        },
+    },
     "sonnet-3-7": {
         "name": "Claude 3.7 Sonnet",
         "base_model_id": "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -329,6 +341,18 @@ CLAUDE_MODELS = {
                     "ap-southeast-2",
                     "ap-southeast-4",
                 ],
+            },
+        },
+    },
+    "sonnet-3-7-govcloud": {
+        "name": "Claude 3.7 Sonnet (GovCloud)",
+        "base_model_id": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "profiles": {
+            "us-gov": {
+                "model_id": "us-gov.anthropic.claude-3-7-sonnet-20250219-v1:0",
+                "description": "US GovCloud regions",
+                "source_regions": ["us-gov-west-1", "us-gov-east-1"],
+                "destination_regions": ["us-gov-west-1", "us-gov-east-1"],
             },
         },
     },

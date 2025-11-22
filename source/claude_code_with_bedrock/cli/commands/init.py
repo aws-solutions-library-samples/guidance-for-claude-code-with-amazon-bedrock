@@ -326,6 +326,9 @@ class InitCommand(Command):
                         provider_type = "azure"
                     elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                         provider_type = "cognito"
+                    elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                        # Handle cognito-idp.{region}.amazonaws.com format (commercial and GovCloud)
+                        provider_type = "cognito"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
             except Exception:
@@ -428,6 +431,8 @@ class InitCommand(Command):
                 "us-east-2",
                 "us-west-1",
                 "us-west-2",
+                "us-gov-west-1",
+                "us-gov-east-1",
                 "eu-west-1",
                 "eu-west-2",
                 "eu-west-3",
