@@ -84,6 +84,10 @@ Conditions:
   UseCognitoUserPool: !Equals [!Ref AuthProviderType, 'CognitoUserPool']
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
   BedrockTrackingEnabled: !Equals [!Ref EnableBedrockTracking, 'true']
+  # Partition-aware conditions for Cognito Identity service principals
+  IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
+  IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
+  IsGovCloud: !Or [!Condition IsGovCloudWest, !Condition IsGovCloudEast]
 
 Resources:
   # Cognito Identity Pool - configured based on provider type
@@ -167,6 +171,10 @@ Resources:
             - !Ref 'AWS::NoValue'
 
   # IAM Role for Bedrock Access
+  # Note: Service principal differs by partition:
+  # - Commercial: cognito-identity.amazonaws.com
+  # - GovCloud West: cognito-identity-us-gov.amazonaws.com
+  # - GovCloud East: cognito-identity.us-gov-east-1.amazonaws.com
   BedrockAccessRole:
     Type: AWS::IAM::Role
     Properties:
@@ -177,15 +185,33 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: cognito-identity.amazonaws.com
+              Federated: !If
+                - IsGovCloudWest
+                - cognito-identity-us-gov.amazonaws.com
+                - !If
+                  - IsGovCloudEast
+                  - cognito-identity.us-gov-east-1.amazonaws.com
+                  - cognito-identity.amazonaws.com
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
               - 'sts:TagSession'
             Condition:
               StringEquals:
-                'cognito-identity.amazonaws.com:aud': !Ref BedrockIdentityPool
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:aud': !Ref BedrockIdentityPool
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:aud': !Ref BedrockIdentityPool
+                    - 'cognito-identity.amazonaws.com:aud': !Ref BedrockIdentityPool
               'ForAnyValue:StringLike':
-                'cognito-identity.amazonaws.com:amr': authenticated
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:amr': authenticated
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:amr': authenticated
+                    - 'cognito-identity.amazonaws.com:amr': authenticated
       ManagedPolicyArns:
         - !Ref BedrockAccessPolicy
 
@@ -199,13 +225,31 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: cognito-identity.amazonaws.com
+              Federated: !If
+                - IsGovCloudWest
+                - cognito-identity-us-gov.amazonaws.com
+                - !If
+                  - IsGovCloudEast
+                  - cognito-identity.us-gov-east-1.amazonaws.com
+                  - cognito-identity.amazonaws.com
             Action: 'sts:AssumeRoleWithWebIdentity'
             Condition:
               StringEquals:
-                'cognito-identity.amazonaws.com:aud': !Ref BedrockIdentityPool
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:aud': !Ref BedrockIdentityPool
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:aud': !Ref BedrockIdentityPool
+                    - 'cognito-identity.amazonaws.com:aud': !Ref BedrockIdentityPool
               'ForAnyValue:StringLike':
-                'cognito-identity.amazonaws.com:amr': unauthenticated
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:amr': unauthenticated
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:amr': unauthenticated
+                    - 'cognito-identity.amazonaws.com:amr': unauthenticated
       Policies:
         - PolicyName: CognitoIdentityAccess
           PolicyDocument:
