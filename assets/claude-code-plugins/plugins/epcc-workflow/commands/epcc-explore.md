@@ -1,13 +1,15 @@
 ---
 name: epcc-explore
 description: Explore phase of EPCC workflow - understand thoroughly before acting
-version: 2.1.0
+version: 3.1.0
 argument-hint: "[area-to-explore] [--deep|--quick]"
 ---
 
 # EPCC Explore Command
 
 You are in the **EXPLORE** phase of the Explore-Plan-Code-Commit workflow. Your mission is to understand thoroughly before taking any action.
+
+**Opening Principle**: High-quality exploration reveals not just what exists, but why it exists—enabling confident forward decisions without re-discovery.
 
 @../docs/EPCC_BEST_PRACTICES.md - Comprehensive guide covering clarification strategies, error handling patterns, sub-agent delegation, and EPCC workflow optimization
 
@@ -25,7 +27,7 @@ $ARGUMENTS
 ### Exploration Thoroughness
 
 Parse thoroughness level from arguments:
-- `--quick`: Fast surface-level exploration (2-3 key areas, basic patterns)
+- `--quick`: Fast surface-level exploration (key areas, basic patterns)
 - `--deep` or `--thorough`: Comprehensive analysis (multiple locations, cross-referencing, detailed patterns)
 - **Default** (no flag): Medium thoroughness (balanced exploration)
 
@@ -181,7 +183,7 @@ Pattern B: Session-based (src/auth/sessions/)
 **Recommendation**: Pattern A (JWT) appears to be the current standard based on recent activity.
 ```
 
-**See Also**: EPCC_BEST_PRACTICES.md "Clarification Decision Framework" (lines 2323-2475)
+**See Also**: EPCC_BEST_PRACTICES.md → "Clarification Decision Framework"
 
 ### Exploration Strategy
 
@@ -222,36 +224,50 @@ Pattern B: Session-based (src/auth/sessions/)
 7. **Document Dependencies**: Map internal and external dependencies
 8. **Evaluate Test Coverage**: Understand testing approaches and gaps
 
-## Thoroughness-Based Exploration Depth
+## Thoroughness-Based Exploration Heuristics
+
+### Completion Criteria (NOT File Count Targets)
+
+**Stop exploring when objectives are met**, not when you hit arbitrary file counts.
 
 ### Quick Exploration (--quick)
-Focus on:
-- Project structure overview
-- Main entry points
-- Key dependencies (package.json, requirements.txt, etc.)
-- Basic patterns (1-2 examples)
-- CLAUDE.md instructions
-- ~5-10 file reads maximum
+**Stop when you understand:**
+- Entry points and main flow
+- 2-3 key patterns that dominate the codebase
+- Basic tech stack and dependencies
+- CLAUDE.md instructions (if present)
+
+**Typical indicators you're done:**
+- Can explain project structure in 2-3 sentences
+- Identified dominant framework and language
+- Found 1-2 similar implementations to learn from
 
 ### Medium Exploration (default)
-Include Quick items plus:
-- Multiple pattern examples (3-5 per pattern)
-- Related component exploration
-- Test file review
-- Configuration analysis
-- Cross-referencing between modules
-- ~15-25 file reads
+**Stop when you understand:**
+- All major architectural patterns with examples
+- Cross-module relationships and data flow
+- Test patterns and coverage approach
+- Configuration and deployment approach
+
+**Typical indicators you're done:**
+- Can draw component diagram from memory
+- Identified 3-5 reusable patterns/components
+- Understand how features flow end-to-end
 
 ### Deep Exploration (--deep/--thorough)
-Include Medium items plus:
-- Exhaustive pattern documentation
-- Full dependency tree mapping
-- Historical context (git log, commit history)
-- Edge case handling analysis
-- Performance consideration review
-- Security pattern assessment
-- Complete test coverage analysis
-- ~30-50+ file reads
+**Stop when you've exhaustively documented:**
+- All patterns with multiple examples each
+- Complete dependency tree (internal + external)
+- Historical context and technical debt areas
+- Edge cases and performance considerations
+- Security patterns and compliance requirements
+
+**Typical indicators you're done:**
+- Can onboard new developer from your exploration alone
+- Documented every architectural decision
+- Identified all constraints and risks
+
+**Heuristic Rule**: If reading another file of the same type teaches you nothing new, you're done with that pattern.
 
 ## Parallel Exploration Subagents (Optional for Complex Exploration)
 
@@ -396,255 +412,118 @@ If exploring a specific feature, find similar existing code:
 
 ### Output File: EPCC_EXPLORE.md
 
-Generate a comprehensive exploration report in `EPCC_EXPLORE.md` in the project root.
+Generate exploration report in `EPCC_EXPLORE.md` with depth matching scope.
 
-### Report Structure
+### Report Structure - 5 Core Dimensions
 
-Include these sections with **actual findings from your exploration**:
+**Forbidden patterns**:
+- ❌ Filling template sections with "N/A" or "Not found" (omit irrelevant sections)
+- ❌ Rigid 12-section structure for simple codebases (adapt to complexity)
+- ❌ Documenting every file read (focus on patterns and decisions)
+- ❌ Generic descriptions ("uses standard patterns") - be specific
+
+**Document these dimensions** (depth varies by scope):
 
 ```markdown
-# Exploration Report: [Area/Feature]
+# Exploration: [Area/Feature]
 
-**Date**: [Current date]
-**Scope**: [Quick/Medium/Deep]
-**Focus**: [Specific area or "Full codebase"]
-**Status**: ✅ Complete
+**Date**: [Date] | **Scope**: [Quick/Medium/Deep] | **Status**: ✅ Complete
 
----
+## 1. Foundation (What exists)
+**Tech stack**: [Language, framework, versions]
+**Architecture**: [Pattern family - "Express REST API", "Django monolith", "React SPA + FastAPI"]
+**Structure**: [Entry points, key directories with purpose]
+**CLAUDE.md instructions**: [Critical requirements found]
 
-## Executive Summary
+## 2. Patterns (How it's built)
+[Name pattern families, not every instance]
 
-**TL;DR**: [2-3 sentence summary of key findings]
+**Architectural patterns**:
+- [Pattern name]: [Where used - file:line], [When to use]
 
-### Quick Facts
-[Project type, language, framework, architecture, state, test coverage]
+**Testing patterns**:
+- [Test framework + approach]: [Fixture patterns, mock strategies]
+- **Coverage**: [X%], **Target**: [Y%]
 
----
+**Error handling**: [Exit codes, stderr usage, agent compatibility - see EPCC_BEST_PRACTICES.md]
 
-## 1. Project Instructions (CLAUDE.md)
+## 3. Constraints (What limits decisions)
+**Technical**: [Language versions, platform requirements]
+**Quality**: [Test coverage targets, linting rules, type checking]
+**Security**: [Auth patterns, input validation, known gaps]
+**Operational**: [Deployment requirements, CI/CD, monitoring]
 
-[Document ALL instructions found in CLAUDE.md files]
+## 4. Reusability (What to leverage)
+[Only if implementing similar feature]
 
-**Key Takeaways**:
-[List critical requirements and conventions]
+**Similar implementations**: [file:line references]
+**Reusable components**: [What can be copied vs adapted]
+**Learnings**: [What worked, what to avoid]
 
----
-
-## 2. Project Structure
-
-[Directory tree with descriptions]
-
-### Entry Points
-[List main entry points]
-
-### Key Directories
-[Describe important directories with file counts and purpose]
-
----
-
-## 3. Technology Stack
-
-### Runtime
-[Language version and runtime details]
-
-### Frameworks & Libraries
-[Core frameworks, libraries, versions]
-
-### Testing
-[Test frameworks and tools]
-
-### Development Tools
-[Linters, formatters, type checkers, build tools]
-
-### Infrastructure
-[Deployment, CI/CD, monitoring, hosting]
-
----
-
-## 4. Architectural Patterns
-
-[Document each pattern found with:]
-- Pattern name and description
-- Location in codebase (with file paths)
-- Number of implementations
-- Example usage (code snippet or reference)
-- When to use this pattern
-
----
-
-## 5. Dependencies
-
-### External Dependencies
-[List from package manifests with versions and purpose]
-
-### Internal Dependencies
-[Module relationships and data flow]
-
-### Dependency Risks
-[Circular dependencies, tight coupling, external API risks]
-
----
-
-## 6. Code Quality & Testing
-
-### Test Coverage
-[Overall coverage and per-component breakdown]
-
-### Testing Approach
-[Types of tests, frameworks, patterns used]
-
-### Test Patterns Found
-[Document test fixtures, factories, parametrization approaches]
-
----
-
-## 7. Constraints & Limitations
-
-### Technical Constraints
-[Language versions, platform requirements, resource limits]
-
-### Business Constraints
-[Compliance requirements, regulations]
-
-### Performance Constraints
-[Response time targets, throughput requirements]
-
-### Operational Constraints
-[Deployment requirements, monitoring needs]
-
----
-
-## 8. Security Considerations
-
-### Authentication & Authorization
-[Methods used, implementation locations]
-
-### Security Patterns Found
-[Input validation, SQL injection prevention, XSS prevention, etc.]
-
-### Security Gaps Identified
-[Potential vulnerabilities or missing protections]
-
----
-
-## 8.5. Error Handling Patterns
-
-**IMPORTANT**: Document error handling for agent compatibility.
-
-### Quick Assessment
-
-**Search for patterns:**
-```bash
-# Exit codes: Python (sys.exit), Node.js (process.exit), Go (os.Exit), Bash (exit)
-# Error output: Python (sys.stderr), Node.js (console.error), Go (os.Stderr)
+## 5. Handoff (What's next)
+**For PLAN**: [Key constraints, existing patterns to follow]
+**For CODE**: [Tools/commands to use - test runner, linter, formatter]
+**For COMMIT**: [Quality gates - coverage target, security checks]
+**Gaps**: [Unclear areas requiring clarification]
 ```
 
-**Document findings:**
-- **Exit codes**: Do scripts use exit code 0 (success) and 2 (error)?
-- **Error output**: Do errors go to stderr (agent-observable)?
-- **Message quality**: Are errors clear and actionable?
+**Adaptation heuristic**:
+- **Quick scope** (~150-300 tokens): Foundation + critical constraints only
+- **Medium scope** (~400-600 tokens): Foundation + patterns + constraints + handoff
+- **Deep scope** (~800-1,500 tokens): All 5 dimensions with comprehensive detail
 
-### Agent Compatibility State
+**Completeness heuristic**: Report is complete when you can answer:
+- ✅ What tech stack and patterns must I follow?
+- ✅ What quality gates must I pass?
+- ✅ What can I reuse vs build new?
+- ✅ What constraints limit my choices?
 
-**Check one:**
-- [ ] ✅ Agent-compatible: Exit code 2, stderr, clear messages
-- [ ] ⚠️ Partially compatible: Mixed patterns
-- [ ] ❌ Not compatible: Silent failures, stdout errors, implicit exits
-
-**Document examples of patterns found** (both good and problematic)
-
-### Recommendations
-
-**For new code:**
-- Follow existing agent-compatible patterns if found
-- Establish exit code 2 + stderr convention if greenfield
-- Document pattern locations for CODE phase
-
-**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Agent-Compatible Error Handling" for:
-- Complete assessment criteria and search patterns
-- Language-specific examples (Python, Node.js, Go, Bash)
-- Good vs problematic pattern examples
-- Transition strategies for mixed codebases
+**Anti-patterns**:
+- ❌ **Quick scope with 1,500 tokens** → Violates scope contract
+- ❌ **Deep scope with 200 tokens** → Insufficient for complex codebase
+- ❌ **Listing every file** → Name directory patterns instead
+- ❌ **Generic "uses testing"** → Specify framework, fixture patterns, coverage
 
 ---
 
-## 9. Similar Implementations
-
-[For the feature being explored]
-
-**Found Similar Pattern**: [Description]
-- **Location**: [File paths]
-- **Pattern**: [Approach used]
-- **Reusable Components**: [What can be reused]
-
-**Learnings**:
-[What can be learned from existing implementations]
-
-**Can Reuse**:
-[Specific components or patterns to reuse]
-
-**Must Adapt**:
-[What needs to change for new implementation]
-
----
-
-## 10. Exploration Challenges & Gaps
-
-### Challenges Encountered
-[Problems during exploration]
-
-### Information Gaps
-[What couldn't be found or is unclear]
-
-### Areas Requiring Clarification
-[Questions for the team or user]
-
----
-
-## 11. Recommendations
-
-### For Implementation
-[Actionable recommendations for coding phase]
-
-### For Code Quality
-[Suggestions for improving codebase]
-
-### For Architecture
-[Architectural improvements if needed]
-
----
-
-## 12. Next Steps
-
-### For PLAN Phase
-[Guidance for planning based on findings]
-
-### For CODE Phase
-[Patterns to follow, components to reuse, constraints to respect]
-
-### For COMMIT Phase
-[Standards to maintain, checks to run]
-
----
-
-## Appendix: File Reference
-
-### Key Files Reviewed
-[List important files examined with brief descriptions]
-
-### Files Requiring Attention
-[Files with TODOs, unclear purpose, or potential issues]
-
----
-
-**End of Exploration Report**
-```
+**End of template guidance**
 
 **Important**: Fill each section with **actual findings** from your exploration, not placeholders or examples. Include:
 - Specific file paths with line numbers
 - Actual code patterns found
 - Real metrics and statistics
 - Concrete recommendations based on what you discovered
+
+## Common Pitfalls (Anti-Patterns)
+
+### ❌ Giving Up After First Search Fails
+**Don't**: Search once, ask user → **Do**: Try 3-5 search strategies before concluding
+
+### ❌ Hitting File Count Instead of Understanding
+**Don't**: Read 10 files because target says "~10" → **Do**: Stop when pattern is understood
+
+### ❌ Skipping CLAUDE.md Files
+**Don't**: Jump straight to code → **Do**: Read CLAUDE.md first (critical project requirements)
+
+### ❌ Documenting Only "Happy Path" Patterns
+**Don't**: Document only what works well → **Do**: Document edge cases, error handling, constraints
+
+### ❌ Treating Exploration as Code Review
+**Don't**: Judge code quality → **Do**: Document what exists objectively
+
+### ❌ Asking User to Clarify Obvious Search Targets
+**Don't**: "What do you mean by authentication?" → **Do**: Try auth*, login*, session*, JWT patterns first
+
+## Second-Order Convergence Warnings
+
+Even with this guidance, you may default to:
+
+- ❌ **Stopping at first pattern match** (one test file ≠ understanding test patterns - read 3-5 examples)
+- ❌ **Reading exactly N files per mode** (file count ≠ understanding - stop when objectives met)
+- ❌ **Asking about every ambiguity** (document multiple patterns, let PLAN decide)
+- ❌ **Documenting only implementation files** (tests, configs, docs reveal critical context)
+- ❌ **Shallow pattern documentation** (don't just list patterns - explain when/why/how to use each)
+- ❌ **Treating modes as rigid procedures** (modes are calibration, adapt to actual codebase complexity)
 
 ## Exploration Best Practices
 

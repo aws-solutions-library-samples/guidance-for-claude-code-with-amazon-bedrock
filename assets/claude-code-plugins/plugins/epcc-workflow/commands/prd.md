@@ -1,7 +1,7 @@
 ---
 name: prd
 description: Interactive PRD creation - Optional feeder command that prepares requirements before EPCC workflow
-version: 2.1.0
+version: 3.1.0
 argument-hint: "[initial-idea-or-project-name]"
 ---
 
@@ -13,37 +13,40 @@ You are in the **REQUIREMENTS PREPARATION** phase - an optional prerequisite tha
 
 @../docs/EPCC_BEST_PRACTICES.md - Comprehensive guide covering sub-agent delegation, clarification strategies, error handling patterns, and EPCC workflow optimization
 
-⚠️ **IMPORTANT**: This phase is CONVERSATIONAL and INTERACTIVE. Do NOT:
-- Make assumptions about requirements
-- Jump to technical solutions
-- Write implementation code
-- Make decisions without asking
-
-✅ **DO**:
-- Ask clarifying questions frequently
-- Offer options when multiple paths exist
-- Guide the user through thinking about their idea
-- Document everything in PRD.md
-- Adapt conversation naturally to the project size and complexity
+**Opening Principle**: High-quality PRDs transform vague ideas into actionable requirements through collaborative discovery, enabling confident technical decisions downstream.
 
 ## Initial Input
 $ARGUMENTS
 
 If no initial idea was provided, start by asking: "What idea or project would you like to explore?"
 
----
+## 🎯 PRD Discovery Philosophy
 
-## 🏗️ Phase Architecture
+**Core Principle**: Help users articulate their ideas through **structured questions and collaborative dialogue**. Ask until clarity achieved, not to hit question counts.
 
-**Mechanism**: Slash command with direct injection (fast, interactive, user-controlled)
+⚠️ **IMPORTANT - This phase is CONVERSATIONAL and INTERACTIVE**:
 
-**See**: `../docs/EPCC_BEST_PRACTICES.md` → "Interactive Phase Best Practices" for architecture details and CLAUDE.md leverage patterns.
+**❌ Don't**:
+- Make assumptions about requirements
+- Wait for user to ask "help me decide" (be proactive with AskUserQuestion)
+- Jump to technical solutions
+- Write implementation code
+- Make decisions without asking
+- Follow templates rigidly
+- Ask questions to hit a count target
 
----
+**✅ Do (Default Behavior)**:
+- **Use AskUserQuestion proactively** for all decisions with 2-4 clear options
+- Ask clarifying questions when genuinely unclear
+- Offer options when multiple paths exist (using AskUserQuestion by default)
+- Guide user through thinking about their idea
+- Document everything in PRD.md
+- Adapt conversation naturally to project complexity
+- Match depth to actual needs (simple project ≠ comprehensive PRD)
 
-## 🎯 Discovery Objectives
+## Discovery Objectives
 
-The goal is to create a PRD that answers:
+Create a PRD that answers the 5W+H:
 
 1. **What** are we building?
 2. **Why** does it need to exist?
@@ -53,76 +56,122 @@ The goal is to create a PRD that answers:
 6. **Where** will it run/be deployed?
 
 **Depth adapts to project complexity:**
-- **Simple projects** (e.g., "add login button"): Focus on Vision + Core Features + Success Criteria
-- **Medium projects** (e.g., "team dashboard"): Add Technical Approach + Constraints
-- **Complex projects** (e.g., "knowledge management system"): Full comprehensive PRD
+- **Simple** (e.g., "add login button"): Vision + Core Features + Success Criteria (~10-15 min)
+- **Medium** (e.g., "team dashboard"): Add Technical Approach + Constraints (~20-30 min)
+- **Complex** (e.g., "knowledge management system"): Full comprehensive PRD (~45-60 min)
 
 ## Clarification Strategy
 
-This is the **most conversational phase** of the EPCC workflow. Your role is to help users articulate their ideas through Socratic dialogue.
+### Question Decision Framework
 
-### When to Ask Questions
-
-✅ **Ask frequently when:**
+**✅ Ask when:**
 - User provides vague ideas ("make it better", "improve performance")
-- Multiple valid interpretations exist ("add authentication" → JWT? OAuth? Sessions?)
-- Scope is unclear ("build a dashboard" → what data? what views?)
-- You need concrete examples ("can you walk me through how someone would use this?")
-- Prioritization is ambiguous ("which features are must-haves?")
-- Technical approach has options (Cloud? Local? Which database?)
-- User jumps to solutions before defining the problem
+- Multiple valid interpretations ("authentication" → JWT? OAuth? Sessions?)
+- Scope unclear ("build dashboard" → what data? views? users?)
+- Need concrete examples ("walk me through how someone uses this")
+- Prioritization ambiguous ("which features are must-haves?")
+- Technical options exist (Cloud? Local? Which database?)
+- User jumps to solution before defining problem
 
-### When to Use AskUserQuestion Tool
+**❌ Don't ask when:**
+- User already provided clear answer
+- Question doesn't add value to PRD
+- You're interrogating instead of conversing
+- Stalling instead of documenting what you know
+- User explicitly says "let's move forward"
 
-**About the tool:** AskUserQuestion is a Claude Code built-in tool that presents multiple-choice questions to users. If the tool is unavailable, use natural conversation with clearly formatted options.
+### Question Modes
 
-**Prefer the tool when:**
-- **2-4 clear technical options** exist (e.g., database choices, deployment options)
-- **Architectural decisions** need to be made (monolith vs microservices)
-- **Technology stack choices** with clear tradeoffs
-- **Integration approach** has multiple valid patterns
-- User needs to see **options side-by-side** to make informed choice
+**Structured questions (AskUserQuestion tool)** - PRIMARY METHOD:
+- **Use by default for all decisions with 2-4 clear options**
+- Project type (web app? mobile? CLI? browser extension?)
+- User scope (internal? external? both?)
+- Urgency (ASAP? planned timeline? exploratory?)
+- Feature priorities (which are must-haves?)
+- Technical options (cloud? local? which platform?)
+- **Don't wait for user to request** - be proactive with structured questions
 
-**Example using tool:**
-```
-Technology choice with 3 options: React vs Vue vs Vanilla JS
-Deployment options: AWS vs GCP vs Local
-Authentication: JWT vs OAuth vs Sessions
-```
-
-**Use conversation instead when:**
-- Questions are open-ended ("tell me about your users")
+**Conversational exploration** (FALLBACK):
+- Open-ended discovery ("tell me about your users and their pain points")
 - Gathering context ("what problem does this solve?")
-- Exploring user journeys ("walk me through a typical day")
-- Single yes/no questions
-- More than 4 options need discussion
+- Exploring journeys ("walk me through a typical user workflow")
+- Following up on structured answers ("You chose mobile app - any specific platform priority?")
+- Truly unique situations that don't fit 2-4 options
+- Building shared understanding through dialogue
 
-### User-Triggered Structured Questions
+### Question Frequency Heuristic
 
-**IMPORTANT**: Users can request structured questions at ANY point during the conversation.
+**Ask until clarity achieved**, not to hit targets. Typical ranges by phase:
 
-**Trigger phrases to watch for:**
-- "Ask me"
-- "Help me decide"
-- "Give me options"
-- "Show me choices"
-- "Present options"
-- "What are my options?"
-- "I'm not sure, help me choose"
+- **Vision phase**: Exploratory questioning until problem/solution understood
+- **Features phase**: Prioritization-focused until must-haves identified
+- **Technical phase**: Option-driven until key decisions made
+- **Constraints phase**: Fact-gathering until boundaries clear
+- **Success phase**: Metric-defining until "done" criteria established
 
-**When user says these phrases:**
+**Rule**: If user can't answer clearly after 2-3 attempts, you're asking wrong question or too early. Reframe or gather more context first.
 
-1. **Identify the decision point**: What are they trying to decide?
-2. **Formulate 2-4 clear options** with tradeoffs
-3. **Use AskUserQuestion tool** to present choices
-4. **Continue conversationally** based on their selection
+**Research** (if needed):
+- **WebSearch/WebFetch**: Use for UX patterns, user research, domain standards when unfamiliar domain
+- **Skip**: When user has complete product vision or simple feature
 
-**Examples:**
+**Decision heuristic**: Research when learning domain or UX patterns; skip if user provided sufficient product context.
+
+## Interview Mode Selection
+
+Offer two approaches based on project complexity:
+
+### Mode A: Quick PRD (15-20 minutes)
+**Use when:**
+- Simple, well-defined projects
+- User knows exactly what they want
+- MVP mindset - ship fast, iterate
+- Time-sensitive projects
+
+**Approach:**
+- Streamlined questioning focused on essentials
+- ~9 structured questions + ~5-10 conversational follow-ups
+- Lean PRD focusing on core requirements
+- Skip deep edge case exploration
+
+### Mode B: Comprehensive PRD (45-60 minutes)
+**Use when:**
+- Greenfield projects from scratch
+- Complex systems with many unknowns
+- User needs help clarifying requirements
+- Enterprise or production-critical systems
+- Multiple stakeholders need alignment
+
+**Approach:**
+- Deep exploration with Socratic dialogue
+- ~12 structured questions + ~15-20 conversational explorations
+- Full PRD with user stories, edge cases, acceptance criteria
+- Thorough examination of alternatives
+
+### Starting Question
 
 ```
-User: "I'm not sure what database to use, help me decide"
+I can help you create either:
+1. **Quick PRD** (15-20 min) - Streamlined for simple/clear projects
+2. **Comprehensive PRD** (45-60 min) - Deep exploration for complex projects
 
-You: Use AskUserQuestion with database options:
+Which approach works better for this project?
+```
+
+**Adaptive switching**: Start Quick, switch to Comprehensive if complexity emerges. Switch is OK - adapt to reality.
+
+## Structured Question Pattern
+
+When using AskUserQuestion tool (or formatted conversation if tool unavailable):
+
+**Pattern structure:**
+1. Identify decision point user needs to make
+2. Formulate 2-4 clear options with tradeoffs
+3. Present using tool with concise header and descriptions
+4. Continue conversationally based on selection
+
+**Example - Database Decision:**
+```json
 {
   "questions": [{
     "question": "What are your data storage requirements?",
@@ -138,788 +187,187 @@ You: Use AskUserQuestion with database options:
 }
 ```
 
-```
-User: "Give me options for how to handle authentication"
+**Common decision categories:**
+- Project type (Greenfield, Feature Addition, Refactor, Bug Fix)
+- User scope (Just me, Small team, Department, Public)
+- Urgency (Critical, Important, Nice-to-have, Exploratory)
+- MVP approach (Bare Minimum, Core + Polish, Feature Complete, Phased)
+- Environment (Local, Cloud, On-Premise, Hybrid)
+- Data storage (Relational, Document, File, In-Memory)
+- Authentication (None, Basic, OAuth/SSO, API Keys)
+- Timeline (ASAP, 1-2 weeks, 1-2 months, 3+ months)
 
-You: Use AskUserQuestion with auth options:
-{
-  "questions": [{
-    "question": "What authentication approach do you need?",
-    "header": "Auth Method",
-    "multiSelect": false,
-    "options": [
-      {"label": "Basic Auth", "description": "Simple username/password, easy to implement"},
-      {"label": "OAuth/SSO", "description": "Login with Google/GitHub, better UX"},
-      {"label": "JWT Tokens", "description": "Stateless, scalable, good for APIs"},
-      {"label": "Magic Links", "description": "Passwordless email links, modern approach"}
-    ]
-  }]
-}
-```
+**Adapt this pattern** to your specific decision - don't limit yourself to these examples.
 
-```
-User: "I don't know, ask me about the timeline"
+## Discovery Process Phases
 
-You: Use AskUserQuestion for timeline:
-{
-  "questions": [{
-    "question": "When do you need this completed?",
-    "header": "Timeline",
-    "multiSelect": false,
-    "options": [
-      {"label": "ASAP (days)", "description": "Urgent need, minimal scope acceptable"},
-      {"label": "1-2 weeks", "description": "Short-term project, focused scope"},
-      {"label": "1-2 months", "description": "Medium project with multiple features"},
-      {"label": "3+ months", "description": "Large project, comprehensive solution"}
-    ]
-  }]
-}
-```
+### Phase 1: Understanding the Vision
 
-**Benefits for users:**
-- They can request structure when feeling overwhelmed
-- Helps when they don't know what options exist
-- Makes decision-making faster and clearer
-- Works at ANY point in the conversation, not just phase starts
+**Objective**: Understand big picture and core problem
 
-### Clarification Patterns
+**Context**: Research with WebSearch/WebFetch("[product-type] best practices 2025") if unfamiliar domain.
 
-**Pattern 1: Vague Input → Concrete Example**
-```
-User: "I want to build something for team productivity"
-You: "Can you give me a specific example of what's unproductive now?"
-```
+**Use AskUserQuestion proactively for** (default approach):
+- Project type: "Greenfield project vs Feature addition vs Refactor vs Bug fix?"
+- User scope: "Personal project vs Small team vs Department/Org vs Public users?"
+- Urgency: "Critical/ASAP vs Important/Planned vs Nice-to-have vs Exploratory?"
 
-**Pattern 2: Multiple Paths → Present Options**
-```
-User: "We need authentication"
-You: Use AskUserQuestion with JWT/OAuth/Sessions options
-```
-
-**Pattern 3: Assumed Requirements → Validate**
-```
-User: "Everyone knows what we need"
-You: "Let's make it explicit - what's the ONE thing this must do?"
-```
-
-**Pattern 4: Solution-First → Problem-First**
-```
-User: "We should use Kubernetes"
-You: "Let's step back - what problem are you trying to solve with Kubernetes?"
-```
-
-### Anti-Patterns (When NOT to Ask)
-
-❌ **Don't ask when:**
-- User has already been very specific and clear
-- You're making the conversation feel like an interrogation
-- Question doesn't add value to the PRD
-- You're stalling instead of documenting what you know
-- User explicitly says "let's move forward"
-
-### Frequency Guide
-
-These are guidelines, not targets. Adapt based on project complexity and user responsiveness.
-
-- **Phase 1 (Vision)**: Typically 5-8 questions
-- **Phase 2 (Features)**: Typically 6-10 questions (including prioritization)
-- **Phase 3 (Technical)**: Typically 4-8 questions (use tool for 2-3)
-- **Phase 4 (Constraints)**: Typically 3-5 questions
-- **Phase 5 (Success)**: Typically 2-4 questions
-
-**Typical total**: 20-35 questions across full discovery session
-
-**Note**: Simple projects may need fewer questions; complex enterprise projects may need more. Focus on quality over quantity.
-
-Remember: This phase is about **understanding**, not judging. Every question should help clarify what to build and why.
-
-## Interview Mode Selection
-
-To improve efficiency and user experience, this phase offers **two interview modes** combining structured questions with conversational discovery:
-
-### Mode A: Quick PRD (15-20 minutes)
-**Use when:**
-- Simple, well-defined projects ("add login to existing app")
-- User already knows exactly what they want
-- MVP mindset - ship fast, iterate later
-- Time-sensitive projects
-
-**Approach:**
-- 9 structured multiple-choice questions (3 batches)
-- 5-10 brief conversational follow-ups
-- Lean PRD focusing on essentials
-- Skip deep exploration of edge cases
-
-### Mode B: Comprehensive PRD (45-60 minutes)
-**Use when:**
-- Greenfield projects starting from scratch
-- Complex systems with many unknowns
-- User needs help clarifying requirements
-- Enterprise or production-critical systems
-- Multiple stakeholders need alignment
-
-**Approach:**
-- 12 structured multiple-choice questions (5 batches)
-- 15-20 deep conversational explorations
-- Full PRD with user stories, edge cases, acceptance criteria
-- Thorough exploration of alternatives
-
-### How to Choose
-
-**Start with this question:**
-```
-I can help you create either:
-1. **Quick PRD** (15-20 min) - Streamlined for simple/clear projects
-2. **Comprehensive PRD** (45-60 min) - Deep exploration for complex projects
-
-Which approach works better for this project?
-```
-
-**Adaptive switching:** You can start with Quick mode and switch to Comprehensive if complexity emerges during discovery.
-
-### Structured Question Integration
-
-Both modes use **AskUserQuestion tool** to gather baseline information efficiently. These questions establish the foundation, then conversational follow-ups adapt to the project's needs.
-
-**Benefits of structured questions:**
-- Faster decision-making (options presented side-by-side)
-- Consistent baseline across all PRDs
-- Reduces back-and-forth for technical decisions
-- User can see tradeoffs clearly
-- Automatic "Other" option for custom answers
-
-**When structured questions appear:** At the start of each phase (Vision, Features, Technical, Constraints, Success). You'll still have conversational dialogue between question batches.
-
-## Conversational Discovery Process
-
-### Phase 1: Understanding the Vision (10-15 min)
-
-**Objective**: Understand the big picture and core problem
-
-**🎯 Start with Structured Questions** (Both Modes)
-
-Use AskUserQuestion tool to establish the baseline:
-
-```json
-{
-  "questions": [
-    {
-      "question": "What type of project is this?",
-      "header": "Project Type",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Greenfield",
-          "description": "Brand new project, starting from scratch"
-        },
-        {
-          "label": "Feature Addition",
-          "description": "Adding new capabilities to existing system"
-        },
-        {
-          "label": "Refactor/Improve",
-          "description": "Improving or reorganizing existing functionality"
-        },
-        {
-          "label": "Bug Fix/Hotfix",
-          "description": "Fixing broken or incorrect behavior"
-        }
-      ]
-    },
-    {
-      "question": "Who will use this system?",
-      "header": "User Scope",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Just me",
-          "description": "Personal project or tool for individual use"
-        },
-        {
-          "label": "Small team (2-10)",
-          "description": "Internal team tool, known users"
-        },
-        {
-          "label": "Dept/Org (10-200)",
-          "description": "Company-wide or multi-team usage"
-        },
-        {
-          "label": "Public/External",
-          "description": "Customer-facing or open to internet users"
-        }
-      ]
-    },
-    {
-      "question": "How urgent is solving this problem?",
-      "header": "Urgency",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Critical",
-          "description": "Blocking work, costing money, or serious pain daily"
-        },
-        {
-          "label": "Important",
-          "description": "Significant impact, but workarounds exist"
-        },
-        {
-          "label": "Nice-to-have",
-          "description": "Would improve things but not urgent"
-        },
-        {
-          "label": "Exploratory",
-          "description": "Investigating feasibility or learning"
-        }
-      ]
-    }
-  ]
-}
-```
-
-**📝 Then explore conversationally** (adapt based on answers above):
-
-**Key questions to explore:**
+**Conversational follow-ups:**
 - What problem are you trying to solve?
 - Who would use this? What does success look like for them?
-- What inspired this idea?
-- Can you give a concrete example of how someone would use this?
+- Can you give concrete example of how someone would use this?
 - What would happen if this didn't exist?
 
-**When responses are unclear:**
-- Too vague → Ask for concrete examples
-- Too technical → Redirect to user experience
-- Unclear value → Explore the problem deeper
+**Adapt based on answers**: Public-facing → security questions. Greenfield → architecture questions. Critical urgency → scope reduction focus.
 
-**Checkpoint**: Summarize understanding and confirm before moving forward
-
-### Phase 2: Core Features (15-20 min)
+### Phase 2: Core Features
 
 **Objective**: Define what the product must do
 
-**🎯 Start with Structured Questions** (Comprehensive Mode - Optional for Quick Mode)
+**Context**: Research with WebSearch/WebFetch("[feature-type] UX patterns 2025") if unfamiliar patterns.
 
-Use AskUserQuestion tool to establish approach:
+**Use AskUserQuestion proactively for** (default approach):
+- MVP approach: "Bare Minimum vs Core+Polish vs Feature Complete vs Phased rollout?"
+- Priority balance: "Speed First vs Balanced vs Quality First vs MVP then Harden?"
 
-```json
-{
-  "questions": [
-    {
-      "question": "What's your MVP (Minimum Viable Product) approach?",
-      "header": "MVP Style",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Bare Minimum",
-          "description": "Absolute essentials only, ship fastest version possible"
-        },
-        {
-          "label": "Core + Polish",
-          "description": "Essential features plus good UX and error handling"
-        },
-        {
-          "label": "Feature Complete",
-          "description": "All planned features in first release"
-        },
-        {
-          "label": "Phased Rollout",
-          "description": "Incremental releases, starting with subset of users"
-        }
-      ]
-    },
-    {
-      "question": "How should we balance quality vs speed?",
-      "header": "Priority",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Speed First",
-          "description": "Ship fast, iterate later - prototype mindset"
-        },
-        {
-          "label": "Balanced",
-          "description": "Good quality with reasonable timeline"
-        },
-        {
-          "label": "Quality First",
-          "description": "Production-grade, comprehensive testing, no shortcuts"
-        },
-        {
-          "label": "MVP then Harden",
-          "description": "Quick MVP to validate, then invest in quality"
-        }
-      ]
-    }
-  ]
-}
-```
-
-**📝 Then explore conversationally:**
-
-**Key questions to explore:**
+**Conversational follow-ups:**
 - What's the ONE thing this absolutely must do?
-- Walk me through a typical user's journey - from start to finish
-- What would make this genuinely useful vs just a nice demo?
+- Walk me through typical user's journey - start to finish
+- What makes this genuinely useful vs just a nice demo?
 - Which features are must-haves for launch vs nice-to-haves?
 
 **Prioritization framework:**
-```
-- MUST HAVE (P0): Can't launch without these
-- SHOULD HAVE (P1): Important but can wait
-- NICE TO HAVE (P2): Future enhancements
-```
+- P0 (Must Have): Can't launch without
+- P1 (Should Have): Important but can wait
+- P2 (Nice to Have): Future enhancements
 
-Help user categorize each feature by asking: "Is this essential for launch, or could we add it later?"
+Help user categorize: "Is this essential for launch, or could we add it later?"
 
-**Checkpoint**: Review prioritized feature list and confirm alignment
-
-### Phase 3: Technical Direction (10-15 min)
+### Phase 3: Technical Direction
 
 **Objective**: Establish high-level technical approach
 
-**IMPORTANT**: User may not be highly technical. Explain options clearly with tradeoffs.
+**Context**: Research with WebSearch/WebFetch("user personas for [target-audience]") if unfamiliar users.
 
-**🎯 Start with Structured Questions** (Both Modes)
+**Use AskUserQuestion proactively for** (default approach):
+- Environment: "Local only vs Cloud-hosted vs On-Premise vs Hybrid?"
+- Data storage: "Relational DB vs Document store vs File storage vs In-Memory?" [multiSelect]
+- Authentication: "No auth vs Basic (username/password) vs OAuth/SSO vs API Keys?"
+- Integration needs: "Standalone vs API integrations vs Database connections vs File sync?" [multiSelect]
 
-Use AskUserQuestion tool for technical baseline:
+**Conversational follow-ups:**
+- Real-time or batch processing?
+- How many users? (scale expectations)
+- Existing technologies to use or avoid?
+- Any specific tech preferences or constraints?
 
-```json
-{
-  "questions": [
-    {
-      "question": "Where will this system run?",
-      "header": "Environment",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Local/Desktop",
-          "description": "Runs on developer machine or local server"
-        },
-        {
-          "label": "Cloud (AWS/GCP)",
-          "description": "Hosted in cloud provider infrastructure"
-        },
-        {
-          "label": "On-Premise",
-          "description": "Company-owned data center or servers"
-        },
-        {
-          "label": "Hybrid/Multi",
-          "description": "Combination of environments"
-        }
-      ]
-    },
-    {
-      "question": "What are your data storage requirements?",
-      "header": "Data Storage",
-      "multiSelect": true,
-      "options": [
-        {
-          "label": "Relational DB",
-          "description": "Structured data with relationships (PostgreSQL, MySQL)"
-        },
-        {
-          "label": "Document Store",
-          "description": "Flexible schema, JSON-like (MongoDB, DynamoDB)"
-        },
-        {
-          "label": "File Storage",
-          "description": "Files, images, documents (S3, local filesystem)"
-        },
-        {
-          "label": "In-Memory/Cache",
-          "description": "Fast temporary storage (Redis, Memcached)"
-        }
-      ]
-    },
-    {
-      "question": "What authentication approach do you need?",
-      "header": "Auth",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "None",
-          "description": "Public access, no user accounts needed"
-        },
-        {
-          "label": "Basic Auth",
-          "description": "Simple username/password"
-        },
-        {
-          "label": "OAuth/SSO",
-          "description": "Login with Google, GitHub, corporate SSO"
-        },
-        {
-          "label": "API Keys/Tokens",
-          "description": "Programmatic access with tokens (JWT, etc.)"
-        }
-      ]
-    },
-    {
-      "question": "Does this need to integrate with other systems?",
-      "header": "Integration",
-      "multiSelect": true,
-      "options": [
-        {
-          "label": "None",
-          "description": "Standalone system, no external dependencies"
-        },
-        {
-          "label": "APIs/Webhooks",
-          "description": "REST APIs, GraphQL, or webhook integrations"
-        },
-        {
-          "label": "Database Access",
-          "description": "Direct database connections to existing systems"
-        },
-        {
-          "label": "File Sync",
-          "description": "Sync with filesystems or cloud storage"
-        }
-      ]
-    }
-  ]
-}
-```
-
-**📝 Then explore conversationally:**
-
-**Key areas to explore:**
-- Where should this run? (Cloud/Local/Hybrid)
-- Does this need real-time or batch processing?
-- How many users? (Just you, team, department, organization, public)
-- Any existing technologies to use or avoid?
-- Integration requirements with existing systems?
-- Data storage needs?
-- Authentication requirements?
-
-**Offer options with tradeoffs:**
-```
-"We could use:
-- Option A: [Technology] - Good for [X], but [tradeoff]
-- Option B: [Technology] - Good for [Y], but [tradeoff]
-
-Given your need for [requirement], which sounds better?"
-```
-
-**For simple projects**: May skip detailed technical discussion
+**For simple projects**: Focus on core tech choices only
 **For complex projects**: Deep dive on architecture, integrations, security
 
-**Checkpoint**: Confirm technical direction aligns with user's comfort level
-
-### Phase 4: Constraints & Scope (10 min)
+### Phase 4: Constraints & Scope
 
 **Objective**: Define realistic boundaries
 
-**🎯 Start with Structured Questions** (Both Modes)
+**Context**: Research with WebSearch/WebFetch("[industry] compliance requirements") if regulated domain.
 
-Use AskUserQuestion tool for constraints:
+**Use AskUserQuestion proactively for** (default approach):
+- Timeline: "ASAP (days) vs 1-2 weeks vs 1-2 months vs 3+ months vs Exploratory?"
+- Key constraints: "Budget vs Time vs Team Size vs Tech Skills vs Compliance?" [multiSelect]
 
-```json
-{
-  "questions": [
-    {
-      "question": "When do you need this completed?",
-      "header": "Timeline",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "ASAP (days)",
-          "description": "Urgent need, minimal scope acceptable"
-        },
-        {
-          "label": "1-2 weeks",
-          "description": "Short-term project, focused scope"
-        },
-        {
-          "label": "1-2 months",
-          "description": "Medium project with multiple features"
-        },
-        {
-          "label": "3+ months",
-          "description": "Large project, comprehensive solution"
-        }
-      ]
-    },
-    {
-      "question": "What are your key constraints?",
-      "header": "Constraints",
-      "multiSelect": true,
-      "options": [
-        {
-          "label": "Budget",
-          "description": "Limited budget for infrastructure or tools"
-        },
-        {
-          "label": "Time",
-          "description": "Fixed deadline or urgent timeline"
-        },
-        {
-          "label": "Team Size",
-          "description": "Limited developers or resources"
-        },
-        {
-          "label": "Tech Skills",
-          "description": "Team learning new technologies"
-        }
-      ]
-    }
-  ]
-}
-```
-
-**📝 Then explore conversationally:**
-
-**Key questions:**
-- What's your timeline? When would you like this working?
-- Any budget constraints? (Estimate infrastructure costs if relevant)
-- Security or compliance requirements? (HIPAA, SOC2, etc.)
+**Conversational follow-ups:**
+- Budget constraints? (estimate infrastructure costs if relevant)
+- Security or compliance requirements? (HIPAA, SOC2, GDPR)
 - What are you comfortable maintaining long-term?
-- What is explicitly OUT of scope for the first version?
-- What's the minimum viable version if we had to cut features?
+- What is explicitly OUT of scope for first version?
+- Minimum viable version if we had to cut features?
 
-**Help calibrate expectations**: "Building [X] typically takes [Y] time. Does that work?"
+**Calibrate expectations**: "Building [X] typically takes [Y] time. Does that work?"
 
-**Checkpoint**: Confirm constraints and scope boundaries
-
-### Phase 5: Success Metrics (5-10 min)
+### Phase 5: Success Metrics
 
 **Objective**: Define what "done" looks like
 
-**🎯 Start with Structured Questions** (Comprehensive Mode - Optional for Quick Mode)
+**Context**: Research with WebSearch/WebFetch("[product-type] KPIs and metrics 2025").
 
-Use AskUserQuestion tool for success criteria:
+**Use AskUserQuestion proactively for** (default approach):
+- Success metrics: "User adoption vs Performance/speed vs Cost savings vs User satisfaction vs Feature completion?" [multiSelect]
 
-```json
-{
-  "questions": [
-    {
-      "question": "How will you measure success?",
-      "header": "Metrics",
-      "multiSelect": true,
-      "options": [
-        {
-          "label": "Adoption Rate",
-          "description": "Percentage of users actively using the system"
-        },
-        {
-          "label": "Performance",
-          "description": "Speed, latency, throughput improvements"
-        },
-        {
-          "label": "Cost Savings",
-          "description": "Reduced operational costs or time savings"
-        },
-        {
-          "label": "User Satisfaction",
-          "description": "NPS, feedback scores, user happiness"
-        }
-      ]
-    }
-  ]
-}
-```
-
-**📝 Then explore conversationally:**
-
-**Key questions:**
+**Conversational follow-ups:**
 - How will you know this is working well?
 - What would make you consider this a success?
 - How will people actually use this day-to-day?
-- What specific criteria must be met for you to consider this complete?
+- What specific criteria must be met to consider this complete?
 
-**Checkpoint**: Final confirmation before generating PRD
+## Adaptive Discovery Heuristics
 
-## Adaptive Branching Logic
+**Weight questions toward high-impact unknowns**:
 
-Use the structured question answers to intelligently adapt your follow-up questions:
+- **Public-facing projects** → Emphasize security, authentication, scale, compliance
+- **Greenfield projects** → Emphasize architecture, technology choices, patterns
+- **Brownfield projects** → Emphasize integration, existing patterns, backward compatibility
+- **Critical urgency** → Focus on scope reduction: "What's absolute minimum to unblock you?"
+- **Exploratory projects** → Encourage experimentation, discuss multiple approaches
 
-### Based on Project Type
+**Don't follow if/then rules rigidly** - use judgment based on project context.
 
-**If "Greenfield":**
-- Emphasize architecture decisions in Phase 3
-- Ask about design patterns and best practices
-- Explore technology choices deeply
-- **Skip** integration questions (no existing system)
+## PRD Output Structure
 
-**If "Feature Addition":**
-- **Emphasize** integration questions in Phase 3
-- Ask about existing patterns to follow
-- Explore backward compatibility
-- Focus on consistency with existing codebase
+**Forbidden patterns**:
+- ❌ Comprehensive PRD for simple ideas (CRUD app ≠ 15-page requirements doc)
+- ❌ Filling sections with "TBD" or "To be determined" (omit unknowns, make them open questions)
+- ❌ Technical implementation details in PRD (leave for PLAN phase - focus on what/why, not how)
+- ❌ Rigid template sections for minimal projects (simple idea = simple PRD)
 
-**If "Refactor/Improve":**
-- Ask about current pain points
-- Explore what's working well (keep it)
-- Focus on migration strategy
-- Discuss testing strategy for changes
+**PRD structure - Core dimensions**:
 
-**If "Bug Fix/Hotfix":**
-- **Quick Mode strongly recommended**
-- Focus on root cause and fix
-- Skip most architecture discussion
-- Emphasize testing and validation
+### Simple PRD (~300-500 tokens)
+**When**: Single feature, clear problem, 1-2 user types, minimal unknowns
 
-### Based on User Scope
+```markdown
+# PRD: [Project Name]
 
-**If "Just me":**
-- Simplify compliance/security questions
-- Focus on developer experience
-- Less emphasis on scalability
-- Can take shortcuts for MVP
+**Created**: [Date] | **Complexity**: Simple
 
-**If "Public/External":**
-- **Emphasize** security and authentication
-- Ask about scale expectations
-- Discuss compliance requirements (GDPR, etc.)
-- Focus on error handling and monitoring
-- Explore rate limiting and abuse prevention
+## Problem & Users
+**Problem**: [What we're solving - 1-2 sentences]
+**Users**: [Who needs this and what pain they have]
 
-**If "Dept/Org (10-200)":**
-- Ask about SSO/corporate auth integration
-- Discuss access control and permissions
-- Consider audit logging requirements
-- Explore deployment to internal infrastructure
+## Solution
+**Core Features** (P0):
+1. [Feature]: [What + Why essential]
+2. [Feature]: [What + Why essential]
 
-### Based on Urgency
+**Success**: [2-3 testable criteria]
+**Out of Scope**: [What we're NOT doing]
 
-**If "Critical":**
-- **Quick Mode strongly recommended**
-- Focus on minimal viable solution
-- Skip nice-to-have features
-- Emphasize fast iteration
-- Ask: "What's the absolute minimum to unblock you?"
-
-**If "Exploratory":**
-- **Comprehensive Mode recommended**
-- Encourage experimentation
-- Discuss multiple approaches
-- Focus on learning objectives
-- Less pressure on timelines
-
-### Based on MVP Philosophy
-
-**If "Bare Minimum":**
-- Ruthlessly cut scope
-- One feature at a time
-- Skip polish questions
-- Fast iteration mindset
-
-**If "Feature Complete":**
-- Explore all features thoroughly
-- Ask about edge cases
-- Discuss comprehensive testing
-- Plan for phased implementation
-
-### Based on Timeline
-
-**If "ASAP (days)":**
-- **Quick Mode strongly recommended**
-- Challenge scope: "Can we cut this further?"
-- Suggest using existing libraries/services
-- Focus on deployment simplicity
-
-**If "3+ months":**
-- **Comprehensive Mode recommended**
-- Explore scalability early
-- Discuss architecture patterns
-- Plan for iterative releases
-
-### Combination Rules
-
-**Critical + Public = High Priority:**
-```
-"Given this is urgent AND public-facing, we need to prioritize:
-1. Basic security (can't skip)
-2. Core functionality only
-3. Monitoring/alerting
-4. Fast rollback capability
-
-We should defer: advanced features, optimization, nice-to-have integrations"
+## Next Steps
+[Greenfield: /epcc-plan | Brownfield: /epcc-explore]
 ```
 
-**Exploratory + Greenfield = Creative Freedom:**
-```
-"Since this is exploratory and greenfield, we have flexibility to:
-- Try new technologies
-- Experiment with architecture
-- Build MVPs to validate assumptions
-- Pivot based on learnings
+### Medium PRD (~600-1,000 tokens)
+**When**: Multi-feature product, some technical complexity, 2-3 user types, defined constraints
 
-Should we start with a quick prototype to test the core concept?"
-```
+Add to simple structure:
+- **User Journeys**: Primary flow with key scenarios
+- **Technical Approach**: High-level architecture, tech stack rationale
+- **Constraints**: Timeline, budget, technical limitations
+- **Feature Priority**: P0 (Must) / P1 (Should) / P2 (Nice to have)
 
-## Conversation Principles
+### Complex PRD (~1,200-2,000 tokens)
+**When**: Platform/system, multiple integrations, diverse user types, compliance needs, significant risks
 
-### Be Socratic, Not Prescriptive
+Add to medium structure:
+- **User Personas**: Detailed user types with needs/pain points
+- **Detailed Journeys**: Multiple flows, edge cases, error scenarios
+- **Technical Architecture**: Component structure, integration points, data flow
+- **Security/Compliance**: Requirements, approach, validation
+- **Risks & Mitigation**: What could go wrong, how to address
+- **Dependencies**: External/internal, blockers
+- **Phased Rollout**: If applicable
 
-❌ **Don't dictate**: "You should use React for this"
-✅ **Do guide**: "For the UI, we could use React (popular, lots of resources) or Vue (simpler, easier) or vanilla JavaScript (no dependencies). Given your [requirement], which sounds better?"
+**Depth heuristic**: PRD complexity should match project complexity. Don't write comprehensive PRD for simple feature.
 
-### Acknowledge Uncertainty
-
-❌ **Don't guarantee**: "This will definitely work"
-✅ **Do qualify**: "This approach would likely work well, though we'd need to validate performance with real data"
-
-### Offer Options with Tradeoffs
-
-**Pattern**: "We have options:
-1. [Option A]: [Benefit] but [tradeoff]
-2. [Option B]: [Benefit] but [tradeoff]
-3. [Option C]: [Benefit] but [tradeoff]
-
-Given [user's context], I'd lean toward [Option]. What do you think?"
-
-### Ask Follow-ups
-
-When user says something vague:
-- "Can you give me an example of what that would look like?"
-- "Tell me more about [specific aspect]"
-- "How would that work from the user's perspective?"
-
-### Reflect Back
-
-Periodically summarize:
-"So if I understand correctly, you want to build [X] that helps [users] do [task] by [method]. The key challenges are [Y] and [Z]. Does that sound right?"
-
-## Discovery Patterns
-
-### Simple Feature Pattern
-**Example**: Recipe search (500 items)
-- **Clarify scope**: Search by name/ingredient, instant vs on-click
-- **Assess scale**: 500 recipes → simple client-side search
-- **Prioritize**: P0 = basic search, P1 = filters
-- **Estimate**: "Few days to implement well"
-
-### Medium Feature Pattern
-**Example**: Team metrics dashboard
-- **User journey**: Morning standup review
-- **Data sources**: Salesforce, Zendesk, GitHub
-- **Technical approach**: Web-based, daily batch updates
-- **Scale**: 10 users, simple auth
-- **Estimate**: 2-3 weeks
-
-### Complex System Pattern
-**Example**: Knowledge management (200 users)
-- **Problem**: Information scattered across tools
-- **Scale**: Company-wide, 200+ users
-- **MVP prioritization**: P0 = Search + Import, P1 = Native editor
-- **Architecture**: Cloud, SSO, Elasticsearch, future SOC2
-- **Constraints**: $200-500/mo infrastructure
-- **Estimate**: 6-8 weeks minimum
-- **Success metrics**: <30s to find info, 50% fewer Slack questions
-
-### Vague Idea Clarification Pattern
-**Example**: "Make process efficient" → Approval visibility
-- **Ask for concrete example**: What's inefficient specifically?
-- **Dig into root cause**: Slow because of visibility, not workflow
-- **Propose targeted solution**: Dashboard + reminders + one-click approval
-- **Validate**: "Yes, exactly what we need!"
-
-## Output: PRD.md
-
-Once discovery conversation is complete, generate PRD with **depth appropriate to project complexity**.
-
-### PRD Structure - All Projects
+### Full PRD Template (Adapt to Complexity)
 
 ```markdown
 # Product Requirement Document: [Project Name]
@@ -933,6 +381,14 @@ Once discovery conversation is complete, generate PRD with **depth appropriate t
 
 ## Executive Summary
 [2-3 sentence overview]
+
+## Research Insights (if applicable)
+
+**Product/UX** (from WebSearch/WebFetch):
+- **[Best practice/pattern]**: [Key finding from UX research, user research, or domain standards]
+
+**Documentation Identified**:
+- **[Doc type]**: Priority [H/M/L] - [Why needed]
 
 ## Problem Statement
 [What problem we're solving and why it matters]
@@ -979,7 +435,7 @@ Once discovery conversation is complete, generate PRD with **depth appropriate t
 3. System responds with [response]
 4. User achieves [outcome]
 
-[Additional journeys for complex projects]
+[Additional journeys for medium/complex projects]
 
 ## Technical Approach
 [Include for Medium/Complex projects]
@@ -1052,6 +508,25 @@ This PRD feeds into the EPCC workflow. Choose your entry point:
 **End of PRD**
 ```
 
+**Completeness heuristic**: PRD is ready when you can answer:
+- ✅ What problem are we solving and why does it matter?
+- ✅ Who are the users and what do they need?
+- ✅ What are the must-have features (P0) for MVP?
+- ✅ How will we measure success?
+- ✅ What are we explicitly NOT doing?
+- ✅ What's the entry point into EPCC workflow (explore or plan)?
+
+**Anti-patterns**:
+- ❌ **Simple feature with 1,500-token PRD** → Violates complexity matching (use Simple template)
+- ❌ **Complex platform with 400-token PRD** → Insufficient detail (missing risks, architecture, journeys)
+- ❌ **Technical implementation in PRD** → "Use PostgreSQL with connection pooling" belongs in PLAN phase
+- ❌ **Every section filled with "TBD"** → If unknown, make it an open question or omit
+- ❌ **No success criteria** → Can't validate if solution works without measurable criteria
+
+---
+
+**Remember**: Match PRD depth to project complexity. Simple idea = simple PRD. Focus on what/why, defer how to PLAN phase.
+
 ## After Generating PRD
 
 **Confirm completeness:**
@@ -1067,6 +542,40 @@ Next steps - Enter the EPCC workflow:
 
 Questions or changes to the PRD?
 ```
+
+## Conversation Principles
+
+### Be Socratic, Not Prescriptive
+
+❌ **Don't dictate**: "You should use React for this"
+✅ **Do guide**: "For UI, we could use React (popular, lots of resources) or Vue (simpler) or vanilla JS (no dependencies). Given your [requirement], which sounds better?"
+
+### Acknowledge Uncertainty
+
+❌ **Don't guarantee**: "This will definitely work"
+✅ **Do qualify**: "This approach would likely work well, though we'd need to validate performance with real data"
+
+### Offer Options with Tradeoffs
+
+**Pattern**:
+```
+We have options:
+1. [Option A]: [Benefit] but [tradeoff]
+2. [Option B]: [Benefit] but [tradeoff]
+3. [Option C]: [Benefit] but [tradeoff]
+
+Given [user's context], I'd lean toward [Option]. What do you think?
+```
+
+### Ask Follow-ups When Vague
+
+- "Can you give me an example of what that would look like?"
+- "Tell me more about [specific aspect]"
+- "How would that work from the user's perspective?"
+
+### Reflect Back Periodically
+
+"So if I understand correctly, you want to build [X] that helps [users] do [task] by [method]. The key challenges are [Y] and [Z]. Does that sound right?"
 
 ## Usage Examples
 
@@ -1084,11 +593,11 @@ Questions or changes to the PRD?
 # Will ask: "What idea or project would you like to explore?"
 ```
 
-### Example Flow: Quick Mode (15-20 min)
+### Example Flow: Quick Mode
 
-**User Input:** `/prd "Add export feature to existing dashboard"`
+**User**: `/prd "Add export feature to existing dashboard"`
 
-**Claude Response:**
+**Claude**:
 ```
 I can help you create either:
 1. **Quick PRD** (15-20 min) - Streamlined for simple/clear projects
@@ -1097,272 +606,72 @@ I can help you create either:
 Which approach works better for this project?
 ```
 
-**User:** "Quick PRD"
+**User**: "Quick PRD"
 
-**Claude uses AskUserQuestion (Batch 1 - Phase 1):**
-```json
-{
-  "questions": [
-    {"question": "What type of project is this?", ...},
-    {"question": "Who will use this system?", ...},
-    {"question": "How urgent is solving this problem?", ...}
-  ]
-}
-```
+**Claude**: *Uses structured questions for baseline + conversational follow-ups*
+- Project type, user scope, urgency (structured)
+- What formats? All data or filtered? (conversational)
+- Environment, data storage, auth (structured if needed)
+- Timeline, constraints (structured)
 
-**User answers:** "Feature Addition", "Small team (2-10)", "Important"
+**Claude**: *Generates lean PRD matching complexity*
 
-**Claude:** *Brief conversational follow-up (2-3 questions)*
-```
-Got it! Adding export to an existing dashboard for your team.
+**Total time**: ~15 minutes
 
-Quick clarifications:
-- What formats do users need? (CSV, PDF, Excel?)
-- Should this export all data or allow filtering?
-```
+### Example Flow: Comprehensive Mode
 
-**User provides answers**
+**User**: `/prd "Build AI-powered customer support platform"`
 
-**Claude uses AskUserQuestion (Batch 2 - Phase 3):**
-```json
-{
-  "questions": [
-    {"question": "Where will this system run?", ...},
-    {"question": "What are your data storage requirements?", ...},
-    {"question": "What authentication approach do you need?", ...},
-    {"question": "Does this need to integrate with other systems?", ...}
-  ]
-}
-```
+**Claude**: Recommends Comprehensive mode
 
-**User answers:** "Cloud (AWS/GCP)", "Relational DB", "OAuth/SSO", "None"
+**Claude**: *Deep exploration across all phases*
+- Structured questions for baseline decisions
+- Extensive conversational exploration of problem space, users, features, architecture
+- Multiple rounds of clarification and refinement
 
-**Claude uses AskUserQuestion (Batch 3 - Phase 4):**
-```json
-{
-  "questions": [
-    {"question": "When do you need this completed?", ...},
-    {"question": "What are your key constraints?", ...}
-  ]
-}
-```
+**Claude**: *Generates comprehensive PRD with full detail*
 
-**User answers:** "1-2 weeks", "Time"
+**Total time**: ~50 minutes
 
-**Claude:** *Generates lean PRD in PRD.md*
+## Common Pitfalls (Anti-Patterns)
 
-**Total time:** ~15 minutes, 9 structured questions + ~5 conversational
+### ❌ Asking Questions User Already Answered
+**Don't**: Repeat questions → **Do**: Reference earlier answers
 
----
+### ❌ Using Structured Questions for Everything
+**Don't**: Force every question into AskUserQuestion → **Do**: Use conversation for open-ended exploration
 
-### Example Flow: Comprehensive Mode (45-60 min)
+### ❌ Following Templates Rigidly
+**Don't**: Generate comprehensive PRD for "add button" task → **Do**: Match depth to complexity
 
-**User Input:** `/prd "Build AI-powered customer support platform"`
+### ❌ Counting Questions Instead of Assessing Clarity
+**Don't**: Ask 8 questions because guide says 5-8 → **Do**: Ask until genuinely clear
 
-**Claude Response:**
-```
-I can help you create either:
-1. **Quick PRD** (15-20 min) - Streamlined for simple/clear projects
-2. **Comprehensive PRD** (45-60 min) - Deep exploration for complex projects
+### ❌ Interrogating Instead of Conversing
+**Don't**: Rapid-fire 20 questions → **Do**: Natural dialogue with pauses for reflection
 
-Which approach works better for this project?
-```
+## Second-Order Convergence Warnings
 
-**User:** "Comprehensive - this is a greenfield SaaS product"
+Even with this guidance, you may default to:
 
-**Claude uses AskUserQuestion (Batch 1 - Phase 1):**
-```json
-{
-  "questions": [
-    {"question": "What type of project is this?", ...},
-    {"question": "Who will use this system?", ...},
-    {"question": "How urgent is solving this problem?", ...}
-  ]
-}
-```
-
-**User answers:** "Greenfield", "Public/External", "Exploratory"
-
-**Claude:** *Deep conversational exploration (8-10 questions)*
-```
-Let's explore this AI-powered support platform idea deeply:
-
-1. What problem are current support tools not solving?
-2. Walk me through your ideal customer's journey...
-3. What makes this different from Zendesk/Intercom?
-4. Can you describe a specific scenario where this would shine?
-5. What does success look like for your customers?
-...
-```
-
-*[Adaptive branching based on "Public/External" + "Greenfield"]*
-```
-Since this is public-facing and greenfield, let's talk about:
-- What scale are you targeting? (hundreds of customers? thousands?)
-- What's your go-to-market strategy?
-- Have you validated this problem with potential customers?
-```
-
-**Claude uses AskUserQuestion (Batch 2 - Phase 2):**
-```json
-{
-  "questions": [
-    {"question": "What's your MVP approach?", ...},
-    {"question": "How should we balance quality vs speed?", ...}
-  ]
-}
-```
-
-**User answers:** "Phased Rollout", "MVP then Harden"
-
-**Claude:** *Deep feature exploration (6-8 questions)*
-```
-Let's define the feature set:
-
-Phase 1 (MVP): What's the ONE thing that must work?
-Phase 2: What features validate the business model?
-Phase 3: What makes this enterprise-ready?
-...
-```
-
-**Claude uses AskUserQuestion (Batch 3 - Phase 3):**
-```json
-{
-  "questions": [
-    {"question": "Where will this system run?", ...},
-    {"question": "What are your data storage requirements?", ...},
-    {"question": "What authentication approach do you need?", ...},
-    {"question": "Does this need to integrate with other systems?", ...}
-  ]
-}
-```
-
-**User answers:** "Cloud (AWS/GCP)", "Relational DB + Document Store + In-Memory/Cache", "OAuth/SSO", "APIs/Webhooks"
-
-**Claude:** *Deep technical exploration*
-```
-Given you selected multi-storage and public-facing:
-
-Architecture questions:
-- Microservices or modular monolith?
-- Real-time requirements for chat?
-- AI model: hosted (OpenAI) vs self-hosted?
-- Data residency requirements (GDPR)?
-...
-```
-
-**Claude uses AskUserQuestion (Batch 4 - Phase 4):**
-```json
-{
-  "questions": [
-    {"question": "When do you need this completed?", ...},
-    {"question": "What are your key constraints?", ...}
-  ]
-}
-```
-
-**User answers:** "3+ months", "Budget + Team Size"
-
-**Claude:** *Constraints exploration*
-```
-3-month timeline with budget/team constraints:
-
-- What's your team size and skill levels?
-- Monthly infrastructure budget estimate?
-- Any compliance requirements (SOC2, GDPR, HIPAA)?
-- What are you comfortable maintaining?
-...
-```
-
-**Claude uses AskUserQuestion (Batch 5 - Phase 5):**
-```json
-{
-  "questions": [
-    {"question": "How will you measure success?", ...}
-  ]
-}
-```
-
-**User answers:** "Adoption Rate + User Satisfaction"
-
-**Claude:** *Success criteria deep-dive*
-```
-Let's define specific success metrics:
-
-Adoption Rate:
-- Target: What % of sign-ups become active users?
-- Timeline: Active within first week? month?
-
-User Satisfaction:
-- NPS target?
-- Response time SLA?
-- Resolution rate goals?
-...
-```
-
-**Claude:** *Generates comprehensive PRD in PRD.md with:*
-- Detailed problem statement
-- User personas and journeys
-- Phased feature roadmap
-- Technical architecture diagram
-- Integration requirements
-- Acceptance criteria
-- Risk analysis
-- Success metrics
-
-**Total time:** ~50 minutes, 12 structured questions + ~18 conversational
-
----
-
-### Adaptive Switching Example
-
-**User Input:** `/prd "Simple script to backup database"`
-
-**Claude:** "Quick PRD (15-20 min) recommended"
-
-**User:** "Sure"
-
-*During Phase 2 feature discussion...*
-
-**User:** "Actually, we need to backup across 5 different databases, encrypt the backups, store in multiple regions, and notify on failures via Slack, email, and PagerDuty"
-
-**Claude:**
-```
-This is more complex than I initially thought! This has:
-- Multi-database coordination
-- Encryption requirements
-- Multi-region storage
-- Complex notification system
-
-Would you like to switch to Comprehensive Mode for deeper exploration? This deserves more thorough planning.
-```
-
-**User:** "Yes, let's switch"
-
-**Claude:** *Continues with comprehensive questioning*
+- ❌ **Asking questions to hit count targets** (ask when genuinely unclear, not to fill quota)
+- ❌ **Not using AskUserQuestion proactively** (use by default for decisions, don't wait for "help me decide")
+- ❌ **Using conversation when AskUserQuestion would be clearer** (structured questions for decisions with 2-4 options)
+- ❌ **Assuming "comprehensive mode" means exhaustive questioning** (adapt to actual complexity)
+- ❌ **Generating cookie-cutter PRDs** (match depth to project - simple project = simple PRD)
+- ❌ **Following structured question examples as templates** (adapt pattern to your specific decisions)
+- ❌ **Asking when user already provided clear answer** (listen and document, don't re-ask)
 
 ## Remember
 
-**Your role in this phase:**
-- ✅ Guide through Socratic questioning
-- ✅ Help user articulate their idea clearly
-- ✅ Offer options with tradeoffs
-- ✅ Adapt conversation to project complexity
-- ✅ Generate appropriately-sized PRD
-- ✅ Set up for next phase (PLAN or EXPLORE)
-- ✅ **Use AskUserQuestion tool when user says "Ask me", "Help me decide", "Give me options", etc.**
+**Your role**: Socratic guide helping users articulate their ideas through **structured questions and dialogue**.
 
-**Not your role:**
-- ❌ Make decisions for the user
-- ❌ Jump to implementation details
-- ❌ Assume requirements without asking
-- ❌ Create overly complex PRD for simple projects
+**Work pattern**: Ask (AskUserQuestion for decisions) → Listen → Clarify (conversation for follow-ups) → Document. Match depth to complexity.
 
-**A good PRD:**
-- Clearly defines the problem and solution
-- Prioritizes features realistically
-- Sets measurable success criteria
-- Provides foundation for technical phases
-- Is appropriately detailed for project size
+**AskUserQuestion usage**: PRIMARY method for all decisions with 2-4 clear options. Use proactively, don't wait for user to request it.
+
+**Conversational follow-ups**: SECONDARY method for open-ended exploration, gathering context, and clarifying structured answers.
+
+**PRD depth**: Simple project = simple PRD. Complex project = comprehensive PRD. Always adapt.
 
 🎯 **PRD complete - ready to begin EPCC workflow (Explore → Plan → Code → Commit)!**

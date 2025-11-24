@@ -9,10 +9,17 @@
   "plugins": [
     {
       "name": "epcc-workflow",
-      "version": "1.0.0",
+      "version": "3.1.0",
       "source": "./assets/claude-code-plugins/plugins/epcc-workflow",
       "description": "EPCC (Explore-Plan-Code-Commit) systematic development workflow with 12 specialized agents for exploration, planning, coding, and commit phases",
       "category": "workflow"
+    },
+    {
+      "name": "frontend-design",
+      "version": "1.0.0",
+      "source": "./assets/claude-code-plugins/plugins/frontend-design",
+      "description": "Frontend design skill for UI/UX implementation",
+      "category": "skill"
     },
         {
       "name": "requirements",
