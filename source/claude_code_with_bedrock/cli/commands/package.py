@@ -1861,7 +1861,8 @@ if [ -d "claude-settings" ]; then
 
         if [ "$SKIP_SETTINGS" != "true" ]; then
             # Replace placeholders and write settings
-            sed -e 's|__OTEL_HELPER_PATH__|~/claude-code-with-bedrock/otel-helper|g' \
+            sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
             echo "✓ Claude Code settings configured"
         fi
@@ -2032,11 +2033,11 @@ if exist "claude-settings" (
         )
 
         if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholder
-            powershell -Command "$path = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe'
+            REM Use PowerShell to replace placeholders
             powershell -Command "
-            $path = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' -replace '\\\\\\\\', '/';
-            (Get-Content 'claude-settings\\\\settings.json') -replace '__OTEL_HELPER_PATH__', $path |
+            $otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' -replace '\\\\\\\\', '/';
+            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' -replace '\\\\\\\\', '/';
+            (Get-Content 'claude-settings\\\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath |
             Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
             echo OK Claude Code settings configured
         )
@@ -2300,7 +2301,7 @@ Available metrics include:
 
             # Add awsAuthRefresh for session-based credential storage
             if profile.credential_storage == "session":
-                settings["awsAuthRefresh"] = f"~/claude-code-with-bedrock/credential-process --profile {profile_name}"
+                settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:
