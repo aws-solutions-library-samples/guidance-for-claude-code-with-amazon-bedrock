@@ -108,6 +108,8 @@ Resources:
     Properties:
       ClientName: !Sub '${UserPoolName}-client'
       UserPoolId: !Ref UserPool
+      # Public client for CLI apps (no client secret, uses PKCE)
+      GenerateSecret: false
       # OAuth2 configuration
       AllowedOAuthFlows:
         - code
@@ -137,8 +139,6 @@ Resources:
       SupportedIdentityProviders:
         - !If [UseFederate, !Ref ExternalIdentityProvider, COGNITO]
         - COGNITO
-      # Generate client secret
-      GenerateSecret: false
       # Attributes
       ReadAttributes:
         - email
