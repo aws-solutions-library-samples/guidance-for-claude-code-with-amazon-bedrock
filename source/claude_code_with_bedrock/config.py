@@ -59,6 +59,7 @@ class Profile:
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+    sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits

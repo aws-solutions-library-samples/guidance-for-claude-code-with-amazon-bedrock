@@ -75,6 +75,37 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 5. **Access Amazon Bedrock**: Application uses the temporary credentials to call Amazon Bedrock
 6. **Bedrock response**: Amazon Bedrock processes the request and returns the response
 
+### Optional: Deploy Without SSO Authentication
+
+**New in v2.1+:** You can now deploy the observability and analytics solution without SSO authentication. This is ideal for:
+
+- **Internal tools and development environments** where user authentication isn't required
+- **Analytics-only deployments** where you want usage tracking without managing IdP integrations
+- **Simplified deployments** using AWS IAM roles for access control
+
+When SSO authentication is disabled:
+
+- **Access Control**: Uses AWS IAM roles and policies directly (no OIDC provider required)
+- **Anonymous Metrics**: Usage metrics are tracked using anonymized AWS IAM identity (hashed ARN)
+  - Each unique IAM principal (user/role) gets a unique anonymous identifier
+  - Consistent tracking across sessions without exposing PII
+  - Full observability maintained with anonymous user attribution
+- **No IdP Configuration**: Skip OIDC provider setup entirely
+
+**When to use this:**
+- You're deploying only the observability/analytics infrastructure
+- Your users already have AWS IAM access to Bedrock
+- You want simplified deployment without IdP integration
+- You need usage monitoring but don't require individual user authentication
+
+**When to use SSO authentication:**
+- You need centralized access control through your identity provider
+- You require user-level attribution with real identities (email, department, etc.)
+- You want to enforce organization-wide access policies
+- You need detailed audit trails with user information
+
+To deploy without SSO authentication, simply answer "No" when prompted "Enable SSO authentication?" during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
+
 ## Prerequisites
 
 ### For Deployment (IT Administrators)

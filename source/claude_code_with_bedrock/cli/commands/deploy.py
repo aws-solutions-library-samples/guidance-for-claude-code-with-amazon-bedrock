@@ -95,6 +95,10 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
+                if not getattr(profile, "sso_enabled", True):
+                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
+                    console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
+                    return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
             elif stack_arg == "networking":
                 if profile.monitoring_enabled:
@@ -153,7 +157,9 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order
-            stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
+            # Only deploy auth stack if SSO is enabled (default: True for backward compatibility)
+            if getattr(profile, "sso_enabled", True):
+                stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
             # Deploy networking first if needed (required by landing-page distribution and monitoring)
             if profile.monitoring_enabled or (

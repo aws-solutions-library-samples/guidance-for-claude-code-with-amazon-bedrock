@@ -275,9 +275,32 @@ class InitCommand(Command):
             skip_monitoring = last_step in ["monitoring_complete", "bedrock_complete"]
             skip_bedrock = last_step in ["bedrock_complete"]
 
-        # OIDC Provider Configuration
+        # SSO Authentication Configuration
         if not skip_okta:
-            console.print("\n[bold blue]Step 1: OIDC Provider Configuration[/bold blue]")
+            console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
+            console.print("─" * 40)
+
+            console.print("\n[bold]SSO Authentication[/bold]")
+            console.print("Enable Single Sign-On authentication via identity providers")
+            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
+            console.print("\nWhen disabled:")
+            console.print("  • Uses AWS IAM roles for access control")
+            console.print("  • Metrics will use anonymous tracking based on IAM identity")
+            console.print("  • No user authentication required\n")
+
+            sso_enabled = questionary.confirm(
+                "Enable SSO authentication?",
+                default=config.get("sso_enabled", True),
+            ).ask()
+
+            if sso_enabled is None:
+                return None
+
+            config["sso_enabled"] = sso_enabled
+
+        # OIDC Provider Configuration
+        if not skip_okta and config.get("sso_enabled", True):
+            console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
             console.print("─" * 30)
 
             provider_domain = questionary.text(
@@ -1295,10 +1318,15 @@ class InitCommand(Command):
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
+        # Get SSO configuration or use defaults if SSO is disabled
+        sso_enabled = config_data.get("sso_enabled", True)
+        provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
+        client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+
         profile = Profile(
             name=profile_name,
-            provider_domain=config_data["okta"]["domain"],
-            client_id=config_data["okta"]["client_id"],
+            provider_domain=provider_domain,
+            client_id=client_id,
             credential_storage=config_data.get("credential_storage", "session"),
             aws_region=config_data["aws"]["region"],
             identity_pool_name=config_data["aws"]["identity_pool_name"],
@@ -1318,6 +1346,7 @@ class InitCommand(Command):
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
+            sso_enabled=config_data.get("sso_enabled", True),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
             enable_distribution=config_data.get("distribution", {}).get("enabled", False),
             distribution_type=config_data.get("distribution", {}).get("type"),
