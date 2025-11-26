@@ -2033,11 +2033,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholder
-            powershell -Command "$path = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe'
-            powershell -Command "
-            $path = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' -replace '\\\\\\\\', '/';
-            (Get-Content 'claude-settings\\\\settings.json') -replace '__OTEL_HELPER_PATH__', $path |
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
+            powershell -Command "$path = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $path | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -2048,21 +2044,20 @@ echo.
 echo Configuring AWS profiles...
 
 REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
-$config.PSObject.Properties.Name"') do (
+for /f %%p in ('powershell -Command "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
     echo Configuring AWS profile: %%p
 
     REM Get profile-specific region
-    for /f %%r in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json;
-    $config.'%%p'.aws_region"') do set PROFILE_REGION=%%r
+    for /f %%r in ('powershell -Command "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
+
 
     REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "\"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe\"
-    --profile %%p" --profile %%p
+    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+
 
     REM Set region
     if defined PROFILE_REGION (
-        aws configure set region %PROFILE_REGION% --profile %%p
+        aws configure set region !PROFILE_REGION! --profile %%p
     ) else (
         aws configure set region {profile.aws_region} --profile %%p
     )
@@ -2076,8 +2071,7 @@ echo Installation complete!
 echo ======================================
 echo.
 echo Available profiles:
-for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
-$config.PSObject.Properties.Name"') do (
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
     echo   - %%p
 )
 echo.
@@ -2086,8 +2080,7 @@ echo   set AWS_PROFILE=^<profile-name^>
 echo   aws sts get-caller-identity
 echo.
 echo Example:
-for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; \
-$config.PSObject.Properties.Name | Select-Object -First 1"') do (
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
     echo   set AWS_PROFILE=%%p
     echo   aws sts get-caller-identity
 )
