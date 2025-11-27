@@ -21,6 +21,16 @@ from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
+from .commands.quota import (
+    QuotaDeleteCommand,
+    QuotaListCommand,
+    QuotaSetDefaultCommand,
+    QuotaSetGroupCommand,
+    QuotaSetUserCommand,
+    QuotaShowCommand,
+    QuotaUnblockCommand,
+    QuotaUsageCommand,
+)
 from .commands.status import StatusCommand
 from .commands.test import TestCommand
 
@@ -53,6 +63,16 @@ def create_application() -> Application:
     application.add(ConfigValidateCommand())
     application.add(ConfigExportCommand())
     application.add(ConfigImportCommand())
+
+    # Quota management commands
+    application.add(QuotaSetUserCommand())
+    application.add(QuotaSetGroupCommand())
+    application.add(QuotaSetDefaultCommand())
+    application.add(QuotaListCommand())
+    application.add(QuotaDeleteCommand())
+    application.add(QuotaShowCommand())
+    application.add(QuotaUsageCommand())
+    application.add(QuotaUnblockCommand())
 
     return application
 

@@ -8,19 +8,23 @@ The quota monitoring system is an optional CloudFormation stack that integrates 
 
 ### Key Features
 
-- **Per-user token tracking**: Monthly consumption monitoring for each authenticated user
-- **Configurable thresholds**: Alerts at 80%, 90%, and 100% of monthly limits
-- **Automated alerting**: SNS notifications with usage projections and cost estimates
-- **Alert deduplication**: One alert per threshold per user per month
+- **Per-user token tracking**: Monthly and daily consumption monitoring for each authenticated user
+- **Fine-grained quota policies**: Set limits at user, group, or default levels with precedence rules
+- **Multiple limit types**: Monthly tokens, daily tokens, and cost-based limits (USD)
+- **Configurable thresholds**: Alerts at 80%, 90%, and 100% of limits
+- **Cost estimation**: Track estimated costs based on Bedrock pricing per model
+- **JWT group integration**: Automatically extract group membership from identity provider claims
+- **Alert deduplication**: One alert per threshold per limit type per user per period
 - **DynamoDB storage**: Efficient tracking with automatic TTL cleanup
 
 ### Architecture Components
 
-- **UserQuotaMetrics Table**: DynamoDB table storing monthly usage totals
+- **UserQuotaMetrics Table**: DynamoDB table storing monthly/daily usage totals with token type breakdown
+- **QuotaPolicies Table**: DynamoDB table storing fine-grained quota policies (user/group/default)
 - **Quota Monitor Lambda**: Scheduled function checking thresholds every 15 minutes
 - **SNS Topic**: Alert delivery to administrators
 - **EventBridge Rule**: Lambda scheduling
-- **Metrics Aggregator Integration**: Updates quota table during metric processing
+- **Metrics Aggregator Integration**: Updates quota table during metric processing with cost calculation
 
 ## Configuration
 
@@ -29,20 +33,111 @@ The quota monitoring system is an optional CloudFormation stack that integrates 
 During `ccwb init`, configure quota monitoring when prompted:
 - Monthly token limit per user (default: 300 million)
 - Automatic threshold calculation (80% warning, 90% critical)
+- Enable fine-grained quotas (optional, for user/group/default policies)
 
 Deploy using `poetry run ccwb deploy quota`. For complete deployment instructions, see the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure).
 
 ## Configuration Settings
 
-| Parameter          | Default     | Description                            |
-| ------------------ | ----------- | -------------------------------------- |
-| MonthlyTokenLimit  | 300M tokens | Maximum per user per month             |
-| Warning Threshold  | 80% (240M)  | First alert level                      |
-| Critical Threshold | 90% (270M)  | Second alert level                     |
-| Check Frequency    | 15 minutes  | Lambda execution interval              |
-| Alert Retention    | 60 days     | DynamoDB TTL for deduplication        |
+| Parameter               | Default     | Description                                    |
+| ----------------------- | ----------- | ---------------------------------------------- |
+| MonthlyTokenLimit       | 300M tokens | Default maximum per user per month             |
+| Warning Threshold       | 80% (240M)  | First alert level                              |
+| Critical Threshold      | 90% (270M)  | Second alert level                             |
+| Check Frequency         | 15 minutes  | Lambda execution interval                      |
+| Alert Retention         | 60 days     | DynamoDB TTL for deduplication                 |
+| EnableFinegrainedQuotas | false       | Enable fine-grained policy support             |
 
 To update limits: Re-run `ccwb init` and redeploy with `ccwb deploy quota`.
+
+## Fine-Grained Quota Policies
+
+Fine-grained quotas allow administrators to set different limits for different users and groups, with a clear precedence hierarchy.
+
+### Policy Types
+
+1. **User Policies**: Apply to a specific user by email address
+2. **Group Policies**: Apply to all users in a group (from JWT claims)
+3. **Default Policy**: Applies to all users without a more specific policy
+
+### Policy Precedence
+
+When determining the effective quota for a user:
+
+1. **User-specific policy** (highest priority): If a policy exists for the user's email, use it
+2. **Group policy** (most restrictive): If user belongs to multiple groups with policies, use the **lowest limit** (most restrictive)
+3. **Default policy**: If no user or group policy applies, use the default
+4. **No policy**: If no policies are defined, usage is **unlimited** (quota monitoring disabled for that user)
+
+### Limit Types
+
+Each policy can configure three types of limits:
+
+| Limit Type           | Description                        | Reset Period     |
+| -------------------- | ---------------------------------- | ---------------- |
+| Monthly Token Limit  | Maximum tokens per calendar month  | 1st of each month|
+| Daily Token Limit    | Maximum tokens per day             | UTC midnight     |
+| Monthly Cost Limit   | Maximum estimated cost in USD      | 1st of each month|
+
+### Managing Policies with CLI
+
+Use the `ccwb quota` commands to manage policies:
+
+```bash
+# Set a user-specific policy
+ccwb quota set-user john.doe@company.com --monthly-limit 500M --daily-limit 20M
+
+# Set a group policy
+ccwb quota set-group engineering --monthly-limit 400M --cost-limit 600.00
+
+# Set the default policy for all users
+ccwb quota set-default --monthly-limit 300M --daily-limit 15M --cost-limit 450.00
+
+# List all policies
+ccwb quota list
+ccwb quota list --type group
+
+# Show effective policy for a user
+ccwb quota show john.doe@company.com --groups "engineering,ml-team"
+
+# View current usage against limits
+ccwb quota usage john.doe@company.com
+
+# Delete a policy
+ccwb quota delete group engineering
+
+# Temporarily unblock a user who exceeded quota (Phase 2)
+ccwb quota unblock john.doe@company.com --duration 24h
+```
+
+### Token Value Shortcuts
+
+The CLI supports human-readable token values:
+
+- `300M` = 300,000,000 (300 million)
+- `1.5B` = 1,500,000,000 (1.5 billion)
+- `50K` = 50,000 (50 thousand)
+
+### Group Membership from JWT Claims
+
+The system automatically extracts group membership from JWT token claims:
+
+- `groups`: Standard groups claim
+- `cognito:groups`: Amazon Cognito groups
+- `custom:department`: Custom department claim (treated as a group)
+
+Configure your identity provider to include group claims in the JWT tokens issued to users.
+
+## Cost Estimation
+
+The system tracks token usage by type and estimates costs based on Bedrock pricing:
+
+| Model                            | Input/1M | Output/1M | Cache Read/1M |
+| -------------------------------- | -------- | --------- | ------------- |
+| Claude Sonnet 4.5                | $3.00    | $15.00    | $0.30         |
+| Claude Opus 4.5                  | $15.00   | $75.00    | $1.50         |
+
+Cost estimates are calculated automatically as usage occurs and included in alerts.
 
 ## Alert Management
 
@@ -60,42 +155,31 @@ aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint adm
 
 ### Alert Types
 
-The system sends three types of alerts based on usage levels:
+The system sends alerts for three limit types, each with three threshold levels:
 
-#### Warning Alert (80% threshold)
+#### Monthly Token Alert
 
-Sent when a user exceeds 80% of their monthly quota. Contains:
+Sent when monthly token usage exceeds 80%, 90%, or 100% of the monthly limit.
 
-- Current usage and percentage
-- Projected monthly total based on daily average
-- Days remaining in the month
-- Estimated costs
+#### Daily Token Alert
 
-#### Critical Alert (90% threshold)
+Sent when daily token usage exceeds 80%, 90%, or 100% of the daily limit. Daily alerts can be sent each day (they include the date in the deduplication key).
 
-Sent when a user exceeds 90% of their monthly quota. Includes all warning information plus:
+#### Cost Alert
 
-- Projected overage amount
-- Urgency indicators in subject line
-
-#### Exceeded Alert (100% threshold)
-
-Sent when a user exceeds their monthly quota. Contains:
-
-- Actual overage amount
-- Updated cost estimates
-- Recommended actions
+Sent when estimated monthly cost exceeds 80%, 90%, or 100% of the cost limit.
 
 ### Sample Alert Content
 
 ```
-Subject: Claude Code CRITICAL - 92.3% of Monthly Quota
+Subject: Claude Code CRITICAL - Monthly Token Quota - 92%
 
-Claude Code Usage Alert
+Claude Code Usage Alert - Monthly Token Quota
 
 User: john.doe@company.com
 Alert Level: CRITICAL
-Month: September 2024
+Month: November 2025
+Policy: group:engineering
 
 Current Usage: 276,900,000 tokens
 Monthly Limit: 300,000,000 tokens
@@ -104,15 +188,14 @@ Percentage Used: 92.3%
 Days Remaining in Month: 8
 Daily Average: 12,586,364 tokens
 Projected Monthly Total: 377,454,552 tokens
-Projected Overage: 77,454,552 tokens
 
-Estimated Cost: $4,153.50
-Estimated Monthly Cost: $5,661.82
+Estimated Cost So Far: $4,153.50
 
-Action Required: Monitor usage closely
+---
+This alert is sent once per threshold level per month.
 ```
 
-Alerts are deduplicated - each threshold triggers only once per user per month, with history stored in DynamoDB (60-day TTL).
+Alerts are deduplicated - each threshold triggers only once per user per period, with history stored in DynamoDB (60-day TTL).
 
 ## Troubleshooting
 
@@ -124,48 +207,219 @@ aws logs tail /aws/lambda/claude-code-quota-monitor --follow
 
 # Query user quotas
 aws dynamodb scan --table-name UserQuotaMetrics \
-  --projection-expression "email, total_tokens"
+  --projection-expression "email, total_tokens, daily_tokens, estimated_cost"
+
+# List quota policies
+aws dynamodb scan --table-name QuotaPolicies \
+  --filter-expression "sk = :current" \
+  --expression-attribute-values '{":current": {"S": "CURRENT"}}'
 ```
 
 ### Common Issues
 
 - **No alerts**: Verify SNS subscriptions are confirmed and EventBridge rule is enabled
 - **Missing users**: Check JWT tokens include email claim
-- **Wrong calculations**: Ensure QUOTA_TABLE environment variable is set on metrics aggregator
+- **Wrong policy applied**: Verify group claims are present in JWT tokens
+- **Groups not detected**: Check that `ENABLE_FINEGRAINED_QUOTAS` is set to `true`
+- **Cost estimates off**: Token type breakdown requires OTEL metrics to include `type` field
 
 For detailed monitoring setup, see the [Monitoring Guide](MONITORING.md).
 
 ## Cost Considerations
 
-**Estimated monthly costs for <1000 users: $1-5**
-- Lambda: ~2,880 invocations × $0.0000002 = $0.58
-- DynamoDB: Pay-per-request for user count × 2,880 operations
+**Estimated monthly costs for <1000 users: $2-10**
+- Lambda: ~2,880 invocations x $0.0000002 = $0.58
+- DynamoDB: Pay-per-request for user count x 2,880 operations
 - SNS: $0.50 per million notifications
 - CloudWatch Logs: Standard retention pricing
+- QuotaPolicies table: Minimal cost (policies rarely change)
 
 ## Data Schema
 
-### DynamoDB Structure
+### UserQuotaMetrics Table
 
 **User Totals**: `PK: USER#{email}`, `SK: MONTH#{YYYY-MM}`
-- Attributes: `total_tokens`, `last_updated`, `email`
+- Attributes: `total_tokens`, `daily_tokens`, `daily_date`, `input_tokens`, `output_tokens`, `cache_tokens`, `estimated_cost`, `groups`, `last_updated`, `email`
 - TTL: End of following month
 
-**Alert History**: `PK: ALERTS`, `SK: {YYYY-MM}#ALERT#{email}#{level}`
-- Attributes: `sent_at`, `alert_level`, `usage_at_alert`
+**Alert History**: `PK: ALERTS`, `SK: {YYYY-MM}#ALERT#{email}#{type}#{level}[#{date}]`
+- Attributes: `sent_at`, `alert_type`, `alert_level`, `usage_at_alert`, `policy_info`
 - TTL: 60 days
+
+### QuotaPolicies Table
+
+**Policy Records**: `PK: POLICY#{type}#{identifier}`, `SK: CURRENT`
+- Attributes: `policy_type`, `identifier`, `monthly_token_limit`, `daily_token_limit`, `monthly_cost_limit`, `warning_threshold_80`, `warning_threshold_90`, `enforcement_mode`, `enabled`, `created_at`, `updated_at`, `created_by`
+
+**GSI: PolicyTypeIndex**
+- PK: `policy_type` (user, group, default)
+- SK: `identifier`
+- Enables efficient queries like "list all group policies"
+
+## Migration from Basic Quotas
+
+If you're upgrading from the basic quota system (single global limit):
+
+1. Deploy the updated CloudFormation stack (adds QuotaPolicies table)
+2. Existing UserQuotaMetrics data continues working (new fields are nullable)
+3. Set `EnableFinegrainedQuotas: true` in stack parameters
+4. Optionally create a default policy to maintain previous behavior:
+   ```bash
+   ccwb quota set-default --monthly-limit 300M
+   ```
+5. Gradually add group/user policies as needed
+
+**No breaking changes** - this is an enhancement that's opt-in through policy creation.
+
+## Access Blocking (Phase 2)
+
+When `enforcement_mode` is set to `"block"` for a policy, the system will deny credential issuance when a user exceeds their quota limits.
+
+### How Blocking Works
+
+1. **Quota Check API**: A real-time API endpoint checks user quota before credential issuance
+2. **Enforcement Point**: The credential provider calls the quota check API after OIDC authentication
+3. **Block Triggers**: Access is blocked when:
+   - Monthly token usage ≥ monthly_token_limit
+   - Daily token usage ≥ daily_token_limit (if configured)
+   - Estimated cost ≥ monthly_cost_limit (if configured)
+
+### Configuring Blocking
+
+Enable blocking for a policy:
+
+```bash
+# Set user policy with blocking enabled
+ccwb quota set-user john.doe@company.com --monthly-limit 300M --enforcement block
+
+# Set group policy with blocking
+ccwb quota set-group engineering --monthly-limit 500M --enforcement block
+
+# Set default with blocking
+ccwb quota set-default --monthly-limit 300M --enforcement block
+```
+
+### Admin Override (Unblock)
+
+Administrators can temporarily unblock users who have exceeded their quota:
+
+```bash
+# Unblock for 24 hours (default)
+ccwb quota unblock john.doe@company.com
+
+# Unblock for 7 days
+ccwb quota unblock john.doe@company.com --duration 7d
+
+# Unblock until end of month (quota reset)
+ccwb quota unblock john.doe@company.com --duration until-reset
+
+# With reason
+ccwb quota unblock john.doe@company.com --duration 24h --reason "Urgent project deadline"
+```
+
+The unblock record expires automatically and is cleaned up by DynamoDB TTL.
+
+### Error Handling: Fail-Open vs Fail-Closed
+
+By default, the system uses **fail-open** behavior - if the quota check API is unavailable, access is allowed. This prevents service disruptions due to network issues.
+
+Configure fail mode in your profile config:
+
+```json
+{
+  "quota_fail_mode": "open"   // Allow on error (default)
+  // OR
+  "quota_fail_mode": "closed" // Deny on error (stricter)
+}
+```
+
+The 15-minute Lambda monitoring job continues to run regardless, so alerts will still be sent even if real-time checks fail.
+
+### Quota Check API
+
+After deploying the quota monitoring stack, the API endpoint is available in the stack outputs:
+
+```bash
+# Get quota check API endpoint
+aws cloudformation describe-stacks --stack-name <quota-stack-name> \
+  --query 'Stacks[0].Outputs[?OutputKey==`QuotaCheckApiEndpoint`].OutputValue' \
+  --output text
+```
+
+Configure the endpoint in your credential provider config.json:
+
+```json
+{
+  "profiles": {
+    "ClaudeCode": {
+      "quota_api_endpoint": "https://xxx.execute-api.us-east-1.amazonaws.com"
+    }
+  }
+}
+```
+
+### Enforcement Timing
+
+**Important**: Quota enforcement only occurs at credential issuance time, not during an active session.
+
+If a user exceeds their quota mid-session, they can continue using Claude Code until their credentials expire and they need to re-authenticate. At that point, the quota check will block access.
+
+#### Example Timeline (12-hour session)
+
+```
+09:00 - User authenticates, quota check passes (at 50% of limit)
+09:00 - AWS credentials issued, valid for 12 hours
+15:00 - User exceeds 100% of monthly quota
+15:01 - User CONTINUES working (credentials still valid)
+21:00 - Credentials expire, user must re-authenticate
+21:00 - Quota check BLOCKS access (enforcement finally applied)
+```
+
+In this scenario, there's a 6-hour gap between exceeding the quota (15:00) and enforcement (21:00).
+
+#### Recommendation for Tight Enforcement
+
+Reduce `max_session_duration` when blocking is enabled:
+
+| Session Duration | Enforcement Gap | Use Case |
+|------------------|-----------------|----------|
+| 12h (default) | Up to 12 hours | Alert-only mode |
+| 4h | Up to 4 hours | Moderate enforcement |
+| 1h (recommended) | Up to 1 hour | Strict cost control |
+
+Configure in your profile:
+
+```json
+{
+  "profiles": {
+    "ClaudeCode": {
+      "max_session_duration": 3600,
+      "quota_api_endpoint": "https://xxx.execute-api.us-east-1.amazonaws.com"
+    }
+  }
+}
+```
+
+**Trade-off**: Shorter sessions mean more frequent re-authentication prompts for users, but provide tighter quota enforcement.
 
 ## Current Limitations
 
-- Quotas reset on calendar month (1st of each month)
-- Single limit applies to all users
-- Alert-only (no access blocking)
+- Quotas reset on calendar month/day (UTC timezone)
 - Requires email claim in JWT tokens
+- Group membership requires JWT group claims from identity provider
+- Cost estimates are approximate (based on token counts and model pricing)
+- Enforcement only at credential issuance (see [Enforcement Timing](#enforcement-timing) for mitigation)
+
+## Future Enhancements
+
+- **Bulk import/export**: Manage policies via JSON files
+- **Quota reporting**: Generate usage reports across all users
 
 ## Integration Points
 
 - **Dashboard**: Shares DynamoDB metrics table and OTEL pipeline
 - **Analytics**: Quota data available in Athena queries (see [Analytics Guide](ANALYTICS.md))
 - **External Systems**: SNS topic supports webhooks, Lambda triggers, and third-party integrations
+- **Identity Provider**: Group membership extracted from JWT claims
 
 For complete monitoring setup and general telemetry information, see the [Monitoring Guide](MONITORING.md).

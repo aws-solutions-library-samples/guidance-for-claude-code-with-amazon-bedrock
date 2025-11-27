@@ -1212,6 +1212,168 @@ class MultiProviderAuth:
             self._debug_print(f"Error during monitoring authentication: {e}")
             return None
 
+    # ===========================================
+    # Quota Check Methods (Phase 2)
+    # ===========================================
+
+    def _should_check_quota(self) -> bool:
+        """Check if quota checking is configured and enabled."""
+        quota_api_endpoint = self.config.get("quota_api_endpoint")
+        return bool(quota_api_endpoint)
+
+    def _extract_groups(self, token_claims: dict) -> list:
+        """Extract group memberships from JWT token claims.
+
+        Looks for groups in multiple claim formats:
+        - groups: Standard groups claim
+        - cognito:groups: Amazon Cognito groups
+        - custom:department: Custom department claim (treated as a group)
+        """
+        groups = []
+
+        # Standard groups claim
+        if "groups" in token_claims:
+            claim_groups = token_claims["groups"]
+            if isinstance(claim_groups, list):
+                groups.extend(claim_groups)
+            elif isinstance(claim_groups, str):
+                groups.append(claim_groups)
+
+        # Cognito groups
+        if "cognito:groups" in token_claims:
+            claim_groups = token_claims["cognito:groups"]
+            if isinstance(claim_groups, list):
+                groups.extend(claim_groups)
+            elif isinstance(claim_groups, str):
+                groups.append(claim_groups)
+
+        # Custom department (treated as a group for policy matching)
+        if "custom:department" in token_claims:
+            department = token_claims["custom:department"]
+            if department:
+                groups.append(f"department:{department}")
+
+        return list(set(groups))  # Remove duplicates
+
+    def _check_quota(self, token_claims: dict) -> dict:
+        """Check user quota via the quota check API.
+
+        Args:
+            token_claims: JWT token claims containing user info
+
+        Returns:
+            Quota check result dict with 'allowed' key
+        """
+        quota_api_endpoint = self.config.get("quota_api_endpoint")
+        fail_mode = self.config.get("quota_fail_mode", "open")
+        timeout = self.config.get("quota_check_timeout", 5)
+
+        email = token_claims.get("email")
+        if not email:
+            self._debug_print("No email in token claims, skipping quota check")
+            return {"allowed": True, "reason": "no_email"}
+
+        groups = self._extract_groups(token_claims)
+        self._debug_print(f"Checking quota for {email} (groups: {groups})")
+
+        try:
+            response = requests.get(
+                f"{quota_api_endpoint}/check",
+                params={
+                    "email": email,
+                    "groups": ",".join(groups) if groups else ""
+                },
+                timeout=timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                self._debug_print(f"Quota check result: allowed={result.get('allowed')}, reason={result.get('reason')}")
+                return result
+            else:
+                self._debug_print(f"Quota check returned status {response.status_code}")
+                # Fail according to configured mode
+                if fail_mode == "closed":
+                    return {
+                        "allowed": False,
+                        "reason": "api_error",
+                        "message": f"Quota check failed with status {response.status_code}"
+                    }
+                return {"allowed": True, "reason": "api_error"}
+
+        except requests.exceptions.Timeout:
+            self._debug_print("Quota check timed out")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "timeout",
+                    "message": "Quota check timed out. Please try again."
+                }
+            return {"allowed": True, "reason": "timeout"}
+
+        except requests.exceptions.RequestException as e:
+            self._debug_print(f"Quota check request failed: {e}")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "connection_error",
+                    "message": f"Could not connect to quota service: {e}"
+                }
+            return {"allowed": True, "reason": "connection_error"}
+
+        except Exception as e:
+            self._debug_print(f"Quota check error: {e}")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "error",
+                    "message": f"Quota check failed: {e}"
+                }
+            return {"allowed": True, "reason": "error"}
+
+    def _handle_quota_blocked(self, quota_result: dict) -> int:
+        """Handle blocked quota by displaying user-friendly message.
+
+        Args:
+            quota_result: Result from quota check API
+
+        Returns:
+            Exit code (always 1 for blocked)
+        """
+        reason = quota_result.get("reason", "unknown")
+        message = quota_result.get("message", "Access blocked due to quota limits")
+        usage = quota_result.get("usage", {})
+        policy = quota_result.get("policy", {})
+
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("ACCESS BLOCKED - QUOTA EXCEEDED", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+        print(f"\n{message}\n", file=sys.stderr)
+
+        if usage:
+            print("Current Usage:", file=sys.stderr)
+            if "monthly_tokens" in usage and "monthly_limit" in usage:
+                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+            if "daily_tokens" in usage and "daily_limit" in usage:
+                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+            if "estimated_cost" in usage:
+                print(f"  Estimated Cost: ${usage['estimated_cost']:.2f}", file=sys.stderr)
+                if "cost_limit" in usage:
+                    print(f"  Cost Limit: ${usage['cost_limit']:.2f} ({usage.get('cost_percent', 0):.1f}%)", file=sys.stderr)
+
+        if policy:
+            print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)
+
+        print("\nTo request an unblock, contact your administrator.", file=sys.stderr)
+        print("=" * 60 + "\n", file=sys.stderr)
+
+        return 1
+
+    # ===========================================
+    # End Quota Check Methods
+    # ===========================================
+
     def run(self):
         """Main execution flow"""
         try:
@@ -1258,6 +1420,13 @@ class MultiProviderAuth:
             # Authenticate with OIDC provider
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
             id_token, token_claims = self.authenticate_oidc()
+
+            # Check quota before issuing credentials (if configured)
+            if self._should_check_quota():
+                self._debug_print("Checking quota before credential issuance...")
+                quota_result = self._check_quota(token_claims)
+                if not quota_result.get("allowed", True):
+                    return self._handle_quota_blocked(quota_result)
 
             # Get AWS credentials
             self._debug_print("Exchanging token for AWS credentials...")

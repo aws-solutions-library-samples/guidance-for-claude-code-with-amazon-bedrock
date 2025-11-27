@@ -54,6 +54,11 @@ class Profile:
     monthly_token_limit: int = 300000000  # Monthly token limit per user (300M default)
     warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
     warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
+    enable_finegrained_quotas: bool = False  # Enable fine-grained quota policies (user/group/default)
+    quota_policies_table: str | None = None  # DynamoDB table name for quota policies
+    user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics
+    quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
+    quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
