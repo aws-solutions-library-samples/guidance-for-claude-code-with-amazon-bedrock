@@ -62,7 +62,7 @@ poetry run ccwb init [options]
 
 **Options:**
 
-- `--profile <name>` - Configuration profile name (default: "default")
+- `--profile <name>` - Configuration profile name (optional, will prompt if not specified)
 
 **What it does:**
 
@@ -348,7 +348,7 @@ poetry run ccwb distribute [options]
 
 - `--expires-hours <hours>` - URL expiration time in hours (1-168) [default: "48"]
 - `--get-latest` - Retrieve the latest distribution URL (presigned-s3 only)
-- `--profile <name>` - Configuration profile to use [default: "default"]
+- `--profile <name>` - Configuration profile to use (uses active profile if not specified)
 - `--package-path <path>` - Path to package directory [default: "dist"]
 - `--build-profile <name>` - Select build by profile name
 - `--timestamp <timestamp>` - Select build by timestamp (format: YYYY-MM-DD-HHMMSS)
@@ -433,7 +433,7 @@ poetry run ccwb status [options]
 
 **Options:**
 
-- `--profile <name>` - Profile to check (default: "default")
+- `--profile <name>` - Profile to check (uses active profile if not specified)
 - `--json` - Output in JSON format
 - `--detailed` - Show detailed information
 
@@ -716,7 +716,7 @@ poetry run ccwb destroy [stack] [options]
 
 **Options:**
 
-- `--profile <name>` - Configuration profile to use (default: "default")
+- `--profile <name>` - Configuration profile to use (uses active profile if not specified)
 - `--force` - Skip confirmation prompts
 
 **What it does:**

@@ -18,7 +18,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from claude_code_with_bedrock.cli.utils.aws import check_bedrock_access, get_current_region, get_subnets, get_vpcs
+from claude_code_with_bedrock.cli.utils.aws import (
+    check_bedrock_access,
+    get_account_id,
+    get_current_region,
+    get_subnets,
+    get_vpcs,
+)
 from claude_code_with_bedrock.cli.utils.progress import WizardProgress
 from claude_code_with_bedrock.cli.utils.validators import (
     validate_oidc_provider_domain,
@@ -1142,6 +1148,13 @@ class InitCommand(Command):
             "apac": "APAC Cross-Region (ap-northeast-1, ap-southeast-1/2, ap-south-1)",
         }
         table.add_row("Bedrock Regions", profile_display.get(cross_region_profile, cross_region_profile))
+
+        # Show AWS account ID
+        account_id = get_account_id()
+        if account_id:
+            table.add_row("AWS Account", account_id)
+        else:
+            table.add_row("AWS Account", "[yellow]Unable to determine[/yellow]")
 
         console.print(table)
 
