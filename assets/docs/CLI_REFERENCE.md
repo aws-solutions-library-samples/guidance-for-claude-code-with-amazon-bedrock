@@ -137,6 +137,21 @@ poetry run ccwb deploy --dry-run
 
 > **Note**: Quota monitoring requires the dashboard stack to be deployed first. See [Quota Monitoring Guide](QUOTA_MONITORING.md) for detailed information.
 
+#### When to Use `ccwb deploy` vs `ccwb deploy quota`
+
+| Command | Use Case |
+|---------|----------|
+| `ccwb deploy` | Initial setup - deploys all enabled stacks including quota (when enabled) |
+| `ccwb deploy quota` | Update quota settings, late enablement, or troubleshooting |
+
+**When `ccwb deploy` deploys quota**: If `quota_monitoring_enabled=True` in your profile (set during `ccwb init`), running `ccwb deploy` will automatically deploy the quota stack as part of the full deployment.
+
+**When to use `ccwb deploy quota`**:
+- You want to update quota configuration without redeploying other stacks
+- You initially deployed without quota and now want to add it
+- You need to troubleshoot or redeploy just the quota stack
+- Your organization requires phased deployments with explicit control
+
 ### `test` - Test Package
 
 Tests the packaged distribution as an end user would experience it.

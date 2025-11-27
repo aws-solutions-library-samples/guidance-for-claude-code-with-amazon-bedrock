@@ -589,10 +589,13 @@ class InitCommand(Command):
 
                 # Quota monitoring configuration (only if monitoring is enabled)
                 console.print("\n[bold]Quota Monitoring[/bold]")
-                console.print("Per-user token usage limits with automated SNS alerts")
+                console.print("Track per-user token consumption, set limits, and receive alerts")
+                console.print("when users approach or exceed their quotas.")
+                console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
+                console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
                 enable_quota_monitoring = questionary.confirm(
                     "Enable quota monitoring?",
-                    default=config.get("quota", {}).get("enabled", False),
+                    default=config.get("quota", {}).get("enabled", True),
                 ).ask()
 
                 # Preserve existing quota settings, only update enabled flag
@@ -606,7 +609,7 @@ class InitCommand(Command):
                     # Monthly token limit
                     monthly_limit_millions = questionary.text(
                         "Monthly token limit per user (in millions):",
-                        default=str(config.get("quota", {}).get("monthly_limit_millions", 300)),
+                        default=str(config.get("quota", {}).get("monthly_limit_millions", 10)),
                         validate=lambda x: x.isdigit() and int(x) > 0,
                     ).ask()
 

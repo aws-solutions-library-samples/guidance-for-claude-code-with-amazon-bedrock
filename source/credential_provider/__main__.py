@@ -1255,11 +1255,12 @@ class MultiProviderAuth:
 
         return list(set(groups))  # Remove duplicates
 
-    def _check_quota(self, token_claims: dict) -> dict:
+    def _check_quota(self, token_claims: dict, id_token: str) -> dict:
         """Check user quota via the quota check API.
 
         Args:
-            token_claims: JWT token claims containing user info
+            token_claims: JWT token claims containing user info (for logging/fallback)
+            id_token: Raw JWT token to send in Authorization header for API Gateway validation
 
         Returns:
             Quota check result dict with 'allowed' key
@@ -1277,12 +1278,11 @@ class MultiProviderAuth:
         self._debug_print(f"Checking quota for {email} (groups: {groups})")
 
         try:
+            # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
+            # The API extracts email/groups from validated JWT claims, not query params
             response = requests.get(
                 f"{quota_api_endpoint}/check",
-                params={
-                    "email": email,
-                    "groups": ",".join(groups) if groups else ""
-                },
+                headers={"Authorization": f"Bearer {id_token}"},
                 timeout=timeout
             )
 
@@ -1290,6 +1290,16 @@ class MultiProviderAuth:
                 result = response.json()
                 self._debug_print(f"Quota check result: allowed={result.get('allowed')}, reason={result.get('reason')}")
                 return result
+            elif response.status_code == 401:
+                # JWT validation failed at API Gateway
+                self._debug_print("Quota check JWT validation failed (401)")
+                if fail_mode == "closed":
+                    return {
+                        "allowed": False,
+                        "reason": "jwt_invalid",
+                        "message": "Quota check authentication failed - invalid or expired token"
+                    }
+                return {"allowed": True, "reason": "jwt_invalid"}
             else:
                 self._debug_print(f"Quota check returned status {response.status_code}")
                 # Fail according to configured mode
@@ -1424,7 +1434,7 @@ class MultiProviderAuth:
             # Check quota before issuing credentials (if configured)
             if self._should_check_quota():
                 self._debug_print("Checking quota before credential issuance...")
-                quota_result = self._check_quota(token_claims)
+                quota_result = self._check_quota(token_claims, id_token)
                 if not quota_result.get("allowed", True):
                     return self._handle_quota_blocked(quota_result)
 

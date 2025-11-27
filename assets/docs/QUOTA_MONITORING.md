@@ -30,23 +30,22 @@ The quota monitoring system is an optional CloudFormation stack that integrates 
 
 > **Prerequisites**: Monitoring must be enabled and the dashboard stack deployed. See the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure) for deployment details.
 
-During `ccwb init`, configure quota monitoring when prompted:
-- Monthly token limit per user (default: 300 million)
-- Automatic threshold calculation (80% warning, 90% critical)
-- Enable fine-grained quotas (optional, for user/group/default policies)
+During `ccwb init`, quota monitoring is **enabled by default** when monitoring is enabled. You'll be prompted to configure:
+- Monthly token limit per user (default: 10 million tokens)
+- Automatic threshold calculation (80% warning at 8M, 90% critical at 9M)
 
-Deploy using `poetry run ccwb deploy quota`. For complete deployment instructions, see the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure).
+Deploy using `poetry run ccwb deploy` (deploys all enabled stacks) or `poetry run ccwb deploy quota` for just the quota stack. The OIDC configuration is automatically passed from your profile settings. For complete deployment instructions, see the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure).
 
 ## Configuration Settings
 
 | Parameter               | Default     | Description                                    |
 | ----------------------- | ----------- | ---------------------------------------------- |
-| MonthlyTokenLimit       | 300M tokens | Default maximum per user per month             |
-| Warning Threshold       | 80% (240M)  | First alert level                              |
-| Critical Threshold      | 90% (270M)  | Second alert level                             |
+| MonthlyTokenLimit       | 10M tokens  | Default maximum per user per month             |
+| Warning Threshold       | 80% (8M)    | First alert level                              |
+| Critical Threshold      | 90% (9M)    | Second alert level                             |
 | Check Frequency         | 15 minutes  | Lambda execution interval                      |
 | Alert Retention         | 60 days     | DynamoDB TTL for deduplication                 |
-| EnableFinegrainedQuotas | false       | Enable fine-grained policy support             |
+| EnableFinegrainedQuotas | true        | Enable fine-grained policy support             |
 
 To update limits: Re-run `ccwb init` and redeploy with `ccwb deploy quota`.
 
@@ -91,7 +90,7 @@ ccwb quota set-user john.doe@company.com --monthly-limit 500M --daily-limit 20M
 ccwb quota set-group engineering --monthly-limit 400M --cost-limit 600.00
 
 # Set the default policy for all users
-ccwb quota set-default --monthly-limit 300M --daily-limit 15M --cost-limit 450.00
+ccwb quota set-default --monthly-limit 10M --daily-limit 500K --cost-limit 200.00
 
 # List all policies
 ccwb quota list
@@ -114,9 +113,9 @@ ccwb quota unblock john.doe@company.com --duration 24h
 
 The CLI supports human-readable token values:
 
-- `300M` = 300,000,000 (300 million)
-- `1.5B` = 1,500,000,000 (1.5 billion)
-- `50K` = 50,000 (50 thousand)
+- `10M` = 10,000,000 (10 million) - default limit
+- `500K` = 500,000 (500 thousand)
+- `1B` = 1,000,000,000 (1 billion)
 
 ### Group Membership from JWT Claims
 
@@ -181,15 +180,15 @@ Alert Level: CRITICAL
 Month: November 2025
 Policy: group:engineering
 
-Current Usage: 276,900,000 tokens
-Monthly Limit: 300,000,000 tokens
-Percentage Used: 92.3%
+Current Usage: 9,200,000 tokens
+Monthly Limit: 10,000,000 tokens
+Percentage Used: 92.0%
 
 Days Remaining in Month: 8
-Daily Average: 12,586,364 tokens
-Projected Monthly Total: 377,454,552 tokens
+Daily Average: 418,182 tokens
+Projected Monthly Total: 12,545,460 tokens
 
-Estimated Cost So Far: $4,153.50
+Estimated Cost So Far: $138.00
 
 ---
 This alert is sent once per threshold level per month.
@@ -265,7 +264,7 @@ If you're upgrading from the basic quota system (single global limit):
 3. Set `EnableFinegrainedQuotas: true` in stack parameters
 4. Optionally create a default policy to maintain previous behavior:
    ```bash
-   ccwb quota set-default --monthly-limit 300M
+   ccwb quota set-default --monthly-limit 10M
    ```
 5. Gradually add group/user policies as needed
 
@@ -290,13 +289,13 @@ Enable blocking for a policy:
 
 ```bash
 # Set user policy with blocking enabled
-ccwb quota set-user john.doe@company.com --monthly-limit 300M --enforcement block
+ccwb quota set-user john.doe@company.com --monthly-limit 10M --enforcement block
 
 # Set group policy with blocking
-ccwb quota set-group engineering --monthly-limit 500M --enforcement block
+ccwb quota set-group engineering --monthly-limit 50M --enforcement block
 
 # Set default with blocking
-ccwb quota set-default --monthly-limit 300M --enforcement block
+ccwb quota set-default --monthly-limit 10M --enforcement block
 ```
 
 ### Admin Override (Unblock)
@@ -337,7 +336,42 @@ The 15-minute Lambda monitoring job continues to run regardless, so alerts will 
 
 ### Quota Check API
 
-After deploying the quota monitoring stack, the API endpoint is available in the stack outputs:
+The Quota Check API is a secured HTTP endpoint that validates user quotas before credential issuance.
+
+#### API Security
+
+The API requires JWT authentication using your OIDC provider's tokens:
+
+- **Authentication**: JWT token in `Authorization: Bearer <token>` header
+- **Validation**: API Gateway JWT Authorizer validates the token against your OIDC provider
+- **User Identity**: Email and group membership extracted from validated JWT claims (no query parameters)
+
+This ensures:
+- Only authenticated users can check quotas
+- User identity cannot be spoofed (claims come from validated JWT)
+- No additional credentials needed (uses same OIDC token from auth flow)
+
+#### Deployment Configuration
+
+When using `ccwb deploy quota`, the OIDC configuration is **automatically passed** from your profile settings (configured during `ccwb init`). No manual parameter configuration is required.
+
+For manual CloudFormation deployments, provide your OIDC configuration:
+
+```bash
+aws cloudformation deploy \
+  --stack-name claude-code-quota \
+  --template-file quota-monitoring.yaml \
+  --parameter-overrides \
+    OidcIssuerUrl="https://company.okta.com" \
+    OidcClientId="your-client-id" \
+    # ... other parameters
+```
+
+The OIDC parameters must match your credential provider configuration:
+- `OidcIssuerUrl`: Your identity provider's issuer URL (e.g., `https://company.okta.com` for Okta)
+- `OidcClientId`: The client ID configured in your identity provider
+
+After deploying, get the API endpoint from stack outputs:
 
 ```bash
 # Get quota check API endpoint
@@ -357,6 +391,15 @@ Configure the endpoint in your credential provider config.json:
   }
 }
 ```
+
+#### API Responses
+
+| Scenario | HTTP Status | Response |
+|----------|-------------|----------|
+| No/invalid JWT | 401 | Unauthorized (API Gateway rejects) |
+| Valid JWT, quota OK | 200 | `{"allowed": true, ...}` |
+| Valid JWT, quota exceeded | 200 | `{"allowed": false, "reason": "monthly_exceeded", ...}` |
+| Valid JWT, missing email claim | 200 | `{"allowed": true, "reason": "missing_email_claim"}` (fail-open) |
 
 ### Enforcement Timing
 

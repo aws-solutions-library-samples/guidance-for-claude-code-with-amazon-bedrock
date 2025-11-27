@@ -4,8 +4,8 @@ Description: 'Claude Code quota monitoring stack for per-user token limits and a
 Parameters:
   MonthlyTokenLimit:
     Type: Number
-    Default: 300000000
-    Description: Default monthly token limit per user (300M tokens) - used when no policy is defined
+    Default: 10000000
+    Description: Default monthly token limit per user (10M tokens) - used when no policy is defined
     MinValue: 1000000
     MaxValue: 1000000000
 
@@ -15,13 +15,13 @@ Parameters:
 
   WarningThreshold80:
     Type: Number
-    Default: 240000000
-    Description: Default warning threshold at 80% - used when no policy is defined
+    Default: 8000000
+    Description: Default warning threshold at 80% (8M tokens) - used when no policy is defined
 
   WarningThreshold90:
     Type: Number
-    Default: 270000000
-    Description: Default warning threshold at 90% - used when no policy is defined
+    Default: 9000000
+    Description: Default warning threshold at 90% (9M tokens) - used when no policy is defined
 
   MetricsAggregatorRoleName:
     Type: String
@@ -34,6 +34,15 @@ Parameters:
       - 'true'
       - 'false'
     Description: Enable fine-grained quota policies (user/group/default levels)
+
+  # JWT Authentication Parameters for Quota Check API
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC provider issuer URL for JWT validation (e.g., https://company.okta.com)
+
+  OidcClientId:
+    Type: String
+    Description: OIDC client ID (audience) for JWT validation
 
 Resources:
   # DynamoDB table for quota policies (user, group, default levels)
@@ -244,7 +253,7 @@ Resources:
     Type: AWS::ApiGatewayV2::Api
     Properties:
       Name: !Sub '${AWS::StackName}-quota-check-api'
-      Description: Real-time quota check API for Claude Code credential provider
+      Description: Real-time quota check API for Claude Code credential provider (JWT authenticated)
       ProtocolType: HTTP
       CorsConfiguration:
         AllowOrigins:
@@ -254,7 +263,22 @@ Resources:
           - OPTIONS
         AllowHeaders:
           - Content-Type
+          - Authorization
         MaxAge: 300
+
+  # JWT Authorizer for OIDC token validation
+  QuotaCheckAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      AuthorizerType: JWT
+      Name: oidc-jwt-authorizer
+      IdentitySource:
+        - "$request.header.Authorization"
+      JwtConfiguration:
+        Issuer: !Ref OidcIssuerUrl
+        Audience:
+          - !Ref OidcClientId
 
   # Lambda integration for API Gateway
   QuotaCheckIntegration:
@@ -265,13 +289,15 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check
+  # Route for GET /check (JWT authenticated)
   QuotaCheckRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
+      AuthorizerId: !Ref QuotaCheckAuthorizer
+      AuthorizationType: JWT
 
   # Default stage with auto-deploy
   QuotaCheckStage:

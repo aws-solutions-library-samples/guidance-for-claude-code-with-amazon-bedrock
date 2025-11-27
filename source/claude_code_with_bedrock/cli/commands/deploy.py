@@ -148,8 +148,10 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
                 )
+                console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
+                console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
                 return 1
         else:
             # Deploy all configured stacks in dependency order
@@ -718,12 +720,21 @@ class DeployCommand(Command):
                     "MetricsAggregatorRoleName", "claude-code-auth-dashboard-MetricsAggregatorRole-*"
                 )
 
+                # Get OIDC configuration for JWT authentication
+                oidc_issuer_url = profile.provider_domain
+                # Ensure issuer URL has https:// prefix
+                if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                    oidc_issuer_url = f"https://{oidc_issuer_url}"
+                oidc_client_id = profile.client_id
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
                     f"MetricsAggregatorRoleName={metrics_aggregator_role}",
                     f"WarningThreshold80={int(monthly_limit * 0.8)}",
                     f"WarningThreshold90={int(monthly_limit * 0.9)}",
+                    f"OidcIssuerUrl={oidc_issuer_url}",
+                    f"OidcClientId={oidc_client_id}",
                 ]
 
                 # Package the template using AWS CLI

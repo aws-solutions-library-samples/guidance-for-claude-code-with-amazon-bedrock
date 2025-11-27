@@ -51,9 +51,9 @@ class Profile:
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
-    monthly_token_limit: int = 300000000  # Monthly token limit per user (300M default)
-    warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
-    warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
+    monthly_token_limit: int = 10000000  # Monthly token limit per user (10M default)
+    warning_threshold_80: int = 8000000  # Warning threshold at 80% (8M default)
+    warning_threshold_90: int = 9000000  # Critical threshold at 90% (9M default)
     enable_finegrained_quotas: bool = False  # Enable fine-grained quota policies (user/group/default)
     quota_policies_table: str | None = None  # DynamoDB table name for quota policies
     user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics

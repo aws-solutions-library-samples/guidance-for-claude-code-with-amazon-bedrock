@@ -1,5 +1,6 @@
 # ABOUTME: Lambda function for real-time quota checking before credential issuance
 # ABOUTME: Returns allowed/blocked status based on user quota policy and current usage
+# ABOUTME: Requires JWT authentication - extracts user identity from API Gateway JWT Authorizer claims
 
 import json
 import boto3
@@ -32,25 +33,33 @@ def lambda_handler(event, context):
     """
     Real-time quota check for credential issuance.
 
-    Query parameters:
-        email: User's email address (required)
-        groups: Comma-separated list of group names (optional)
+    Authentication:
+        JWT token required in Authorization header. API Gateway JWT Authorizer
+        validates the token and passes claims to Lambda via requestContext.
 
     Returns:
         JSON response with allowed status and usage details
     """
     try:
-        # Parse query parameters
-        query_params = event.get("queryStringParameters") or {}
-        email = query_params.get("email")
-        groups_param = query_params.get("groups", "")
-        groups = [g.strip() for g in groups_param.split(",") if g.strip()]
+        # Extract validated claims from API Gateway JWT Authorizer
+        # The JWT Authorizer validates the token before Lambda is invoked
+        authorizer_context = event.get("requestContext", {}).get("authorizer", {})
+        jwt_claims = authorizer_context.get("jwt", {}).get("claims", {})
+
+        # Email from validated JWT claims (secure - no parameter tampering possible)
+        email = jwt_claims.get("email")
+
+        # Extract groups from various possible JWT claims
+        groups = extract_groups_from_claims(jwt_claims)
 
         if not email:
-            return build_response(400, {
-                "error": "Missing required parameter: email",
-                "allowed": True,  # Fail-open on bad request
-                "reason": "invalid_request"
+            # JWT is valid but missing email claim
+            print(f"JWT missing email claim. Available claims: {list(jwt_claims.keys())}")
+            return build_response(200, {
+                "error": "No email claim in JWT token",
+                "allowed": True,  # Fail-open when email claim is missing
+                "reason": "missing_email_claim",
+                "message": "JWT token does not contain email claim - quota check skipped"
             })
 
         # 1. Resolve the effective quota policy for this user
@@ -199,10 +208,53 @@ def build_response(status_code: int, body: dict) -> dict:
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type"
+            "Access-Control-Allow-Headers": "Content-Type, Authorization"
         },
         "body": json.dumps(body, cls=DecimalEncoder)
     }
+
+
+def extract_groups_from_claims(claims: dict) -> list:
+    """
+    Extract group memberships from JWT token claims.
+
+    Supports multiple claim formats:
+    - groups: Standard groups claim (array or comma-separated string)
+    - cognito:groups: Amazon Cognito groups claim
+    - custom:department: Custom department claim (treated as a group)
+
+    Args:
+        claims: JWT claims dictionary from API Gateway JWT Authorizer
+
+    Returns:
+        List of group names
+    """
+    groups = []
+
+    # Standard groups claim
+    if "groups" in claims:
+        claim_groups = claims["groups"]
+        if isinstance(claim_groups, list):
+            groups.extend(claim_groups)
+        elif isinstance(claim_groups, str):
+            # Could be comma-separated or single value
+            groups.extend([g.strip() for g in claim_groups.split(",") if g.strip()])
+
+    # Cognito groups claim
+    if "cognito:groups" in claims:
+        claim_groups = claims["cognito:groups"]
+        if isinstance(claim_groups, list):
+            groups.extend(claim_groups)
+        elif isinstance(claim_groups, str):
+            groups.extend([g.strip() for g in claim_groups.split(",") if g.strip()])
+
+    # Custom department claim (treated as a group for policy matching)
+    if "custom:department" in claims:
+        department = claims["custom:department"]
+        if department:
+            groups.append(f"department:{department}")
+
+    return list(set(groups))  # Remove duplicates
 
 
 def resolve_quota_for_user(email: str, groups: list) -> dict | None:
