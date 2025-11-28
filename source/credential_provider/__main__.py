@@ -74,11 +74,12 @@ PROVIDER_CONFIGS = {
 
 class MultiProviderAuth:
     def __init__(self, profile=None):
-        # Load configuration from environment or config file
-        self.profile = profile or "ClaudeCode"
-
         # Debug mode - set before loading config since _load_config may use _debug_print
         self.debug = os.getenv("COGNITO_AUTH_DEBUG", "").lower() in ("1", "true", "yes")
+
+        # Load configuration from environment or config file
+        # Auto-detect profile from config.json if not specified
+        self.profile = profile or self._auto_detect_profile() or "ClaudeCode"
 
         self.config = self._load_config()
 
@@ -104,6 +105,41 @@ class MultiProviderAuth:
         """Print debug message only if debug mode is enabled"""
         if self.debug:
             print(f"Debug: {message}", file=sys.stderr)
+
+    def _auto_detect_profile(self):
+        """Auto-detect profile name from config.json when only one profile exists."""
+        try:
+            # Try same directory as binary first (for testing)
+            binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
+            config_path = binary_dir / "config.json"
+
+            # Fall back to installed location
+            if not config_path.exists():
+                config_path = Path.home() / "claude-code-with-bedrock" / "config.json"
+
+            if not config_path.exists():
+                return None
+
+            with open(config_path) as f:
+                file_config = json.load(f)
+
+            # New format with "profiles" key
+            if "profiles" in file_config:
+                profiles = list(file_config["profiles"].keys())
+            else:
+                # Old format: profile names are top-level keys
+                profiles = list(file_config.keys())
+
+            if len(profiles) == 1:
+                self._debug_print(f"Auto-detected profile: {profiles[0]}")
+                return profiles[0]
+            elif len(profiles) > 1:
+                self._debug_print(f"Multiple profiles found: {profiles}. Use --profile to specify.")
+                return None
+            return None
+        except Exception as e:
+            self._debug_print(f"Could not auto-detect profile: {e}")
+            return None
 
     def _load_config(self):
         """Load configuration from config.json.

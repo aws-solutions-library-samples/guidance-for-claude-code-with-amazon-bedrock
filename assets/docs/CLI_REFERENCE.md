@@ -172,21 +172,20 @@ poetry run ccwb test [options]
 
 **Options:**
 
-- `--profile <name>` - AWS profile to test (default: "ClaudeCode")
-- `--quick` - Run quick tests only
-- `--api` - Test actual Bedrock API calls (costs ~$0.001)
+- `--profile, -p <name>` - Profile name to test (defaults to active profile)
+- `--full` - Test all allowed regions (default: tests 3 representative regions)
 
 **What it does:**
 
-- Simulates package installation in temporary directory
-- Runs the installer script
-- Verifies AWS profile configuration
+- Finds the latest package for the profile in `dist/{profile}/{timestamp}/`
+- Verifies package contents (binary, config, OTEL helper)
+- Tests credential process binary execution
 - Tests authentication and IAM role assumption
-- Checks Bedrock access in configured regions
+- Tests Bedrock API access in configured regions
+- Tests inference profile availability
 - Tests quota monitoring API (if enabled)
-- Optionally tests actual API calls to Claude models
 
-**Note:** This command actually installs the package to properly test it.
+**Note:** API tests run by default and make actual calls to Bedrock (minimal cost ~$0.001).
 
 ### `package` - Create Distribution
 

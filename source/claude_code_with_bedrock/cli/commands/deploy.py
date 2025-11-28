@@ -877,12 +877,16 @@ class DeployCommand(Command):
 
                 if quota_outputs:
                     console.print("\n[bold]Quota Monitoring Stack:[/bold]")
-                    console.print(
-                        f"• Quota API Endpoint: [cyan]{quota_outputs.get('QuotaCheckApiEndpoint', 'N/A')}[/cyan]"
-                    )
+                    quota_endpoint = quota_outputs.get("QuotaCheckApiEndpoint")
+                    console.print(f"• Quota API Endpoint: [cyan]{quota_endpoint or 'N/A'}[/cyan]")
                     console.print(f"• Alert Topic ARN: [cyan]{quota_outputs.get('QuotaAlertTopicArn', 'N/A')}[/cyan]")
                     console.print(f"• User Metrics Table: [cyan]{quota_outputs.get('QuotaTableName', 'N/A')}[/cyan]")
                     console.print(f"• Policies Table: [cyan]{quota_outputs.get('PoliciesTableName', 'N/A')}[/cyan]")
+
+                    # Save quota API endpoint to profile for test command and credential provider
+                    if quota_endpoint and quota_endpoint != "N/A":
+                        profile.quota_api_endpoint = quota_endpoint
+                        config.save_profile(profile)
 
     def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
         """Update metrics aggregator Lambda environment variable to include quota table."""

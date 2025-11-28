@@ -62,16 +62,42 @@ class TestCommand(Command):
         # Also check current directory
         local_dist = Path("./dist")
 
+        def find_latest_package(dist_dir: Path, profile_name: str) -> Path | None:
+            """Find the latest package in dist/{profile}/{timestamp}/ structure."""
+            profile_dir = dist_dir / profile_name
+            if not profile_dir.exists():
+                return None
+            # Find timestamp directories (format: YYYY-MM-DD-HHMMSS)
+            timestamp_dirs = [d for d in profile_dir.iterdir() if d.is_dir() and (d / "install.sh").exists()]
+            if not timestamp_dirs:
+                return None
+            # Return the latest (sorted by name, which works for timestamp format)
+            return sorted(timestamp_dirs, reverse=True)[0]
+
         package_dir = None
-        if source_dist.exists() and (source_dist / "install.sh").exists():
-            package_dir = source_dist
-            console.print(f"[dim]Using package from: {package_dir}[/dim]")
-        elif local_dist.exists() and (local_dist / "install.sh").exists():
-            package_dir = local_dist
-            console.print(f"[dim]Using package from: {package_dir}[/dim]")
-        else:
+        # Try nested structure first: dist/{profile}/{timestamp}/
+        for dist_path in [source_dist, local_dist]:
+            if dist_path.exists():
+                latest = find_latest_package(dist_path, test_profile_name)
+                if latest:
+                    package_dir = latest
+                    console.print(f"[dim]Using package from: {package_dir}[/dim]")
+                    break
+
+        # Fall back to legacy flat structure: dist/install.sh
+        if not package_dir:
+            if source_dist.exists() and (source_dist / "install.sh").exists():
+                package_dir = source_dist
+                console.print(f"[dim]Using package from: {package_dir}[/dim]")
+            elif local_dist.exists() and (local_dist / "install.sh").exists():
+                package_dir = local_dist
+                console.print(f"[dim]Using package from: {package_dir}[/dim]")
+
+        if not package_dir:
             console.print("[red]No package found. Run 'poetry run ccwb package' first.[/red]")
             console.print("[dim]Searched in:[/dim]")
+            console.print(f"[dim]  - {source_dist}/{test_profile_name}/<timestamp>/[/dim]")
+            console.print(f"[dim]  - {local_dist}/{test_profile_name}/<timestamp>/[/dim]")
             console.print(f"[dim]  - {source_dist}[/dim]")
             console.print(f"[dim]  - {local_dist}[/dim]")
             return 1
@@ -314,8 +340,13 @@ class TestCommand(Command):
 
                 if quota_enabled and quota_endpoint:
                     task = progress.add_task("Testing quota monitoring API...", total=None)
-                    result = self._test_quota_api(credential_binary, quota_endpoint)
-                    test_results.append(("Quota Monitoring", result["status"], result["details"]))
+                    # Get profile name from package's config.json (more reliable than ccwb profile name)
+                    package_profile = self._get_package_profile_name(package_dir)
+                    if package_profile:
+                        result = self._test_quota_api(credential_binary, quota_endpoint, package_dir, package_profile)
+                        test_results.append(("Quota Monitoring", result["status"], result["details"]))
+                    else:
+                        test_results.append(("Quota Monitoring", "!", "Could not determine profile from package"))
                     progress.update(task, completed=True)
                 elif quota_enabled and not quota_endpoint:
                     test_results.append(("Quota Monitoring", "!", "Enabled but API endpoint not configured"))
@@ -716,22 +747,43 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)[:50]}
 
-    def _test_quota_api(self, credential_binary: Path, quota_api_endpoint: str) -> dict:
+    def _get_package_profile_name(self, package_dir: Path) -> str | None:
+        """Get the profile name from the package's config.json."""
+        config_file = package_dir / "config.json"
+        if not config_file.exists():
+            return None
+        try:
+            with open(config_file) as f:
+                config = json.load(f)
+            # config.json has profile names as top-level keys
+            # Return the first (usually only) profile
+            profiles = list(config.keys())
+            return profiles[0] if profiles else None
+        except Exception:
+            return None
+
+    def _test_quota_api(
+        self, credential_binary: Path, quota_api_endpoint: str, package_dir: Path, profile_name: str
+    ) -> dict:
         """Test quota monitoring API access."""
         import urllib.error
         import urllib.request
 
         try:
             # Get JWT token using the monitoring token flag
+            # Run from package_dir so binary can find config.json
             token_result = subprocess.run(
-                [str(credential_binary), "--get-monitoring-token"],
+                [str(credential_binary), "--profile", profile_name, "--get-monitoring-token"],
                 capture_output=True,
                 text=True,
                 timeout=30,
+                cwd=package_dir,
             )
 
             if token_result.returncode != 0 or not token_result.stdout.strip():
-                return {"status": "!", "details": "Could not get JWT token for quota API"}
+                # Include stderr for debugging if available
+                err_msg = token_result.stderr.strip()[:50] if token_result.stderr else "no output"
+                return {"status": "!", "details": f"Could not get JWT token: {err_msg}"}
 
             jwt_token = token_result.stdout.strip()
 

@@ -101,7 +101,7 @@ class QuotaPolicyManager:
         if warning_threshold_90 is None:
             warning_threshold_90 = int(monthly_token_limit * 0.9)
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
         policy = QuotaPolicy(
             policy_type=policy_type,
             identifier=identifier,
