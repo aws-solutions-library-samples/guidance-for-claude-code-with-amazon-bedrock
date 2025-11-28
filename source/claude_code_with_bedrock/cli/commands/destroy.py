@@ -102,7 +102,9 @@ class DestroyCommand(Command):
         # Destroy stacks
         console.print("\n[bold]Destroying stacks...[/bold]\n")
 
-        failed = False
+        all_failed_resources = []  # Collect failed resources from all stacks
+        stacks_with_failures = []
+
         for stack in stacks_to_destroy:
             if stack == "monitoring" and not profile.monitoring_enabled:
                 continue
@@ -118,34 +120,30 @@ class DestroyCommand(Command):
 
             result = self._delete_stack(stack_name, profile.aws_region, console)
             if result != 0:
-                failed = True
-                console.print(f"[red]Failed to destroy {stack} stack[/red]")
-                break
-            console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+                # Don't break - collect failed resources and continue
+                failed = self._get_failed_resources(stack_name, profile.aws_region)
+                if failed:
+                    all_failed_resources.extend(failed)
+                    stacks_with_failures.append(stack_name)
+                console.print(
+                    f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n"
+                )
+            else:
+                console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 
-        if failed:
-            console.print("\n[red]Destruction failed. Some resources may still exist.[/red]")
-            return 1
-
-        # Show cleanup instructions
-        console.print("\n[green]Stack destruction complete![/green]")
-        console.print("\n[yellow]Manual cleanup may be required for:[/yellow]")
-        console.print("1. CloudWatch LogGroups:")
-        console.print(
-            f"   [cyan]aws logs delete-log-group --log-group-name /ecs/otel-collector "
-            f"--region {profile.aws_region}[/cyan]"
-        )
-        console.print(
-            f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics "
-            f"--region {profile.aws_region}[/cyan]"
-        )
-        console.print("\n2. Check CloudFormation console for any DELETE_FAILED resources")
-        console.print("\nFor more information, see: assets/docs/TROUBLESHOOTING.md")
+        # Show cleanup summary at the end
+        self._show_cleanup_summary(all_failed_resources, stacks_with_failures, profile, console)
 
         return 0
 
     def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
-        """Delete a CloudFormation stack using boto3."""
+        """Delete a CloudFormation stack using boto3.
+
+        Returns:
+            0: Success (stack deleted or doesn't exist)
+            1: Partial success (DELETE_FAILED - some resources need manual cleanup)
+            2: Actual error (permissions, network, etc.)
+        """
         cf_manager = CloudFormationManager(region=region)
 
         # Check if stack exists
@@ -153,6 +151,11 @@ class DestroyCommand(Command):
         if not status:
             console.print(f"[yellow]Stack {stack_name} not found or already deleted[/yellow]")
             return 0
+
+        # If already in DELETE_FAILED, report it (don't retry)
+        if status == "DELETE_FAILED":
+            console.print(f"[yellow]Stack {stack_name} is in DELETE_FAILED state[/yellow]")
+            return 1  # Signal that manual cleanup is needed
 
         # Use progress indicator
         with Progress(
@@ -174,9 +177,102 @@ class DestroyCommand(Command):
 
             if result.success:
                 return 0
-            else:
-                if "DELETE_FAILED" in str(result.error):
-                    console.print("[red]Stack deletion failed. Check CloudFormation console for details.[/red]")
-                else:
-                    console.print(f"[red]Error deleting stack: {result.error}[/red]")
-                return 1
+
+            # Check if it ended up in DELETE_FAILED (some resources retained)
+            new_status = cf_manager.get_stack_status(stack_name)
+            if new_status == "DELETE_FAILED":
+                return 1  # Not an error, just needs manual cleanup
+
+            # Actual error
+            console.print(f"[red]Error deleting stack: {result.error}[/red]")
+            return 2
+
+    def _get_failed_resources(self, stack_name: str, region: str) -> list[dict]:
+        """Get list of resources that failed to delete from a stack."""
+        cf_manager = CloudFormationManager(region=region)
+        return cf_manager.get_failed_resources(stack_name)
+
+    def _show_cleanup_summary(
+        self,
+        failed_resources: list[dict],
+        stacks: list[str],
+        profile,
+        console: Console,
+    ) -> None:
+        """Show cleanup instructions for failed resources."""
+        if not failed_resources and not stacks:
+            console.print("\n[green]✓ All stacks destroyed successfully![/green]")
+            return
+
+        console.print("\n[yellow]⚠ Manual cleanup required for the following resources:[/yellow]\n")
+
+        # Group by resource type for organized output
+        by_type: dict[str, list[dict]] = {}
+        for r in failed_resources:
+            rtype = r["resource_type"]
+            if rtype not in by_type:
+                by_type[rtype] = []
+            by_type[rtype].append(r)
+
+        region = profile.aws_region
+
+        # S3 Buckets
+        if "AWS::S3::Bucket" in by_type:
+            console.print("[bold]S3 Buckets (must be emptied first):[/bold]")
+            for r in by_type["AWS::S3::Bucket"]:
+                bucket = r["physical_id"]
+                console.print(f"  • {bucket}")
+                console.print(f"    [cyan]aws s3 rm s3://{bucket} --recursive[/cyan]")
+                console.print(f"    [cyan]aws s3 rb s3://{bucket}[/cyan]")
+            console.print()
+
+        # CloudWatch Log Groups
+        if "AWS::Logs::LogGroup" in by_type:
+            console.print("[bold]CloudWatch Log Groups:[/bold]")
+            for r in by_type["AWS::Logs::LogGroup"]:
+                log_group = r["physical_id"]
+                console.print(f"  • {log_group}")
+                console.print(
+                    f"    [cyan]aws logs delete-log-group --log-group-name {log_group} --region {region}[/cyan]"
+                )
+            console.print()
+
+        # DynamoDB Tables
+        if "AWS::DynamoDB::Table" in by_type:
+            console.print("[bold]DynamoDB Tables:[/bold]")
+            for r in by_type["AWS::DynamoDB::Table"]:
+                table = r["physical_id"]
+                console.print(f"  • {table}")
+                console.print(f"    [cyan]aws dynamodb delete-table --table-name {table} --region {region}[/cyan]")
+            console.print()
+
+        # ECR Repositories
+        if "AWS::ECR::Repository" in by_type:
+            console.print("[bold]ECR Repositories (must delete images first):[/bold]")
+            for r in by_type["AWS::ECR::Repository"]:
+                repo = r["physical_id"]
+                console.print(f"  • {repo}")
+                console.print(
+                    f"    [cyan]aws ecr delete-repository --repository-name {repo} --force --region {region}[/cyan]"
+                )
+            console.print()
+
+        # Other resources
+        known_types = ["AWS::S3::Bucket", "AWS::Logs::LogGroup", "AWS::DynamoDB::Table", "AWS::ECR::Repository"]
+        other_types = [t for t in by_type if t not in known_types]
+        if other_types:
+            console.print("[bold]Other Resources:[/bold]")
+            for rtype in other_types:
+                for r in by_type[rtype]:
+                    console.print(f"  • {r['logical_id']} ({rtype}): {r['physical_id']}")
+                    console.print(f"    Reason: {r['status_reason']}")
+            console.print()
+
+        # Final instructions
+        if stacks:
+            console.print("[yellow]After manual cleanup, delete the failed stacks:[/yellow]")
+            for stack in stacks:
+                console.print(f"  [cyan]aws cloudformation delete-stack --stack-name {stack} --region {region}[/cyan]")
+            console.print()
+
+        console.print("For more information, see: assets/docs/TROUBLESHOOTING.md")

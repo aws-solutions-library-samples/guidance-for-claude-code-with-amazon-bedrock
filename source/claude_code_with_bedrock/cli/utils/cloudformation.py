@@ -249,6 +249,33 @@ class CloudFormationManager:
         except Exception as e:
             return StackDeletionResult(success=False, error=str(e))
 
+    def get_failed_resources(self, stack_name: str) -> list[dict[str, str]]:
+        """
+        Get list of resources that failed to delete from a DELETE_FAILED stack.
+
+        Args:
+            stack_name: Name of the stack to query
+
+        Returns:
+            List of dicts with: logical_id, physical_id, resource_type, status_reason
+        """
+        try:
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            failed = []
+            for resource in response.get("StackResources", []):
+                if resource["ResourceStatus"] == "DELETE_FAILED":
+                    failed.append({
+                        "logical_id": resource["LogicalResourceId"],
+                        "physical_id": resource.get("PhysicalResourceId", "N/A"),
+                        "resource_type": resource["ResourceType"],
+                        "status_reason": resource.get("ResourceStatusReason", "Unknown"),
+                    })
+            return failed
+        except ClientError:
+            return []
+        except Exception:
+            return []
+
     def package_template(
         self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
     ) -> str:
