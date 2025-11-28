@@ -17,6 +17,15 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
+  - [Quota Management](#quota-management)
+    - [`quota set-user` - Set User Quota](#quota-set-user---set-user-quota)
+    - [`quota set-group` - Set Group Quota](#quota-set-group---set-group-quota)
+    - [`quota set-default` - Set Default Quota](#quota-set-default---set-default-quota)
+    - [`quota list` - List Policies](#quota-list---list-policies)
+    - [`quota delete` - Delete Policy](#quota-delete---delete-policy)
+    - [`quota show` - Show Effective Quota](#quota-show---show-effective-quota)
+    - [`quota usage` - Show Usage](#quota-usage---show-usage)
+    - [`quota unblock` - Unblock User](#quota-unblock---unblock-user)
   - [Profile Management](#profile-management)
     - [`context list` - List All Profiles](#context-list---list-all-profiles)
     - [`context current` - Show Active Profile](#context-current---show-active-profile)
@@ -76,6 +85,7 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
+- Configures quota monitoring (monthly limits, warning thresholds, enforcement mode)
 - Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 
@@ -173,6 +183,7 @@ poetry run ccwb test [options]
 - Verifies AWS profile configuration
 - Tests authentication and IAM role assumption
 - Checks Bedrock access in configured regions
+- Tests quota monitoring API (if enabled)
 - Optionally tests actual API calls to Claude models
 
 **Note:** This command actually installs the package to properly test it.
@@ -474,6 +485,152 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+## Quota Management
+
+Commands for managing per-user and group token quotas. Requires quota monitoring to be enabled during `init`.
+
+For detailed architecture and configuration, see [QUOTA_MONITORING.md](QUOTA_MONITORING.md).
+
+### `quota set-user` - Set User Quota
+
+Sets a quota policy for a specific user.
+
+```bash
+poetry run ccwb quota set-user <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--monthly-limit, -m <tokens>` - Monthly token limit (supports K, M, B suffixes: 10M = 10,000,000)
+- `--daily-limit, -d <tokens>` - Daily token limit (optional)
+- `--cost-limit, -c <usd>` - Monthly cost limit in USD (optional)
+- `--enforcement, -e <mode>` - Enforcement mode: `alert` (monitor only) or `block` (deny access)
+- `--disabled` - Create policy in disabled state
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota set-user alice@example.com -m 5M -e block
+```
+
+### `quota set-group` - Set Group Quota
+
+Sets a quota policy for a group (applies to all users in the group).
+
+```bash
+poetry run ccwb quota set-group <group> [options]
+```
+
+**Arguments:**
+- `<group>` - Group name (from OIDC groups claim)
+
+**Options:**
+- Same as `set-user`
+
+**Example:**
+```bash
+poetry run ccwb quota set-group engineering -m 20M -d 1M -e alert
+```
+
+### `quota set-default` - Set Default Quota
+
+Sets the default quota policy for all users without a specific user or group policy.
+
+```bash
+poetry run ccwb quota set-default [options]
+```
+
+**Options:**
+- Same as `set-user`
+
+**Example:**
+```bash
+poetry run ccwb quota set-default -m 10M -e alert
+```
+
+### `quota list` - List Policies
+
+Lists all quota policies.
+
+```bash
+poetry run ccwb quota list [options]
+```
+
+**Options:**
+- `--type <type>` - Filter by type: `user`, `group`, or `default`
+- `--profile, -p <name>` - Configuration profile
+
+### `quota delete` - Delete Policy
+
+Deletes a quota policy.
+
+```bash
+poetry run ccwb quota delete <type> <identifier> [options]
+```
+
+**Arguments:**
+- `<type>` - Policy type: `user`, `group`, or `default`
+- `<identifier>` - Email (for user), group name, or "default"
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota delete user alice@example.com
+```
+
+### `quota show` - Show Effective Quota
+
+Shows the effective quota policy for a user (resolves user > group > default precedence).
+
+```bash
+poetry run ccwb quota show <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+### `quota usage` - Show Usage
+
+Shows current usage against quota limits for a user.
+
+```bash
+poetry run ccwb quota usage <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+### `quota unblock` - Unblock User
+
+Temporarily unblocks a user who has been blocked due to quota exceeded.
+
+```bash
+poetry run ccwb quota unblock <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--duration <time>` - Duration: `24h`, `7d`, `until-reset`, or custom (e.g., `48h`, `3d`)
+- `--reason <text>` - Reason for unblock (for audit trail)
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota unblock alice@example.com --duration 24h --reason "Emergency project deadline"
+```
 
 ## Profile Management
 
