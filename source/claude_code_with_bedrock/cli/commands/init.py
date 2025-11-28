@@ -616,7 +616,7 @@ class InitCommand(Command):
                     console.print("\n[bold]Monthly Limit[/bold]")
                     monthly_limit_millions = questionary.text(
                         "Monthly token limit per user (in millions):",
-                        default=str(config.get("quota", {}).get("monthly_limit_millions", 10)),
+                        default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
                         validate=lambda x: x.isdigit() and int(x) > 0,
                     ).ask()
 
@@ -1187,7 +1187,7 @@ class InitCommand(Command):
         if config.get("monitoring", {}).get("enabled"):
             quota_config = config.get("quota", {})
             if quota_config.get("enabled", False):
-                monthly = quota_config.get("monthly_limit", 10000000)
+                monthly = quota_config.get("monthly_limit", 225000000)
                 daily = quota_config.get("daily_limit")
                 monthly_mode = quota_config.get("monthly_enforcement_mode", "block")
                 daily_mode = quota_config.get("daily_enforcement_mode", "alert")

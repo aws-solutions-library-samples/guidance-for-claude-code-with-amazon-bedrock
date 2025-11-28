@@ -51,9 +51,9 @@ class Profile:
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
-    monthly_token_limit: int = 10000000  # Monthly token limit per user (10M default)
-    warning_threshold_80: int = 8000000  # Warning threshold at 80% (8M default)
-    warning_threshold_90: int = 9000000  # Critical threshold at 90% (9M default)
+    monthly_token_limit: int = 225000000  # Monthly token limit per user (225M default)
+    warning_threshold_80: int = 180000000  # Warning threshold at 80% (180M default)
+    warning_threshold_90: int = 202500000  # Critical threshold at 90% (202.5M default)
     daily_token_limit: int | None = None  # Daily token limit (auto-calculated from monthly)
     burst_buffer_percent: int = 10  # Burst buffer for daily limit (5-25%, default 10%)
     daily_enforcement_mode: str = "alert"  # Daily limit enforcement: "alert" or "block"

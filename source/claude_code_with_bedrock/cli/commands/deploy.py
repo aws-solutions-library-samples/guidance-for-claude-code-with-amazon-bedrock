@@ -715,7 +715,7 @@ class DeployCommand(Command):
                 s3_bucket = networking_outputs["CfnArtifactsBucket"]
 
                 # Build parameters
-                monthly_limit = getattr(profile, "monthly_token_limit", 10000000)
+                monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
                 daily_limit = getattr(profile, "daily_token_limit", None)
                 daily_enforcement = getattr(profile, "daily_enforcement_mode", "alert")
                 monthly_enforcement = getattr(profile, "monthly_enforcement_mode", "block")
@@ -893,7 +893,7 @@ class DeployCommand(Command):
                     console.print(f"• Policies Table: [cyan]{quota_outputs.get('PoliciesTableName', 'N/A')}[/cyan]")
 
                     # Show configured limits
-                    monthly_limit = getattr(profile, "monthly_token_limit", 10000000)
+                    monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
                     monthly_mode = getattr(profile, "monthly_enforcement_mode", "block")
                     daily_limit = getattr(profile, "daily_token_limit", None)
                     daily_mode = getattr(profile, "daily_enforcement_mode", "alert")

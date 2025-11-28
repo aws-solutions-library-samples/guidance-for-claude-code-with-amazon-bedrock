@@ -550,7 +550,7 @@ poetry run ccwb quota set-default [options]
 
 **Example:**
 ```bash
-poetry run ccwb quota set-default -m 10M -e alert
+poetry run ccwb quota set-default -m 225M -e alert
 ```
 
 ### `quota list` - List Policies

@@ -31,8 +31,8 @@ The quota monitoring system is an optional CloudFormation stack that integrates 
 > **Prerequisites**: Monitoring must be enabled and the dashboard stack deployed. See the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure) for deployment details.
 
 During `ccwb init`, quota monitoring is **enabled by default** when monitoring is enabled. You'll be prompted to configure:
-- Monthly token limit per user (default: 10 million tokens)
-- Automatic threshold calculation (80% warning at 8M, 90% critical at 9M)
+- Monthly token limit per user (default: 225 million tokens)
+- Automatic threshold calculation (80% warning at 180M, 90% critical at 202.5M)
 - Daily token limit with burst buffer (auto-calculated from monthly)
 - Enforcement modes for daily and monthly limits
 
@@ -42,13 +42,13 @@ Deploy using `poetry run ccwb deploy` (deploys all enabled stacks) or `poetry ru
 
 | Parameter               | Default     | Description                                    |
 | ----------------------- | ----------- | ---------------------------------------------- |
-| MonthlyTokenLimit       | 10M tokens  | Default maximum per user per month             |
-| DailyTokenLimit         | ~367K tokens| Daily limit (auto-calculated with burst buffer)|
+| MonthlyTokenLimit       | 225M tokens | Default maximum per user per month             |
+| DailyTokenLimit         | ~8.25M tokens| Daily limit (auto-calculated with burst buffer)|
 | BurstBufferPercent      | 10%         | Daily buffer for usage variation (5-25%)       |
 | MonthlyEnforcementMode  | block       | Block access when monthly limit exceeded       |
 | DailyEnforcementMode    | alert       | Alert only when daily limit exceeded           |
-| Warning Threshold       | 80% (8M)    | First alert level                              |
-| Critical Threshold      | 90% (9M)    | Second alert level                             |
+| Warning Threshold       | 80% (180M)  | First alert level                              |
+| Critical Threshold      | 90% (202.5M)| Second alert level                             |
 | Check Frequency         | 15 minutes  | Lambda execution interval                      |
 | Alert Retention         | 60 days     | DynamoDB TTL for deduplication                 |
 | EnableFinegrainedQuotas | true        | Enable fine-grained policy support             |
@@ -69,19 +69,19 @@ Without daily limits, a user could consume their entire monthly quota in just 2-
 daily_limit = monthly_limit ÷ 30 × (1 + burst_buffer%)
 ```
 
-Example with 10M monthly limit and 10% burst:
-- Base daily: 10,000,000 ÷ 30 = 333,333 tokens/day
-- With 10% burst: 333,333 × 1.10 = **366,667 tokens/day**
+Example with 225M monthly limit and 10% burst:
+- Base daily: 225,000,000 ÷ 30 = 7,500,000 tokens/day
+- With 10% burst: 7,500,000 × 1.10 = **8,250,000 tokens/day**
 
 ### Burst Buffer Guidance
 
 The burst buffer allows for legitimate daily variation above the average:
 
-| Buffer | Daily (10M/month) | Use Case |
+| Buffer | Daily (225M/month) | Use Case |
 |--------|-------------------|----------|
-| 5% (strict)  | 350,000 tokens | Tight cost control, heavy days blocked quickly |
-| 10% (default)| 366,667 tokens | Balanced protection for typical usage |
-| 25% (flexible)| 416,667 tokens | Allows 1.25x average days, catches only extreme spikes |
+| 5% (strict)  | 7,875,000 tokens | Tight cost control, heavy days blocked quickly |
+| 10% (default)| 8,250,000 tokens | Balanced protection for typical usage |
+| 25% (flexible)| 9,375,000 tokens | Allows 1.25x average days, catches only extreme spikes |
 
 ### Enforcement Modes
 
@@ -99,16 +99,16 @@ Each limit type can be configured with different enforcement:
 ### Example Configuration
 
 ```
-Monthly Limit: 10,000,000 tokens (block)
-Daily Limit:   366,667 tokens (alert)
+Monthly Limit: 225,000,000 tokens (block)
+Daily Limit:   8,250,000 tokens (alert)
 Burst Buffer:  10%
 
 Behavior:
-- Day 1: User consumes 400K tokens → Daily alert sent
-- Day 2: User consumes 380K tokens → Daily alert sent
-- Day 3-5: Normal usage (~300K/day) → No alerts
-- Day 15: Monthly usage reaches 8M → 80% warning alert
-- Day 20: Monthly usage reaches 10M → Access blocked
+- Day 1: User consumes 9M tokens → Daily alert sent
+- Day 2: User consumes 8.5M tokens → Daily alert sent
+- Day 3-5: Normal usage (~7M/day) → No alerts
+- Day 15: Monthly usage reaches 180M → 80% warning alert
+- Day 20: Monthly usage reaches 225M → Access blocked
 ```
 
 ## Fine-Grained Quota Policies
@@ -152,7 +152,7 @@ ccwb quota set-user john.doe@company.com --monthly-limit 500M --daily-limit 20M
 ccwb quota set-group engineering --monthly-limit 400M --cost-limit 600.00
 
 # Set the default policy for all users
-ccwb quota set-default --monthly-limit 10M --daily-limit 500K --cost-limit 200.00
+ccwb quota set-default --monthly-limit 225M --daily-limit 8M --cost-limit 500.00
 
 # List all policies
 ccwb quota list
@@ -175,7 +175,7 @@ ccwb quota unblock john.doe@company.com --duration 24h
 
 The CLI supports human-readable token values:
 
-- `10M` = 10,000,000 (10 million) - default limit
+- `225M` = 225,000,000 (225 million) - default limit
 - `500K` = 500,000 (500 thousand)
 - `1B` = 1,000,000,000 (1 billion)
 
@@ -242,15 +242,15 @@ Alert Level: CRITICAL
 Month: November 2025
 Policy: group:engineering
 
-Current Usage: 9,200,000 tokens
-Monthly Limit: 10,000,000 tokens
+Current Usage: 207,000,000 tokens
+Monthly Limit: 225,000,000 tokens
 Percentage Used: 92.0%
 
 Days Remaining in Month: 8
-Daily Average: 418,182 tokens
-Projected Monthly Total: 12,545,460 tokens
+Daily Average: 9,409,091 tokens
+Projected Monthly Total: 282,272,727 tokens
 
-Estimated Cost So Far: $138.00
+Estimated Cost So Far: $3,105.00
 
 ---
 This alert is sent once per threshold level per month.
@@ -326,7 +326,7 @@ If you're upgrading from the basic quota system (single global limit):
 3. Set `EnableFinegrainedQuotas: true` in stack parameters
 4. Optionally create a default policy to maintain previous behavior:
    ```bash
-   ccwb quota set-default --monthly-limit 10M
+   ccwb quota set-default --monthly-limit 225M
    ```
 5. Gradually add group/user policies as needed
 
@@ -357,7 +357,7 @@ ccwb quota set-user john.doe@company.com --monthly-limit 10M --enforcement block
 ccwb quota set-group engineering --monthly-limit 50M --enforcement block
 
 # Set default with blocking
-ccwb quota set-default --monthly-limit 10M --enforcement block
+ccwb quota set-default --monthly-limit 225M --enforcement block
 ```
 
 ### Admin Override (Unblock)
