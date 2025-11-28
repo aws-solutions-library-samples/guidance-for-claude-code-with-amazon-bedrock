@@ -870,6 +870,20 @@ class DeployCommand(Command):
                 if dashboard_url:
                     console.print(f"• Dashboard URL: [cyan][link={dashboard_url}]{dashboard_url}[/link][/cyan]")
 
+            # Get quota monitoring stack outputs if enabled
+            if profile.quota_monitoring_enabled:
+                quota_stack = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+                quota_outputs = get_stack_outputs(quota_stack, profile.aws_region)
+
+                if quota_outputs:
+                    console.print("\n[bold]Quota Monitoring Stack:[/bold]")
+                    console.print(
+                        f"• Quota API Endpoint: [cyan]{quota_outputs.get('QuotaCheckApiEndpoint', 'N/A')}[/cyan]"
+                    )
+                    console.print(f"• Alert Topic ARN: [cyan]{quota_outputs.get('QuotaAlertTopicArn', 'N/A')}[/cyan]")
+                    console.print(f"• User Metrics Table: [cyan]{quota_outputs.get('QuotaTableName', 'N/A')}[/cyan]")
+                    console.print(f"• Policies Table: [cyan]{quota_outputs.get('PoliciesTableName', 'N/A')}[/cyan]")
+
     def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
         """Update metrics aggregator Lambda environment variable to include quota table."""
         try:
