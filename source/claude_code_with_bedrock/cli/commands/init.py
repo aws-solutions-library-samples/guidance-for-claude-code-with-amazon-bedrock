@@ -1115,6 +1115,9 @@ class InitCommand(Command):
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
             table.add_row(
+                "Quota Monitoring", "✓ Enabled" if config.get("quota", {}).get("enabled", False) else "✗ Disabled"
+            )
+            table.add_row(
                 "Analytics Pipeline", "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled"
             )
 
