@@ -613,6 +613,7 @@ class InitCommand(Command):
                     console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
 
                     # Monthly token limit
+                    console.print("\n[bold]Monthly Limit[/bold]")
                     monthly_limit_millions = questionary.text(
                         "Monthly token limit per user (in millions):",
                         default=str(config.get("quota", {}).get("monthly_limit_millions", 10)),
@@ -627,10 +628,80 @@ class InitCommand(Command):
                     config["quota"]["warning_threshold_80"] = warning_80
                     config["quota"]["warning_threshold_90"] = warning_90
 
-                    console.print("[green]✓[/green] Quota monitoring configured:")
-                    console.print(f"  • Monthly limit: {monthly_limit:,} tokens per user")
-                    console.print(f"  • Warning at: {warning_80:,} tokens (80%)")
-                    console.print(f"  • Critical at: {warning_90:,} tokens (90%)")
+                    console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
+                    console.print(f"  → Warning at 80%: {warning_80:,} tokens")
+                    console.print(f"  → Critical at 90%: {warning_90:,} tokens")
+
+                    # Daily limit configuration (Bill Shock Protection)
+                    console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
+                    console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
+
+                    base_daily = monthly_limit / 30
+
+                    # Show burst buffer options
+                    console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
+                    console.print("\nBurst buffer allows daily variation above the average:")
+                    console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
+                    console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
+                    console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
+
+                    burst_buffer = questionary.text(
+                        "Burst buffer percentage (5-25%):",
+                        default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
+                        validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
+                    ).ask()
+
+                    burst_percent = int(burst_buffer)
+                    calculated_daily = int(base_daily * (1 + burst_percent / 100))
+
+                    console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
+
+                    # Allow custom override
+                    custom_daily = questionary.text(
+                        f"Custom daily limit (Enter to accept {calculated_daily:,}):",
+                        default="",
+                        validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
+                    ).ask()
+
+                    daily_limit = int(custom_daily) if custom_daily else calculated_daily
+
+                    config["quota"]["daily_limit"] = daily_limit
+                    config["quota"]["burst_buffer_percent"] = burst_percent
+
+                    if custom_daily:
+                        console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
+
+                    # Enforcement mode configuration
+                    console.print("\n[bold]Enforcement Modes[/bold]")
+                    console.print("Choose how limits are enforced:")
+                    console.print("  • [cyan]alert[/cyan]: Send notifications but allow continued use")
+                    console.print("  • [yellow]block[/yellow]: Deny credential issuance when exceeded")
+
+                    daily_enforcement = questionary.select(
+                        "Daily limit enforcement:",
+                        choices=[
+                            questionary.Choice("alert (warn only)", value="alert"),
+                            questionary.Choice("block (deny access)", value="block"),
+                        ],
+                        default=config.get("quota", {}).get("daily_enforcement_mode", "alert"),
+                    ).ask()
+
+                    monthly_enforcement = questionary.select(
+                        "Monthly limit enforcement:",
+                        choices=[
+                            questionary.Choice("alert (warn only)", value="alert"),
+                            questionary.Choice("block (deny access)", value="block"),
+                        ],
+                        default=config.get("quota", {}).get("monthly_enforcement_mode", "block"),
+                    ).ask()
+
+                    config["quota"]["daily_enforcement_mode"] = daily_enforcement
+                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
+
+                    console.print("\n[green]✓[/green] Quota monitoring configured:")
+                    console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
+                    console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
+                    console.print(f"  • Burst buffer: {burst_percent}%")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -1114,9 +1185,19 @@ class InitCommand(Command):
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
-            table.add_row(
-                "Quota Monitoring", "✓ Enabled" if config.get("quota", {}).get("enabled", False) else "✗ Disabled"
-            )
+            quota_config = config.get("quota", {})
+            if quota_config.get("enabled", False):
+                monthly = quota_config.get("monthly_limit", 10000000)
+                daily = quota_config.get("daily_limit")
+                monthly_mode = quota_config.get("monthly_enforcement_mode", "block")
+                daily_mode = quota_config.get("daily_enforcement_mode", "alert")
+                quota_status = (
+                    f"✓ Monthly: {monthly:,} ({monthly_mode})\n"
+                    f"  Daily: {daily:,} ({daily_mode})" if daily else f"✓ Monthly: {monthly:,} ({monthly_mode})"
+                )
+                table.add_row("Quota Monitoring", quota_status)
+            else:
+                table.add_row("Quota Monitoring", "✗ Disabled")
             table.add_row(
                 "Analytics Pipeline", "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled"
             )
@@ -1354,6 +1435,10 @@ class InitCommand(Command):
             monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
             warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
             warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
+            daily_token_limit=config_data.get("quota", {}).get("daily_limit"),
+            burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
+            daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
         )
 
         config.add_profile(profile)

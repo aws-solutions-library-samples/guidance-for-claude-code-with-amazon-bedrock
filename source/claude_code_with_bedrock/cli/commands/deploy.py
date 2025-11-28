@@ -715,7 +715,13 @@ class DeployCommand(Command):
                 s3_bucket = networking_outputs["CfnArtifactsBucket"]
 
                 # Build parameters
-                monthly_limit = getattr(profile, "monthly_token_limit", 300000000)
+                monthly_limit = getattr(profile, "monthly_token_limit", 10000000)
+                daily_limit = getattr(profile, "daily_token_limit", None)
+                daily_enforcement = getattr(profile, "daily_enforcement_mode", "alert")
+                monthly_enforcement = getattr(profile, "monthly_enforcement_mode", "block")
+                warning_80 = getattr(profile, "warning_threshold_80", int(monthly_limit * 0.8))
+                warning_90 = getattr(profile, "warning_threshold_90", int(monthly_limit * 0.9))
+
                 metrics_aggregator_role = dashboard_outputs.get(
                     "MetricsAggregatorRoleName", "claude-code-auth-dashboard-MetricsAggregatorRole-*"
                 )
@@ -731,8 +737,11 @@ class DeployCommand(Command):
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
                     f"MetricsAggregatorRoleName={metrics_aggregator_role}",
-                    f"WarningThreshold80={int(monthly_limit * 0.8)}",
-                    f"WarningThreshold90={int(monthly_limit * 0.9)}",
+                    f"WarningThreshold80={warning_80}",
+                    f"WarningThreshold90={warning_90}",
+                    f"DailyTokenLimit={daily_limit or 0}",
+                    f"DailyEnforcementMode={daily_enforcement}",
+                    f"MonthlyEnforcementMode={monthly_enforcement}",
                     f"OidcIssuerUrl={oidc_issuer_url}",
                     f"OidcClientId={oidc_client_id}",
                 ]
@@ -882,6 +891,16 @@ class DeployCommand(Command):
                     console.print(f"• Alert Topic ARN: [cyan]{quota_outputs.get('QuotaAlertTopicArn', 'N/A')}[/cyan]")
                     console.print(f"• User Metrics Table: [cyan]{quota_outputs.get('QuotaTableName', 'N/A')}[/cyan]")
                     console.print(f"• Policies Table: [cyan]{quota_outputs.get('PoliciesTableName', 'N/A')}[/cyan]")
+
+                    # Show configured limits
+                    monthly_limit = getattr(profile, "monthly_token_limit", 10000000)
+                    monthly_mode = getattr(profile, "monthly_enforcement_mode", "block")
+                    daily_limit = getattr(profile, "daily_token_limit", None)
+                    daily_mode = getattr(profile, "daily_enforcement_mode", "alert")
+
+                    console.print(f"• Monthly Limit: [cyan]{monthly_limit:,}[/cyan] tokens ({monthly_mode})")
+                    if daily_limit:
+                        console.print(f"• Daily Limit: [cyan]{daily_limit:,}[/cyan] tokens ({daily_mode})")
 
                     # Save quota API endpoint to profile for test command and credential provider
                     if quota_endpoint and quota_endpoint != "N/A":

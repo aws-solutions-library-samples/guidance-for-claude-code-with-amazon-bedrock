@@ -23,6 +23,29 @@ Parameters:
     Default: 9000000
     Description: Default warning threshold at 90% (9M tokens) - used when no policy is defined
 
+  DailyTokenLimit:
+    Type: Number
+    Default: 366667
+    Description: Default daily token limit per user (monthly/30 * 1.1) - 0 to disable daily limits
+    MinValue: 0
+    MaxValue: 100000000
+
+  DailyEnforcementMode:
+    Type: String
+    Default: 'alert'
+    AllowedValues:
+      - 'alert'
+      - 'block'
+    Description: Enforcement mode for daily limits - alert (warn only) or block (deny access)
+
+  MonthlyEnforcementMode:
+    Type: String
+    Default: 'block'
+    AllowedValues:
+      - 'alert'
+      - 'block'
+    Description: Enforcement mode for monthly limits - alert (warn only) or block (deny access)
+
   MetricsAggregatorRoleName:
     Type: String
     Description: Name of the MetricsAggregatorRole from the dashboard stack
@@ -176,6 +199,9 @@ Resources:
           MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
           WARNING_THRESHOLD_80: !Ref WarningThreshold80
           WARNING_THRESHOLD_90: !Ref WarningThreshold90
+          DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
+          DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
+          MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
       Code: ./lambda-functions/quota_monitor/
 
@@ -246,6 +272,10 @@ Resources:
         Variables:
           QUOTA_TABLE: !Ref UserQuotaMetrics
           POLICIES_TABLE: !Ref QuotaPolicies
+          MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
+          DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
+          DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
+          MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
       Code: ./lambda-functions/quota_check/
 
   # HTTP API Gateway (v2 - cheaper and faster than REST API)

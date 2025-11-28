@@ -85,7 +85,10 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
-- Configures quota monitoring (monthly limits, warning thresholds, enforcement mode)
+- Configures quota monitoring:
+  - Monthly token limit per user
+  - Daily token limit with burst buffer (auto-calculated from monthly)
+  - Enforcement modes (alert vs block) for daily and monthly limits
 - Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 
