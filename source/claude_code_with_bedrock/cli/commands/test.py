@@ -308,6 +308,20 @@ class TestCommand(Command):
                     test_results.append(("Inference Profiles", result["status"], result["details"]))
                     progress.update(task, completed=True)
 
+                # Test 6: Quota Monitoring API (if enabled)
+                quota_enabled = getattr(profile, "quota_monitoring_enabled", False)
+                quota_endpoint = getattr(profile, "quota_api_endpoint", None)
+
+                if quota_enabled and quota_endpoint:
+                    task = progress.add_task("Testing quota monitoring API...", total=None)
+                    result = self._test_quota_api(credential_binary, quota_endpoint)
+                    test_results.append(("Quota Monitoring", result["status"], result["details"]))
+                    progress.update(task, completed=True)
+                elif quota_enabled and not quota_endpoint:
+                    test_results.append(("Quota Monitoring", "!", "Enabled but API endpoint not configured"))
+                else:
+                    test_results.append(("Quota Monitoring", "-", "Skipped (not enabled)"))
+
         # Display results
         console.print("\n")
         for test_name, status, details in test_results:
@@ -315,6 +329,8 @@ class TestCommand(Command):
                 status_display = "[green]✓ Pass[/green]"
             elif status == "!":
                 status_display = "[yellow]! Warning[/yellow]"
+            elif status == "-":
+                status_display = "[dim]- Skip[/dim]"
             else:
                 status_display = "[red]✗ Fail[/red]"
             table.add_row(test_name, status_display, details)
@@ -325,8 +341,12 @@ class TestCommand(Command):
         passed = sum(1 for _, status, _ in test_results if status == "✓")
         warnings = sum(1 for _, status, _ in test_results if status == "!")
         failed = sum(1 for _, status, _ in test_results if status == "✗")
+        skipped = sum(1 for _, status, _ in test_results if status == "-")
 
-        console.print(f"\n[bold]Summary:[/bold] {passed} passed, {warnings} warnings, {failed} failed")
+        summary_parts = [f"{passed} passed", f"{warnings} warnings", f"{failed} failed"]
+        if skipped > 0:
+            summary_parts.append(f"{skipped} skipped")
+        console.print(f"\n[bold]Summary:[/bold] {', '.join(summary_parts)}")
 
         if failed > 0:
             console.print("\n[red]Some tests failed. Please check the details above.[/red]")
@@ -693,6 +713,60 @@ class TestCommand(Command):
                 return {"status": "✗", "details": "OTEL helper failed"}
         except subprocess.TimeoutExpired:
             return {"status": "✗", "details": "OTEL helper timeout"}
+        except Exception as e:
+            return {"status": "✗", "details": str(e)[:50]}
+
+    def _test_quota_api(self, credential_binary: Path, quota_api_endpoint: str) -> dict:
+        """Test quota monitoring API access."""
+        import urllib.error
+        import urllib.request
+
+        try:
+            # Get JWT token using the monitoring token flag
+            token_result = subprocess.run(
+                [str(credential_binary), "--get-monitoring-token"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if token_result.returncode != 0 or not token_result.stdout.strip():
+                return {"status": "!", "details": "Could not get JWT token for quota API"}
+
+            jwt_token = token_result.stdout.strip()
+
+            # Call the /check endpoint
+            url = f"{quota_api_endpoint.rstrip('/')}/check"
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Authorization", f"Bearer {jwt_token}")
+            req.add_header("Content-Type", "application/json")
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+
+                # Verify response structure
+                if "allowed" in data and "reason" in data:
+                    allowed = data.get("allowed", False)
+                    reason = data.get("reason", "unknown")
+                    if allowed:
+                        return {"status": "✓", "details": f"API responding, access: allowed ({reason})"}
+                    else:
+                        # User is blocked but API is working
+                        return {"status": "!", "details": f"API responding, access: blocked ({reason})"}
+                else:
+                    return {"status": "!", "details": "API responded but unexpected format"}
+
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                return {"status": "✗", "details": "JWT authentication failed (401)"}
+            elif e.code == 403:
+                return {"status": "✗", "details": "Access forbidden (403)"}
+            else:
+                return {"status": "✗", "details": f"HTTP error: {e.code}"}
+        except urllib.error.URLError as e:
+            return {"status": "✗", "details": f"Connection failed: {str(e.reason)[:50]}"}
+        except subprocess.TimeoutExpired:
+            return {"status": "✗", "details": "Request timed out"}
         except Exception as e:
             return {"status": "✗", "details": str(e)[:50]}
 
