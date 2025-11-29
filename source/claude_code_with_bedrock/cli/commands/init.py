@@ -1196,10 +1196,11 @@ class InitCommand(Command):
                 daily = quota_config.get("daily_limit")
                 monthly_mode = quota_config.get("monthly_enforcement_mode", "block")
                 daily_mode = quota_config.get("daily_enforcement_mode", "alert")
-                quota_status = (
-                    f"✓ Monthly: {monthly:,} ({monthly_mode})\n"
-                    f"  Daily: {daily:,} ({daily_mode})" if daily else f"✓ Monthly: {monthly:,} ({monthly_mode})"
-                )
+                check_interval = quota_config.get("check_interval", 30)
+                quota_status = f"✓ Monthly: {monthly:,} ({monthly_mode})"
+                if daily:
+                    quota_status += f"\n  Daily: {daily:,} ({daily_mode})"
+                quota_status += f"\n  Re-check: {check_interval} min"
                 table.add_row("Quota Monitoring", quota_status)
             else:
                 table.add_row("Quota Monitoring", "✗ Disabled")
