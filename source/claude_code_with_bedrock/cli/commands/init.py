@@ -1002,6 +1002,7 @@ class InitCommand(Command):
 
             # Step 1: Select Claude model
             model_choices = []
+            default_model_key = saved_model_key or "sonnet-4-5"
             for model_key, model_info in CLAUDE_MODELS.items():
                 # Build region list from available profiles
                 available_profiles = get_available_profiles_for_model(model_key)
@@ -1017,19 +1018,12 @@ class InitCommand(Command):
                 regions_text = ", ".join(regions)
 
                 choice_text = f"{model_info['name']} ({regions_text})"
-                model_choices.append(
-                    questionary.Choice(
-                        title=choice_text,
-                        value=model_key,
-                        checked=(
-                            model_key == saved_model_key or (not saved_model_key and model_key == "sonnet-4-5")
-                        ),  # Default to Sonnet 4.5
-                    )
-                )
+                model_choices.append(questionary.Choice(title=choice_text, value=model_key))
 
             selected_model_key = questionary.select(
                 "Select Claude model:",
                 choices=model_choices,
+                default=default_model_key,
                 instruction="(Use arrow keys to select, Enter to confirm)",
             ).ask()
 
@@ -1056,9 +1050,7 @@ class InitCommand(Command):
                 description = get_profile_description(selected_model_key, profile_key)
                 profile_name = profile_key.upper() if profile_key != "us" else "US"
                 choice_text = f"{profile_name} Cross-Region - {description}"
-                profile_choices.append(
-                    questionary.Choice(title=choice_text, value=profile_key, checked=(profile_key == saved_profile))
-                )
+                profile_choices.append(questionary.Choice(title=choice_text, value=profile_key))
 
             # Adjust the prompt based on number of options
             if len(available_profiles) == 1:
@@ -1069,7 +1061,7 @@ class InitCommand(Command):
                 instruction_text = "(Use arrow keys to select, Enter to confirm)"
 
             selected_profile = questionary.select(
-                prompt_text, choices=profile_choices, instruction=instruction_text
+                prompt_text, choices=profile_choices, default=saved_profile, instruction=instruction_text
             ).ask()
 
             if selected_profile is None:  # User cancelled
@@ -1110,9 +1102,7 @@ class InitCommand(Command):
                 source_region_choices = []
                 for region in available_source_regions:
                     choice_text = f"{region}"
-                    source_region_choices.append(
-                        questionary.Choice(title=choice_text, value=region, checked=(region == saved_source_region))
-                    )
+                    source_region_choices.append(questionary.Choice(title=choice_text, value=region))
 
                 # Adjust prompt based on number of options
                 if len(available_source_regions) == 1:
@@ -1123,7 +1113,7 @@ class InitCommand(Command):
                     instruction_text = "(Use arrow keys to select, Enter to confirm)"
 
                 selected_source_region = questionary.select(
-                    prompt_text, choices=source_region_choices, instruction=instruction_text
+                    prompt_text, choices=source_region_choices, default=saved_source_region, instruction=instruction_text
                 ).ask()
 
                 if selected_source_region is None:  # User cancelled
