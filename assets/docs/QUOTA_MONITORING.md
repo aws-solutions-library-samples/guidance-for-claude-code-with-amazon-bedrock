@@ -341,6 +341,80 @@ Configure during `ccwb init`:
 
 The check happens in the background when returning cached credentials - users only see a browser notification if their quota status changes.
 
+## Bulk Policy Management
+
+For organizations with many users, the CLI provides import/export commands to manage policies in bulk.
+
+### Export Policies
+
+Export existing policies to JSON or CSV for backup, audit, or migration:
+
+```bash
+# Export all policies to JSON
+ccwb quota export policies.json
+
+# Export to CSV for spreadsheet editing
+ccwb quota export policies.csv
+
+# Export only user policies
+ccwb quota export users.json --type user
+```
+
+### Import Policies
+
+Import policies from a file:
+
+```bash
+# Import from CSV, creating new and updating existing
+ccwb quota import users.csv --update
+
+# Preview changes without applying
+ccwb quota import users.csv --dry-run
+
+# Auto-calculate daily limits (monthly / 30 + burst buffer)
+ccwb quota import users.csv --auto-daily --burst 15
+```
+
+### CSV Template
+
+Create a CSV file with these columns:
+
+```csv
+type,identifier,monthly_token_limit,daily_token_limit,monthly_cost_limit,enforcement_mode,enabled
+user,alice@example.com,300M,15M,500.00,alert,true
+user,bob@example.com,200M,,,block,true
+group,engineering,500M,25M,,alert,true
+default,default,225M,8M,,alert,true
+```
+
+**Required columns:** `type`, `identifier`, `monthly_token_limit`
+
+**Token format:** Supports `K` (thousands), `M` (millions), `B` (billions), e.g., `300M` = 300,000,000 tokens
+
+### Typical Workflow
+
+1. **Initial setup from HR system:**
+   ```bash
+   # Export user list from HR, create CSV
+   ccwb quota import users.csv --auto-daily --update
+   ```
+
+2. **Backup before changes:**
+   ```bash
+   ccwb quota export backup-$(date +%Y%m%d).json
+   ```
+
+3. **Cross-environment sync:**
+   ```bash
+   # Export from staging
+   ccwb quota export policies.json --profile staging
+
+   # Import to production
+   ccwb quota import policies.json --profile production --update
+   ```
+
+See [CLI Reference](CLI_REFERENCE.md#quota-export---export-policies) for full documentation.
+
 ## Troubleshooting
 
 ### Quick Checks

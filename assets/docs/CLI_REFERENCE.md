@@ -26,6 +26,8 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`quota show` - Show Effective Quota](#quota-show---show-effective-quota)
     - [`quota usage` - Show Usage](#quota-usage---show-usage)
     - [`quota unblock` - Unblock User](#quota-unblock---unblock-user)
+    - [`quota export` - Export Policies](#quota-export---export-policies)
+    - [`quota import` - Import Policies](#quota-import---import-policies)
   - [Profile Management](#profile-management)
     - [`context list` - List All Profiles](#context-list---list-all-profiles)
     - [`context current` - Show Active Profile](#context-current---show-active-profile)
@@ -663,6 +665,127 @@ poetry run ccwb quota unblock <email> [options]
 ```bash
 poetry run ccwb quota unblock alice@example.com --duration 24h --reason "Emergency project deadline"
 ```
+
+### `quota export` - Export Policies
+
+Exports quota policies to a JSON or CSV file for backup, migration, or auditing.
+
+```bash
+poetry run ccwb quota export <file> [options]
+```
+
+**Arguments:**
+- `<file>` - Output file path (.json or .csv)
+
+**Options:**
+- `--type, -t <type>` - Filter by policy type: `user`, `group`, or `default`
+- `--stdout` - Output to stdout instead of file
+- `--profile, -p <name>` - Configuration profile
+
+**Examples:**
+```bash
+# Export all policies to JSON
+poetry run ccwb quota export policies.json
+
+# Export to CSV for spreadsheet editing
+poetry run ccwb quota export policies.csv
+
+# Export only user policies
+poetry run ccwb quota export users.json --type user
+
+# Export to stdout (for piping)
+poetry run ccwb quota export --stdout > backup.json
+```
+
+**JSON output format:**
+```json
+{
+  "version": "1.0",
+  "exported_at": "2025-11-29T10:30:00Z",
+  "policies": [
+    {
+      "type": "user",
+      "identifier": "alice@example.com",
+      "monthly_token_limit": "300M",
+      "daily_token_limit": "15M",
+      "monthly_cost_limit": "500.00",
+      "enforcement_mode": "alert",
+      "enabled": true
+    }
+  ]
+}
+```
+
+**CSV output format:**
+```csv
+type,identifier,monthly_token_limit,daily_token_limit,monthly_cost_limit,enforcement_mode,enabled
+user,alice@example.com,300M,15M,500.00,alert,true
+group,engineering,500M,25M,,block,true
+default,default,225M,8M,,alert,true
+```
+
+### `quota import` - Import Policies
+
+Imports quota policies from a JSON or CSV file. Supports bulk policy creation with conflict handling.
+
+```bash
+poetry run ccwb quota import <file> [options]
+```
+
+**Arguments:**
+- `<file>` - Input file path (.json or .csv)
+
+**Options:**
+- `--skip-existing` - Skip policies that already exist
+- `--update` - Update existing policies (upsert mode)
+- `--dry-run` - Preview changes without applying
+- `--type, -t <type>` - Import only specific type: `user`, `group`, or `default`
+- `--auto-daily` - Auto-calculate daily limits for policies missing `daily_token_limit`
+- `--burst <percent>` - Burst buffer percentage for auto-daily calculation (default: 10)
+- `--profile, -p <name>` - Configuration profile
+
+**Examples:**
+```bash
+# Import from JSON, skip existing policies
+poetry run ccwb quota import policies.json --skip-existing
+
+# Import from CSV, update existing policies
+poetry run ccwb quota import policies.csv --update
+
+# Preview import without making changes
+poetry run ccwb quota import policies.json --dry-run
+
+# Import users only
+poetry run ccwb quota import all-policies.csv --type user --update
+
+# Auto-calculate daily limits with 15% burst buffer
+poetry run ccwb quota import users.csv --auto-daily --burst 15
+```
+
+**Output example:**
+```
+✓ Created: alice@example.com (user) - 300M
+✓ Created: bob@example.com (user) - 200M
+⚠ Skipped: engineering (group) - already exists
+✓ Updated: ml-team (group) - 1B
+
+Import Summary
+  Created: 2
+  Updated: 1
+  Skipped: 1
+  Errors:  0
+```
+
+**Required CSV columns:**
+- `type` - Policy type: `user`, `group`, or `default`
+- `identifier` - User email, group name, or `default`
+- `monthly_token_limit` - Monthly limit (supports K/M/B suffix, e.g., `300M`)
+
+**Optional CSV columns:**
+- `daily_token_limit` - Daily limit (auto-calculated if `--auto-daily`)
+- `monthly_cost_limit` - USD cost limit (e.g., `500.00`)
+- `enforcement_mode` - `alert` (default) or `block`
+- `enabled` - `true` (default) or `false`
 
 ## Profile Management
 

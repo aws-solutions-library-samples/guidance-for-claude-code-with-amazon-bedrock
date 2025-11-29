@@ -23,6 +23,8 @@ from .commands.init import InitCommand
 from .commands.package import PackageCommand
 from .commands.quota import (
     QuotaDeleteCommand,
+    QuotaExportCommand,
+    QuotaImportCommand,
     QuotaListCommand,
     QuotaSetDefaultCommand,
     QuotaSetGroupCommand,
@@ -73,6 +75,8 @@ def create_application() -> Application:
     application.add(QuotaShowCommand())
     application.add(QuotaUsageCommand())
     application.add(QuotaUnblockCommand())
+    application.add(QuotaExportCommand())
+    application.add(QuotaImportCommand())
 
     return application
 

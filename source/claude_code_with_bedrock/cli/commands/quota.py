@@ -3,8 +3,12 @@
 
 """Quota management commands for fine-grained quota control."""
 
+import csv
+import json
+import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import boto3
 from cleo.commands.command import Command
@@ -966,3 +970,271 @@ class QuotaUnblockCommand(Command):
                     pass
 
         return None
+
+
+class QuotaExportCommand(Command):
+    """Export quota policies to a file."""
+
+    name = "quota export"
+    description = "Export quota policies to JSON or CSV file"
+
+    arguments = [
+        argument("file", description="Output file path (.json or .csv)", required=False),
+    ]
+
+    options = [
+        option("profile", "p", description="Configuration profile", flag=False, default=None),
+        option("type", "t", description="Filter by policy type (user, group, default)", flag=False),
+        option("stdout", None, description="Output to stdout instead of file", flag=True),
+    ]
+
+    def handle(self) -> int:
+        """Execute the command."""
+        console = Console()
+        config = Config.load()
+        profile_name = self.option("profile") or config.active_profile
+        profile = config.get_profile(profile_name)
+
+        if not profile:
+            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+            return 1
+
+        file_path = self.argument("file")
+        to_stdout = self.option("stdout")
+
+        if not file_path and not to_stdout:
+            console.print("[red]Either provide a file path or use --stdout[/red]")
+            return 1
+
+        policy_type = None
+        type_filter = self.option("type")
+        if type_filter:
+            try:
+                policy_type = PolicyType(type_filter.lower())
+            except ValueError:
+                console.print(f"[red]Invalid policy type: {type_filter}. Use 'user', 'group', or 'default'.[/red]")
+                return 1
+
+        try:
+            manager = _get_quota_manager(profile)
+            policies = manager.export_policies(policy_type)
+
+            if not policies:
+                console.print("[yellow]No quota policies found to export.[/yellow]")
+                return 0
+
+            # Determine output format
+            if file_path:
+                file_ext = Path(file_path).suffix.lower()
+            else:
+                file_ext = ".json"  # Default to JSON for stdout
+
+            if file_ext == ".csv":
+                output = self._format_csv(policies)
+            else:
+                output = self._format_json(policies)
+
+            if to_stdout:
+                print(output)
+            else:
+                with open(file_path, "w") as f:
+                    f.write(output)
+                console.print(f"[green]Exported {len(policies)} policies to {file_path}[/green]")
+
+            return 0
+
+        except QuotaPolicyError as e:
+            console.print(f"[red]Failed to export policies: {e}[/red]")
+            return 1
+
+    def _format_json(self, policies: list[dict]) -> str:
+        """Format policies as JSON."""
+        export_data = {
+            "version": "1.0",
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "policies": policies,
+        }
+        return json.dumps(export_data, indent=2)
+
+    def _format_csv(self, policies: list[dict]) -> str:
+        """Format policies as CSV."""
+        from io import StringIO
+
+        output = StringIO()
+        fieldnames = ["type", "identifier", "monthly_token_limit", "daily_token_limit", "monthly_cost_limit", "enforcement_mode", "enabled"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for policy in policies:
+            writer.writerow(policy)
+        return output.getvalue()
+
+
+class QuotaImportCommand(Command):
+    """Import quota policies from a file."""
+
+    name = "quota import"
+    description = "Import quota policies from JSON or CSV file"
+
+    arguments = [
+        argument("file", description="Input file path (.json or .csv)"),
+    ]
+
+    options = [
+        option("profile", "p", description="Configuration profile", flag=False, default=None),
+        option("type", "t", description="Import only specific type (user, group, default)", flag=False),
+        option("skip-existing", None, description="Skip policies that already exist", flag=True),
+        option("update", None, description="Update existing policies (upsert)", flag=True),
+        option("dry-run", None, description="Preview changes without applying", flag=True),
+        option("auto-daily", None, description="Auto-calculate daily limits if missing", flag=True),
+        option("burst", None, description="Burst buffer % for auto-daily (default: 10)", flag=False, default="10"),
+    ]
+
+    def handle(self) -> int:
+        """Execute the command."""
+        console = Console()
+        config = Config.load()
+        profile_name = self.option("profile") or config.active_profile
+        profile = config.get_profile(profile_name)
+
+        if not profile:
+            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+            return 1
+
+        file_path = self.argument("file")
+        skip_existing = self.option("skip-existing")
+        update_existing = self.option("update")
+        dry_run = self.option("dry-run")
+        auto_daily = self.option("auto-daily")
+
+        try:
+            burst_buffer = int(self.option("burst"))
+            if burst_buffer < 0 or burst_buffer > 100:
+                console.print("[red]Burst buffer must be between 0 and 100[/red]")
+                return 1
+        except ValueError:
+            console.print(f"[red]Invalid burst buffer: {self.option('burst')}[/red]")
+            return 1
+
+        # Filter by type if specified
+        type_filter = self.option("type")
+        filter_policy_type = None
+        if type_filter:
+            try:
+                filter_policy_type = PolicyType(type_filter.lower())
+            except ValueError:
+                console.print(f"[red]Invalid policy type: {type_filter}. Use 'user', 'group', or 'default'.[/red]")
+                return 1
+
+        # Check file exists
+        if not Path(file_path).exists():
+            console.print(f"[red]File not found: {file_path}[/red]")
+            return 1
+
+        try:
+            # Parse file
+            policies = self._parse_file(file_path)
+
+            if not policies:
+                console.print("[yellow]No policies found in file.[/yellow]")
+                return 0
+
+            # Apply type filter if specified
+            if filter_policy_type:
+                policies = [p for p in policies if p.get("type", "").lower() == filter_policy_type.value]
+                if not policies:
+                    console.print(f"[yellow]No policies of type '{filter_policy_type.value}' found in file.[/yellow]")
+                    return 0
+
+            if dry_run:
+                console.print(
+                    Panel.fit(
+                        "[bold cyan]Dry Run - No changes will be made[/bold cyan]",
+                        border_style="cyan",
+                    )
+                )
+
+            manager = _get_quota_manager(profile)
+            results = manager.bulk_import_policies(
+                policies=policies,
+                skip_existing=skip_existing,
+                update_existing=update_existing,
+                auto_daily=auto_daily,
+                burst_buffer_percent=burst_buffer,
+                dry_run=dry_run,
+            )
+
+            # Display results
+            self._display_results(console, results, dry_run)
+
+            # Return error code if there were errors
+            if results["errors"]:
+                return 1
+
+            return 0
+
+        except (json.JSONDecodeError, csv.Error) as e:
+            console.print(f"[red]Failed to parse file: {e}[/red]")
+            return 1
+        except QuotaPolicyError as e:
+            console.print(f"[red]Failed to import policies: {e}[/red]")
+            return 1
+
+    def _parse_file(self, file_path: str) -> list[dict]:
+        """Parse policies from JSON or CSV file.
+
+        Args:
+            file_path: Path to file.
+
+        Returns:
+            List of policy dictionaries.
+        """
+        file_ext = Path(file_path).suffix.lower()
+
+        with open(file_path, "r") as f:
+            if file_ext == ".csv":
+                reader = csv.DictReader(f)
+                return list(reader)
+            else:
+                data = json.load(f)
+                # Support both flat array and wrapped format
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict) and "policies" in data:
+                    return data["policies"]
+                else:
+                    raise ValueError("Invalid JSON format. Expected array or object with 'policies' key.")
+
+    def _display_results(self, console: Console, results: dict, dry_run: bool) -> None:
+        """Display import results.
+
+        Args:
+            console: Rich console.
+            results: Import results dictionary.
+            dry_run: Whether this was a dry run.
+        """
+        action_prefix = "Would " if dry_run else ""
+
+        # Show details
+        for detail in results["details"]:
+            if detail["action"] == "create":
+                console.print(f"[green]✓ {action_prefix}Created: {detail['identifier']} ({detail['type']}) - {detail.get('monthly_limit', '')}[/green]")
+            elif detail["action"] == "update":
+                console.print(f"[yellow]✓ {action_prefix}Updated: {detail['identifier']} ({detail['type']}) - {detail.get('monthly_limit', '')}[/yellow]")
+            elif detail["action"] == "skip":
+                console.print(f"[dim]⚠ Skipped: {detail['identifier']} ({detail['type']}) - {detail.get('reason', '')}[/dim]")
+
+        # Show errors
+        for error in results["errors"]:
+            if "identifier" in error:
+                console.print(f"[red]✗ Error: {error['identifier']} ({error.get('type', '?')}) - {error['error']}[/red]")
+            else:
+                console.print(f"[red]✗ {error['error']}[/red]")
+
+        # Show summary
+        console.print()
+        summary_title = "[bold]Dry Run Summary[/bold]" if dry_run else "[bold]Import Summary[/bold]"
+        console.print(summary_title)
+        console.print(f"  Created: {results['created']}")
+        console.print(f"  Updated: {results['updated']}")
+        console.print(f"  Skipped: {results['skipped']}")
+        console.print(f"  Errors:  {len(results['errors'])}")

@@ -13,6 +13,57 @@ from botocore.exceptions import ClientError
 from .models import EnforcementMode, PolicyType, QuotaPolicy
 
 
+def _format_tokens(tokens: int) -> str:
+    """Format token count for export.
+
+    Args:
+        tokens: Token count.
+
+    Returns:
+        Formatted string (e.g., "300M", "1.5B", "50K").
+    """
+    if tokens >= 1_000_000_000:
+        value = tokens / 1_000_000_000
+        return f"{value:.1f}B" if value != int(value) else f"{int(value)}B"
+    elif tokens >= 1_000_000:
+        value = tokens / 1_000_000
+        return f"{value:.1f}M" if value != int(value) else f"{int(value)}M"
+    elif tokens >= 1_000:
+        value = tokens / 1_000
+        return f"{value:.1f}K" if value != int(value) else f"{int(value)}K"
+    return str(tokens)
+
+
+def _parse_tokens(value: str | int) -> int:
+    """Parse token value with suffix support.
+
+    Args:
+        value: Token value string (e.g., "300M", "1.5B", "50000") or integer.
+
+    Returns:
+        Integer token count.
+
+    Raises:
+        ValueError: If value cannot be parsed.
+    """
+    if isinstance(value, int):
+        return value
+
+    value = str(value).strip().upper()
+
+    multipliers = {
+        "K": 1_000,
+        "M": 1_000_000,
+        "B": 1_000_000_000,
+    }
+
+    for suffix, multiplier in multipliers.items():
+        if value.endswith(suffix):
+            return int(float(value[:-1]) * multiplier)
+
+    return int(value)
+
+
 class QuotaPolicyError(Exception):
     """Base exception for quota policy operations."""
 
@@ -444,3 +495,246 @@ class QuotaPolicyManager:
             "warning_threshold_80": policy.warning_threshold_80,
             "warning_threshold_90": policy.warning_threshold_90,
         }
+
+    def export_policies(
+        self, policy_type: PolicyType | None = None
+    ) -> list[dict[str, Any]]:
+        """Export policies as list of dicts with human-readable token values.
+
+        Args:
+            policy_type: Optional filter by policy type.
+
+        Returns:
+            List of policy dictionaries suitable for JSON/CSV export.
+        """
+        policies = self.list_policies(policy_type)
+
+        exported = []
+        for policy in policies:
+            item: dict[str, Any] = {
+                "type": policy.policy_type.value,
+                "identifier": policy.identifier,
+                "monthly_token_limit": _format_tokens(policy.monthly_token_limit),
+                "enforcement_mode": policy.enforcement_mode.value,
+                "enabled": policy.enabled,
+            }
+
+            if policy.daily_token_limit:
+                item["daily_token_limit"] = _format_tokens(policy.daily_token_limit)
+            else:
+                item["daily_token_limit"] = ""
+
+            if policy.monthly_cost_limit:
+                item["monthly_cost_limit"] = f"{policy.monthly_cost_limit:.2f}"
+            else:
+                item["monthly_cost_limit"] = ""
+
+            exported.append(item)
+
+        return exported
+
+    def bulk_import_policies(
+        self,
+        policies: list[dict[str, Any]],
+        skip_existing: bool = False,
+        update_existing: bool = False,
+        auto_daily: bool = False,
+        burst_buffer_percent: int = 10,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Import multiple policies with conflict handling.
+
+        Args:
+            policies: List of policy dictionaries to import.
+            skip_existing: Skip policies that already exist.
+            update_existing: Update existing policies (upsert).
+            auto_daily: Auto-calculate daily limits for policies missing daily_token_limit.
+            burst_buffer_percent: Burst buffer percentage for auto-daily calculation.
+            dry_run: Preview changes without actually importing.
+
+        Returns:
+            Dictionary with import results:
+            {
+                "created": 5,
+                "updated": 2,
+                "skipped": 1,
+                "errors": [{"row": 3, "error": "Invalid token format"}],
+                "details": [{"action": "create", "type": "user", "identifier": "..."}]
+            }
+        """
+        results: dict[str, Any] = {
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "errors": [],
+            "details": [],
+        }
+
+        for i, policy_dict in enumerate(policies, start=1):
+            try:
+                # Validate and parse policy
+                parsed = self._parse_import_policy(policy_dict, i, auto_daily, burst_buffer_percent)
+
+                # Check if policy exists
+                existing = self.get_policy(parsed["policy_type"], parsed["identifier"])
+
+                if existing:
+                    if skip_existing:
+                        results["skipped"] += 1
+                        results["details"].append({
+                            "action": "skip",
+                            "type": parsed["policy_type"].value,
+                            "identifier": parsed["identifier"],
+                            "reason": "already exists",
+                        })
+                    elif update_existing:
+                        if not dry_run:
+                            self.update_policy(
+                                policy_type=parsed["policy_type"],
+                                identifier=parsed["identifier"],
+                                monthly_token_limit=parsed["monthly_token_limit"],
+                                daily_token_limit=parsed.get("daily_token_limit"),
+                                monthly_cost_limit=parsed.get("monthly_cost_limit"),
+                                enforcement_mode=parsed.get("enforcement_mode", EnforcementMode.ALERT),
+                                enabled=parsed.get("enabled", True),
+                            )
+                        results["updated"] += 1
+                        results["details"].append({
+                            "action": "update",
+                            "type": parsed["policy_type"].value,
+                            "identifier": parsed["identifier"],
+                            "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
+                        })
+                    else:
+                        # Neither skip nor update - this is a conflict
+                        results["errors"].append({
+                            "row": i,
+                            "type": parsed["policy_type"].value,
+                            "identifier": parsed["identifier"],
+                            "error": "Policy already exists (use --skip-existing or --update)",
+                        })
+                else:
+                    # Create new policy
+                    if not dry_run:
+                        self.create_policy(
+                            policy_type=parsed["policy_type"],
+                            identifier=parsed["identifier"],
+                            monthly_token_limit=parsed["monthly_token_limit"],
+                            daily_token_limit=parsed.get("daily_token_limit"),
+                            monthly_cost_limit=parsed.get("monthly_cost_limit"),
+                            enforcement_mode=parsed.get("enforcement_mode", EnforcementMode.ALERT),
+                            enabled=parsed.get("enabled", True),
+                        )
+                    results["created"] += 1
+                    results["details"].append({
+                        "action": "create",
+                        "type": parsed["policy_type"].value,
+                        "identifier": parsed["identifier"],
+                        "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
+                    })
+
+            except (ValueError, KeyError) as e:
+                results["errors"].append({
+                    "row": i,
+                    "error": str(e),
+                })
+
+        return results
+
+    def _parse_import_policy(
+        self,
+        policy_dict: dict[str, Any],
+        row_num: int,
+        auto_daily: bool,
+        burst_buffer_percent: int,
+    ) -> dict[str, Any]:
+        """Parse and validate a policy dictionary from import.
+
+        Args:
+            policy_dict: Raw policy dictionary from file.
+            row_num: Row number for error reporting.
+            auto_daily: Whether to auto-calculate daily limits.
+            burst_buffer_percent: Burst buffer for auto-daily calculation.
+
+        Returns:
+            Parsed policy dictionary with proper types.
+
+        Raises:
+            ValueError: If validation fails.
+            KeyError: If required field is missing.
+        """
+        # Required fields
+        if "type" not in policy_dict:
+            raise KeyError(f"Row {row_num}: Missing required field 'type'")
+        if "identifier" not in policy_dict:
+            raise KeyError(f"Row {row_num}: Missing required field 'identifier'")
+        if "monthly_token_limit" not in policy_dict:
+            raise KeyError(f"Row {row_num}: Missing required field 'monthly_token_limit'")
+
+        # Parse policy type
+        type_str = str(policy_dict["type"]).lower().strip()
+        try:
+            policy_type = PolicyType(type_str)
+        except ValueError:
+            raise ValueError(f"Row {row_num}: Invalid policy type '{type_str}'. Use 'user', 'group', or 'default'.")
+
+        # Parse identifier
+        identifier = str(policy_dict["identifier"]).strip()
+        if not identifier:
+            raise ValueError(f"Row {row_num}: Identifier cannot be empty")
+        if policy_type == PolicyType.DEFAULT:
+            identifier = "default"
+
+        # Parse monthly token limit
+        try:
+            monthly_token_limit = _parse_tokens(policy_dict["monthly_token_limit"])
+        except (ValueError, TypeError):
+            raise ValueError(f"Row {row_num}: Invalid monthly_token_limit '{policy_dict['monthly_token_limit']}'")
+
+        result: dict[str, Any] = {
+            "policy_type": policy_type,
+            "identifier": identifier,
+            "monthly_token_limit": monthly_token_limit,
+        }
+
+        # Parse daily token limit
+        daily_str = policy_dict.get("daily_token_limit", "")
+        if daily_str and str(daily_str).strip():
+            try:
+                result["daily_token_limit"] = _parse_tokens(daily_str)
+            except (ValueError, TypeError):
+                raise ValueError(f"Row {row_num}: Invalid daily_token_limit '{daily_str}'")
+        elif auto_daily:
+            # Auto-calculate daily limit from monthly with burst buffer
+            burst_factor = 1 + (burst_buffer_percent / 100)
+            result["daily_token_limit"] = int(monthly_token_limit / 30 * burst_factor)
+
+        # Parse cost limit
+        cost_str = policy_dict.get("monthly_cost_limit", "")
+        if cost_str and str(cost_str).strip():
+            try:
+                result["monthly_cost_limit"] = Decimal(str(cost_str))
+            except Exception:
+                raise ValueError(f"Row {row_num}: Invalid monthly_cost_limit '{cost_str}'")
+
+        # Parse enforcement mode
+        enforcement_str = policy_dict.get("enforcement_mode", "alert")
+        if enforcement_str:
+            enforcement_str = str(enforcement_str).lower().strip()
+            if enforcement_str == "block":
+                result["enforcement_mode"] = EnforcementMode.BLOCK
+            elif enforcement_str in ("alert", ""):
+                result["enforcement_mode"] = EnforcementMode.ALERT
+            else:
+                raise ValueError(f"Row {row_num}: Invalid enforcement_mode '{enforcement_str}'. Use 'alert' or 'block'.")
+
+        # Parse enabled status
+        enabled_val = policy_dict.get("enabled", True)
+        if isinstance(enabled_val, bool):
+            result["enabled"] = enabled_val
+        elif isinstance(enabled_val, str):
+            result["enabled"] = enabled_val.lower().strip() in ("true", "1", "yes")
+        else:
+            result["enabled"] = bool(enabled_val)
+
+        return result
