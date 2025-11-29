@@ -258,6 +258,58 @@ This alert is sent once per threshold level per month.
 
 Alerts are deduplicated - each threshold triggers only once per user per period, with history stored in DynamoDB (60-day TTL).
 
+## User Notifications
+
+When users approach or exceed their quota limits, they receive visual notifications in both the terminal and browser.
+
+### Browser Notification
+
+The credential provider opens a browser page showing quota status when:
+
+| Condition | Browser Opens? | Access Granted? |
+|-----------|----------------|-----------------|
+| Within quota (<80%) | No | Yes |
+| Warning (80-99%) | Yes (yellow) | Yes |
+| Blocked (100%+) | Yes (red) | No |
+
+The browser page displays:
+- **Status header**: Warning (⚠️) or Blocked (🚫)
+- **Monthly usage**: Progress bar with percentage
+- **Daily usage**: Progress bar with percentage (if daily limits configured)
+- **Message**: Explanation and guidance
+
+### Terminal Output
+
+In addition to browser notifications, the terminal shows:
+
+**Warning (80%+ usage):**
+```
+============================================================
+QUOTA WARNING
+============================================================
+  Monthly: 180,000,000 / 225,000,000 tokens (80.0%)
+  Daily: 6,600,000 / 8,250,000 tokens (80.0%)
+============================================================
+```
+
+**Blocked (100%+ usage):**
+```
+============================================================
+ACCESS BLOCKED - QUOTA EXCEEDED
+============================================================
+
+Monthly quota exceeded: 225,000,000 / 225,000,000 tokens (100.0%).
+Contact your administrator for assistance.
+
+Current Usage:
+  Monthly: 225,000,000 / 225,000,000 tokens (100.0%)
+
+Policy: user:john.doe@company.com
+
+To request an unblock, contact your administrator.
+============================================================
+```
+
 ## Troubleshooting
 
 ### Quick Checks

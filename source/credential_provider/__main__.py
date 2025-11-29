@@ -1414,7 +1414,259 @@ class MultiProviderAuth:
         print("\nTo request an unblock, contact your administrator.", file=sys.stderr)
         print("=" * 60 + "\n", file=sys.stderr)
 
+        # Show browser notification
+        self._show_quota_browser_notification(quota_result, is_blocked=True)
+
         return 1
+
+    def _show_quota_browser_notification(self, quota_result: dict, is_blocked: bool = False):
+        """Show quota status in browser with visual progress bars.
+
+        Args:
+            quota_result: Result from quota check API
+            is_blocked: Whether access is blocked (vs warning)
+        """
+        try:
+            usage = quota_result.get("usage", {})
+            message = quota_result.get("message", "")
+
+            # Calculate percentages
+            monthly_percent = usage.get("monthly_percent", 0)
+            daily_percent = usage.get("daily_percent", 0)
+
+            # Format numbers for display
+            monthly_tokens = usage.get("monthly_tokens", 0)
+            monthly_limit = usage.get("monthly_limit", 0)
+            daily_tokens = usage.get("daily_tokens", 0)
+            daily_limit = usage.get("daily_limit", 0)
+
+            def format_tokens(n):
+                if n >= 1_000_000_000:
+                    return f"{n/1_000_000_000:.1f}B"
+                elif n >= 1_000_000:
+                    return f"{n/1_000_000:.1f}M"
+                elif n >= 1_000:
+                    return f"{n/1_000:.1f}K"
+                return str(int(n))
+
+            # Determine status styling
+            if is_blocked:
+                status_emoji = "🚫"
+                status_text = "Access Blocked"
+                status_color = "#dc3545"
+                header_bg = "#f8d7da"
+            else:
+                status_emoji = "⚠️"
+                status_text = "Quota Warning"
+                status_color = "#ffc107"
+                header_bg = "#fff3cd"
+
+            # Progress bar color based on percentage
+            def bar_color(pct):
+                if pct >= 100:
+                    return "#dc3545"  # Red
+                elif pct >= 90:
+                    return "#fd7e14"  # Orange
+                elif pct >= 80:
+                    return "#ffc107"  # Yellow
+                return "#28a745"  # Green
+
+            monthly_bar_color = bar_color(monthly_percent)
+            daily_bar_color = bar_color(daily_percent) if daily_limit else "#6c757d"
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Quota Status - Claude Code</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            margin: 0;
+            padding: 40px;
+            background: #f5f5f5;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }}
+        .container {{
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+        .header {{
+            background: {header_bg};
+            padding: 30px;
+            text-align: center;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }}
+        .header h1 {{
+            margin: 0;
+            color: {status_color};
+            font-size: 28px;
+        }}
+        .content {{
+            padding: 30px;
+        }}
+        .usage-section {{
+            margin-bottom: 25px;
+        }}
+        .usage-label {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #666;
+        }}
+        .usage-value {{
+            font-weight: 600;
+            color: #333;
+        }}
+        .progress-bar {{
+            height: 24px;
+            background: #e9ecef;
+            border-radius: 12px;
+            overflow: hidden;
+        }}
+        .progress-fill {{
+            height: 100%;
+            border-radius: 12px;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: white;
+            box-sizing: border-box;
+        }}
+        .message {{
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #666;
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }}
+        .footer {{
+            text-align: center;
+            padding: 20px;
+            background: #f8f9fa;
+            font-size: 13px;
+            color: #666;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{status_emoji} {status_text}</h1>
+        </div>
+        <div class="content">
+            <div class="usage-section">
+                <div class="usage-label">
+                    <span>Monthly Usage</span>
+                    <span class="usage-value">{format_tokens(monthly_tokens)} / {format_tokens(monthly_limit)} ({monthly_percent:.1f}%)</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {min(monthly_percent, 100)}%; background: {monthly_bar_color};">
+                        {monthly_percent:.0f}%
+                    </div>
+                </div>
+            </div>
+            {"" if not daily_limit else f'''
+            <div class="usage-section">
+                <div class="usage-label">
+                    <span>Daily Usage</span>
+                    <span class="usage-value">{format_tokens(daily_tokens)} / {format_tokens(daily_limit)} ({daily_percent:.1f}%)</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {min(daily_percent, 100)}%; background: {daily_bar_color};">
+                        {daily_percent:.0f}%
+                    </div>
+                </div>
+            </div>
+            '''}
+            <div class="message">
+                {message if message else ("Your access has been blocked due to quota limits." if is_blocked else "You're approaching your quota limit.")}
+                {" Contact your administrator for assistance." if is_blocked else ""}
+            </div>
+        </div>
+        <div class="footer">
+            Return to your terminal to continue.
+        </div>
+    </div>
+</body>
+</html>"""
+
+            # Start a brief HTTP server to serve the page
+            parent = self
+            page_served = {"done": False}
+
+            class QuotaPageHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(html.encode())
+                    page_served["done"] = True
+
+                def log_message(self, format, *args):
+                    pass  # Suppress logs
+
+            # Use a different port for quota page (8401) to avoid conflict with auth
+            quota_port = self.redirect_port + 1
+            try:
+                server = HTTPServer(("127.0.0.1", quota_port), QuotaPageHandler)
+                server.timeout = 5  # 5 second timeout
+
+                # Open browser
+                webbrowser.open(f"http://localhost:{quota_port}/quota-status")
+
+                # Wait for page to be served (or timeout)
+                while not page_served["done"]:
+                    server.handle_request()
+
+                server.server_close()
+            except OSError:
+                # Port in use or other error - skip browser notification
+                self._debug_print(f"Could not start quota notification server on port {quota_port}")
+
+        except Exception as e:
+            self._debug_print(f"Failed to show browser notification: {e}")
+
+    def _handle_quota_warning(self, quota_result: dict):
+        """Handle quota warning by showing notification without blocking.
+
+        Args:
+            quota_result: Result from quota check API
+        """
+        usage = quota_result.get("usage", {})
+        monthly_percent = usage.get("monthly_percent", 0)
+        daily_percent = usage.get("daily_percent", 0)
+
+        # Only show warning for significant thresholds (80%+)
+        if monthly_percent < 80 and daily_percent < 80:
+            return
+
+        # Show terminal warning
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("QUOTA WARNING", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+        if usage:
+            if "monthly_tokens" in usage and "monthly_limit" in usage:
+                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
+            if "daily_tokens" in usage and "daily_limit" in usage:
+                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
+
+        print("=" * 60 + "\n", file=sys.stderr)
+
+        # Show browser notification
+        self._show_quota_browser_notification(quota_result, is_blocked=False)
 
     # ===========================================
     # End Quota Check Methods
@@ -1473,6 +1725,9 @@ class MultiProviderAuth:
                 quota_result = self._check_quota(token_claims, id_token)
                 if not quota_result.get("allowed", True):
                     return self._handle_quota_blocked(quota_result)
+                else:
+                    # Check for warning threshold (allowed but high usage)
+                    self._handle_quota_warning(quota_result)
 
             # Get AWS credentials
             self._debug_print("Exchanging token for AWS credentials...")

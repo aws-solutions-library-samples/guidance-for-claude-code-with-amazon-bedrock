@@ -177,6 +177,8 @@ poetry run ccwb test [options]
 
 - `--profile, -p <name>` - Profile name to test (defaults to active profile)
 - `--full` - Test all allowed regions (default: tests 3 representative regions)
+- `--quota-only` - Run only quota monitoring tests (API, policies, usage capture)
+- `--quota-api <endpoint>` - Test quota API with optional custom endpoint override
 
 **What it does:**
 
@@ -187,6 +189,33 @@ poetry run ccwb test [options]
 - Tests Bedrock API access in configured regions
 - Tests inference profile availability
 - Tests quota monitoring API (if enabled)
+
+**Quota Testing (`--quota-only`):**
+
+When using `--quota-only`, runs comprehensive quota monitoring tests:
+
+1. **Quota Config** - Validates all quota configuration is present
+2. **Quota API** - Tests the `/check` endpoint with JWT authentication
+3. **Create Policy** - Creates a test user policy in DynamoDB
+4. **List Policies** - Verifies the policy appears in the list
+5. **Resolve Quota** - Tests policy resolution for users
+6. **Delete Policy** - Cleans up the test policy
+
+**Examples:**
+
+```bash
+# Run standard tests
+poetry run ccwb test
+
+# Run only quota monitoring tests (fastest for quota validation)
+poetry run ccwb test --quota-only
+
+# Test quota API against a staging endpoint
+poetry run ccwb test --quota-only --quota-api https://staging-api.example.com/prod
+
+# Run all tests with custom quota endpoint
+poetry run ccwb test --quota-api https://my-api.execute-api.us-east-1.amazonaws.com/prod
+```
 
 **Note:** API tests run by default and make actual calls to Bedrock (minimal cost ~$0.001).
 

@@ -902,10 +902,14 @@ class DeployCommand(Command):
                     if daily_limit:
                         console.print(f"• Daily Limit: [cyan]{daily_limit:,}[/cyan] tokens ({daily_mode})")
 
-                    # Save quota API endpoint to profile for test command and credential provider
+                    # Save quota outputs to profile for test command and credential provider
                     if quota_endpoint and quota_endpoint != "N/A":
                         profile.quota_api_endpoint = quota_endpoint
-                        config.save_profile(profile)
+                    if quota_outputs.get("PoliciesTableName"):
+                        profile.quota_policies_table = quota_outputs["PoliciesTableName"]
+                    if quota_outputs.get("QuotaTableName"):
+                        profile.user_quota_metrics_table = quota_outputs["QuotaTableName"]
+                    config.save_profile(profile)
 
     def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
         """Update metrics aggregator Lambda environment variable to include quota table."""
