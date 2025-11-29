@@ -540,7 +540,6 @@ poetry run ccwb quota set-user <email> [options]
 **Options:**
 - `--monthly-limit, -m <tokens>` - Monthly token limit (supports K, M, B suffixes: 10M = 10,000,000)
 - `--daily-limit, -d <tokens>` - Daily token limit (optional)
-- `--cost-limit, -c <usd>` - Monthly cost limit in USD (optional)
 - `--enforcement, -e <mode>` - Enforcement mode: `alert` (monitor only) or `block` (deny access)
 - `--disabled` - Create policy in disabled state
 - `--profile, -p <name>` - Configuration profile
@@ -708,7 +707,6 @@ poetry run ccwb quota export --stdout > backup.json
       "identifier": "alice@example.com",
       "monthly_token_limit": "300M",
       "daily_token_limit": "15M",
-      "monthly_cost_limit": "500.00",
       "enforcement_mode": "alert",
       "enabled": true
     }
@@ -718,10 +716,10 @@ poetry run ccwb quota export --stdout > backup.json
 
 **CSV output format:**
 ```csv
-type,identifier,monthly_token_limit,daily_token_limit,monthly_cost_limit,enforcement_mode,enabled
-user,alice@example.com,300M,15M,500.00,alert,true
-group,engineering,500M,25M,,block,true
-default,default,225M,8M,,alert,true
+type,identifier,monthly_token_limit,daily_token_limit,enforcement_mode,enabled
+user,alice@example.com,300M,15M,alert,true
+group,engineering,500M,25M,block,true
+default,default,225M,8M,alert,true
 ```
 
 ### `quota import` - Import Policies
@@ -783,7 +781,6 @@ Import Summary
 
 **Optional CSV columns:**
 - `daily_token_limit` - Daily limit (auto-calculated if `--auto-daily`)
-- `monthly_cost_limit` - USD cost limit (e.g., `500.00`)
 - `enforcement_mode` - `alert` (default) or `block`
 - `enabled` - `true` (default) or `false`
 

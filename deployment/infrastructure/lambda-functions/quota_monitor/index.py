@@ -1,5 +1,5 @@
 # ABOUTME: Lambda function that monitors user token quotas and sends SNS alerts
-# ABOUTME: Supports fine-grained quota policies (user, group, default) with cost tracking
+# ABOUTME: Supports fine-grained quota policies (user, group, default) with token tracking
 
 import json
 import boto3
@@ -69,7 +69,7 @@ def lambda_handler(event, context):
 
         # Process each user
         alerts_to_send = []
-        stats = {"total_users": 0, "over_80": 0, "over_90": 0, "exceeded": 0, "daily_exceeded": 0, "cost_exceeded": 0}
+        stats = {"total_users": 0, "over_80": 0, "over_90": 0, "exceeded": 0, "daily_exceeded": 0}
 
         for email, usage in user_usage_data.items():
             stats["total_users"] += 1
@@ -83,14 +83,12 @@ def lambda_handler(event, context):
 
             total_tokens = float(usage.get("total_tokens", 0))
             daily_tokens = float(usage.get("daily_tokens", 0))
-            estimated_cost = float(usage.get("estimated_cost", 0))
 
             # Check all limit types and generate alerts
             alerts = check_limits_and_generate_alerts(
                 email=email,
                 total_tokens=total_tokens,
                 daily_tokens=daily_tokens,
-                estimated_cost=estimated_cost,
                 policy=policy,
                 month_name=month_name,
                 current_date=current_date,
@@ -111,9 +109,6 @@ def lambda_handler(event, context):
             if policy.get("daily_token_limit") and daily_tokens > policy["daily_token_limit"]:
                 stats["daily_exceeded"] += 1
 
-            if policy.get("monthly_cost_limit") and estimated_cost > float(policy["monthly_cost_limit"]):
-                stats["cost_exceeded"] += 1
-
             # Add alerts to send list
             for alert in alerts:
                 alert_key = f"{email}#{alert['alert_type']}#{alert['alert_level']}"
@@ -132,7 +127,7 @@ def lambda_handler(event, context):
         # Log summary statistics
         print(f"Summary - Total: {stats['total_users']}, Over 80%: {stats['over_80']}, Over 90%: {stats['over_90']}, Exceeded: {stats['exceeded']}")
         if ENABLE_FINEGRAINED_QUOTAS:
-            print(f"  Daily exceeded: {stats['daily_exceeded']}, Cost exceeded: {stats['cost_exceeded']}")
+            print(f"  Daily exceeded: {stats['daily_exceeded']}")
 
         return {
             "statusCode": 200,
@@ -143,7 +138,6 @@ def lambda_handler(event, context):
                 "users_over_90": stats["over_90"],
                 "users_exceeded": stats["exceeded"],
                 "daily_exceeded": stats["daily_exceeded"],
-                "cost_exceeded": stats["cost_exceeded"],
             }),
         }
 
@@ -246,7 +240,6 @@ def load_all_policies():
                     "identifier": identifier,
                     "monthly_token_limit": int(item.get("monthly_token_limit", 0)),
                     "daily_token_limit": int(item.get("daily_token_limit", 0)) if item.get("daily_token_limit") else None,
-                    "monthly_cost_limit": float(item.get("monthly_cost_limit", 0)) if item.get("monthly_cost_limit") else None,
                     "warning_threshold_80": int(item.get("warning_threshold_80", 0)),
                     "warning_threshold_90": int(item.get("warning_threshold_90", 0)),
                     "enforcement_mode": item.get("enforcement_mode", "alert"),
@@ -271,7 +264,6 @@ def load_all_policies():
                         "identifier": identifier,
                         "monthly_token_limit": int(item.get("monthly_token_limit", 0)),
                         "daily_token_limit": int(item.get("daily_token_limit", 0)) if item.get("daily_token_limit") else None,
-                        "monthly_cost_limit": float(item.get("monthly_cost_limit", 0)) if item.get("monthly_cost_limit") else None,
                         "warning_threshold_80": int(item.get("warning_threshold_80", 0)),
                         "warning_threshold_90": int(item.get("warning_threshold_90", 0)),
                         "enforcement_mode": item.get("enforcement_mode", "alert"),
@@ -304,7 +296,6 @@ def resolve_user_quota(email, groups, policies_cache):
             "identifier": "environment",
             "monthly_token_limit": MONTHLY_TOKEN_LIMIT,
             "daily_token_limit": None,
-            "monthly_cost_limit": None,
             "warning_threshold_80": WARNING_THRESHOLD_80,
             "warning_threshold_90": WARNING_THRESHOLD_90,
             "enforcement_mode": "alert",
@@ -343,7 +334,7 @@ def resolve_user_quota(email, groups, policies_cache):
 
 
 def check_limits_and_generate_alerts(
-    email, total_tokens, daily_tokens, estimated_cost, policy,
+    email, total_tokens, daily_tokens, policy,
     month_name, current_date, days_remaining, days_in_month, sent_alerts
 ):
     """
@@ -383,7 +374,6 @@ def check_limits_and_generate_alerts(
                 "daily_average": int(daily_average),
                 "projected_total": int(projected_total),
                 "policy_info": policy_info,
-                "estimated_cost": round(estimated_cost, 2),
                 "enforcement_mode": enforcement_mode,
             })
 
@@ -412,34 +402,6 @@ def check_limits_and_generate_alerts(
                     "limit": daily_limit,
                     "percentage": round(daily_pct, 1),
                     "date": current_date,
-                    "policy_info": policy_info,
-                    "enforcement_mode": enforcement_mode,
-                })
-
-    # 3. Check monthly cost limit (if configured)
-    cost_limit = policy.get("monthly_cost_limit")
-    if cost_limit:
-        cost_pct = (estimated_cost / cost_limit) * 100 if cost_limit > 0 else 0
-
-        cost_alert_level = None
-        if estimated_cost > cost_limit:
-            cost_alert_level = "exceeded"
-        elif estimated_cost > (cost_limit * 0.9):
-            cost_alert_level = "critical"
-        elif estimated_cost > (cost_limit * 0.8):
-            cost_alert_level = "warning"
-
-        if cost_alert_level:
-            alert_key = f"{email}#cost#{cost_alert_level}"
-            if alert_key not in sent_alerts:
-                alerts.append({
-                    "user": email,
-                    "alert_type": "cost",
-                    "alert_level": cost_alert_level,
-                    "current_usage": round(estimated_cost, 2),
-                    "limit": cost_limit,
-                    "percentage": round(cost_pct, 1),
-                    "month": month_name,
                     "policy_info": policy_info,
                     "enforcement_mode": enforcement_mode,
                 })
@@ -563,7 +525,6 @@ def send_alerts(alerts):
             type_label = {
                 "monthly": "Monthly Token Quota",
                 "daily": "Daily Token Quota",
-                "cost": "Monthly Cost Limit",
             }.get(alert_type, "Quota")
 
             subject = f"Claude Code {level_prefix} - {type_label} - {alert['percentage']:.0f}%"
@@ -573,8 +534,6 @@ def send_alerts(alerts):
                 message = format_monthly_alert(alert)
             elif alert_type == "daily":
                 message = format_daily_alert(alert)
-            elif alert_type == "cost":
-                message = format_cost_alert(alert)
             else:
                 message = format_monthly_alert(alert)
 
@@ -619,7 +578,6 @@ Daily Average: {alert.get('daily_average', 0):,} tokens
 Projected Monthly: {alert.get('projected_total', 0):,} tokens
 
 Days Remaining: {alert.get('days_remaining', 'N/A')}
-Estimated Cost: ${alert.get('estimated_cost', 0):.2f}
 
 Policy: {alert.get('policy_info', 'default')}
 Enforcement: {enforcement}
@@ -675,43 +633,4 @@ To increase their daily quota:
 
 =====================================
 Daily quotas reset at UTC midnight.
-"""
-
-
-def format_cost_alert(alert):
-    """Format cost-based quota alert message with prominent user email."""
-    enforcement = alert.get('enforcement_mode', 'alert')
-    user_email = alert['user']
-
-    return f"""
-=====================================
-CLAUDE CODE QUOTA ALERT
-=====================================
-
-USER: {user_email}
-ALERT: Monthly Cost Limit - {alert['alert_level'].upper()}
-MONTH: {alert.get('month', 'N/A')}
-
--------------------------------------
-CURRENT USAGE
--------------------------------------
-Current Cost: ${alert['current_usage']:.2f} / ${alert['limit']:.2f} ({alert['percentage']:.1f}%)
-
-Policy: {alert.get('policy_info', 'default')}
-Enforcement: {enforcement}
-
--------------------------------------
-ACTION REQUIRED
--------------------------------------
-{"ACCESS IS BLOCKED until monthly quota resets or admin unblocks." if enforcement == "block" and alert['alert_level'] == 'exceeded' else "User may soon exceed cost limit."}
-
-To temporarily unblock this user:
-  ccwb quota unblock {user_email} --duration 24h
-
-To increase their cost limit:
-  ccwb quota set-user {user_email} --cost-limit 600.00
-
-=====================================
-Cost estimates are based on Bedrock pricing.
-This alert is sent once per threshold level per month.
 """

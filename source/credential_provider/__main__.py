@@ -1481,10 +1481,6 @@ class MultiProviderAuth:
                 print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
             if "daily_tokens" in usage and "daily_limit" in usage:
                 print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
-            if "estimated_cost" in usage:
-                print(f"  Estimated Cost: ${usage['estimated_cost']:.2f}", file=sys.stderr)
-                if "cost_limit" in usage:
-                    print(f"  Cost Limit: ${usage['cost_limit']:.2f} ({usage.get('cost_percent', 0):.1f}%)", file=sys.stderr)
 
         if policy:
             print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)

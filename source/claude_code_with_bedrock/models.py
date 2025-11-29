@@ -479,7 +479,6 @@ class QuotaPolicy:
 
     # Optional limits
     daily_token_limit: int | None = None
-    monthly_cost_limit: Decimal | None = None
 
     # Thresholds (auto-calculated from monthly_token_limit if not provided)
     warning_threshold_80: int | None = None
@@ -517,9 +516,6 @@ class QuotaPolicy:
         if self.daily_token_limit is not None:
             item["daily_token_limit"] = self.daily_token_limit
 
-        if self.monthly_cost_limit is not None:
-            item["monthly_cost_limit"] = str(self.monthly_cost_limit)
-
         if self.created_at:
             item["created_at"] = self.created_at.isoformat()
 
@@ -539,7 +535,6 @@ class QuotaPolicy:
             identifier=item["identifier"],
             monthly_token_limit=int(item["monthly_token_limit"]),
             daily_token_limit=int(item["daily_token_limit"]) if item.get("daily_token_limit") else None,
-            monthly_cost_limit=Decimal(item["monthly_cost_limit"]) if item.get("monthly_cost_limit") else None,
             warning_threshold_80=int(item.get("warning_threshold_80", 0)),
             warning_threshold_90=int(item.get("warning_threshold_90", 0)),
             enforcement_mode=EnforcementMode(item.get("enforcement_mode", "alert")),
@@ -634,119 +629,3 @@ class UserQuotaUsage:
         )
 
 
-# =============================================================================
-# Bedrock Pricing Configuration
-# =============================================================================
-
-# Pricing per 1,000 tokens (as of 2025)
-# Source: https://aws.amazon.com/bedrock/pricing/
-BEDROCK_PRICING = {
-    # Claude Opus 4.5
-    "anthropic.claude-opus-4-5-20250929-v1:0": {
-        "input_per_1k": Decimal("0.015"),  # $15 per million input tokens
-        "output_per_1k": Decimal("0.075"),  # $75 per million output tokens
-        "cache_read_per_1k": Decimal("0.0015"),  # $1.50 per million cached tokens
-        "cache_write_per_1k": Decimal("0.01875"),  # $18.75 per million cache write tokens
-    },
-    # Claude Sonnet 4.5
-    "anthropic.claude-sonnet-4-5-20250929-v1:0": {
-        "input_per_1k": Decimal("0.003"),  # $3 per million input tokens
-        "output_per_1k": Decimal("0.015"),  # $15 per million output tokens
-        "cache_read_per_1k": Decimal("0.0003"),  # $0.30 per million cached tokens
-        "cache_write_per_1k": Decimal("0.00375"),  # $3.75 per million cache write tokens
-    },
-    # Claude Sonnet 4
-    "anthropic.claude-sonnet-4-20250514-v1:0": {
-        "input_per_1k": Decimal("0.003"),
-        "output_per_1k": Decimal("0.015"),
-        "cache_read_per_1k": Decimal("0.0003"),
-        "cache_write_per_1k": Decimal("0.00375"),
-    },
-    # Claude Opus 4
-    "anthropic.claude-opus-4-20250514-v1:0": {
-        "input_per_1k": Decimal("0.015"),
-        "output_per_1k": Decimal("0.075"),
-        "cache_read_per_1k": Decimal("0.0015"),
-        "cache_write_per_1k": Decimal("0.01875"),
-    },
-    # Claude Opus 4.1
-    "anthropic.claude-opus-4-1-20250805-v1:0": {
-        "input_per_1k": Decimal("0.015"),
-        "output_per_1k": Decimal("0.075"),
-        "cache_read_per_1k": Decimal("0.0015"),
-        "cache_write_per_1k": Decimal("0.01875"),
-    },
-    # Claude 3.7 Sonnet
-    "anthropic.claude-3-7-sonnet-20250219-v1:0": {
-        "input_per_1k": Decimal("0.003"),
-        "output_per_1k": Decimal("0.015"),
-        "cache_read_per_1k": Decimal("0.0003"),
-        "cache_write_per_1k": Decimal("0.00375"),
-    },
-}
-
-# Default pricing for unknown models (use Sonnet 4 pricing as baseline)
-DEFAULT_PRICING = {
-    "input_per_1k": Decimal("0.003"),
-    "output_per_1k": Decimal("0.015"),
-    "cache_read_per_1k": Decimal("0.0003"),
-    "cache_write_per_1k": Decimal("0.00375"),
-}
-
-
-def get_model_pricing(model_id: str) -> dict[str, Decimal]:
-    """
-    Get pricing for a model ID.
-
-    Args:
-        model_id: The Bedrock model ID (can be base or cross-region format)
-
-    Returns:
-        Dictionary with pricing per 1k tokens for input, output, cache_read, cache_write
-    """
-    # Try exact match first
-    if model_id in BEDROCK_PRICING:
-        return BEDROCK_PRICING[model_id]
-
-    # Try to extract base model ID from cross-region format (e.g., us.anthropic.claude-...)
-    if "." in model_id:
-        parts = model_id.split(".", 1)
-        if len(parts) == 2:
-            base_model_id = parts[1]
-            if base_model_id in BEDROCK_PRICING:
-                return BEDROCK_PRICING[base_model_id]
-
-    # Return default pricing for unknown models
-    return DEFAULT_PRICING
-
-
-def calculate_cost(
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-    model_id: str | None = None,
-) -> Decimal:
-    """
-    Calculate the cost for token usage.
-
-    Args:
-        input_tokens: Number of input tokens
-        output_tokens: Number of output tokens
-        cache_read_tokens: Number of cached tokens read
-        cache_write_tokens: Number of tokens written to cache
-        model_id: Optional model ID for model-specific pricing
-
-    Returns:
-        Total cost in USD as Decimal
-    """
-    pricing = get_model_pricing(model_id) if model_id else DEFAULT_PRICING
-
-    cost = (
-        (Decimal(input_tokens) / 1000 * pricing["input_per_1k"])
-        + (Decimal(output_tokens) / 1000 * pricing["output_per_1k"])
-        + (Decimal(cache_read_tokens) / 1000 * pricing["cache_read_per_1k"])
-        + (Decimal(cache_write_tokens) / 1000 * pricing["cache_write_per_1k"])
-    )
-
-    return cost.quantize(Decimal("0.000001"))  # Round to 6 decimal places

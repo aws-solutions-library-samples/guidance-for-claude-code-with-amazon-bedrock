@@ -23,26 +23,6 @@ POLICIES_TABLE = os.environ.get("POLICIES_TABLE")  # Optional - for fine-grained
 ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 AGGREGATION_WINDOW = 5  # minutes
 
-# Bedrock pricing per 1K tokens (used for cost estimation)
-BEDROCK_PRICING = {
-    "anthropic.claude-sonnet-4-5-20250929-v1:0": {
-        "input_per_1k": Decimal("0.003"),
-        "output_per_1k": Decimal("0.015"),
-        "cache_read_per_1k": Decimal("0.0003"),
-    },
-    "anthropic.claude-opus-4-5-20250929-v1:0": {
-        "input_per_1k": Decimal("0.015"),
-        "output_per_1k": Decimal("0.075"),
-        "cache_read_per_1k": Decimal("0.0015"),
-    },
-    # Default pricing for unknown models (use sonnet pricing)
-    "default": {
-        "input_per_1k": Decimal("0.003"),
-        "output_per_1k": Decimal("0.015"),
-        "cache_read_per_1k": Decimal("0.0003"),
-    },
-}
-
 # DynamoDB tables
 table = dynamodb.Table(METRICS_TABLE)
 quota_table = dynamodb.Table(QUOTA_TABLE) if QUOTA_TABLE else None
@@ -848,20 +828,6 @@ def write_to_dynamodb(
         print(f"Error writing to DynamoDB: {str(e)}")
 
 
-def calculate_cost(input_tokens, output_tokens, cache_tokens, model=None):
-    """
-    Calculate estimated cost based on token usage.
-    Uses model-specific pricing if available, otherwise defaults.
-    """
-    pricing = BEDROCK_PRICING.get(model, BEDROCK_PRICING["default"])
-
-    input_cost = (Decimal(str(input_tokens)) / 1000) * pricing["input_per_1k"]
-    output_cost = (Decimal(str(output_tokens)) / 1000) * pricing["output_per_1k"]
-    cache_cost = (Decimal(str(cache_tokens)) / 1000) * pricing["cache_read_per_1k"]
-
-    return input_cost + output_cost + cache_cost
-
-
 def update_quota_table(timestamp, user_details):
     """
     Update monthly user quota tracking table with enhanced fields.
@@ -869,7 +835,6 @@ def update_quota_table(timestamp, user_details):
     Maintains running totals for each user per month including:
     - Monthly and daily token totals
     - Token type breakdown (input, output, cache)
-    - Estimated cost
     - Group membership from JWT claims
     """
     if not user_details:
@@ -888,14 +853,10 @@ def update_quota_table(timestamp, user_details):
             input_tokens = float(user.get("input_tokens", 0))
             output_tokens = float(user.get("output_tokens", 0))
             cache_tokens = float(user.get("cache_tokens", 0))
-            model = user.get("model")
             groups = user.get("groups", [])
 
             if tokens_to_add <= 0:
                 continue
-
-            # Calculate cost for this batch
-            batch_cost = calculate_cost(input_tokens, output_tokens, cache_tokens, model)
 
             pk = f"USER#{user_email}"
             sk = f"MONTH#{current_month}"
@@ -921,8 +882,7 @@ def update_quota_table(timestamp, user_details):
                     ADD total_tokens :tokens,
                         input_tokens :input_tokens,
                         output_tokens :output_tokens,
-                        cache_tokens :cache_tokens,
-                        estimated_cost :cost
+                        cache_tokens :cache_tokens
                     SET last_updated = :updated,
                         #ttl = :ttl,
                         email = :email,
@@ -934,7 +894,6 @@ def update_quota_table(timestamp, user_details):
                     ":input_tokens": Decimal(str(input_tokens)),
                     ":output_tokens": Decimal(str(output_tokens)),
                     ":cache_tokens": Decimal(str(cache_tokens)),
-                    ":cost": batch_cost,
                     ":updated": timestamp.isoformat().replace("+00:00", "Z"),
                     ":ttl": ttl,
                     ":email": user_email,
@@ -965,10 +924,9 @@ def update_quota_table(timestamp, user_details):
                     ExpressionAttributeValues=expr_attr_values,
                 )
 
-                cost_str = f"${batch_cost:.4f}" if batch_cost > 0 else "$0.00"
                 daily_note = " (daily reset)" if daily_reset else ""
                 print(
-                    f"Updated quota for {user_email}: +{tokens_to_add:,.0f} tokens, {cost_str} cost for {current_month}{daily_note}"
+                    f"Updated quota for {user_email}: +{tokens_to_add:,.0f} tokens for {current_month}{daily_note}"
                 )
 
             except Exception as e:

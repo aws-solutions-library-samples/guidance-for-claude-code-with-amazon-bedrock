@@ -4,7 +4,6 @@
 """Quota policy CRUD operations for fine-grained quota management."""
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 import boto3
@@ -114,7 +113,6 @@ class QuotaPolicyManager:
         identifier: str,
         monthly_token_limit: int,
         daily_token_limit: int | None = None,
-        monthly_cost_limit: Decimal | None = None,
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode = EnforcementMode.ALERT,
@@ -128,7 +126,6 @@ class QuotaPolicyManager:
             identifier: Policy identifier (email for user, group name for group, "default" for default).
             monthly_token_limit: Monthly token limit.
             daily_token_limit: Optional daily token limit.
-            monthly_cost_limit: Optional monthly cost limit in USD.
             warning_threshold_80: Optional 80% warning threshold. Auto-calculated if not provided.
             warning_threshold_90: Optional 90% warning threshold. Auto-calculated if not provided.
             enforcement_mode: Alert or block mode (default: alert).
@@ -158,7 +155,6 @@ class QuotaPolicyManager:
             identifier=identifier,
             monthly_token_limit=monthly_token_limit,
             daily_token_limit=daily_token_limit,
-            monthly_cost_limit=monthly_cost_limit,
             warning_threshold_80=warning_threshold_80,
             warning_threshold_90=warning_threshold_90,
             enforcement_mode=enforcement_mode,
@@ -217,7 +213,6 @@ class QuotaPolicyManager:
         identifier: str,
         monthly_token_limit: int | None = None,
         daily_token_limit: int | None = None,
-        monthly_cost_limit: Decimal | None = None,
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode | None = None,
@@ -230,7 +225,6 @@ class QuotaPolicyManager:
             identifier: Policy identifier.
             monthly_token_limit: New monthly token limit (optional).
             daily_token_limit: New daily token limit (optional).
-            monthly_cost_limit: New monthly cost limit (optional).
             warning_threshold_80: New 80% threshold (optional).
             warning_threshold_90: New 90% threshold (optional).
             enforcement_mode: New enforcement mode (optional).
@@ -272,10 +266,6 @@ class QuotaPolicyManager:
         if daily_token_limit is not None:
             update_parts.append("daily_token_limit = :daily_limit")
             expression_values[":daily_limit"] = daily_token_limit
-
-        if monthly_cost_limit is not None:
-            update_parts.append("monthly_cost_limit = :cost_limit")
-            expression_values[":cost_limit"] = monthly_cost_limit
 
         if warning_threshold_80 is not None:
             update_parts.append("warning_threshold_80 = :warn_80")
@@ -424,7 +414,6 @@ class QuotaPolicyManager:
         groups: list[str] | None = None,
         current_monthly_tokens: int = 0,
         current_daily_tokens: int = 0,
-        current_monthly_cost: Decimal = Decimal("0"),
     ) -> dict[str, Any]:
         """Get usage summary with policy context for a user.
 
@@ -433,7 +422,6 @@ class QuotaPolicyManager:
             groups: List of group names from JWT claims.
             current_monthly_tokens: Current monthly token usage.
             current_daily_tokens: Current daily token usage.
-            current_monthly_cost: Current monthly cost in USD.
 
         Returns:
             Dictionary with policy and usage information.
@@ -449,7 +437,6 @@ class QuotaPolicyManager:
                 "unlimited": True,
                 "monthly_tokens": current_monthly_tokens,
                 "daily_tokens": current_daily_tokens,
-                "monthly_cost": float(current_monthly_cost),
             }
 
         monthly_pct = (
@@ -466,14 +453,6 @@ class QuotaPolicyManager:
                 else 0
             )
 
-        cost_pct = None
-        if policy.monthly_cost_limit:
-            cost_pct = (
-                (float(current_monthly_cost) / float(policy.monthly_cost_limit) * 100)
-                if policy.monthly_cost_limit > 0
-                else 0
-            )
-
         return {
             "email": email,
             "policy_applied": True,
@@ -487,11 +466,6 @@ class QuotaPolicyManager:
             "daily_tokens": current_daily_tokens,
             "daily_token_limit": policy.daily_token_limit,
             "daily_token_pct": round(daily_pct, 1) if daily_pct is not None else None,
-            "monthly_cost": float(current_monthly_cost),
-            "monthly_cost_limit": (
-                float(policy.monthly_cost_limit) if policy.monthly_cost_limit else None
-            ),
-            "monthly_cost_pct": round(cost_pct, 1) if cost_pct is not None else None,
             "warning_threshold_80": policy.warning_threshold_80,
             "warning_threshold_90": policy.warning_threshold_90,
         }
@@ -523,11 +497,6 @@ class QuotaPolicyManager:
                 item["daily_token_limit"] = _format_tokens(policy.daily_token_limit)
             else:
                 item["daily_token_limit"] = ""
-
-            if policy.monthly_cost_limit:
-                item["monthly_cost_limit"] = f"{policy.monthly_cost_limit:.2f}"
-            else:
-                item["monthly_cost_limit"] = ""
 
             exported.append(item)
 
@@ -594,7 +563,6 @@ class QuotaPolicyManager:
                                 identifier=parsed["identifier"],
                                 monthly_token_limit=parsed["monthly_token_limit"],
                                 daily_token_limit=parsed.get("daily_token_limit"),
-                                monthly_cost_limit=parsed.get("monthly_cost_limit"),
                                 enforcement_mode=parsed.get("enforcement_mode", EnforcementMode.ALERT),
                                 enabled=parsed.get("enabled", True),
                             )
@@ -621,7 +589,6 @@ class QuotaPolicyManager:
                             identifier=parsed["identifier"],
                             monthly_token_limit=parsed["monthly_token_limit"],
                             daily_token_limit=parsed.get("daily_token_limit"),
-                            monthly_cost_limit=parsed.get("monthly_cost_limit"),
                             enforcement_mode=parsed.get("enforcement_mode", EnforcementMode.ALERT),
                             enabled=parsed.get("enabled", True),
                         )
@@ -708,14 +675,6 @@ class QuotaPolicyManager:
             # Auto-calculate daily limit from monthly with burst buffer
             burst_factor = 1 + (burst_buffer_percent / 100)
             result["daily_token_limit"] = int(monthly_token_limit / 30 * burst_factor)
-
-        # Parse cost limit
-        cost_str = policy_dict.get("monthly_cost_limit", "")
-        if cost_str and str(cost_str).strip():
-            try:
-                result["monthly_cost_limit"] = Decimal(str(cost_str))
-            except Exception:
-                raise ValueError(f"Row {row_num}: Invalid monthly_cost_limit '{cost_str}'")
 
         # Parse enforcement mode
         enforcement_str = policy_dict.get("enforcement_mode", "alert")

@@ -7,7 +7,6 @@ import csv
 import json
 import sys
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from pathlib import Path
 
 import boto3
@@ -108,7 +107,6 @@ class QuotaSetUserCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("cost-limit", "c", description="Monthly cost limit in USD (e.g., 500.00)", flag=False),
         option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
@@ -146,15 +144,6 @@ class QuotaSetUserCommand(Command):
                 console.print(f"[red]Invalid daily limit: {daily_limit_str}[/red]")
                 return 1
 
-        cost_limit = None
-        cost_limit_str = self.option("cost-limit")
-        if cost_limit_str:
-            try:
-                cost_limit = Decimal(cost_limit_str)
-            except Exception:
-                console.print(f"[red]Invalid cost limit: {cost_limit_str}[/red]")
-                return 1
-
         # Parse enforcement mode
         enforcement_mode = EnforcementMode.ALERT
         enforcement_str = self.option("enforcement")
@@ -175,7 +164,6 @@ class QuotaSetUserCommand(Command):
                 identifier=email,
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
-                monthly_cost_limit=cost_limit,
                 enforcement_mode=enforcement_mode,
                 enabled=enabled,
             )
@@ -183,8 +171,6 @@ class QuotaSetUserCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            if policy.monthly_cost_limit:
-                console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
             return 0
 
@@ -196,7 +182,6 @@ class QuotaSetUserCommand(Command):
                     identifier=email,
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
-                    monthly_cost_limit=cost_limit,
                     enforcement_mode=enforcement_mode,
                     enabled=enabled,
                 )
@@ -204,8 +189,6 @@ class QuotaSetUserCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                if policy.monthly_cost_limit:
-                    console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
                 return 0
             except QuotaPolicyError as e:
@@ -231,7 +214,6 @@ class QuotaSetGroupCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("cost-limit", "c", description="Monthly cost limit in USD (e.g., 500.00)", flag=False),
         option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
@@ -269,15 +251,6 @@ class QuotaSetGroupCommand(Command):
                 console.print(f"[red]Invalid daily limit: {daily_limit_str}[/red]")
                 return 1
 
-        cost_limit = None
-        cost_limit_str = self.option("cost-limit")
-        if cost_limit_str:
-            try:
-                cost_limit = Decimal(cost_limit_str)
-            except Exception:
-                console.print(f"[red]Invalid cost limit: {cost_limit_str}[/red]")
-                return 1
-
         # Parse enforcement mode
         enforcement_mode = EnforcementMode.ALERT
         enforcement_str = self.option("enforcement")
@@ -298,7 +271,6 @@ class QuotaSetGroupCommand(Command):
                 identifier=group,
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
-                monthly_cost_limit=cost_limit,
                 enforcement_mode=enforcement_mode,
                 enabled=enabled,
             )
@@ -306,8 +278,6 @@ class QuotaSetGroupCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            if policy.monthly_cost_limit:
-                console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
             return 0
 
@@ -319,7 +289,6 @@ class QuotaSetGroupCommand(Command):
                     identifier=group,
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
-                    monthly_cost_limit=cost_limit,
                     enforcement_mode=enforcement_mode,
                     enabled=enabled,
                 )
@@ -327,8 +296,6 @@ class QuotaSetGroupCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                if policy.monthly_cost_limit:
-                    console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
                 return 0
             except QuotaPolicyError as e:
@@ -350,7 +317,6 @@ class QuotaSetDefaultCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("cost-limit", "c", description="Monthly cost limit in USD (e.g., 500.00)", flag=False),
         option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
@@ -387,15 +353,6 @@ class QuotaSetDefaultCommand(Command):
                 console.print(f"[red]Invalid daily limit: {daily_limit_str}[/red]")
                 return 1
 
-        cost_limit = None
-        cost_limit_str = self.option("cost-limit")
-        if cost_limit_str:
-            try:
-                cost_limit = Decimal(cost_limit_str)
-            except Exception:
-                console.print(f"[red]Invalid cost limit: {cost_limit_str}[/red]")
-                return 1
-
         # Parse enforcement mode
         enforcement_mode = EnforcementMode.ALERT
         enforcement_str = self.option("enforcement")
@@ -416,7 +373,6 @@ class QuotaSetDefaultCommand(Command):
                 identifier="default",
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
-                monthly_cost_limit=cost_limit,
                 enforcement_mode=enforcement_mode,
                 enabled=enabled,
             )
@@ -424,8 +380,6 @@ class QuotaSetDefaultCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            if policy.monthly_cost_limit:
-                console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
             return 0
 
@@ -437,7 +391,6 @@ class QuotaSetDefaultCommand(Command):
                     identifier="default",
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
-                    monthly_cost_limit=cost_limit,
                     enforcement_mode=enforcement_mode,
                     enabled=enabled,
                 )
@@ -445,8 +398,6 @@ class QuotaSetDefaultCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                if policy.monthly_cost_limit:
-                    console.print(f"  Cost limit: ${policy.monthly_cost_limit:.2f}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
                 return 0
             except QuotaPolicyError as e:
@@ -509,14 +460,12 @@ class QuotaListCommand(Command):
             table.add_column("Identifier")
             table.add_column("Monthly Limit", justify="right")
             table.add_column("Daily Limit", justify="right")
-            table.add_column("Cost Limit", justify="right")
             table.add_column("Enforcement")
             table.add_column("Status")
 
             for policy in sorted(policies, key=lambda p: (p.policy_type.value, p.identifier)):
                 status = "[green]Enabled[/green]" if policy.enabled else "[dim]Disabled[/dim]"
                 daily = _format_tokens(policy.daily_token_limit) if policy.daily_token_limit else "-"
-                cost = f"${policy.monthly_cost_limit:.2f}" if policy.monthly_cost_limit else "-"
                 enforcement = "[red]block[/red]" if policy.enforcement_mode.value == "block" else "alert"
 
                 table.add_row(
@@ -524,7 +473,6 @@ class QuotaListCommand(Command):
                     policy.identifier,
                     _format_tokens(policy.monthly_token_limit),
                     daily,
-                    cost,
                     enforcement,
                     status,
                 )
@@ -652,8 +600,6 @@ class QuotaShowCommand(Command):
             table.add_row("Monthly Token Limit", _format_tokens(policy.monthly_token_limit))
             if policy.daily_token_limit:
                 table.add_row("Daily Token Limit", _format_tokens(policy.daily_token_limit))
-            if policy.monthly_cost_limit:
-                table.add_row("Monthly Cost Limit", f"${policy.monthly_cost_limit:.2f}")
             table.add_row("Warning (80%)", _format_tokens(policy.warning_threshold_80))
             table.add_row("Critical (90%)", _format_tokens(policy.warning_threshold_90))
 
@@ -706,14 +652,12 @@ class QuotaUsageCommand(Command):
             usage_data = self._get_user_usage(profile, email)
             current_monthly_tokens = usage_data.get("total_tokens", 0)
             current_daily_tokens = usage_data.get("daily_tokens", 0)
-            current_monthly_cost = Decimal(str(usage_data.get("estimated_cost", 0)))
 
             summary = manager.get_usage_summary(
                 email=email,
                 groups=groups,
                 current_monthly_tokens=current_monthly_tokens,
                 current_daily_tokens=current_daily_tokens,
-                current_monthly_cost=current_monthly_cost,
             )
 
             console.print(
@@ -726,7 +670,7 @@ class QuotaUsageCommand(Command):
             if summary["unlimited"]:
                 console.print("[yellow]No quota policy applies - usage is unlimited[/yellow]")
                 if current_monthly_tokens > 0:
-                    console.print(f"\n[dim]Current usage: {_format_tokens(current_monthly_tokens)} tokens, ${current_monthly_cost:.2f} estimated cost[/dim]")
+                    console.print(f"\n[dim]Current usage: {_format_tokens(current_monthly_tokens)} tokens[/dim]")
                 return 0
 
             console.print(f"[bold]Policy:[/bold] {summary['policy_type']}:{summary['policy_identifier']}")
@@ -760,17 +704,6 @@ class QuotaUsageCommand(Command):
                     f"[{pct_color}]{daily_pct:.1f}%[/{pct_color}]",
                 )
 
-            # Cost
-            if summary["monthly_cost_limit"]:
-                cost_pct = summary["monthly_cost_pct"]
-                pct_color = "green" if cost_pct < 80 else "yellow" if cost_pct < 90 else "red"
-                table.add_row(
-                    "Monthly Cost",
-                    f"${summary['monthly_cost']:.2f}",
-                    f"${summary['monthly_cost_limit']:.2f}",
-                    f"[{pct_color}]{cost_pct:.1f}%[/{pct_color}]",
-                )
-
             console.print(table)
 
             # Show warning if near/over quota
@@ -793,7 +726,7 @@ class QuotaUsageCommand(Command):
             email: User email address.
 
         Returns:
-            Dictionary with usage data (total_tokens, daily_tokens, estimated_cost).
+            Dictionary with usage data (total_tokens, daily_tokens, etc.).
         """
         import boto3
         from datetime import datetime
@@ -1061,7 +994,7 @@ class QuotaExportCommand(Command):
         from io import StringIO
 
         output = StringIO()
-        fieldnames = ["type", "identifier", "monthly_token_limit", "daily_token_limit", "monthly_cost_limit", "enforcement_mode", "enabled"]
+        fieldnames = ["type", "identifier", "monthly_token_limit", "daily_token_limit", "enforcement_mode", "enabled"]
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         for policy in policies:
