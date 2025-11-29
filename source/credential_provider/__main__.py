@@ -1257,6 +1257,84 @@ class MultiProviderAuth:
         quota_api_endpoint = self.config.get("quota_api_endpoint")
         return bool(quota_api_endpoint)
 
+    def _should_recheck_quota(self) -> bool:
+        """Check if quota should be re-verified based on configured interval.
+
+        Returns True if:
+        - Quota checking is enabled AND
+        - Either interval is 0 (always check) OR
+        - Last quota check was more than interval minutes ago
+        """
+        if not self._should_check_quota():
+            return False
+
+        interval_minutes = self.config.get("quota_check_interval", 30)
+        if interval_minutes == 0:
+            return True  # Always check
+
+        last_check = self._get_last_quota_check_time()
+        if not last_check:
+            return True  # Never checked
+
+        elapsed = (datetime.now(timezone.utc) - last_check).total_seconds() / 60
+        self._debug_print(f"Quota check: {elapsed:.1f} min since last check, interval={interval_minutes} min")
+        return elapsed >= interval_minutes
+
+    def _get_last_quota_check_time(self) -> datetime | None:
+        """Get timestamp of last quota check from storage."""
+        try:
+            if self.credential_storage == "keyring":
+                timestamp_str = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-quota-check")
+                if timestamp_str:
+                    return datetime.fromisoformat(timestamp_str)
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                timestamp_file = session_dir / f"{self.profile}-quota-check.json"
+                if timestamp_file.exists():
+                    with open(timestamp_file) as f:
+                        data = json.load(f)
+                        return datetime.fromisoformat(data["last_check"])
+            return None
+        except Exception as e:
+            self._debug_print(f"Could not read quota check timestamp: {e}")
+            return None
+
+    def _save_quota_check_timestamp(self):
+        """Save current time as last quota check timestamp."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            if self.credential_storage == "keyring":
+                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-quota-check", now)
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                session_dir.mkdir(parents=True, exist_ok=True)
+                timestamp_file = session_dir / f"{self.profile}-quota-check.json"
+                with open(timestamp_file, "w") as f:
+                    json.dump({"last_check": now}, f)
+                timestamp_file.chmod(0o600)
+            self._debug_print("Saved quota check timestamp")
+        except Exception as e:
+            self._debug_print(f"Could not save quota check timestamp: {e}")
+
+    def _get_cached_token_claims(self) -> dict | None:
+        """Get token claims from cached monitoring token for quota re-check."""
+        try:
+            if self.credential_storage == "keyring":
+                token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                if token_json:
+                    token_data = json.loads(token_json)
+                    return {"email": token_data.get("email", "")}
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                token_file = session_dir / f"{self.profile}-monitoring.json"
+                if token_file.exists():
+                    with open(token_file) as f:
+                        token_data = json.load(f)
+                        return {"email": token_data.get("email", "")}
+            return None
+        except Exception:
+            return None
+
     def _extract_groups(self, token_claims: dict) -> list:
         """Extract group memberships from JWT token claims.
 
@@ -1678,6 +1756,21 @@ class MultiProviderAuth:
             # Check cache first
             cached = self.get_cached_credentials()
             if cached:
+                # Periodic quota re-check even with cached credentials
+                if self._should_recheck_quota():
+                    self._debug_print("Performing periodic quota re-check...")
+                    id_token = self.get_monitoring_token()
+                    token_claims = self._get_cached_token_claims()
+                    if id_token and token_claims:
+                        quota_result = self._check_quota(token_claims, id_token)
+                        self._save_quota_check_timestamp()
+                        if not quota_result.get("allowed", True):
+                            return self._handle_quota_blocked(quota_result)
+                        else:
+                            self._handle_quota_warning(quota_result)
+                    else:
+                        self._debug_print("No cached token for quota re-check, skipping")
+
                 # Output cached credentials (intended behavior for AWS CLI)
                 print(json.dumps(cached))  # noqa: S105
                 return 0
@@ -1723,6 +1816,7 @@ class MultiProviderAuth:
             if self._should_check_quota():
                 self._debug_print("Checking quota before credential issuance...")
                 quota_result = self._check_quota(token_claims, id_token)
+                self._save_quota_check_timestamp()  # Track when quota was checked
                 if not quota_result.get("allowed", True):
                     return self._handle_quota_blocked(quota_result)
                 else:

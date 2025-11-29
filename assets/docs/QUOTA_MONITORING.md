@@ -310,6 +310,37 @@ To request an unblock, contact your administrator.
 ============================================================
 ```
 
+### Periodic Quota Re-Check
+
+By default, quota is re-checked every 30 minutes even when credentials are cached. This closes the enforcement gap where users could continue working for up to 12 hours after being blocked (the credential cache duration).
+
+Configure during `ccwb init`:
+
+| Interval | Check Frequency | Max Enforcement Delay | UX Impact |
+|----------|----------------|----------------------|-----------|
+| 0 | Every request | Immediate | ~200ms per request |
+| 15 | Every 15 min | 15 minutes | Minimal |
+| 30 (default) | Every 30 min | 30 minutes | Imperceptible |
+| 60 | Every hour | 1 hour | None |
+
+**How it works:**
+
+1. User requests credentials (cached or fresh)
+2. If last quota check was more than `interval` minutes ago:
+   - Call quota API (~200ms)
+   - Update timestamp
+3. If blocked: Show browser notification, deny credentials
+4. If warning (80%+): Show browser notification, issue credentials
+5. If OK: Issue credentials silently
+
+**Trade-offs:**
+
+- **Interval = 0** (strictest): Every request checks quota. Adds ~200ms latency to each credential request. Use for strict cost control where immediate enforcement is critical.
+- **Interval = 30** (recommended): Balance between enforcement tightness and user experience. Users are blocked within 30 minutes of exceeding quota.
+- **Interval = 60+** (relaxed): Minimal impact but users may work up to an hour after being blocked.
+
+The check happens in the background when returning cached credentials - users only see a browser notification if their quota status changes.
+
 ## Troubleshooting
 
 ### Quick Checks

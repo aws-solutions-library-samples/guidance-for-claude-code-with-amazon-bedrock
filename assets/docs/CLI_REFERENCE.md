@@ -89,6 +89,7 @@ poetry run ccwb init [options]
   - Monthly token limit per user
   - Daily token limit with burst buffer (auto-calculated from monthly)
   - Enforcement modes (alert vs block) for daily and monthly limits
+  - Quota re-check interval (how often to verify quota with cached credentials)
 - Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 

@@ -698,10 +698,25 @@ class InitCommand(Command):
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
                     config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
+                    # Quota re-check interval
+                    console.print("\n[bold]Quota Re-Check Interval[/bold]")
+                    console.print("How often to re-check quota with cached credentials:")
+                    console.print("  • 0 = check every request (strictest, ~200ms latency)")
+                    console.print("  • 30 = every 30 minutes (default, recommended)")
+                    console.print("  • 60 = every hour (minimal impact)")
+
+                    check_interval = questionary.text(
+                        "Quota check interval (minutes):",
+                        default=str(config.get("quota", {}).get("check_interval", 30)),
+                        validate=lambda x: x.isdigit() and int(x) >= 0,
+                    ).ask()
+                    config["quota"]["check_interval"] = int(check_interval)
+
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
                     console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
                     console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
                     console.print(f"  • Burst buffer: {burst_percent}%")
+                    console.print(f"  • Re-check interval: {check_interval} minutes")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -1433,6 +1448,7 @@ class InitCommand(Command):
             burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
             daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
+            quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
         )
 
         config.add_profile(profile)

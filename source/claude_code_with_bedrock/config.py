@@ -63,6 +63,7 @@ class Profile:
     user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics
     quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
+    quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
