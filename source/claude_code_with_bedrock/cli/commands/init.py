@@ -1247,6 +1247,10 @@ class InitCommand(Command):
                 console.print("• Kinesis Firehose for analytics data streaming")
                 console.print("• S3 bucket for analytics data storage")
                 console.print("• Glue catalog and Athena tables for analytics")
+            if config.get("quota", {}).get("enabled", False):
+                console.print("• DynamoDB tables for quota tracking")
+                console.print("• Lambda function for quota checking")
+                console.print("• API Gateway for real-time quota API")
         if config.get("codebuild", {}).get("enabled", False):
             console.print("• CodeBuild project for Windows binary builds")
             console.print("• S3 bucket for build artifacts")
