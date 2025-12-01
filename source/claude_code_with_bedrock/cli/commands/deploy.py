@@ -161,8 +161,8 @@ class DeployCommand(Command):
 
             # Deploy remaining monitoring stacks
             if profile.monitoring_enabled:
-                vpc_congig = profile.monitoring_config or {}
-                if vpc_congig.get("create_vpc", True):
+                vpc_config = profile.monitoring_config or {}
+                if vpc_config.get("create_vpc", True):
                     stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
@@ -583,11 +583,11 @@ class DeployCommand(Command):
                 template = project_root / "deployment" / "infrastructure" / "otel-collector.yaml"
                 stack_name = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
                 params = []
-                vpc_congig = profile.monitoring_config or {}
+                vpc_config = profile.monitoring_config or {}
 
-                if not vpc_congig.get("create_vpc", True):
-                    params.append(f"VpcId={vpc_congig.get('vpc_id', '')}")
-                    subnet_ids = ",".join(vpc_congig.get("subnet_ids", []))
+                if not vpc_config.get("create_vpc", True):
+                    params.append(f"VpcId={vpc_config.get('vpc_id', '')}")
+                    subnet_ids = ",".join(vpc_config.get("subnet_ids", []))
                     params.append(f"SubnetIds={subnet_ids}")
                 else:
                     # Get VPC outputs from networking stack
