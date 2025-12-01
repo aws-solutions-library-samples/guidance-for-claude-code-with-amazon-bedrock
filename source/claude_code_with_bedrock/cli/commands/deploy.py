@@ -155,18 +155,16 @@ class DeployCommand(Command):
             # Deploy all configured stacks in dependency order
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy networking first if needed (required by landing-page distribution and monitoring)
-            if profile.monitoring_enabled or (
-                profile.enable_distribution and profile.distribution_type == "landing-page"
-            ):
-                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-
             # Deploy distribution after networking if it's landing-page type
             if profile.enable_distribution:
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
 
             # Deploy remaining monitoring stacks
             if profile.monitoring_enabled:
+                vpc_congig = profile.monitoring_config or {}
+                if vpc_congig.get("create_vpc", True):
+                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 # Check if analytics is enabled (default to True for backward compatibility)
@@ -563,6 +561,7 @@ class DeployCommand(Command):
                 template = project_root / "deployment" / "infrastructure" / "networking.yaml"
                 stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
                 vpc_config = profile.monitoring_config or {}
+
                 params = [
                     f"VpcCidr={vpc_config.get('vpc_cidr', '10.0.0.0/16')}",
                     f"PublicSubnet1Cidr={vpc_config.get('subnet1_cidr', '10.0.1.0/24')}",
@@ -572,27 +571,38 @@ class DeployCommand(Command):
                     template, stack_name, params, task_description="Deploying networking infrastructure..."
                 )
 
+            elif stack_type == "s3bucket":
+                template = project_root / "deployment" / "infrastructure" / "s3bucket.yaml"
+                stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-s3bucket")
+                params = []
+                return deploy_with_cf(template, stack_name, params, task_description="Deploying S3 Bucket...")
             elif stack_type == "monitoring":
                 # Ensure ECS service linked role exists before deploying
                 self._ensure_ecs_service_linked_role(console)
 
                 template = project_root / "deployment" / "infrastructure" / "otel-collector.yaml"
                 stack_name = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
-
-                # Get VPC outputs from networking stack
-                networking_stack_name = profile.stack_names.get(
-                    "networking", f"{profile.identity_pool_name}-networking"
-                )
-                networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
-
                 params = []
-                if networking_outputs:
-                    vpc_id = networking_outputs.get("VpcId", "")
-                    subnet_ids = networking_outputs.get("SubnetIds", "")
-                    if vpc_id:
-                        params.append(f"VpcId={vpc_id}")
-                    if subnet_ids:
-                        params.append(f"SubnetIds={subnet_ids}")
+                vpc_congig = profile.monitoring_config or {}
+
+                if not vpc_congig.get("create_vpc", True):
+                    params.append(f"VpcId={vpc_congig.get('vpc_id', '')}")
+                    subnet_ids = ",".join(vpc_congig.get("subnet_ids", []))
+                    params.append(f"SubnetIds={subnet_ids}")
+                else:
+                    # Get VPC outputs from networking stack
+                    networking_stack_name = profile.stack_names.get(
+                        "networking", f"{profile.identity_pool_name}-networking"
+                    )
+                    networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+
+                    if networking_outputs:
+                        vpc_id = networking_outputs.get("VpcId", "")
+                        subnet_ids = networking_outputs.get("SubnetIds", "")
+                        if vpc_id:
+                            params.append(f"VpcId={vpc_id}")
+                        if subnet_ids:
+                            params.append(f"SubnetIds={subnet_ids}")
 
                 # Add HTTPS domain parameters if configured
                 monitoring_config = getattr(profile, "monitoring_config", {})
@@ -600,6 +610,7 @@ class DeployCommand(Command):
                     params.append(f"CustomDomainName={monitoring_config['custom_domain']}")
                     params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
 
+                console.print(f"[dim]Using parameters: {params}[/dim]")
                 return deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."
                 )
@@ -609,12 +620,10 @@ class DeployCommand(Command):
                 stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
 
                 # Get S3 bucket from networking stack for packaging
-                networking_stack_name = profile.stack_names.get(
-                    "networking", f"{profile.identity_pool_name}-networking"
-                )
-                networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+                s3_stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack_name, profile.aws_region)
 
-                if not networking_outputs or not networking_outputs.get("CfnArtifactsBucket"):
+                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
                     console.print("[red]Error: S3 bucket for packaging not found[/red]")
                     console.print(
                         "[yellow]The networking stack must be deployed first with the artifacts bucket.[/yellow]"
@@ -622,7 +631,7 @@ class DeployCommand(Command):
                     console.print("Run: [cyan]ccwb deploy networking[/cyan]")
                     return 1
 
-                s3_bucket = networking_outputs["CfnArtifactsBucket"]
+                s3_bucket = s3_outputs["CfnArtifactsBucket"]
 
                 # Package the template using AWS CLI (simple and reliable!)
                 task = progress.add_task("Packaging dashboard Lambda functions...", total=None)

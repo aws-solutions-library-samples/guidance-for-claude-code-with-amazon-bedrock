@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'S3 Bucket for CloudFormation artifacts (Lambda code packages)'
+
+Resources:
+  # S3 Bucket for CloudFormation artifacts (Lambda code packages)
+  CfnArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: claude-code-cfn-artifacts
+        - Key: Purpose
+          Value: CloudFormation Lambda packaging
+
+Outputs:
+  CfnArtifactsBucket:
+    Description: S3 bucket for CloudFormation artifacts
+    Value: !Ref CfnArtifactsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-CfnArtifactsBucket"
