@@ -70,3 +70,11 @@ assets/docs/planning
 EPCC_*
 PRs/
 test_cognito_detection.py
+
+# Development documentation (not for production)
+TESTING_*.md
+IMPLEMENTATION_SUMMARY.md
+PARTITION_*.md
+FEEDBACK.md
+.claudeignore
+.mcp.json
