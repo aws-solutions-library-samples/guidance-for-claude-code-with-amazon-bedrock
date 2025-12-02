@@ -188,58 +188,14 @@ The guidance automatically detects the AWS partition at deployment time and conf
 
 ### Deploying to AWS GovCloud
 
-**Prerequisites:**
-1. AWS GovCloud (US) account with Bedrock access
-2. Valid AWS credentials configured for GovCloud
-3. All standard prerequisites (OIDC provider, etc.)
-
-**Deployment Steps:**
-
-The deployment commands are identical to commercial - just ensure your AWS credentials are configured for your GovCloud account before running them.
-
-```bash
-# 1. Configure AWS credentials for GovCloud
-# Use your preferred method: aws configure, environment variables, or AWS profiles
-
-# 2. Clone and setup (same as commercial)
-git clone https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock
-cd guidance-for-claude-code-with-amazon-bedrock/source
-poetry install
-
-# 3. Initialize - select GovCloud region when prompted
-poetry run ccwb init
-# When prompted:
-# - Select us-gov-west-1 or us-gov-east-1 as your region
-# - The wizard will automatically show GovCloud-compatible models
-
-# 4. Deploy, package, and distribute (same commands as commercial)
-poetry run ccwb deploy
-poetry run ccwb package --target-platform all
-poetry run ccwb distribute
-```
+Follow the same [Quick Start](#quick-start) instructions above with your GovCloud credentials active. During `ccwb init`, select a GovCloud region (us-gov-west-1 or us-gov-east-1) and the wizard will automatically configure GovCloud-compatible models and endpoints.
 
 **GovCloud-Specific Considerations:**
 
-1. **Model Availability:**
-   - Use GovCloud-specific model IDs (prefix: `us-gov.anthropic.*`)
-   - Cross-region inference uses `us-gov` profile
-   - Available regions: us-gov-west-1, us-gov-east-1
-
-2. **FIPS Endpoints:**
-   - GovCloud Cognito uses FIPS endpoints by default
-   - API endpoints: `cognito-idp-fips.us-gov-*.amazonaws.com`
-   - **Cognito Hosted UI**: Uses `{prefix}.auth-fips.{region}.amazoncognito.com` (not `.auth.`)
-   - Managed login branding must be created for each app client
-
-3. **Service Availability:**
-   - All core services (Cognito, Bedrock, IAM, CloudTrail) are available
-   - Optional monitoring components (ECS, CloudWatch) are available
-   - Optional analytics components (Glue, Athena) are available
-
-4. **Credentials:**
-   - GovCloud requires separate AWS credentials from commercial accounts
-   - Configure your credentials using any standard method (environment variables, AWS profiles, IAM Identity Center, etc.)
-   - Ensure your active credentials point to your GovCloud account before running deployment commands
+1. **Credentials:** GovCloud requires separate AWS credentials from commercial accounts
+2. **Model IDs:** GovCloud uses region-prefixed model IDs (e.g., `us-gov.anthropic.*`)
+3. **FIPS Endpoints:** Cognito hosted UI uses `{prefix}.auth-fips.{region}.amazoncognito.com`
+4. **Managed Login:** Branding must be created for each Cognito app client
 
 ### Validation
 
