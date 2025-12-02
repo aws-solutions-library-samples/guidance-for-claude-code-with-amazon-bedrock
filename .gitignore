@@ -39,6 +39,9 @@ Thumbs.db
 # Claude Code settings
 .claude/
 
+#Claude Code plugin settings
+.claude-plugin
+
 # Kiro settings (contains tokens)
 .kiro/settings/mcp.json
 
