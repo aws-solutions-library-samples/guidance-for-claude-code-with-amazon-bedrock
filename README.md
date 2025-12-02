@@ -172,7 +172,7 @@ The guidance automatically detects the AWS partition at deployment time and conf
 
 **Resource ARNs:**
 - CloudFormation uses the `${AWS::Partition}` pseudo-parameter
-- Automatically resolves to `aws`, `aws-us-gov`, or `aws-cn`
+- Automatically resolves to `aws` or `aws-us-gov`
 - Example: `arn:${AWS::Partition}:bedrock:*::foundation-model/*`
 
 **Service Principals:**
@@ -185,7 +185,6 @@ The guidance automatically detects the AWS partition at deployment time and conf
 **S3 Endpoints:**
 - Commercial: `s3.region.amazonaws.com`
 - GovCloud: `s3.region.amazonaws.com`
-- China: `s3.region.amazonaws.com.cn`
 
 ### Deploying to AWS GovCloud
 
