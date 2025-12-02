@@ -23,6 +23,7 @@ class BuildsCommand(Command):
     description = "List and manage CodeBuild builds"
 
     options = [
+        option("profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None),
         option("limit", description="Number of builds to show", flag=False, default="10"),
         option("project", description="CodeBuild project name (default: auto-detect)", flag=False),
         option("status", description="Check status of a specific build by ID", flag=False),
@@ -38,18 +39,35 @@ class BuildsCommand(Command):
             return self._check_build_status(self.option("status"), console)
 
         try:
+            # Load configuration
+            from ...config import Config
+
+            config = Config.load()
+
+            # Get profile name (use active profile if not specified)
+            profile_name = self.option("profile")
+            if not profile_name:
+                profile_name = config.active_profile
+                console.print(f"[dim]Using active profile: {profile_name}[/dim]\n")
+            else:
+                console.print(f"[dim]Using profile: {profile_name}[/dim]\n")
+
+            profile = config.get_profile(profile_name)
+
+            if not profile:
+                if profile_name:
+                    console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+                else:
+                    console.print(
+                        "[red]No active profile set. Run 'poetry run ccwb init' or "
+                        "'poetry run ccwb context use <profile>' first.[/red]"
+                    )
+                return 1
+
             # Auto-detect project name from config if not provided
             project_name = self.option("project")
             if not project_name:
-                from ...config import Config
-
-                config = Config.load()
-                profile = config.get_profile("default")
-                if profile:
-                    project_name = f"{profile.identity_pool_name}-windows-build"
-                else:
-                    console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
-                    return 1
+                project_name = f"{profile.identity_pool_name}-windows-build"
 
             # Get builds from CodeBuild
             codebuild = boto3.client("codebuild", region_name=profile.aws_region)
@@ -133,6 +151,28 @@ class BuildsCommand(Command):
         from pathlib import Path
 
         try:
+            # Load configuration
+            from ...config import Config
+
+            config = Config.load()
+
+            # Get profile name (use active profile if not specified)
+            profile_name = self.option("profile")
+            if not profile_name:
+                profile_name = config.active_profile
+
+            profile = config.get_profile(profile_name)
+
+            if not profile:
+                if profile_name:
+                    console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+                else:
+                    console.print(
+                        "[red]No active profile set. Run 'poetry run ccwb init' or "
+                        "'poetry run ccwb context use <profile>' first.[/red]"
+                    )
+                return 1
+
             # If no build ID provided or it's "latest", check for latest
             if not build_id or build_id == "latest":
                 build_info_file = Path.home() / ".claude-code" / "latest-build.json"
@@ -147,46 +187,32 @@ class BuildsCommand(Command):
             else:
                 # If it's a short ID (8 chars) or full UUID without project prefix
                 if ":" not in build_id:
-                    from ...config import Config
+                    project_name = f"{profile.identity_pool_name}-windows-build"
 
-                    config = Config.load()
-                    profile = config.get_profile("default")
-                    if profile:
-                        project_name = f"{profile.identity_pool_name}-windows-build"
+                    # If it's a short ID (like from the table), find the full UUID
+                    if len(build_id) == 8:
+                        # List recent builds to find the matching one
+                        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                        response = codebuild.list_builds_for_project(
+                            projectName=project_name, sortOrder="DESCENDING"
+                        )
 
-                        # If it's a short ID (like from the table), find the full UUID
-                        if len(build_id) == 8:
-                            # List recent builds to find the matching one
-                            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
-                            response = codebuild.list_builds_for_project(
-                                projectName=project_name, sortOrder="DESCENDING"
-                            )
-
-                            # Find the build that starts with this short ID
-                            for full_build_id in response.get("ids", []):
-                                # Extract the UUID part after the colon
-                                if ":" in full_build_id:
-                                    uuid_part = full_build_id.split(":")[1]
-                                    if uuid_part.startswith(build_id):
-                                        build_id = full_build_id
-                                        break
-                            else:
-                                # If we didn't find it, try with the project prefix anyway
-                                build_id = f"{project_name}:{build_id}"
+                        # Find the build that starts with this short ID
+                        for full_build_id in response.get("ids", []):
+                            # Extract the UUID part after the colon
+                            if ":" in full_build_id:
+                                uuid_part = full_build_id.split(":")[1]
+                                if uuid_part.startswith(build_id):
+                                    build_id = full_build_id
+                                    break
                         else:
-                            # It's likely a full UUID, just add the project prefix
+                            # If we didn't find it, try with the project prefix anyway
                             build_id = f"{project_name}:{build_id}"
+                    else:
+                        # It's likely a full UUID, just add the project prefix
+                        build_id = f"{project_name}:{build_id}"
 
             # Get build status from CodeBuild
-            # Need to get profile to determine region
-            from ...config import Config
-
-            config = Config.load()
-            profile = config.get_profile("default")
-            if not profile:
-                console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
-                return 1
-
             codebuild = boto3.client("codebuild", region_name=profile.aws_region)
             response = codebuild.batch_get_builds(ids=[build_id])
 
@@ -207,7 +233,15 @@ class BuildsCommand(Command):
                     console.print(f"Elapsed: {int(elapsed.total_seconds() / 60)} minutes")
             elif status == "SUCCEEDED":
                 console.print("[green]✓ Build succeeded![/green]")
-                console.print(f"Duration: {build.get('buildDurationInMinutes', 'Unknown')} minutes")
+
+                # Calculate duration
+                if "endTime" in build and "startTime" in build:
+                    duration = build["endTime"] - build["startTime"]
+                    duration_min = int(duration.total_seconds() / 60)
+                    console.print(f"Duration: {duration_min} minutes")
+                else:
+                    console.print("Duration: Unknown")
+
                 console.print("\n[bold]Windows build artifacts are ready![/bold]")
 
                 # Download artifacts if --download flag is provided
@@ -223,12 +257,18 @@ class BuildsCommand(Command):
                         console.print("[yellow]Run 'poetry run ccwb package' first to create a package[/yellow]")
                         return 1
 
-                    console.print(f"[dim]Target: {target_dir.relative_to(Path.cwd())}[/dim]")
+                    # Try to show relative path, fall back to absolute if not possible
+                    try:
+                        display_path = target_dir.relative_to(Path.cwd())
+                    except ValueError:
+                        display_path = target_dir
+
+                    console.print(f"[dim]Target: {display_path}[/dim]")
                     console.print("\n[cyan]Downloading Windows artifacts...[/cyan]")
 
                     if self._download_windows_artifacts(profile, target_dir, console):
                         console.print("[green]✓ Downloaded Windows artifacts[/green]")
-                        console.print(f"Location: {target_dir.relative_to(Path.cwd())}")
+                        console.print(f"Location: {display_path}")
                         console.print("\n[bold]Next steps:[/bold]")
                         console.print("  Run: [cyan]poetry run ccwb distribute[/cyan]")
                         console.print("  This will create your distribution package with Windows binaries included")
@@ -264,7 +304,10 @@ class BuildsCommand(Command):
         """Find the latest package directory in dist/."""
         from pathlib import Path
 
-        dist_dir = Path("./dist")
+        # Get the source directory (where dist/ is located)
+        source_dir = Path(__file__).parents[3]
+        dist_dir = source_dir / "dist"
+
         if not dist_dir.exists():
             return None
 

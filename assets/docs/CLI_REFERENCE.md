@@ -297,9 +297,11 @@ poetry run ccwb builds [options]
 
 **Options:**
 
+- `--profile <name>` - Configuration profile to use (defaults to active profile)
 - `--limit <n>` - Number of builds to show (default: "10")
 - `--project <name>` - CodeBuild project name (default: auto-detect)
 - `--status <id>` - Check status of a specific build by ID
+- `--download` - Download completed Windows artifacts to dist folder
 
 **What it does:**
 
@@ -307,8 +309,28 @@ poetry run ccwb builds [options]
 - Shows build status, duration, and completion time
 - Provides console links to view full build logs
 - Monitors in-progress builds
+- Uses active profile or specified profile for CodeBuild project detection
 
 **Note:** This command requires CodeBuild to be enabled during the `init` process. If CodeBuild was not enabled, you'll need to re-run `init` and enable Windows build support.
+
+**Examples:**
+
+```bash
+# List builds for active profile
+poetry run ccwb builds
+
+# List builds for specific profile
+poetry run ccwb builds --profile production
+
+# Check status of specific build
+poetry run ccwb builds --status abc12345
+
+# Check latest build status and download artifacts
+poetry run ccwb builds --status latest --download
+
+# List last 20 builds
+poetry run ccwb builds --limit 20
+```
 
 **Example output:**
 
