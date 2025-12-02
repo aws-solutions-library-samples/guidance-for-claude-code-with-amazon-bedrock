@@ -195,25 +195,27 @@ The guidance automatically detects the AWS partition at deployment time and conf
 
 **Deployment Steps:**
 
+The deployment commands are identical to commercial - just ensure your AWS credentials are configured for your GovCloud account before running them.
+
 ```bash
-# 1. Clone and setup (same as commercial)
+# 1. Configure AWS credentials for GovCloud
+# Use your preferred method: aws configure, environment variables, or AWS profiles
+
+# 2. Clone and setup (same as commercial)
 git clone https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock
 cd guidance-for-claude-code-with-amazon-bedrock/source
 poetry install
 
-# 2. Initialize for GovCloud
+# 3. Initialize - select GovCloud region when prompted
 poetry run ccwb init
 # When prompted:
 # - Select us-gov-west-1 or us-gov-east-1 as your region
-# - Choose GovCloud Bedrock model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
-# - Select us-gov cross-region profile for inference
+# - The wizard will automatically show GovCloud-compatible models
 
-# 3. Deploy using GovCloud AWS credentials
-AWS_PROFILE=gov-west poetry run ccwb deploy
-
-# 4. Package and distribute (same as commercial)
+# 4. Deploy, package, and distribute (same commands as commercial)
+poetry run ccwb deploy
 poetry run ccwb package --target-platform all
-AWS_PROFILE=gov-west poetry run ccwb distribute
+poetry run ccwb distribute
 ```
 
 **GovCloud-Specific Considerations:**
@@ -236,8 +238,8 @@ AWS_PROFILE=gov-west poetry run ccwb distribute
 
 4. **Credentials:**
    - GovCloud requires separate AWS credentials from commercial accounts
-   - Configure AWS CLI profile for GovCloud: `aws configure --profile gov-west`
-   - Use `AWS_PROFILE=gov-west` environment variable with ccwb deployment commands
+   - Configure your credentials using any standard method (environment variables, AWS profiles, IAM Identity Center, etc.)
+   - Ensure your active credentials point to your GovCloud account before running deployment commands
 
 ### Validation
 
@@ -273,10 +275,6 @@ aws cloudformation describe-stacks \
   --stack-name claude-code-auth-stack \
   --region <region> \
   --query 'Stacks[0].Outputs'
-
-# Examples with profiles:
-# Commercial: aws iam get-role --role-name BedrockCognitoFederatedRole --region us-east-1 --profile default
-# GovCloud: AWS_PROFILE=gov-west aws iam get-role --role-name BedrockCognitoFederatedRole --region us-gov-west-1
 ```
 
 ### Backward Compatibility
