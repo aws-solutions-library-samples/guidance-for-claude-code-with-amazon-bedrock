@@ -223,19 +223,19 @@ class InitCommand(Command):
 
         console.print("[bold cyan]Prerequisites Check:[/bold cyan]")
 
+        # Required checks
         checks = {
             "AWS CLI installed": self._check_aws_cli(),
             "AWS credentials configured": self._check_aws_credentials(),
             "Python 3.10+ available": self._check_python_version(),
         }
 
-        # Check current region and Bedrock access
+        # Check current region
         region = get_current_region()
         if region:
             checks[f"Current region: {region}"] = True
-            checks[f"Bedrock access enabled in {region}"] = check_bedrock_access(region)
 
-        # Display results
+        # Display required check results
         all_passed = True
         for check, passed in checks.items():
             if passed:
@@ -243,6 +243,14 @@ class InitCommand(Command):
             else:
                 console.print(f"  [red]✗[/red] {check}")
                 all_passed = False
+
+        # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
+        if region:
+            bedrock_access = check_bedrock_access(region)
+            if bedrock_access:
+                console.print(f"  [green]✓[/green] Bedrock access enabled in {region}")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] Bedrock access not verified in {region} [dim](optional for deployment)[/dim]")
 
         if not all_passed:
             console.print("\n[red]Prerequisites not met. Please fix the issues above.[/red]")
@@ -284,8 +292,8 @@ class InitCommand(Command):
                 "Enter your OIDC provider domain:",
                 validate=lambda x: validate_oidc_provider_domain(x)
                 or "Invalid provider domain format (e.g., company.okta.com)",
-                instruction="(e.g., company.okta.com, company.auth0.com, login.microsoftonline.com/{ \
-                tenant-id}/v2.0, or my-app.auth.us-east-1.amazoncognito.com)",
+                instruction="(e.g., company.okta.com, company.auth0.com, login.microsoftonline.com/{tenant-id}/v2.0, "
+                "my-app.auth.us-east-1.amazoncognito.com, or my-app.auth-fips.us-gov-west-1.amazoncognito.com for GovCloud)",
                 default=config.get("okta", {}).get("domain", ""),
             ).ask()
 
@@ -337,10 +345,19 @@ class InitCommand(Command):
             # For Cognito, we must ask for the User Pool ID
             # Cannot reliably extract from domain due to case sensitivity
             if provider_type == "cognito":
-                # Try to detect region from domain
-                region_match = re.search(r"\.auth\.([^.]+)\.amazoncognito\.com", provider_domain)
+                # Try to detect region from domain (handles both .auth. and .auth-fips.)
+                region_match = re.search(r"\.auth(?:-fips)?\.([^.]+)\.amazoncognito\.com", provider_domain)
                 if not region_match:
-                    region_match = re.search(r"\.([a-z]{2}-[a-z]+-\d+)\.", provider_domain)
+                    region_match = re.search(r"\.([a-z]{2}-(?:gov-)?[a-z]+-\d+)\.", provider_domain)
+
+                # Auto-correct domain for GovCloud regions (must use auth-fips instead of auth)
+                if region_match:
+                    detected_region = region_match.group(1)
+                    if detected_region.startswith("us-gov-") and ".auth." in provider_domain and ".auth-fips." not in provider_domain:
+                        corrected_domain = provider_domain.replace(".auth.", ".auth-fips.")
+                        console.print(f"\n[yellow]GovCloud detected: Correcting domain to use FIPS endpoint[/yellow]")
+                        console.print(f"[dim]  {provider_domain} → {corrected_domain}[/dim]")
+                        provider_domain = corrected_domain
 
                 region_hint = f" for {region_match.group(1)}" if region_match else ""
 

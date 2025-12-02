@@ -227,7 +227,8 @@ AWS_PROFILE=gov-west poetry run ccwb distribute
 2. **FIPS Endpoints:**
    - GovCloud Cognito uses FIPS endpoints by default
    - API endpoints: `cognito-idp-fips.us-gov-*.amazonaws.com`
-   - No additional configuration required
+   - **Cognito Hosted UI**: Uses `{prefix}.auth-fips.{region}.amazoncognito.com` (not `.auth.`)
+   - Managed login branding must be created for each app client
 
 3. **Service Availability:**
    - All core services (Cognito, Bedrock, IAM, CloudTrail) are available
@@ -288,11 +289,6 @@ aws cloudformation describe-stacks \
 - No changes to user-facing functionality
 - No data migration required
 
-For detailed implementation information, see:
-- [PARTITION_SUPPORT_ASSESSMENT.md](PARTITION_SUPPORT_ASSESSMENT.md) - Technical details and architecture
-- [TESTING_PARTITION_SUPPORT.md](TESTING_PARTITION_SUPPORT.md) - Testing procedures and validation
-- [PARTITION_STRATEGY_ANALYSIS.md](PARTITION_STRATEGY_ANALYSIS.md) - Design decisions
-
 ## Prerequisites
 
 ### For Deployment (IT Administrators)
@@ -341,11 +337,7 @@ The guidance can be deployed in any AWS region that supports:
 - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
 - (Optional) AWS CodeBuild
 
-**Supported AWS Partitions:**
-- **AWS Commercial** (`aws` partition) - All commercial regions where Amazon Bedrock is available
-- **AWS GovCloud (US)** (`aws-us-gov` partition) - us-gov-west-1, us-gov-east-1
-
-The same codebase and templates work across both partitions. CloudFormation automatically detects the partition and uses the correct service principals and ARN formats.
+Both AWS Commercial and AWS GovCloud (US) partitions are supported. See [AWS Partition Support](#aws-partition-support) for details.
 
 ### Cross-Region Inference
 

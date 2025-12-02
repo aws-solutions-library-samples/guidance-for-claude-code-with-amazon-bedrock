@@ -293,7 +293,13 @@ class DistributeCommand(Command):
         # Load configuration
         config = Config.load()
         profile_name = self.option("profile")
+
+        # If profile option is the default "default" and it doesn't exist, try active profile
         profile = config.get_profile(profile_name)
+        if not profile and profile_name == "default":
+            # Fall back to active profile
+            profile_name = config.active_profile
+            profile = config.get_profile(profile_name)
 
         if not profile:
             console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
