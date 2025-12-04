@@ -435,3 +435,197 @@ def get_source_region_for_profile(profile, model_key: str = None, profile_key: s
     else:
         # Use infrastructure region for US or default
         return profile.aws_region
+
+
+# =============================================================================
+# Quota Policy Models and Bedrock Pricing
+# =============================================================================
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
+from typing import Any
+
+
+class PolicyType(str, Enum):
+    """Types of quota policies."""
+
+    USER = "user"
+    GROUP = "group"
+    DEFAULT = "default"
+
+
+class EnforcementMode(str, Enum):
+    """Enforcement modes for quota policies."""
+
+    ALERT = "alert"  # Send alerts but don't block access
+    BLOCK = "block"  # Block access when quota exceeded (Phase 2)
+
+
+@dataclass
+class QuotaPolicy:
+    """
+    Represents a quota policy for users, groups, or default.
+
+    Policies define token and cost limits with configurable thresholds
+    and enforcement modes.
+    """
+
+    policy_type: PolicyType
+    identifier: str  # email for user, group name for group, "default" for default
+    monthly_token_limit: int
+    enabled: bool = True
+
+    # Optional limits
+    daily_token_limit: int | None = None
+
+    # Thresholds (auto-calculated from monthly_token_limit if not provided)
+    warning_threshold_80: int | None = None
+    warning_threshold_90: int | None = None
+
+    # Enforcement (Phase 1: alert only, Phase 2: block support)
+    enforcement_mode: EnforcementMode = EnforcementMode.ALERT
+
+    # Metadata
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    created_by: str | None = None
+
+    def __post_init__(self) -> None:
+        """Auto-calculate thresholds if not provided."""
+        if self.warning_threshold_80 is None:
+            self.warning_threshold_80 = int(self.monthly_token_limit * 0.8)
+        if self.warning_threshold_90 is None:
+            self.warning_threshold_90 = int(self.monthly_token_limit * 0.9)
+
+    def to_dynamodb_item(self) -> dict[str, Any]:
+        """Convert policy to DynamoDB item format."""
+        item = {
+            "pk": f"POLICY#{self.policy_type.value}#{self.identifier}",
+            "sk": "CURRENT",
+            "policy_type": self.policy_type.value,
+            "identifier": self.identifier,
+            "monthly_token_limit": self.monthly_token_limit,
+            "warning_threshold_80": self.warning_threshold_80,
+            "warning_threshold_90": self.warning_threshold_90,
+            "enforcement_mode": self.enforcement_mode.value,
+            "enabled": self.enabled,
+        }
+
+        if self.daily_token_limit is not None:
+            item["daily_token_limit"] = self.daily_token_limit
+
+        if self.created_at:
+            item["created_at"] = self.created_at.isoformat()
+
+        if self.updated_at:
+            item["updated_at"] = self.updated_at.isoformat()
+
+        if self.created_by:
+            item["created_by"] = self.created_by
+
+        return item
+
+    @classmethod
+    def from_dynamodb_item(cls, item: dict[str, Any]) -> "QuotaPolicy":
+        """Create policy from DynamoDB item."""
+        return cls(
+            policy_type=PolicyType(item["policy_type"]),
+            identifier=item["identifier"],
+            monthly_token_limit=int(item["monthly_token_limit"]),
+            daily_token_limit=int(item["daily_token_limit"]) if item.get("daily_token_limit") else None,
+            warning_threshold_80=int(item.get("warning_threshold_80", 0)),
+            warning_threshold_90=int(item.get("warning_threshold_90", 0)),
+            enforcement_mode=EnforcementMode(item.get("enforcement_mode", "alert")),
+            enabled=item.get("enabled", True),
+            created_at=datetime.fromisoformat(item["created_at"]) if item.get("created_at") else None,
+            updated_at=datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else None,
+            created_by=item.get("created_by"),
+        )
+
+
+@dataclass
+class UserQuotaUsage:
+    """
+    Tracks a user's quota usage for monitoring and alerting.
+
+    Enhanced schema for fine-grained quota tracking including daily limits,
+    cost tracking, and policy attribution.
+    """
+
+    email: str
+    month: str  # YYYY-MM format
+    total_tokens: int = 0
+
+    # Daily tracking
+    daily_tokens: int = 0
+    daily_date: str | None = None  # YYYY-MM-DD, resets when day changes
+
+    # Token type breakdown for cost calculation
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_tokens: int = 0
+
+    # Cost tracking
+    estimated_cost: Decimal = field(default_factory=lambda: Decimal("0"))
+
+    # Policy attribution
+    applied_policy_type: PolicyType | None = None
+    applied_policy_id: str | None = None
+    groups: list[str] = field(default_factory=list)
+
+    # Metadata
+    last_updated: datetime | None = None
+
+    def to_dynamodb_item(self) -> dict[str, Any]:
+        """Convert usage to DynamoDB item format."""
+        item = {
+            "pk": f"USER#{self.email}",
+            "sk": f"MONTH#{self.month}",
+            "email": self.email,
+            "total_tokens": self.total_tokens,
+            "daily_tokens": self.daily_tokens,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_tokens": self.cache_tokens,
+            "estimated_cost": str(self.estimated_cost),
+        }
+
+        if self.daily_date:
+            item["daily_date"] = self.daily_date
+
+        if self.applied_policy_type:
+            item["applied_policy_type"] = self.applied_policy_type.value
+
+        if self.applied_policy_id:
+            item["applied_policy_id"] = self.applied_policy_id
+
+        if self.groups:
+            item["groups"] = self.groups
+
+        if self.last_updated:
+            item["last_updated"] = self.last_updated.isoformat()
+
+        return item
+
+    @classmethod
+    def from_dynamodb_item(cls, item: dict[str, Any]) -> "UserQuotaUsage":
+        """Create usage from DynamoDB item."""
+        return cls(
+            email=item["email"],
+            month=item["sk"].replace("MONTH#", ""),
+            total_tokens=int(item.get("total_tokens", 0)),
+            daily_tokens=int(item.get("daily_tokens", 0)),
+            daily_date=item.get("daily_date"),
+            input_tokens=int(item.get("input_tokens", 0)),
+            output_tokens=int(item.get("output_tokens", 0)),
+            cache_tokens=int(item.get("cache_tokens", 0)),
+            estimated_cost=Decimal(item.get("estimated_cost", "0")),
+            applied_policy_type=PolicyType(item["applied_policy_type"]) if item.get("applied_policy_type") else None,
+            applied_policy_id=item.get("applied_policy_id"),
+            groups=item.get("groups", []),
+            last_updated=datetime.fromisoformat(item["last_updated"]) if item.get("last_updated") else None,
+        )
+
+

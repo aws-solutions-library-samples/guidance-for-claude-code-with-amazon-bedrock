@@ -17,6 +17,17 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
+  - [Quota Management](#quota-management)
+    - [`quota set-user` - Set User Quota](#quota-set-user---set-user-quota)
+    - [`quota set-group` - Set Group Quota](#quota-set-group---set-group-quota)
+    - [`quota set-default` - Set Default Quota](#quota-set-default---set-default-quota)
+    - [`quota list` - List Policies](#quota-list---list-policies)
+    - [`quota delete` - Delete Policy](#quota-delete---delete-policy)
+    - [`quota show` - Show Effective Quota](#quota-show---show-effective-quota)
+    - [`quota usage` - Show Usage](#quota-usage---show-usage)
+    - [`quota unblock` - Unblock User](#quota-unblock---unblock-user)
+    - [`quota export` - Export Policies](#quota-export---export-policies)
+    - [`quota import` - Import Policies](#quota-import---import-policies)
   - [Profile Management](#profile-management)
     - [`context list` - List All Profiles](#context-list---list-all-profiles)
     - [`context current` - Show Active Profile](#context-current---show-active-profile)
@@ -62,7 +73,7 @@ poetry run ccwb init [options]
 
 **Options:**
 
-- `--profile <name>` - Configuration profile name (default: "default")
+- `--profile <name>` - Configuration profile name (optional, will prompt if not specified)
 
 **What it does:**
 
@@ -76,6 +87,11 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
+- Configures quota monitoring:
+  - Monthly token limit per user
+  - Daily token limit with burst buffer (auto-calculated from monthly)
+  - Enforcement modes (alert vs block) for daily and monthly limits
+  - Quota re-check interval (how often to verify quota with cached credentials)
 - Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 
@@ -137,6 +153,21 @@ poetry run ccwb deploy --dry-run
 
 > **Note**: Quota monitoring requires the dashboard stack to be deployed first. See [Quota Monitoring Guide](QUOTA_MONITORING.md) for detailed information.
 
+#### When to Use `ccwb deploy` vs `ccwb deploy quota`
+
+| Command | Use Case |
+|---------|----------|
+| `ccwb deploy` | Initial setup - deploys all enabled stacks including quota (when enabled) |
+| `ccwb deploy quota` | Update quota settings, late enablement, or troubleshooting |
+
+**When `ccwb deploy` deploys quota**: If `quota_monitoring_enabled=True` in your profile (set during `ccwb init`), running `ccwb deploy` will automatically deploy the quota stack as part of the full deployment.
+
+**When to use `ccwb deploy quota`**:
+- You want to update quota configuration without redeploying other stacks
+- You initially deployed without quota and now want to add it
+- You need to troubleshoot or redeploy just the quota stack
+- Your organization requires phased deployments with explicit control
+
 ### `test` - Test Package
 
 Tests the packaged distribution as an end user would experience it.
@@ -147,20 +178,49 @@ poetry run ccwb test [options]
 
 **Options:**
 
-- `--profile <name>` - AWS profile to test (default: "ClaudeCode")
-- `--quick` - Run quick tests only
-- `--api` - Test actual Bedrock API calls (costs ~$0.001)
+- `--profile, -p <name>` - Profile name to test (defaults to active profile)
+- `--full` - Test all allowed regions (default: tests 3 representative regions)
+- `--quota-only` - Run only quota monitoring tests (API, policies, usage capture)
+- `--quota-api <endpoint>` - Test quota API with optional custom endpoint override
 
 **What it does:**
 
-- Simulates package installation in temporary directory
-- Runs the installer script
-- Verifies AWS profile configuration
+- Finds the latest package for the profile in `dist/{profile}/{timestamp}/`
+- Verifies package contents (binary, config, OTEL helper)
+- Tests credential process binary execution
 - Tests authentication and IAM role assumption
-- Checks Bedrock access in configured regions
-- Optionally tests actual API calls to Claude models
+- Tests Bedrock API access in configured regions
+- Tests inference profile availability
+- Tests quota monitoring API (if enabled)
 
-**Note:** This command actually installs the package to properly test it.
+**Quota Testing (`--quota-only`):**
+
+When using `--quota-only`, runs comprehensive quota monitoring tests:
+
+1. **Quota Config** - Validates all quota configuration is present
+2. **Quota API** - Tests the `/check` endpoint with JWT authentication
+3. **Create Policy** - Creates a test user policy in DynamoDB
+4. **List Policies** - Verifies the policy appears in the list
+5. **Resolve Quota** - Tests policy resolution for users
+6. **Delete Policy** - Cleans up the test policy
+
+**Examples:**
+
+```bash
+# Run standard tests
+poetry run ccwb test
+
+# Run only quota monitoring tests (fastest for quota validation)
+poetry run ccwb test --quota-only
+
+# Test quota API against a staging endpoint
+poetry run ccwb test --quota-only --quota-api https://staging-api.example.com/prod
+
+# Run all tests with custom quota endpoint
+poetry run ccwb test --quota-api https://my-api.execute-api.us-east-1.amazonaws.com/prod
+```
+
+**Note:** API tests run by default and make actual calls to Bedrock (minimal cost ~$0.001).
 
 ### `package` - Create Distribution
 
@@ -333,7 +393,7 @@ poetry run ccwb distribute [options]
 
 - `--expires-hours <hours>` - URL expiration time in hours (1-168) [default: "48"]
 - `--get-latest` - Retrieve the latest distribution URL (presigned-s3 only)
-- `--profile <name>` - Configuration profile to use [default: "default"]
+- `--profile <name>` - Configuration profile to use (uses active profile if not specified)
 - `--package-path <path>` - Path to package directory [default: "dist"]
 - `--build-profile <name>` - Select build by profile name
 - `--timestamp <timestamp>` - Select build by timestamp (format: YYYY-MM-DD-HHMMSS)
@@ -418,7 +478,7 @@ poetry run ccwb status [options]
 
 **Options:**
 
-- `--profile <name>` - Profile to check (default: "default")
+- `--profile <name>` - Profile to check (uses active profile if not specified)
 - `--json` - Output in JSON format
 - `--detailed` - Show detailed information
 
@@ -459,6 +519,270 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+## Quota Management
+
+Commands for managing per-user and group token quotas. Requires quota monitoring to be enabled during `init`.
+
+For detailed architecture and configuration, see [QUOTA_MONITORING.md](QUOTA_MONITORING.md).
+
+### `quota set-user` - Set User Quota
+
+Sets a quota policy for a specific user.
+
+```bash
+poetry run ccwb quota set-user <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--monthly-limit, -m <tokens>` - Monthly token limit (supports K, M, B suffixes: 10M = 10,000,000)
+- `--daily-limit, -d <tokens>` - Daily token limit (optional)
+- `--enforcement, -e <mode>` - Enforcement mode: `alert` (monitor only) or `block` (deny access)
+- `--disabled` - Create policy in disabled state
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota set-user alice@example.com -m 5M -e block
+```
+
+### `quota set-group` - Set Group Quota
+
+Sets a quota policy for a group (applies to all users in the group).
+
+```bash
+poetry run ccwb quota set-group <group> [options]
+```
+
+**Arguments:**
+- `<group>` - Group name (from OIDC groups claim)
+
+**Options:**
+- Same as `set-user`
+
+**Example:**
+```bash
+poetry run ccwb quota set-group engineering -m 20M -d 1M -e alert
+```
+
+### `quota set-default` - Set Default Quota
+
+Sets the default quota policy for all users without a specific user or group policy.
+
+```bash
+poetry run ccwb quota set-default [options]
+```
+
+**Options:**
+- Same as `set-user`
+
+**Example:**
+```bash
+poetry run ccwb quota set-default -m 225M -e alert
+```
+
+### `quota list` - List Policies
+
+Lists all quota policies.
+
+```bash
+poetry run ccwb quota list [options]
+```
+
+**Options:**
+- `--type <type>` - Filter by type: `user`, `group`, or `default`
+- `--profile, -p <name>` - Configuration profile
+
+### `quota delete` - Delete Policy
+
+Deletes a quota policy.
+
+```bash
+poetry run ccwb quota delete <type> <identifier> [options]
+```
+
+**Arguments:**
+- `<type>` - Policy type: `user`, `group`, or `default`
+- `<identifier>` - Email (for user), group name, or "default"
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota delete user alice@example.com
+```
+
+### `quota show` - Show Effective Quota
+
+Shows the effective quota policy for a user (resolves user > group > default precedence).
+
+```bash
+poetry run ccwb quota show <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+### `quota usage` - Show Usage
+
+Shows current usage against quota limits for a user.
+
+```bash
+poetry run ccwb quota usage <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--profile, -p <name>` - Configuration profile
+
+### `quota unblock` - Unblock User
+
+Temporarily unblocks a user who has been blocked due to quota exceeded.
+
+```bash
+poetry run ccwb quota unblock <email> [options]
+```
+
+**Arguments:**
+- `<email>` - User's email address
+
+**Options:**
+- `--duration <time>` - Duration: `24h`, `7d`, `until-reset`, or custom (e.g., `48h`, `3d`)
+- `--reason <text>` - Reason for unblock (for audit trail)
+- `--profile, -p <name>` - Configuration profile
+
+**Example:**
+```bash
+poetry run ccwb quota unblock alice@example.com --duration 24h --reason "Emergency project deadline"
+```
+
+### `quota export` - Export Policies
+
+Exports quota policies to a JSON or CSV file for backup, migration, or auditing.
+
+```bash
+poetry run ccwb quota export <file> [options]
+```
+
+**Arguments:**
+- `<file>` - Output file path (.json or .csv)
+
+**Options:**
+- `--type, -t <type>` - Filter by policy type: `user`, `group`, or `default`
+- `--stdout` - Output to stdout instead of file
+- `--profile, -p <name>` - Configuration profile
+
+**Examples:**
+```bash
+# Export all policies to JSON
+poetry run ccwb quota export policies.json
+
+# Export to CSV for spreadsheet editing
+poetry run ccwb quota export policies.csv
+
+# Export only user policies
+poetry run ccwb quota export users.json --type user
+
+# Export to stdout (for piping)
+poetry run ccwb quota export --stdout > backup.json
+```
+
+**JSON output format:**
+```json
+{
+  "version": "1.0",
+  "exported_at": "2025-11-29T10:30:00Z",
+  "policies": [
+    {
+      "type": "user",
+      "identifier": "alice@example.com",
+      "monthly_token_limit": "300M",
+      "daily_token_limit": "15M",
+      "enforcement_mode": "alert",
+      "enabled": true
+    }
+  ]
+}
+```
+
+**CSV output format:**
+```csv
+type,identifier,monthly_token_limit,daily_token_limit,enforcement_mode,enabled
+user,alice@example.com,300M,15M,alert,true
+group,engineering,500M,25M,block,true
+default,default,225M,8M,alert,true
+```
+
+### `quota import` - Import Policies
+
+Imports quota policies from a JSON or CSV file. Supports bulk policy creation with conflict handling.
+
+```bash
+poetry run ccwb quota import <file> [options]
+```
+
+**Arguments:**
+- `<file>` - Input file path (.json or .csv)
+
+**Options:**
+- `--skip-existing` - Skip policies that already exist
+- `--update` - Update existing policies (upsert mode)
+- `--dry-run` - Preview changes without applying
+- `--type, -t <type>` - Import only specific type: `user`, `group`, or `default`
+- `--auto-daily` - Auto-calculate daily limits for policies missing `daily_token_limit`
+- `--burst <percent>` - Burst buffer percentage for auto-daily calculation (default: 10)
+- `--profile, -p <name>` - Configuration profile
+
+**Examples:**
+```bash
+# Import from JSON, skip existing policies
+poetry run ccwb quota import policies.json --skip-existing
+
+# Import from CSV, update existing policies
+poetry run ccwb quota import policies.csv --update
+
+# Preview import without making changes
+poetry run ccwb quota import policies.json --dry-run
+
+# Import users only
+poetry run ccwb quota import all-policies.csv --type user --update
+
+# Auto-calculate daily limits with 15% burst buffer
+poetry run ccwb quota import users.csv --auto-daily --burst 15
+```
+
+**Output example:**
+```
+✓ Created: alice@example.com (user) - 300M
+✓ Created: bob@example.com (user) - 200M
+⚠ Skipped: engineering (group) - already exists
+✓ Updated: ml-team (group) - 1B
+
+Import Summary
+  Created: 2
+  Updated: 1
+  Skipped: 1
+  Errors:  0
+```
+
+**Required CSV columns:**
+- `type` - Policy type: `user`, `group`, or `default`
+- `identifier` - User email, group name, or `default`
+- `monthly_token_limit` - Monthly limit (supports K/M/B suffix, e.g., `300M`)
+
+**Optional CSV columns:**
+- `daily_token_limit` - Daily limit (auto-calculated if `--auto-daily`)
+- `enforcement_mode` - `alert` (default) or `block`
+- `enabled` - `true` (default) or `false`
 
 ## Profile Management
 
@@ -701,7 +1025,7 @@ poetry run ccwb destroy [stack] [options]
 
 **Options:**
 
-- `--profile <name>` - Configuration profile to use (default: "default")
+- `--profile <name>` - Configuration profile to use (uses active profile if not specified)
 - `--force` - Skip confirmation prompts
 
 **What it does:**

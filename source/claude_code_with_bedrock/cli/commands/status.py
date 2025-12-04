@@ -25,7 +25,7 @@ class StatusCommand(Command):
     description = "Show current deployment status and usage metrics"
 
     options = [
-        option("profile", description="Configuration profile to check", flag=False, default="default"),
+        option("profile", description="Configuration profile to check", flag=False),
         option("json", description="Output in JSON format", flag=True),
         option("detailed", description="Show detailed information", flag=True),
     ]
@@ -36,11 +36,22 @@ class StatusCommand(Command):
 
         # Load configuration
         config = Config.load()
+
+        # Get profile name (use active profile if not specified)
         profile_name = self.option("profile")
+        if not profile_name:
+            profile_name = config.active_profile
+
         profile = config.get_profile(profile_name)
 
         if not profile:
-            console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            if profile_name:
+                console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            else:
+                console.print(
+                    "[red]No active profile set. Run 'poetry run ccwb init' or "
+                    "'poetry run ccwb context use <profile>' first.[/red]"
+                )
             return 1
 
         # Get options

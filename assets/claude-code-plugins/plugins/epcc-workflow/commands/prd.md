@@ -543,6 +543,153 @@ Next steps - Enter the EPCC workflow:
 Questions or changes to the PRD?
 ```
 
+## Feature List Generation (Long-Running Project Support)
+
+After creating PRD.md, automatically generate progress tracking files for multi-session work.
+
+### Step 1: Generate epcc-features.json
+
+Parse the PRD "Core Features" section and create structured feature tracking:
+
+```json
+{
+  "_warning": "Feature definitions are IMMUTABLE. Only 'passes' and 'status' fields may be modified. IT IS CATASTROPHIC TO REMOVE OR EDIT FEATURE DEFINITIONS.",
+  "project": "[Project Name from PRD]",
+  "created": "[ISO timestamp]",
+  "lastUpdated": "[ISO timestamp]",
+  "source": "PRD.md",
+  "features": [
+    {
+      "id": "F001",
+      "name": "[Feature Name from P0 list]",
+      "description": "[Feature description]",
+      "priority": "P0",
+      "status": "pending",
+      "passes": false,
+      "acceptanceCriteria": [
+        "[Testable criterion 1 from PRD]",
+        "[Testable criterion 2 from PRD]"
+      ],
+      "subtasks": [],
+      "source": "PRD.md#must-have-p0"
+    }
+  ],
+  "metrics": {
+    "total": 0,
+    "verified": 0,
+    "inProgress": 0,
+    "pending": 0,
+    "percentComplete": 0
+  }
+}
+```
+
+**Feature extraction rules:**
+- Extract all P0 (Must Have) features as high-priority features
+- Extract all P1 (Should Have) features as medium-priority features
+- Extract all P2 (Nice to Have) features as low-priority features
+- Generate acceptance criteria from PRD success criteria and feature descriptions
+- Feature count adapts to project complexity:
+  - **Simple projects**: 3-10 features, 2-3 acceptance criteria each
+  - **Medium projects**: 10-30 features, 3-5 acceptance criteria each
+  - **Complex projects**: 30-100+ features, 5-10+ acceptance criteria each
+
+### Step 2: Initialize epcc-progress.md
+
+Create human-readable progress log:
+
+```markdown
+# EPCC Progress Log
+
+**Project**: [Project Name]
+**Started**: [Date]
+**Progress**: 0/[N] features (0%)
+
+---
+
+## Session 0: PRD Created - [Date]
+
+### Summary
+Product Requirements Document created from initial idea exploration.
+
+### Artifacts Created
+- PRD.md - Product requirements
+- epcc-features.json - Feature tracking ([N] features)
+- epcc-progress.md - This progress log
+
+### Feature Summary
+- **P0 (Must Have)**: [X] features
+- **P1 (Should Have)**: [Y] features
+- **P2 (Nice to Have)**: [Z] features
+
+### Next Session
+Run `/trd` for technical requirements or `/epcc-plan` to begin implementation planning.
+
+---
+```
+
+### Step 3: Create Initial Git Commit
+
+If in a git repository:
+
+```bash
+git add PRD.md epcc-features.json epcc-progress.md
+git commit -m "feat: Initialize project from PRD
+
+- PRD.md: Product requirements with [N] features
+- epcc-features.json: Feature tracking initialized
+- epcc-progress.md: Progress log started
+
+Project: [Project Name]
+Complexity: [Simple/Medium/Complex]"
+```
+
+### Step 4: Report Generation Results
+
+```markdown
+## Progress Tracking Initialized
+
+✅ **PRD.md** - Product requirements ([complexity] complexity)
+✅ **epcc-features.json** - Feature list with [N] features:
+   - P0 (Must Have): [X] features
+   - P1 (Should Have): [Y] features
+   - P2 (Nice to Have): [Z] features
+✅ **epcc-progress.md** - Progress log initialized
+[✅ **Git commit** - Initial project state committed]
+
+### Feature Immutability Notice
+
+⚠️ **IMPORTANT**: Feature definitions in `epcc-features.json` are now IMMUTABLE.
+- Only `passes` and `status` fields may be modified
+- IT IS CATASTROPHIC TO REMOVE OR EDIT FEATURE DEFINITIONS
+- New features may be ADDED but existing ones cannot be changed
+
+### Next Steps
+
+**For Technical Requirements**: `/trd` - Add technical specifications and architecture
+**For Greenfield Projects**: `/epcc-plan` - Create implementation plan
+**For Brownfield Projects**: `/epcc-explore` - Understand existing codebase first
+
+**To check progress later**: `/epcc-resume` - Quick orientation and status
+```
+
+### Adaptive Feature Depth
+
+Match feature list detail to project complexity:
+
+| Complexity | Feature Count | Acceptance Criteria | Subtasks |
+|------------|---------------|---------------------|----------|
+| Simple | 3-10 | 2-3 per feature | None initially |
+| Medium | 10-30 | 3-5 per feature | None initially |
+| Complex | 30-100+ | 5-10+ per feature | TRD/Plan will add |
+
+**Complexity detection heuristics:**
+- User story count in PRD
+- Number of user types/personas
+- Integration points mentioned
+- Technical constraints listed
+- Timeline (longer = more complex)
+
 ## Conversation Principles
 
 ### Be Socratic, Not Prescriptive

@@ -63,7 +63,7 @@ class DistributeCommand(Command):
         option("get-latest", description="Retrieve the latest distribution URL", flag=True),
         option("allowed-ips", description="Comma-separated list of allowed IP ranges", flag=False),
         option("package-path", description="Path to package directory", flag=False, default="dist"),
-        option("profile", description="Configuration profile to use", flag=False, default="default"),
+        option("profile", description="Configuration profile to use", flag=False),
         option("show-qr", description="Display QR code for URL (requires qrcode library)", flag=True),
         option("build-profile", description="Select build by profile name", flag=False),
         option("timestamp", description="Select build by timestamp (YYYY-MM-DD-HHMMSS)", flag=False),
@@ -292,11 +292,25 @@ class DistributeCommand(Command):
 
         # Load configuration
         config = Config.load()
+
+        # Get profile name (use active profile if not specified)
         profile_name = self.option("profile")
+        if not profile_name:
+            profile_name = config.active_profile
+            console.print(f"[dim]Using active profile: {profile_name}[/dim]\n")
+        else:
+            console.print(f"[dim]Using profile: {profile_name}[/dim]\n")
+
         profile = config.get_profile(profile_name)
 
         if not profile:
-            console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            if profile_name:
+                console.print(f"[red]Profile '{profile_name}' not found. Run 'poetry run ccwb init' first.[/red]")
+            else:
+                console.print(
+                    "[red]No active profile set. Run 'poetry run ccwb init' or "
+                    "'poetry run ccwb context use <profile>' first.[/red]"
+                )
             return 1
 
         # Check if distribution is enabled and stack is deployed

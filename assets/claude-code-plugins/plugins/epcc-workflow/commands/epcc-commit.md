@@ -310,6 +310,199 @@ Options:
 
 **Remember**: Match documentation depth to commit significance. Skip for trivial commits, comprehensive for complex ones.
 
+## Feature Verification Gate (Long-Running Project Support)
+
+If `epcc-features.json` exists, apply additional verification gates for feature completion.
+
+### Pre-Commit Feature Check
+
+Before committing, verify feature completion status:
+
+```bash
+if [ -f "epcc-features.json" ]; then
+    # Check which feature is being committed
+    # Verify all subtasks complete
+    # Verify acceptance criteria met
+    # Verify E2E tests passing
+fi
+```
+
+### Feature Verification Rules
+
+**For P0 (Must Have) features:**
+
+| Requirement | Action if Not Met |
+|-------------|-------------------|
+| All subtasks complete | 🛑 **BLOCK COMMIT** - Complete subtasks first |
+| All acceptance criteria verified | 🛑 **BLOCK COMMIT** - Run E2E verification |
+| `passes: true` in epcc-features.json | 🛑 **BLOCK COMMIT** - Verify before marking |
+| Test evidence documented | ⚠️ **WARN** - Add screenshot/output reference |
+
+**For P1/P2 features:**
+
+| Requirement | Action if Not Met |
+|-------------|-------------------|
+| Feature incomplete | ⚠️ **WARN** - Allow commit but document in message |
+| Some subtasks pending | ⚠️ **WARN** - Track as deferred work |
+
+### Update Feature Status on Commit
+
+When committing a verified feature:
+
+```json
+{
+  "features": [
+    {
+      "id": "F001",
+      "status": "verified",
+      "passes": true,
+      "verifiedAt": "[ISO timestamp]",
+      "commit": "[SHA]",
+      "subtasks": [
+        {"name": "...", "status": "complete"},
+        {"name": "...", "status": "complete"}
+      ]
+    }
+  ]
+}
+```
+
+**Update fields:**
+- `status`: "verified"
+- `passes`: true
+- `verifiedAt`: Current timestamp
+- `commit`: Commit SHA
+- `subtasks[].status`: "complete" for all
+
+### Update Progress Log on Commit
+
+Append commit entry to `epcc-progress.md`:
+
+```markdown
+---
+
+## Commit: feat(F001) - [Date Time]
+
+### Feature Completed
+- **F001**: User Authentication - VERIFIED
+
+### Quality Gates
+| Gate | Status |
+|------|--------|
+| Tests | ✅ 45/45 passing |
+| Coverage | ✅ 92% (target: 80%) |
+| Linting | ✅ No errors |
+| Type Check | ✅ Clean |
+| Security | ✅ No vulnerabilities |
+
+### Commit Details
+- **SHA**: [abc123]
+- **Message**: feat(F001): Add user authentication - E2E verified
+- **Files**: 12 files changed, +450 -25
+
+### Progress Update
+- **Before**: 2/8 features (25%)
+- **After**: 3/8 features (37.5%)
+- **Next**: F002 - Task CRUD
+
+---
+```
+
+### Feature Completion Summary in EPCC_COMMIT.md
+
+Add feature completion section to EPCC_COMMIT.md:
+
+```markdown
+## 5. Feature Completion Status
+
+| Feature | E2E Status | Commit |
+|---------|------------|--------|
+| F001: User Authentication | ✅ VERIFIED | abc123 |
+| F002: Task CRUD | ✅ VERIFIED | def456 |
+| F003: Task List View | 🔄 IN PROGRESS | - |
+
+**Progress**: 3/8 features (37.5%)
+- P0 completed: 3/4
+- P1 completed: 0/2
+- P2 completed: 0/2
+
+**Deferred to next session**:
+- F003: Task List View (2/5 subtasks complete)
+```
+
+### Commit Message Pattern for Features
+
+Include feature reference in commit message:
+
+```bash
+git commit -m "feat(F001): Add user authentication - E2E verified
+
+Summary:
+- Implemented JWT-based authentication
+- Added login/logout endpoints
+- Created auth middleware
+- All acceptance criteria verified
+
+Quality:
+- Tests: 45 passing (12 new)
+- Coverage: 92%
+- Security: No vulnerabilities
+
+Refs: epcc-features.json#F001"
+```
+
+### Progress Reporting After Commit
+
+After successful commit, report progress:
+
+```markdown
+## Commit Successful
+
+✅ **Committed**: [SHA] - feat(F001): Add user authentication
+
+### Feature Status Updated
+- F001: User Authentication → VERIFIED
+
+### Progress
+- **Before**: 2/8 features (25%)
+- **After**: 3/8 features (37.5%)
+
+### Next Feature
+**Recommended**: F002 - Task CRUD (highest priority pending)
+
+Start with: `/epcc-code F002`
+```
+
+### All Features Complete
+
+When all features pass:
+
+```markdown
+## 🎉 Project Complete!
+
+All features verified and passing:
+| Feature | Status |
+|---------|--------|
+| F001: User Auth | ✅ VERIFIED |
+| F002: Task CRUD | ✅ VERIFIED |
+| F003: Task List | ✅ VERIFIED |
+| ... | ... |
+
+**Total**: 8/8 features (100%)
+**Ready for**: Deployment / PR merge / Release
+
+### Final Quality Summary
+- Tests: 120/120 passing
+- Coverage: 94%
+- Security: No vulnerabilities
+- All E2E acceptance criteria verified
+
+### Recommended Next Steps
+1. Create release tag: `git tag v1.0.0`
+2. Merge to main: `gh pr merge`
+3. Deploy to production
+```
+
 ## Common Pitfalls (Anti-Patterns)
 
 ### ❌ Asking About Every Quality Failure

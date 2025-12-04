@@ -51,9 +51,19 @@ class Profile:
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
-    monthly_token_limit: int = 300000000  # Monthly token limit per user (300M default)
-    warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
-    warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
+    monthly_token_limit: int = 225000000  # Monthly token limit per user (225M default)
+    warning_threshold_80: int = 180000000  # Warning threshold at 80% (180M default)
+    warning_threshold_90: int = 202500000  # Critical threshold at 90% (202.5M default)
+    daily_token_limit: int | None = None  # Daily token limit (auto-calculated from monthly)
+    burst_buffer_percent: int = 10  # Burst buffer for daily limit (5-25%, default 10%)
+    daily_enforcement_mode: str = "alert"  # Daily limit enforcement: "alert" or "block"
+    monthly_enforcement_mode: str = "block"  # Monthly limit enforcement: "alert" or "block"
+    enable_finegrained_quotas: bool = False  # Enable fine-grained quota policies (user/group/default)
+    quota_policies_table: str | None = None  # DynamoDB table name for quota policies
+    user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics
+    quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
+    quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
+    quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"

@@ -11,6 +11,7 @@ This guide walks you through setting up Okta from scratch to work with the AWS C
 5. [Assign Users to Application](#5-assign-users-to-application)
 6. [Collect Required Information](#6-collect-required-information)
 7. [Test the Setup](#7-test-the-setup)
+8. [Quota Monitoring Configuration](#8-quota-monitoring-configuration-optional)
 
 ---
 
@@ -243,6 +244,116 @@ If you want to add department or group information:
 4. Description: `Users with Amazon Bedrock access`
 5. Add users to this group
 6. Assign the group to your application
+
+---
+
+## 8. Quota Monitoring Configuration (Optional)
+
+If you're using the quota monitoring feature to track and limit user token usage, additional Okta configuration is required.
+
+### Required JWT Scopes
+
+The quota monitoring API requires these scopes in your JWT tokens:
+
+| Scope | Required? | Purpose |
+|-------|-----------|---------|
+| `openid` | **Yes** | Base OIDC scope |
+| `email` | **Yes** | User email for quota tracking |
+| `profile` | Recommended | User profile information |
+| `groups` | Optional | Group membership for group-based quotas |
+
+> **Note**: The `groups` scope is only needed if you want to use group-based quota policies (e.g., different limits for `engineering` vs `data-science` teams).
+
+### Adding the Groups Scope
+
+1. Go to **Security** → **API** → **Authorization Servers**
+2. Click on your authorization server (usually "default")
+3. Click the **Scopes** tab
+4. Click **Add Scope**
+5. Configure:
+   - **Name**: `groups`
+   - **Display phrase**: `Access your group memberships`
+   - **Description**: `Allows the app to see your group memberships`
+   - **User consent**: `Implicit`
+6. Click **Create**
+
+### Configuring the Groups Claim
+
+To include group membership in JWT tokens:
+
+1. Go to **Security** → **API** → **Authorization Servers**
+2. Click on your authorization server (usually "default")
+3. Click the **Claims** tab
+4. Click **Add Claim**
+5. Configure:
+   - **Name**: `groups`
+   - **Include in token type**: `ID Token` → `Always`
+   - **Value type**: `Groups`
+   - **Filter**: `Matches regex` → `.*` (includes all groups)
+   - **Include in**: `Any scope` (or select specific scopes)
+6. Click **Create**
+
+### Token Lifetime Settings
+
+Token lifetimes affect how often quota checks occur:
+
+1. Go to **Security** → **API** → **Authorization Servers**
+2. Click on your authorization server
+3. Click the **Access Policies** tab
+4. Click on your policy, then edit the rule
+5. Configure token lifetimes:
+   - **Access token lifetime**: `1 hour` (default, works well)
+   - **ID token lifetime**: `1 hour` (default)
+   - **Refresh token lifetime**: As needed for your use case
+
+> **Tip**: Shorter token lifetimes mean more frequent quota checks but more re-authentication. The defaults work well for most use cases.
+
+### Creating Groups for Quota Policies
+
+If using group-based quotas:
+
+1. Go to **Directory** → **Groups**
+2. Click **Add Group**
+3. Create groups matching your quota policy needs:
+   - `engineering` - Engineering team
+   - `data-science` - Data science team
+   - `power-users` - Users with higher limits
+4. Assign users to appropriate groups
+5. Assign groups to your Bedrock CLI application
+
+### Deploy and Configure Quota Monitoring
+
+After completing Okta configuration:
+
+```bash
+# Deploy the quota monitoring stack
+poetry run ccwb deploy quota
+
+# Set a default quota for all users (required)
+poetry run ccwb quota set-default --monthly-limit 225M
+
+# Optional: Set group-based quotas (requires groups claim)
+poetry run ccwb quota set-group engineering --monthly-limit 500M
+poetry run ccwb quota set-group data-science --monthly-limit 1B
+
+# Optional: Set user-specific quotas
+poetry run ccwb quota set-user power.user@company.com --monthly-limit 500M
+
+# Test the quota API
+poetry run ccwb test quota-api
+```
+
+### Verifying Your Configuration
+
+Test that your JWT includes the expected claims:
+
+1. Complete an authentication flow with your application
+2. Decode the ID token at [jwt.io](https://jwt.io)
+3. Verify these claims are present:
+   - `email` - Your user's email address
+   - `groups` - Array of group names (if configured)
+
+For complete quota monitoring documentation, see [Quota Monitoring Guide](../QUOTA_MONITORING.md).
 
 ---
 
