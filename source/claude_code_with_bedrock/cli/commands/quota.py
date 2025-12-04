@@ -5,6 +5,7 @@
 
 import csv
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,41 @@ from claude_code_with_bedrock.quota_policies import (
     QuotaPolicyError,
     QuotaPolicyManager,
 )
+
+# Security: Maximum allowed unblock duration in days
+MAX_UNBLOCK_DAYS = 7
+
+# Email validation pattern (RFC 5322 simplified)
+EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+MAX_EMAIL_LENGTH = 254
+
+
+def _validate_email(email: str) -> bool:
+    """Validate email format for security.
+
+    Args:
+        email: Email address to validate.
+
+    Returns:
+        True if valid, False otherwise.
+    """
+    if not email or len(email) > MAX_EMAIL_LENGTH:
+        return False
+    return bool(EMAIL_PATTERN.match(email))
+
+
+def _get_caller_identity() -> str:
+    """Get the actual caller identity using STS for audit trail.
+
+    Returns:
+        Caller ARN or 'unknown' if unable to determine.
+    """
+    try:
+        sts = boto3.client('sts')
+        identity = sts.get_caller_identity()
+        return identity.get("Arn", "unknown")
+    except Exception:
+        return "unknown"
 
 
 def _get_quota_manager(profile) -> QuotaPolicyManager:
@@ -123,6 +159,12 @@ class QuotaSetUserCommand(Command):
             return 1
 
         email = self.argument("email")
+
+        # Security: Validate email format before using as DynamoDB key
+        if not _validate_email(email):
+            console.print(f"[red]Invalid email format: {email}[/red]")
+            return 1
+
         monthly_limit_str = self.option("monthly-limit")
 
         if not monthly_limit_str:
@@ -570,6 +612,12 @@ class QuotaShowCommand(Command):
             return 1
 
         email = self.argument("email")
+
+        # Security: Validate email format before using as DynamoDB key
+        if not _validate_email(email):
+            console.print(f"[red]Invalid email format: {email}[/red]")
+            return 1
+
         groups_str = self.option("groups")
         groups = [g.strip() for g in groups_str.split(",")] if groups_str else None
 
@@ -642,6 +690,12 @@ class QuotaUsageCommand(Command):
             return 1
 
         email = self.argument("email")
+
+        # Security: Validate email format before using as DynamoDB key
+        if not _validate_email(email):
+            console.print(f"[red]Invalid email format: {email}[/red]")
+            return 1
+
         groups_str = self.option("groups")
         groups = [g.strip() for g in groups_str.split(",")] if groups_str else None
 
@@ -805,12 +859,17 @@ class QuotaUnblockCommand(Command):
         duration = self.option("duration")
         reason = self.option("reason")
 
+        # Security: Validate email format before using as DynamoDB key
+        if not _validate_email(email):
+            console.print(f"[red]Invalid email format: {email}[/red]")
+            return 1
+
         # Calculate expiry time
         now = datetime.now(timezone.utc)
         expires_at = self._calculate_expiry(now, duration)
 
         if expires_at is None:
-            console.print(f"[red]Invalid duration: {duration}. Use '24h', '7d', or 'until-reset'.[/red]")
+            console.print(f"[red]Invalid duration: {duration}. Use '24h', '{MAX_UNBLOCK_DAYS}d' (max), or 'until-reset'.[/red]")
             return 1
 
         # Get the UserQuotaMetrics table name
@@ -821,6 +880,9 @@ class QuotaUnblockCommand(Command):
             dynamodb = boto3.resource("dynamodb", region_name=profile.aws_region)
             table = dynamodb.Table(quota_table_name)
 
+            # Security: Get actual caller identity for audit trail
+            caller_identity = _get_caller_identity()
+
             # Create unblock record
             pk = f"USER#{email}"
             sk = "UNBLOCK#CURRENT"
@@ -830,7 +892,7 @@ class QuotaUnblockCommand(Command):
                 "sk": sk,
                 "email": email,
                 "unblocked_at": now.isoformat(),
-                "unblocked_by": "cli-admin",  # Could be enhanced to get actual admin identity
+                "unblocked_by": caller_identity,
                 "expires_at": expires_at.isoformat(),
                 "duration_type": duration,
                 "ttl": int(expires_at.timestamp()),  # DynamoDB TTL for auto-cleanup
@@ -871,9 +933,10 @@ class QuotaUnblockCommand(Command):
             duration: Duration string ('24h', '7d', 'until-reset').
 
         Returns:
-            Expiry datetime or None if invalid duration.
+            Expiry datetime or None if invalid duration or exceeds maximum.
         """
         duration = duration.lower().strip()
+        max_duration = timedelta(days=MAX_UNBLOCK_DAYS)
 
         if duration == "24h":
             return now + timedelta(hours=24)
@@ -885,12 +948,18 @@ class QuotaUnblockCommand(Command):
                 next_month = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             else:
                 next_month = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Security: Cap at maximum duration even for until-reset
+            if (next_month - now) > max_duration:
+                return now + max_duration
             return next_month
         else:
             # Try to parse as hours (e.g., "48h")
             if duration.endswith("h"):
                 try:
                     hours = int(duration[:-1])
+                    # Security: Enforce maximum duration
+                    if hours > MAX_UNBLOCK_DAYS * 24:
+                        return None
                     return now + timedelta(hours=hours)
                 except ValueError:
                     pass
@@ -898,6 +967,9 @@ class QuotaUnblockCommand(Command):
             elif duration.endswith("d"):
                 try:
                     days = int(duration[:-1])
+                    # Security: Enforce maximum duration
+                    if days > MAX_UNBLOCK_DAYS:
+                        return None
                     return now + timedelta(days=days)
                 except ValueError:
                     pass

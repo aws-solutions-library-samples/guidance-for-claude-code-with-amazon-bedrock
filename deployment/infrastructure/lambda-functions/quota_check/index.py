@@ -15,6 +15,10 @@ dynamodb = boto3.resource("dynamodb")
 # Configuration from environment
 QUOTA_TABLE = os.environ.get("QUOTA_TABLE", "UserQuotaMetrics")
 POLICIES_TABLE = os.environ.get("POLICIES_TABLE", "QuotaPolicies")
+# Security: Control fail behavior when email claim is missing or errors occur
+# Default to "block" (fail-closed) for security; set to "open" to allow on failures
+MISSING_EMAIL_ENFORCEMENT = os.environ.get("MISSING_EMAIL_ENFORCEMENT", "block")
+ERROR_HANDLING_MODE = os.environ.get("ERROR_HANDLING_MODE", "fail_closed")
 
 # DynamoDB tables
 quota_table = dynamodb.Table(QUOTA_TABLE)
@@ -54,12 +58,14 @@ def lambda_handler(event, context):
 
         if not email:
             # JWT is valid but missing email claim
+            # Security: Default to fail-closed (block) unless explicitly configured to allow
             print(f"JWT missing email claim. Available claims: {list(jwt_claims.keys())}")
+            allow_missing_email = MISSING_EMAIL_ENFORCEMENT != "block"
             return build_response(200, {
                 "error": "No email claim in JWT token",
-                "allowed": True,  # Fail-open when email claim is missing
+                "allowed": allow_missing_email,
                 "reason": "missing_email_claim",
-                "message": "JWT token does not contain email claim - quota check skipped"
+                "message": "JWT token does not contain email claim" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
             })
 
         # 1. Resolve the effective quota policy for this user
@@ -171,15 +177,16 @@ def lambda_handler(event, context):
         import traceback
         traceback.print_exc()
 
-        # Fail-open on errors
+        # Security: Honor error handling mode - default to fail-closed for security
+        allow_on_error = ERROR_HANDLING_MODE != "fail_closed"
         return build_response(200, {
-            "allowed": True,
+            "allowed": allow_on_error,
             "reason": "check_failed",
             "enforcement_mode": None,
             "usage": None,
             "policy": None,
             "unblock_status": None,
-            "message": f"Quota check failed (fail-open): {str(e)}"
+            "message": f"Quota check failed ({ERROR_HANDLING_MODE}): {str(e)}"
         })
 
 

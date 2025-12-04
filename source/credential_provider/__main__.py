@@ -9,6 +9,7 @@ Supports multiple OIDC providers for Bedrock access
 import base64
 import errno
 import hashlib
+import html as html_module
 import json
 import os
 import platform
@@ -1677,7 +1678,7 @@ class MultiProviderAuth:
             </div>
             '''}
             <div class="message">
-                {message if message else ("Your access has been blocked due to quota limits." if is_blocked else "You're approaching your quota limit.")}
+                {html_module.escape(message) if message else ("Your access has been blocked due to quota limits." if is_blocked else "You're approaching your quota limit.")}
                 {" Contact your administrator for assistance." if is_blocked else ""}
             </div>
         </div>
