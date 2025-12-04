@@ -924,6 +924,14 @@ class MultiProviderAuth:
         """Direct STS federation without Cognito Identity Pool - provides 12 hour sessions"""
         self._debug_print("Using Direct STS federation (AssumeRoleWithWebIdentity)")
 
+        # Clear any AWS credentials to prevent recursive calls
+        env_vars_to_clear = ["AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+        saved_env = {}
+        for var in env_vars_to_clear:
+            if var in os.environ:
+                saved_env[var] = os.environ[var]
+                del os.environ[var]
+
         try:
             # Get the federated role ARN from config
             federated_role_arn = self.config.get("federated_role_arn")
@@ -1025,6 +1033,10 @@ class MultiProviderAuth:
                     f"Original error: {error_str}"
                 ) from e
             raise Exception(f"Failed to get AWS credentials via Direct STS: {str(e)}") from None
+        finally:
+            # Restore environment variables
+            for var, value in saved_env.items():
+                os.environ[var] = value
 
     def get_aws_credentials_cognito(self, id_token, token_claims):
         """Exchange OIDC token for AWS credentials via Cognito Identity Pool"""

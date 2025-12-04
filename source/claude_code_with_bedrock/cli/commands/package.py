@@ -1861,7 +1861,8 @@ if [ -d "claude-settings" ]; then
 
         if [ "$SKIP_SETTINGS" != "true" ]; then
             # Replace placeholders and write settings
-            sed -e 's|__OTEL_HELPER_PATH__|~/claude-code-with-bedrock/otel-helper|g' \
+            sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
             echo "✓ Claude Code settings configured"
         fi
@@ -2032,8 +2033,16 @@ if exist "claude-settings" (
         )
 
         if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholder
-            powershell -Command "$path = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $path | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            REM Use PowerShell to replace placeholders
+            powershell -Command ^
+            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
+            -replace '\\\\\\\\', '/'; ^
+            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
+            -replace '\\\\\\\\', '/'; ^
+            (Get-Content 'claude-settings\\\\settings.json') ^
+            -replace '__OTEL_HELPER_PATH__', $otelPath ^
+            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
+            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
             echo OK Claude Code settings configured
         )
     )
@@ -2044,15 +2053,18 @@ echo.
 echo Configuring AWS profiles...
 
 REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
+for /f %%p in ('powershell -Command ^
+"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
     echo Configuring AWS profile: %%p
 
     REM Get profile-specific region
-    for /f %%r in ('powershell -Command "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
+    for /f %%r in ('powershell -Command ^
+    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
 
 
     REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+    aws configure set credential_process ^
+    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
 
 
     REM Set region
@@ -2071,7 +2083,8 @@ echo Installation complete!
 echo ======================================
 echo.
 echo Available profiles:
-for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
+for /f %%p in ('powershell -Command ^
+"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
     echo   - %%p
 )
 echo.
@@ -2080,7 +2093,8 @@ echo   set AWS_PROFILE=^<profile-name^>
 echo   aws sts get-caller-identity
 echo.
 echo Example:
-for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
+for /f %%p in ('powershell -Command ^
+"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
     echo   set AWS_PROFILE=%%p
     echo   aws sts get-caller-identity
 )
@@ -2293,7 +2307,7 @@ Available metrics include:
 
             # Add awsAuthRefresh for session-based credential storage
             if profile.credential_storage == "session":
-                settings["awsAuthRefresh"] = f"~/claude-code-with-bedrock/credential-process --profile {profile_name}"
+                settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:

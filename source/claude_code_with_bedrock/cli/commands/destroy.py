@@ -64,15 +64,15 @@ class DestroyCommand(Command):
 
         stacks_to_destroy = []
         if stack_arg:
-            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics"]:
+            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics", "s3bucket"]:
                 stacks_to_destroy.append(stack_arg)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics")
+                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, s3bucket")
                 return 1
         else:
             # Destroy all stacks in reverse order
-            stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "auth"]
+            stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "s3bucket", "auth"]
 
         # Show what will be destroyed
         console.print(
@@ -113,6 +113,8 @@ class DestroyCommand(Command):
             if stack == "networking" and not profile.monitoring_enabled:
                 continue
             if stack == "analytics" and not profile.monitoring_enabled:
+                continue
+            if stack == "s3bucket" and not profile.monitoring_enabled:
                 continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
