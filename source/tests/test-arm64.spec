@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['claude_code_with_bedrock/__main__.py'],
+    ['claude_code_with_bedrock/cli/__init__.py'],
     pathex=[],
     binaries=[],
     datas=[],
