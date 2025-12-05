@@ -1,11 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Claude Code quota monitoring stack for per-user token limits and alerts'
+Description: 'Claude Code quota monitoring stack for per-user token limits and alerts with fine-grained policy support'
 
 Parameters:
   MonthlyTokenLimit:
     Type: Number
-    Default: 300000000
-    Description: Monthly token limit per user (default 300M tokens)
+    Default: 10000000
+    Description: Default monthly token limit per user (10M tokens) - used when no policy is defined
     MinValue: 1000000
     MaxValue: 1000000000
 
@@ -15,19 +15,94 @@ Parameters:
 
   WarningThreshold80:
     Type: Number
-    Default: 240000000
-    Description: Warning threshold at 80% (calculated automatically)
+    Default: 8000000
+    Description: Default warning threshold at 80% (8M tokens) - used when no policy is defined
 
   WarningThreshold90:
     Type: Number
-    Default: 270000000
-    Description: Warning threshold at 90% (calculated automatically)
+    Default: 9000000
+    Description: Default warning threshold at 90% (9M tokens) - used when no policy is defined
+
+  DailyTokenLimit:
+    Type: Number
+    Default: 366667
+    Description: Default daily token limit per user (monthly/30 * 1.1) - 0 to disable daily limits
+    MinValue: 0
+    MaxValue: 100000000
+
+  DailyEnforcementMode:
+    Type: String
+    Default: 'alert'
+    AllowedValues:
+      - 'alert'
+      - 'block'
+    Description: Enforcement mode for daily limits - alert (warn only) or block (deny access)
+
+  MonthlyEnforcementMode:
+    Type: String
+    Default: 'block'
+    AllowedValues:
+      - 'alert'
+      - 'block'
+    Description: Enforcement mode for monthly limits - alert (warn only) or block (deny access)
 
   MetricsAggregatorRoleName:
     Type: String
     Description: Name of the MetricsAggregatorRole from the dashboard stack
 
+  EnableFinegrainedQuotas:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable fine-grained quota policies (user/group/default levels)
+
+  # JWT Authentication Parameters for Quota Check API
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC provider issuer URL for JWT validation (e.g., https://company.okta.com)
+
+  OidcClientId:
+    Type: String
+    Description: OIDC client ID (audience) for JWT validation
+
 Resources:
+  # DynamoDB table for quota policies (user, group, default levels)
+  QuotaPolicies:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: QuotaPolicies
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: policy_type
+          AttributeType: S
+        - AttributeName: identifier
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: PolicyTypeIndex
+          KeySchema:
+            - AttributeName: policy_type
+              KeyType: HASH
+            - AttributeName: identifier
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Name
+          Value: QuotaPolicies
+        - Key: Purpose
+          Value: Fine-grained quota policy definitions
+
   # DynamoDB table for user quota tracking
   UserQuotaMetrics:
     Type: AWS::DynamoDB::Table
@@ -94,6 +169,14 @@ Resources:
                   - !GetAtt UserQuotaMetrics.Arn
               - Effect: Allow
                 Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt QuotaPolicies.Arn
+                  - !Sub '${QuotaPolicies.Arn}/index/*'
+              - Effect: Allow
+                Action:
                   - sns:Publish
                 Resource: !Ref QuotaAlertTopic
 
@@ -111,10 +194,15 @@ Resources:
       Environment:
         Variables:
           QUOTA_TABLE: !Ref UserQuotaMetrics
+          POLICIES_TABLE: !Ref QuotaPolicies
           SNS_TOPIC_ARN: !Ref QuotaAlertTopic
           MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
           WARNING_THRESHOLD_80: !Ref WarningThreshold80
           WARNING_THRESHOLD_90: !Ref WarningThreshold90
+          DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
+          DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
+          MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
+          ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
       Code: ./lambda-functions/quota_monitor/
 
   # EventBridge Rule to run quota monitor every 15 minutes
@@ -138,7 +226,131 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt QuotaMonitorScheduleRule.Arn
 
-  # Grant MetricsAggregator permissions to write to quota table
+  # ============================================
+  # Quota Check API (Phase 2 - Access Blocking)
+  # ============================================
+
+  # IAM Role for Quota Check Lambda
+  QuotaCheckRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QuotaCheckPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt UserQuotaMetrics.Arn
+                  - !GetAtt QuotaPolicies.Arn
+                  - !Sub '${QuotaPolicies.Arn}/index/*'
+
+  # Lambda function for real-time quota checking
+  QuotaCheckFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: claude-code-quota-check
+      Description: Real-time quota check for credential issuance - blocks access when quota exceeded
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt QuotaCheckRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          QUOTA_TABLE: !Ref UserQuotaMetrics
+          POLICIES_TABLE: !Ref QuotaPolicies
+          MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
+          DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
+          DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
+          MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
+      Code: ./lambda-functions/quota_check/
+
+  # HTTP API Gateway (v2 - cheaper and faster than REST API)
+  QuotaCheckApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-quota-check-api'
+      Description: Real-time quota check API for Claude Code credential provider (JWT authenticated)
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 300
+
+  # JWT Authorizer for OIDC token validation
+  QuotaCheckAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      AuthorizerType: JWT
+      Name: oidc-jwt-authorizer
+      IdentitySource:
+        - "$request.header.Authorization"
+      JwtConfiguration:
+        Issuer: !Ref OidcIssuerUrl
+        Audience:
+          - !Ref OidcClientId
+
+  # Lambda integration for API Gateway
+  QuotaCheckIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt QuotaCheckFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Route for GET /check (JWT authenticated)
+  QuotaCheckRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      RouteKey: 'GET /check'
+      Target: !Sub 'integrations/${QuotaCheckIntegration}'
+      AuthorizerId: !Ref QuotaCheckAuthorizer
+      AuthorizationType: JWT
+
+  # Default stage with auto-deploy
+  QuotaCheckStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  # Permission for API Gateway to invoke Lambda
+  QuotaCheckLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QuotaCheckFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
+
+  # ============================================
+  # End Quota Check API
+  # ============================================
+
+  # Grant MetricsAggregator permissions to write to quota table and read policies
   MetricsAggregatorQuotaPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -153,6 +365,13 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt UserQuotaMetrics.Arn
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:GetItem
+            Resource:
+              - !GetAtt QuotaPolicies.Arn
+              - !Sub '${QuotaPolicies.Arn}/index/*'
       Roles:
         - !Ref MetricsAggregatorRoleName
 
@@ -169,6 +388,18 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-QuotaTableArn'
 
+  PoliciesTableName:
+    Description: Name of the QuotaPolicies DynamoDB table for fine-grained quotas
+    Value: !Ref QuotaPolicies
+    Export:
+      Name: !Sub '${AWS::StackName}-PoliciesTableName'
+
+  PoliciesTableArn:
+    Description: ARN of the QuotaPolicies DynamoDB table
+    Value: !GetAtt QuotaPolicies.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PoliciesTableArn'
+
   QuotaAlertTopicArn:
     Description: SNS Topic ARN for quota alerts - subscribe to this for notifications
     Value: !Ref QuotaAlertTopic
@@ -180,3 +411,15 @@ Outputs:
     Value: !GetAtt QuotaMonitorFunction.Arn
     Export:
       Name: !Sub '${AWS::StackName}-QuotaMonitorFunctionArn'
+
+  QuotaCheckApiEndpoint:
+    Description: HTTP API endpoint for real-time quota checks - configure in credential provider
+    Value: !Sub 'https://${QuotaCheckApi}.execute-api.${AWS::Region}.amazonaws.com'
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaCheckApiEndpoint'
+
+  QuotaCheckFunctionArn:
+    Description: ARN of the quota check Lambda function
+    Value: !GetAtt QuotaCheckFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaCheckFunctionArn'

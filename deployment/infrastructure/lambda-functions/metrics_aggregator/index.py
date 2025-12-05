@@ -19,11 +19,14 @@ NAMESPACE = "ClaudeCode"
 LOG_GROUP = os.environ.get("METRICS_LOG_GROUP", "/aws/lambda/bedrock-claude-logs")
 METRICS_TABLE = os.environ.get("METRICS_TABLE", "ClaudeCodeMetrics")
 QUOTA_TABLE = os.environ.get("QUOTA_TABLE")  # Optional - only set if quota monitoring is enabled
+POLICIES_TABLE = os.environ.get("POLICIES_TABLE")  # Optional - for fine-grained quotas
+ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 AGGREGATION_WINDOW = 5  # minutes
 
 # DynamoDB tables
 table = dynamodb.Table(METRICS_TABLE)
 quota_table = dynamodb.Table(QUOTA_TABLE) if QUOTA_TABLE else None
+policies_table = dynamodb.Table(POLICIES_TABLE) if POLICIES_TABLE else None
 
 
 def lambda_handler(event, context):
@@ -220,7 +223,8 @@ def aggregate_total_tokens(start_ms, end_ms):
 
 def aggregate_active_users(start_ms, end_ms):
     """
-    Count distinct active users and return user details.
+    Count distinct active users and return user details with token type breakdown.
+    Also extracts JWT group claims for fine-grained quota support.
     """
     # First get unique count for CloudWatch metric
     query_count = """
@@ -237,22 +241,29 @@ def aggregate_active_users(start_ms, end_ms):
             if field["field"] == "active_users":
                 unique_count = int(float(field["value"]))
 
-    # Now get user details for DynamoDB
+    # Get user details with token type breakdown for cost calculation
+    # This query extracts input, output, and cache tokens separately
     query_details = """
     fields @message
     | filter @message like /user.email/
     | parse @message /"user.email":"(?<user>[^"]*)"/
     | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
-    | stats sum(tokens) as total_tokens, count() as requests by user
-    | sort total_tokens desc
+    | parse @message /"type":"(?<token_type>[^"]*)"/
+    | parse @message /"model":"(?<model>[^"]*)"/
+    | stats sum(tokens) as total_tokens, count() as requests by user, token_type, model
+    | sort user asc
     """
 
-    user_details = []
+    # Aggregate by user, collecting token types
+    user_data = {}
     results = run_query(query_details, start_ms, end_ms)
     for result in results:
         user_email = None
         tokens = 0
         requests = 0
+        token_type = None
+        model = None
+
         for field in result:
             if field["field"] == "user":
                 user_email = field["value"]
@@ -260,11 +271,93 @@ def aggregate_active_users(start_ms, end_ms):
                 tokens = float(field["value"])
             elif field["field"] == "requests":
                 requests = int(float(field["value"]))
+            elif field["field"] == "token_type":
+                token_type = field["value"]
+            elif field["field"] == "model":
+                model = field["value"]
 
         if user_email:
-            user_details.append(
-                {"email": user_email, "tokens": tokens, "requests": requests}
-            )
+            if user_email not in user_data:
+                user_data[user_email] = {
+                    "email": user_email,
+                    "tokens": 0,
+                    "requests": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_tokens": 0,
+                    "model": model,  # Track last model used
+                }
+
+            user_data[user_email]["tokens"] += tokens
+
+            # Track token types for cost calculation
+            if token_type == "input":
+                user_data[user_email]["input_tokens"] += tokens
+                user_data[user_email]["requests"] += requests  # Count requests only for input
+            elif token_type == "output":
+                user_data[user_email]["output_tokens"] += tokens
+            elif token_type in ("cacheRead", "cache_read"):
+                user_data[user_email]["cache_tokens"] += tokens
+
+            # Keep track of model (use latest)
+            if model:
+                user_data[user_email]["model"] = model
+
+    # Query for JWT group claims (groups, cognito:groups, custom:department)
+    if ENABLE_FINEGRAINED_QUOTAS:
+        query_groups = """
+        fields @message
+        | filter @message like /user.email/
+        | parse @message /"user.email":"(?<user>[^"]*)"/
+        | parse @message /"groups":\[(?<groups>[^\]]*)\]/
+        | parse @message /"cognito:groups":\[(?<cognito_groups>[^\]]*)\]/
+        | parse @message /"custom:department":"(?<department>[^"]*)"/
+        | stats latest(groups) as groups, latest(cognito_groups) as cognito_groups, latest(department) as department by user
+        """
+
+        results = run_query(query_groups, start_ms, end_ms)
+        for result in results:
+            user_email = None
+            groups_str = None
+            cognito_groups_str = None
+            department = None
+
+            for field in result:
+                if field["field"] == "user":
+                    user_email = field["value"]
+                elif field["field"] == "groups":
+                    groups_str = field["value"]
+                elif field["field"] == "cognito_groups":
+                    cognito_groups_str = field["value"]
+                elif field["field"] == "department":
+                    department = field["value"]
+
+            if user_email and user_email in user_data:
+                # Parse and combine all group sources
+                all_groups = set()
+
+                # Parse groups array (format: "group1","group2")
+                if groups_str:
+                    for g in groups_str.replace('"', '').split(','):
+                        g = g.strip()
+                        if g:
+                            all_groups.add(g)
+
+                # Parse cognito:groups array
+                if cognito_groups_str:
+                    for g in cognito_groups_str.replace('"', '').split(','):
+                        g = g.strip()
+                        if g:
+                            all_groups.add(g)
+
+                # Add department as a group
+                if department:
+                    all_groups.add(department)
+
+                user_data[user_email]["groups"] = list(all_groups)
+
+    # Convert to list and sort by tokens
+    user_details = sorted(user_data.values(), key=lambda x: x["tokens"], reverse=True)
 
     return unique_count, user_details
 
@@ -737,15 +830,19 @@ def write_to_dynamodb(
 
 def update_quota_table(timestamp, user_details):
     """
-    Update monthly user quota tracking table.
+    Update monthly user quota tracking table with enhanced fields.
     Schema: PK=USER#{email}, SK=MONTH#{YYYY-MM}
-    Maintains running totals for each user per month.
+    Maintains running totals for each user per month including:
+    - Monthly and daily token totals
+    - Token type breakdown (input, output, cache)
+    - Group membership from JWT claims
     """
     if not user_details:
         return
 
     try:
         current_month = timestamp.strftime("%Y-%m")
+        current_date = timestamp.strftime("%Y-%m-%d")
         ttl = int(
             (timestamp.replace(day=28) + timedelta(days=32)).replace(day=1).timestamp()
         )  # End of next month
@@ -753,6 +850,10 @@ def update_quota_table(timestamp, user_details):
         for user in user_details:
             user_email = user["email"]
             tokens_to_add = float(user.get("tokens", 0))
+            input_tokens = float(user.get("input_tokens", 0))
+            output_tokens = float(user.get("output_tokens", 0))
+            cache_tokens = float(user.get("cache_tokens", 0))
+            groups = user.get("groups", [])
 
             if tokens_to_add <= 0:
                 continue
@@ -760,21 +861,72 @@ def update_quota_table(timestamp, user_details):
             pk = f"USER#{user_email}"
             sk = f"MONTH#{current_month}"
 
-            # Update or create the monthly total for this user
+            # First, get the current record to check daily_date
             try:
+                response = quota_table.get_item(Key={"pk": pk, "sk": sk})
+                existing = response.get("Item", {})
+                existing_daily_date = existing.get("daily_date")
+
+                # Determine if we need to reset daily tokens
+                if existing_daily_date != current_date:
+                    # New day - reset daily tokens
+                    daily_tokens_expr = ":tokens"
+                    daily_reset = True
+                else:
+                    # Same day - add to existing
+                    daily_tokens_expr = "daily_tokens + :tokens"
+                    daily_reset = False
+
+                # Build update expression with all enhanced fields
+                update_expr = """
+                    ADD total_tokens :tokens,
+                        input_tokens :input_tokens,
+                        output_tokens :output_tokens,
+                        cache_tokens :cache_tokens
+                    SET last_updated = :updated,
+                        #ttl = :ttl,
+                        email = :email,
+                        daily_date = :daily_date
+                """
+
+                expr_attr_values = {
+                    ":tokens": Decimal(str(tokens_to_add)),
+                    ":input_tokens": Decimal(str(input_tokens)),
+                    ":output_tokens": Decimal(str(output_tokens)),
+                    ":cache_tokens": Decimal(str(cache_tokens)),
+                    ":updated": timestamp.isoformat().replace("+00:00", "Z"),
+                    ":ttl": ttl,
+                    ":email": user_email,
+                    ":daily_date": current_date,
+                }
+
+                expr_attr_names = {"#ttl": "ttl"}
+
+                # Handle daily tokens based on date change
+                if daily_reset:
+                    update_expr += ", daily_tokens = :tokens"
+                else:
+                    update_expr = update_expr.replace(
+                        "ADD total_tokens :tokens",
+                        "ADD total_tokens :tokens, daily_tokens :tokens"
+                    )
+
+                # Add groups if available (for fine-grained quotas)
+                if groups and ENABLE_FINEGRAINED_QUOTAS:
+                    update_expr += ", #groups = :groups"
+                    expr_attr_values[":groups"] = groups
+                    expr_attr_names["#groups"] = "groups"
+
                 quota_table.update_item(
                     Key={"pk": pk, "sk": sk},
-                    UpdateExpression="ADD total_tokens :tokens SET last_updated = :updated, #ttl = :ttl, email = :email",
-                    ExpressionAttributeNames={"#ttl": "ttl"},
-                    ExpressionAttributeValues={
-                        ":tokens": Decimal(str(tokens_to_add)),
-                        ":updated": timestamp.isoformat().replace("+00:00", "Z"),
-                        ":ttl": ttl,
-                        ":email": user_email,
-                    },
+                    UpdateExpression=update_expr,
+                    ExpressionAttributeNames=expr_attr_names,
+                    ExpressionAttributeValues=expr_attr_values,
                 )
+
+                daily_note = " (daily reset)" if daily_reset else ""
                 print(
-                    f"Updated quota for {user_email}: +{tokens_to_add:,.0f} tokens for {current_month}"
+                    f"Updated quota for {user_email}: +{tokens_to_add:,.0f} tokens for {current_month}{daily_note}"
                 )
 
             except Exception as e:

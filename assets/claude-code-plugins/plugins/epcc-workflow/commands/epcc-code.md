@@ -16,6 +16,279 @@ You are in the **CODE** phase of the Explore-Plan-Code-Commit workflow. Transfor
 ## Implementation Target
 $ARGUMENTS
 
+## Session Startup Protocol (Long-Running Project Support)
+
+If `epcc-features.json` exists, this is a tracked multi-session project. Execute the session startup protocol before implementation.
+
+### Phase 1: Getting Oriented (REQUIRED)
+
+Before ANY implementation, run automatic orientation:
+
+```bash
+# 1. Confirm working directory
+pwd
+
+# 2. Check git state
+git branch --show-current
+git status --short
+git log --oneline -10
+
+# 3. Read progress state (if exists)
+if [ -f "epcc-progress.md" ]; then
+    head -100 epcc-progress.md
+fi
+
+# 4. Read feature list (if exists)
+if [ -f "epcc-features.json" ]; then
+    cat epcc-features.json
+fi
+
+# 5. Check for init.sh requirement from TRD
+if grep -q "init.sh required.*Yes" TECH_REQ.md 2>/dev/null; then
+    # Auto-regenerate if TRD changed or init.sh missing
+    if [ ! -f "init.sh" ] || [ "TECH_REQ.md" -nt "init.sh" ]; then
+        echo "TRD requires init.sh - generating/regenerating..."
+        # See "init.sh Generation" section below
+    else
+        echo "Found init.sh - run if servers need starting"
+    fi
+elif [ -f "init.sh" ]; then
+    echo "Found init.sh (manual) - run if servers need starting"
+fi
+```
+
+**Announce session context:**
+```
+Session [N] starting. Progress: X/Y features (Z%).
+Last session: [summary from epcc-progress.md]
+Resuming: [feature name from arguments or highest-priority incomplete]
+```
+
+### Phase 2: Regression Verification
+
+Before new work, verify existing features still work:
+
+```bash
+# Run test suite (use project's test command)
+npm test  # or pytest, cargo test, etc.
+```
+
+**If any previously-passing features now fail:**
+- ⚠️ **FIX REGRESSIONS FIRST** before new work
+- "Prioritize fixing broken tests over implementing new features"
+- Update `epcc-features.json`: Set `passes: false` for regressed features
+- Document regression in `epcc-progress.md`
+
+### Phase 3: Feature Selection
+
+**One Feature at a Time Rule:**
+
+1. If feature specified in arguments: Work on that feature
+2. If no feature specified: Select highest-priority feature where `passes: false`
+3. Work on ONE feature until verified
+4. Complete ALL subtasks before moving to next feature
+
+**Anti-pattern**: Implementing multiple features before any verification
+**Correct pattern**: Implement → Verify → Commit → Next Feature
+
+### Phase 4: Quality Assurance (Critical)
+
+**"Test like a human user with mouse and keyboard. Don't take shortcuts."**
+
+- For web features: Use browser automation (Chrome DevTools MCP)
+- Take screenshots to verify visual correctness
+- Check for: contrast issues, layout problems, console errors
+- Run complete user workflows end-to-end
+
+**Only when ALL acceptance criteria verified:**
+- Update `epcc-features.json`: `"passes": true`, `"status": "verified"`
+- Check all subtasks as complete
+- Add test evidence (screenshot path or test output)
+- Add timestamp: `"verifiedAt": "[ISO timestamp]"`
+
+**NEVER edit feature definitions - only modify:**
+- `passes` field
+- `status` field
+- `subtasks[].status` field
+- `verifiedAt` field
+- `commit` field
+
+### Phase 5: Checkpoint Commits
+
+After completing each feature:
+
+```bash
+# 1. Stage implementation files + state files
+git add [implementation files]
+git add epcc-features.json epcc-progress.md
+
+# 2. Commit with feature reference
+git commit -m "feat(F00X): [feature description] - E2E verified
+
+- [What was implemented]
+- All acceptance criteria verified
+- Tests passing
+
+Refs: epcc-features.json#F00X"
+
+# 3. Push if remote exists
+git push
+```
+
+**Purpose**: Each commit represents a clean, verified state that can be safely merged or reverted to.
+
+### Phase 6: Session Handoff
+
+Before ending session (or on context exhaustion):
+
+**If feature incomplete:**
+```bash
+# Commit work-in-progress
+git add -A
+git commit -m "wip(F00X): [current state]
+
+Session [N] progress:
+- [What was done]
+- [What remains]
+
+HANDOFF: [specific instructions for next session]
+Resume at: [file:line] - [what to do next]"
+```
+
+**Update epcc-progress.md:**
+```markdown
+---
+
+## Session [N]: [Date Time]
+
+### Summary
+[What was accomplished]
+
+### Feature Progress
+- F00X: [status] ([X/Y subtasks], [specific state])
+
+### Work Completed
+- [Completed item 1]
+- [Completed item 2]
+
+### Files Modified
+- [file1.ts] - [what was changed]
+- [file2.ts] - [what was changed]
+
+### Checkpoint Commit
+[SHA]: [message]
+
+### Handoff Notes
+**Resume at**: [file:line]
+**Next action**: [specific instruction]
+**Blockers**: [None / description]
+
+### Next Session
+[What should happen next]
+
+---
+```
+
+**⚠️ "IT IS CATASTROPHIC TO LOSE PROGRESS" - always document before ending**
+
+### Session Protocol Summary
+
+| Phase | Action | Outcome |
+|-------|--------|---------|
+| 1. Orient | pwd, git, progress, features | Know current state |
+| 2. Verify | Run tests | Catch regressions |
+| 3. Select | Pick one feature | Focus, no context switching |
+| 4. Validate | E2E testing | Verify before marking done |
+| 5. Commit | Checkpoint commit | Save verified progress |
+| 6. Handoff | Document for next session | Enable continuity |
+
+### init.sh Generation (When TRD Requires)
+
+If TECH_REQ.md specifies `init.sh required: Yes`, generate or regenerate the init.sh script.
+
+**Auto-regeneration triggers:**
+- init.sh doesn't exist
+- TECH_REQ.md is newer than init.sh (TRD was updated)
+
+**Generation process:**
+
+1. **Parse TECH_REQ.md Environment Setup section** to extract:
+   - Components to initialize (venv, database, services, env vars)
+   - Startup command
+   - Health check command
+
+2. **Generate init.sh** following this template:
+
+```bash
+#!/bin/bash
+# init.sh - Generated from TECH_REQ.md Environment Setup
+# Regenerate by updating TECH_REQ.md and running /epcc-code
+set -e
+
+PROJECT_NAME="[from TRD]"
+echo "Setting up $PROJECT_NAME..."
+
+# Prerequisites check
+check_prereqs() {
+    echo "Checking prerequisites..."
+    # Based on TRD tech stack (python3, node, etc.)
+    command -v [required_command] >/dev/null 2>&1 || { echo "[tool] required"; exit 1; }
+}
+
+# Virtual environment / package installation
+setup_environment() {
+    echo "Setting up environment..."
+    # Based on TRD: venv, npm install, etc.
+}
+
+# Install dependencies
+install_deps() {
+    echo "Installing dependencies..."
+    # Based on TRD: pip install, npm ci, etc.
+}
+
+# Start services
+start_services() {
+    echo "Starting services..."
+    # Based on TRD: database, redis, etc.
+}
+
+# Start development server
+start_dev_server() {
+    echo "Starting development server..."
+    # Based on TRD startup command
+}
+
+# Health check
+verify_ready() {
+    echo "Verifying environment..."
+    # Based on TRD health check
+}
+
+# Run setup
+check_prereqs
+setup_environment
+install_deps
+start_services
+start_dev_server &
+sleep 2
+verify_ready
+
+echo "Environment ready!"
+```
+
+3. **Make executable**: `chmod +x init.sh`
+
+4. **Verify script runs**: Execute init.sh and confirm health check passes
+
+**Customization notes:**
+- Adapt template to actual TRD requirements
+- Include only components marked in TRD checklist
+- Use startup command and health check from TRD verbatim
+- For complex setups, consider docker-compose alternative
+
+---
+
 ## 🎯 Implementation Philosophy
 
 **Core Principle**: Work autonomously with clear judgment. You're the main coding agent with full context and all tools. Use sub-agents for specialized tasks when they add value.

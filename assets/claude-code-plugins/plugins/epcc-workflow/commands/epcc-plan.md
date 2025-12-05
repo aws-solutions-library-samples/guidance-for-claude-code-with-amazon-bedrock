@@ -361,6 +361,229 @@ Deliverable: Architecture diagram, component descriptions, scalability considera
 
 **Remember**: Match plan depth to project complexity. Get user approval before finalizing.
 
+## Feature List Finalization (Long-Running Project Support)
+
+After creating EPCC_PLAN.md, finalize the feature list for multi-session progress tracking.
+
+### Step 1: Check/Create Feature List
+
+```bash
+if [ -f "epcc-features.json" ]; then
+    # Feature list exists from PRD/TRD - validate and finalize
+    echo "Found epcc-features.json - validating and finalizing features..."
+else
+    # Create new feature list from plan
+    echo "Creating epcc-features.json from EPCC_PLAN.md..."
+fi
+```
+
+### Step 2: Validate Features Against Plan
+
+If `epcc-features.json` exists, ensure all plan tasks map to features:
+
+```json
+{
+  "validation": {
+    "planTasks": "[N]",
+    "mappedToFeatures": "[M]",
+    "unmappedTasks": ["Task X not in any feature"],
+    "featuresWithoutTasks": ["F003 has no plan tasks"]
+  }
+}
+```
+
+**Validation actions:**
+- Add missing features for unmapped plan tasks
+- Add plan tasks as subtasks to matching features
+- Flag features without corresponding plan tasks for review
+
+### Step 3: Add Implementation Order and Dependencies
+
+Update `epcc-features.json` with implementation sequence:
+
+```json
+{
+  "features": [
+    {
+      "id": "F001",
+      "name": "User Authentication",
+      "implementationOrder": 1,
+      "dependencies": [],
+      "blockedBy": [],
+      "estimatedHours": 8,
+      "planReference": "EPCC_PLAN.md#phase-1-foundation",
+      "subtasks": [
+        {"name": "Set up JWT integration", "status": "pending", "estimatedHours": 2},
+        {"name": "Create user schema", "status": "pending", "estimatedHours": 1},
+        {"name": "Implement login endpoint", "status": "pending", "estimatedHours": 2},
+        {"name": "Add auth middleware", "status": "pending", "estimatedHours": 1.5},
+        {"name": "Write tests", "status": "pending", "estimatedHours": 1.5}
+      ]
+    },
+    {
+      "id": "F002",
+      "name": "Task CRUD",
+      "implementationOrder": 2,
+      "dependencies": ["F001"],
+      "blockedBy": ["F001"],
+      "estimatedHours": 6
+    }
+  ]
+}
+```
+
+**Order rules:**
+- P0 features before P1 before P2
+- Dependencies must be implemented first
+- Infrastructure features (INFRA-*) typically first
+- Group related features for efficient context switching
+
+### Step 4: Ensure Subtasks Are <4 Hours
+
+Break down any subtasks larger than 4 hours:
+
+```json
+{
+  "subtasks": [
+    // BAD: Too large
+    {"name": "Implement authentication system", "estimatedHours": 8},
+
+    // GOOD: Broken down
+    {"name": "Create user model and migrations", "estimatedHours": 1},
+    {"name": "Implement password hashing", "estimatedHours": 0.5},
+    {"name": "Create login endpoint", "estimatedHours": 1.5},
+    {"name": "Create logout endpoint", "estimatedHours": 0.5},
+    {"name": "Implement JWT token generation", "estimatedHours": 1},
+    {"name": "Create auth middleware", "estimatedHours": 1.5},
+    {"name": "Write unit tests", "estimatedHours": 1},
+    {"name": "Write integration tests", "estimatedHours": 1}
+  ]
+}
+```
+
+### Step 5: Add Acceptance Criteria from Plan
+
+Ensure each feature has testable acceptance criteria:
+
+```json
+{
+  "features": [
+    {
+      "id": "F001",
+      "acceptanceCriteria": [
+        "User can register with email and password",
+        "User can log in with valid credentials",
+        "Invalid credentials return 401 error",
+        "Protected routes require valid JWT",
+        "JWT tokens expire after 24 hours",
+        "Refresh tokens work correctly"
+      ]
+    }
+  ]
+}
+```
+
+**Criteria rules:**
+- Map from PRD success criteria
+- Map from plan test strategy
+- Must be testable (verifiable yes/no)
+- Include both happy path and error cases
+
+### Step 6: Update Progress Log
+
+Append planning session to `epcc-progress.md`:
+
+```markdown
+---
+
+## Session [N]: Planning Complete - [Date]
+
+### Summary
+Implementation plan created with task breakdown, dependencies, and risk assessment.
+
+### Plan Overview
+- **Total Phases**: [N]
+- **Total Tasks**: [M]
+- **Estimated Effort**: [X] hours
+- **Critical Path**: [List of blocking dependencies]
+
+### Feature Finalization
+- Validated [X] features against plan
+- Added [Y] subtasks with estimates
+- Set implementation order (1-N)
+- Mapped dependencies
+
+### Implementation Order
+1. INFRA-001: Database Setup (P0, no dependencies)
+2. F001: User Authentication (P0, depends on INFRA-001)
+3. F002: Task CRUD (P0, depends on F001)
+...
+
+### Risk Assessment
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| [From plan] | [H/M/L] | [Strategy] |
+
+### Next Session
+Begin implementation with `/epcc-code F001` (or first feature in order)
+
+---
+```
+
+### Step 7: Report Finalization Results
+
+```markdown
+## Plan Complete - Feature List Finalized
+
+✅ **EPCC_PLAN.md** - Implementation strategy documented
+✅ **epcc-features.json** - Feature list finalized:
+   - [N] total features with implementation order
+   - [M] total subtasks (<4hr each)
+   - All dependencies mapped
+   - Acceptance criteria defined
+✅ **epcc-progress.md** - Planning session logged
+
+### Implementation Sequence
+
+| Order | Feature | Priority | Est. Hours | Dependencies |
+|-------|---------|----------|------------|--------------|
+| 1 | INFRA-001: Database | P0 | 4h | None |
+| 2 | F001: User Auth | P0 | 8h | INFRA-001 |
+| 3 | F002: Task CRUD | P0 | 6h | F001 |
+| ... | ... | ... | ... | ... |
+
+### Critical Path
+[Features that block the most other work]
+
+### Next Steps
+
+**Ready to implement!** Start with:
+```bash
+/epcc-code F001  # Or first feature in implementation order
+```
+
+**To check progress later**: `/epcc-resume`
+```
+
+### Feature Immutability Enforcement
+
+After plan approval, enforce feature immutability:
+
+```json
+{
+  "_warning": "Feature definitions are IMMUTABLE after planning.",
+  "_planApproved": true,
+  "_planApprovedAt": "[ISO timestamp]",
+  "_modifiableFields": ["passes", "status", "subtasks[].status"]
+}
+```
+
+⚠️ **After approval:**
+- Feature definitions (name, description, acceptanceCriteria) are FROZEN
+- Only `passes`, `status`, and `subtasks[].status` may be modified
+- New features MAY be added but existing ones CANNOT be changed
+- IT IS CATASTROPHIC TO REMOVE OR EDIT FEATURE DEFINITIONS
+
 ## Common Pitfalls (Anti-Patterns)
 
 ### ❌ Creating Exhaustive Plans for Simple Features

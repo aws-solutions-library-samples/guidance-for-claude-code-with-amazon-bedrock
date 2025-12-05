@@ -9,6 +9,7 @@ Supports multiple OIDC providers for Bedrock access
 import base64
 import errno
 import hashlib
+import html as html_module
 import json
 import os
 import platform
@@ -74,11 +75,12 @@ PROVIDER_CONFIGS = {
 
 class MultiProviderAuth:
     def __init__(self, profile=None):
-        # Load configuration from environment or config file
-        self.profile = profile or "ClaudeCode"
-
         # Debug mode - set before loading config since _load_config may use _debug_print
         self.debug = os.getenv("COGNITO_AUTH_DEBUG", "").lower() in ("1", "true", "yes")
+
+        # Load configuration from environment or config file
+        # Auto-detect profile from config.json if not specified
+        self.profile = profile or self._auto_detect_profile() or "ClaudeCode"
 
         self.config = self._load_config()
 
@@ -104,6 +106,41 @@ class MultiProviderAuth:
         """Print debug message only if debug mode is enabled"""
         if self.debug:
             print(f"Debug: {message}", file=sys.stderr)
+
+    def _auto_detect_profile(self):
+        """Auto-detect profile name from config.json when only one profile exists."""
+        try:
+            # Try same directory as binary first (for testing)
+            binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
+            config_path = binary_dir / "config.json"
+
+            # Fall back to installed location
+            if not config_path.exists():
+                config_path = Path.home() / "claude-code-with-bedrock" / "config.json"
+
+            if not config_path.exists():
+                return None
+
+            with open(config_path) as f:
+                file_config = json.load(f)
+
+            # New format with "profiles" key
+            if "profiles" in file_config:
+                profiles = list(file_config["profiles"].keys())
+            else:
+                # Old format: profile names are top-level keys
+                profiles = list(file_config.keys())
+
+            if len(profiles) == 1:
+                self._debug_print(f"Auto-detected profile: {profiles[0]}")
+                return profiles[0]
+            elif len(profiles) > 1:
+                self._debug_print(f"Multiple profiles found: {profiles}. Use --profile to specify.")
+                return None
+            return None
+        except Exception as e:
+            self._debug_print(f"Could not auto-detect profile: {e}")
+            return None
 
     def _load_config(self):
         """Load configuration from config.json.
@@ -1224,12 +1261,525 @@ class MultiProviderAuth:
             self._debug_print(f"Error during monitoring authentication: {e}")
             return None
 
+    # ===========================================
+    # Quota Check Methods (Phase 2)
+    # ===========================================
+
+    def _should_check_quota(self) -> bool:
+        """Check if quota checking is configured and enabled."""
+        quota_api_endpoint = self.config.get("quota_api_endpoint")
+        return bool(quota_api_endpoint)
+
+    def _should_recheck_quota(self) -> bool:
+        """Check if quota should be re-verified based on configured interval.
+
+        Returns True if:
+        - Quota checking is enabled AND
+        - Either interval is 0 (always check) OR
+        - Last quota check was more than interval minutes ago
+        """
+        if not self._should_check_quota():
+            return False
+
+        interval_minutes = self.config.get("quota_check_interval", 30)
+        if interval_minutes == 0:
+            return True  # Always check
+
+        last_check = self._get_last_quota_check_time()
+        if not last_check:
+            return True  # Never checked
+
+        elapsed = (datetime.now(timezone.utc) - last_check).total_seconds() / 60
+        self._debug_print(f"Quota check: {elapsed:.1f} min since last check, interval={interval_minutes} min")
+        return elapsed >= interval_minutes
+
+    def _get_last_quota_check_time(self) -> datetime | None:
+        """Get timestamp of last quota check from storage."""
+        try:
+            if self.credential_storage == "keyring":
+                timestamp_str = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-quota-check")
+                if timestamp_str:
+                    return datetime.fromisoformat(timestamp_str)
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                timestamp_file = session_dir / f"{self.profile}-quota-check.json"
+                if timestamp_file.exists():
+                    with open(timestamp_file) as f:
+                        data = json.load(f)
+                        return datetime.fromisoformat(data["last_check"])
+            return None
+        except Exception as e:
+            self._debug_print(f"Could not read quota check timestamp: {e}")
+            return None
+
+    def _save_quota_check_timestamp(self):
+        """Save current time as last quota check timestamp."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            if self.credential_storage == "keyring":
+                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-quota-check", now)
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                session_dir.mkdir(parents=True, exist_ok=True)
+                timestamp_file = session_dir / f"{self.profile}-quota-check.json"
+                with open(timestamp_file, "w") as f:
+                    json.dump({"last_check": now}, f)
+                timestamp_file.chmod(0o600)
+            self._debug_print("Saved quota check timestamp")
+        except Exception as e:
+            self._debug_print(f"Could not save quota check timestamp: {e}")
+
+    def _get_cached_token_claims(self) -> dict | None:
+        """Get token claims from cached monitoring token for quota re-check."""
+        try:
+            if self.credential_storage == "keyring":
+                token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                if token_json:
+                    token_data = json.loads(token_json)
+                    return {"email": token_data.get("email", "")}
+            else:
+                session_dir = Path.home() / ".claude-code-session"
+                token_file = session_dir / f"{self.profile}-monitoring.json"
+                if token_file.exists():
+                    with open(token_file) as f:
+                        token_data = json.load(f)
+                        return {"email": token_data.get("email", "")}
+            return None
+        except Exception:
+            return None
+
+    def _extract_groups(self, token_claims: dict) -> list:
+        """Extract group memberships from JWT token claims.
+
+        Looks for groups in multiple claim formats:
+        - groups: Standard groups claim
+        - cognito:groups: Amazon Cognito groups
+        - custom:department: Custom department claim (treated as a group)
+        """
+        groups = []
+
+        # Standard groups claim
+        if "groups" in token_claims:
+            claim_groups = token_claims["groups"]
+            if isinstance(claim_groups, list):
+                groups.extend(claim_groups)
+            elif isinstance(claim_groups, str):
+                groups.append(claim_groups)
+
+        # Cognito groups
+        if "cognito:groups" in token_claims:
+            claim_groups = token_claims["cognito:groups"]
+            if isinstance(claim_groups, list):
+                groups.extend(claim_groups)
+            elif isinstance(claim_groups, str):
+                groups.append(claim_groups)
+
+        # Custom department (treated as a group for policy matching)
+        if "custom:department" in token_claims:
+            department = token_claims["custom:department"]
+            if department:
+                groups.append(f"department:{department}")
+
+        return list(set(groups))  # Remove duplicates
+
+    def _check_quota(self, token_claims: dict, id_token: str) -> dict:
+        """Check user quota via the quota check API.
+
+        Args:
+            token_claims: JWT token claims containing user info (for logging/fallback)
+            id_token: Raw JWT token to send in Authorization header for API Gateway validation
+
+        Returns:
+            Quota check result dict with 'allowed' key
+        """
+        quota_api_endpoint = self.config.get("quota_api_endpoint")
+        fail_mode = self.config.get("quota_fail_mode", "open")
+        timeout = self.config.get("quota_check_timeout", 5)
+
+        email = token_claims.get("email")
+        if not email:
+            self._debug_print("No email in token claims, skipping quota check")
+            return {"allowed": True, "reason": "no_email"}
+
+        groups = self._extract_groups(token_claims)
+        self._debug_print(f"Checking quota for {email} (groups: {groups})")
+
+        try:
+            # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
+            # The API extracts email/groups from validated JWT claims, not query params
+            response = requests.get(
+                f"{quota_api_endpoint}/check",
+                headers={"Authorization": f"Bearer {id_token}"},
+                timeout=timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                self._debug_print(f"Quota check result: allowed={result.get('allowed')}, reason={result.get('reason')}")
+                return result
+            elif response.status_code == 401:
+                # JWT validation failed at API Gateway
+                self._debug_print("Quota check JWT validation failed (401)")
+                if fail_mode == "closed":
+                    return {
+                        "allowed": False,
+                        "reason": "jwt_invalid",
+                        "message": "Quota check authentication failed - invalid or expired token"
+                    }
+                return {"allowed": True, "reason": "jwt_invalid"}
+            else:
+                self._debug_print(f"Quota check returned status {response.status_code}")
+                # Fail according to configured mode
+                if fail_mode == "closed":
+                    return {
+                        "allowed": False,
+                        "reason": "api_error",
+                        "message": f"Quota check failed with status {response.status_code}"
+                    }
+                return {"allowed": True, "reason": "api_error"}
+
+        except requests.exceptions.Timeout:
+            self._debug_print("Quota check timed out")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "timeout",
+                    "message": "Quota check timed out. Please try again."
+                }
+            return {"allowed": True, "reason": "timeout"}
+
+        except requests.exceptions.RequestException as e:
+            self._debug_print(f"Quota check request failed: {e}")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "connection_error",
+                    "message": f"Could not connect to quota service: {e}"
+                }
+            return {"allowed": True, "reason": "connection_error"}
+
+        except Exception as e:
+            self._debug_print(f"Quota check error: {e}")
+            if fail_mode == "closed":
+                return {
+                    "allowed": False,
+                    "reason": "error",
+                    "message": f"Quota check failed: {e}"
+                }
+            return {"allowed": True, "reason": "error"}
+
+    def _handle_quota_blocked(self, quota_result: dict) -> int:
+        """Handle blocked quota by displaying user-friendly message.
+
+        Args:
+            quota_result: Result from quota check API
+
+        Returns:
+            Exit code (always 1 for blocked)
+        """
+        reason = quota_result.get("reason", "unknown")
+        message = quota_result.get("message", "Access blocked due to quota limits")
+        usage = quota_result.get("usage", {})
+        policy = quota_result.get("policy", {})
+
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("ACCESS BLOCKED - QUOTA EXCEEDED", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+        print(f"\n{message}\n", file=sys.stderr)
+
+        if usage:
+            print("Current Usage:", file=sys.stderr)
+            if "monthly_tokens" in usage and "monthly_limit" in usage:
+                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+            if "daily_tokens" in usage and "daily_limit" in usage:
+                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+
+        if policy:
+            print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)
+
+        print("\nTo request an unblock, contact your administrator.", file=sys.stderr)
+        print("=" * 60 + "\n", file=sys.stderr)
+
+        # Show browser notification
+        self._show_quota_browser_notification(quota_result, is_blocked=True)
+
+        return 1
+
+    def _show_quota_browser_notification(self, quota_result: dict, is_blocked: bool = False):
+        """Show quota status in browser with visual progress bars.
+
+        Args:
+            quota_result: Result from quota check API
+            is_blocked: Whether access is blocked (vs warning)
+        """
+        try:
+            usage = quota_result.get("usage", {})
+            message = quota_result.get("message", "")
+
+            # Calculate percentages
+            monthly_percent = usage.get("monthly_percent", 0)
+            daily_percent = usage.get("daily_percent", 0)
+
+            # Format numbers for display
+            monthly_tokens = usage.get("monthly_tokens", 0)
+            monthly_limit = usage.get("monthly_limit", 0)
+            daily_tokens = usage.get("daily_tokens", 0)
+            daily_limit = usage.get("daily_limit", 0)
+
+            def format_tokens(n):
+                if n >= 1_000_000_000:
+                    return f"{n/1_000_000_000:.1f}B"
+                elif n >= 1_000_000:
+                    return f"{n/1_000_000:.1f}M"
+                elif n >= 1_000:
+                    return f"{n/1_000:.1f}K"
+                return str(int(n))
+
+            # Determine status styling
+            if is_blocked:
+                status_emoji = "🚫"
+                status_text = "Access Blocked"
+                status_color = "#dc3545"
+                header_bg = "#f8d7da"
+            else:
+                status_emoji = "⚠️"
+                status_text = "Quota Warning"
+                status_color = "#ffc107"
+                header_bg = "#fff3cd"
+
+            # Progress bar color based on percentage
+            def bar_color(pct):
+                if pct >= 100:
+                    return "#dc3545"  # Red
+                elif pct >= 90:
+                    return "#fd7e14"  # Orange
+                elif pct >= 80:
+                    return "#ffc107"  # Yellow
+                return "#28a745"  # Green
+
+            monthly_bar_color = bar_color(monthly_percent)
+            daily_bar_color = bar_color(daily_percent) if daily_limit else "#6c757d"
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Quota Status - Claude Code</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            margin: 0;
+            padding: 40px;
+            background: #f5f5f5;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }}
+        .container {{
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+        .header {{
+            background: {header_bg};
+            padding: 30px;
+            text-align: center;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }}
+        .header h1 {{
+            margin: 0;
+            color: {status_color};
+            font-size: 28px;
+        }}
+        .content {{
+            padding: 30px;
+        }}
+        .usage-section {{
+            margin-bottom: 25px;
+        }}
+        .usage-label {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #666;
+        }}
+        .usage-value {{
+            font-weight: 600;
+            color: #333;
+        }}
+        .progress-bar {{
+            height: 24px;
+            background: #e9ecef;
+            border-radius: 12px;
+            overflow: hidden;
+        }}
+        .progress-fill {{
+            height: 100%;
+            border-radius: 12px;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: white;
+            box-sizing: border-box;
+        }}
+        .message {{
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #666;
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }}
+        .footer {{
+            text-align: center;
+            padding: 20px;
+            background: #f8f9fa;
+            font-size: 13px;
+            color: #666;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{status_emoji} {status_text}</h1>
+        </div>
+        <div class="content">
+            <div class="usage-section">
+                <div class="usage-label">
+                    <span>Monthly Usage</span>
+                    <span class="usage-value">{format_tokens(monthly_tokens)} / {format_tokens(monthly_limit)} ({monthly_percent:.1f}%)</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {min(monthly_percent, 100)}%; background: {monthly_bar_color};">
+                        {monthly_percent:.0f}%
+                    </div>
+                </div>
+            </div>
+            {"" if not daily_limit else f'''
+            <div class="usage-section">
+                <div class="usage-label">
+                    <span>Daily Usage</span>
+                    <span class="usage-value">{format_tokens(daily_tokens)} / {format_tokens(daily_limit)} ({daily_percent:.1f}%)</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {min(daily_percent, 100)}%; background: {daily_bar_color};">
+                        {daily_percent:.0f}%
+                    </div>
+                </div>
+            </div>
+            '''}
+            <div class="message">
+                {html_module.escape(message) if message else ("Your access has been blocked due to quota limits." if is_blocked else "You're approaching your quota limit.")}
+                {" Contact your administrator for assistance." if is_blocked else ""}
+            </div>
+        </div>
+        <div class="footer">
+            Return to your terminal to continue.
+        </div>
+    </div>
+</body>
+</html>"""
+
+            # Start a brief HTTP server to serve the page
+            parent = self
+            page_served = {"done": False}
+
+            class QuotaPageHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(html.encode())
+                    page_served["done"] = True
+
+                def log_message(self, format, *args):
+                    pass  # Suppress logs
+
+            # Use a different port for quota page (8401) to avoid conflict with auth
+            quota_port = self.redirect_port + 1
+            try:
+                server = HTTPServer(("127.0.0.1", quota_port), QuotaPageHandler)
+                server.timeout = 5  # 5 second timeout
+
+                # Open browser
+                webbrowser.open(f"http://localhost:{quota_port}/quota-status")
+
+                # Wait for page to be served (or timeout)
+                while not page_served["done"]:
+                    server.handle_request()
+
+                server.server_close()
+            except OSError:
+                # Port in use or other error - skip browser notification
+                self._debug_print(f"Could not start quota notification server on port {quota_port}")
+
+        except Exception as e:
+            self._debug_print(f"Failed to show browser notification: {e}")
+
+    def _handle_quota_warning(self, quota_result: dict):
+        """Handle quota warning by showing notification without blocking.
+
+        Args:
+            quota_result: Result from quota check API
+        """
+        usage = quota_result.get("usage", {})
+        monthly_percent = usage.get("monthly_percent", 0)
+        daily_percent = usage.get("daily_percent", 0)
+
+        # Only show warning for significant thresholds (80%+)
+        if monthly_percent < 80 and daily_percent < 80:
+            return
+
+        # Show terminal warning
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("QUOTA WARNING", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+        if usage:
+            if "monthly_tokens" in usage and "monthly_limit" in usage:
+                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
+            if "daily_tokens" in usage and "daily_limit" in usage:
+                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
+
+        print("=" * 60 + "\n", file=sys.stderr)
+
+        # Show browser notification
+        self._show_quota_browser_notification(quota_result, is_blocked=False)
+
+    # ===========================================
+    # End Quota Check Methods
+    # ===========================================
+
     def run(self):
         """Main execution flow"""
         try:
             # Check cache first
             cached = self.get_cached_credentials()
             if cached:
+                # Periodic quota re-check even with cached credentials
+                if self._should_recheck_quota():
+                    self._debug_print("Performing periodic quota re-check...")
+                    id_token = self.get_monitoring_token()
+                    token_claims = self._get_cached_token_claims()
+                    if id_token and token_claims:
+                        quota_result = self._check_quota(token_claims, id_token)
+                        self._save_quota_check_timestamp()
+                        if not quota_result.get("allowed", True):
+                            return self._handle_quota_blocked(quota_result)
+                        else:
+                            self._handle_quota_warning(quota_result)
+                    else:
+                        self._debug_print("No cached token for quota re-check, skipping")
+
                 # Output cached credentials (intended behavior for AWS CLI)
                 print(json.dumps(cached))  # noqa: S105
                 return 0
@@ -1270,6 +1820,17 @@ class MultiProviderAuth:
             # Authenticate with OIDC provider
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
             id_token, token_claims = self.authenticate_oidc()
+
+            # Check quota before issuing credentials (if configured)
+            if self._should_check_quota():
+                self._debug_print("Checking quota before credential issuance...")
+                quota_result = self._check_quota(token_claims, id_token)
+                self._save_quota_check_timestamp()  # Track when quota was checked
+                if not quota_result.get("allowed", True):
+                    return self._handle_quota_blocked(quota_result)
+                else:
+                    # Check for warning threshold (allowed but high usage)
+                    self._handle_quota_warning(quota_result)
 
             # Get AWS credentials
             self._debug_print("Exchanging token for AWS credentials...")

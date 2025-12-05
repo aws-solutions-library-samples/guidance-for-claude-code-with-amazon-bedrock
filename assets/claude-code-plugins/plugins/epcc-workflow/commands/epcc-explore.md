@@ -1,8 +1,8 @@
 ---
 name: epcc-explore
 description: Explore phase of EPCC workflow - understand thoroughly before acting
-version: 3.1.0
-argument-hint: "[area-to-explore] [--deep|--quick]"
+version: 3.2.0
+argument-hint: "[area-to-explore] [--deep|--quick|--refresh]"
 ---
 
 # EPCC Explore Command
@@ -20,6 +20,74 @@ You are in the **EXPLORE** phase of the Explore-Plan-Code-Commit workflow. Your 
 - Documenting everything in EPCC_EXPLORE.md
 
 All implementation will happen in the CODE phase.
+
+## Session Resume Detection (Long-Running Project Support)
+
+**On entry**, check for existing session state:
+
+### Step 1: Check for Progress File
+```
+if epcc-progress.md exists:
+    Parse last exploration session for this area
+```
+
+### Step 2: Detect Prior Exploration
+```python
+# Check if this exploration target was explored recently
+for session in epcc_progress.sessions:
+    if session.phase == "EXPLORE" and session.target matches ARGUMENTS:
+        age = days_since(session.timestamp)
+        if age < 7:
+            # Recent exploration found
+            trigger_reuse_prompt(session)
+```
+
+### Step 3: Offer Reuse Option (If Applicable)
+If prior exploration found within 7 days:
+
+```
+📋 **Prior exploration found from [date]**:
+   Area: [exploration target]
+   Findings: [brief summary from EPCC_EXPLORE.md]
+   Files examined: [count]
+
+   Use existing exploration? [Y/n/refresh]
+   - Y: Load existing EPCC_EXPLORE.md, skip to recommendations
+   - n: Start fresh exploration (overwrites existing)
+   - refresh: Quick delta check (only new/changed files since last exploration)
+```
+
+Use AskUserQuestion tool:
+```json
+{
+  "questions": [{
+    "question": "Prior exploration for this area found from [date]. How do you want to proceed?",
+    "header": "Prior Found",
+    "multiSelect": false,
+    "options": [
+      {
+        "label": "Use existing",
+        "description": "Load prior EPCC_EXPLORE.md findings, skip re-exploration"
+      },
+      {
+        "label": "Start fresh",
+        "description": "Full re-exploration from scratch (overwrites existing)"
+      },
+      {
+        "label": "Refresh delta",
+        "description": "Quick check for changes since last exploration"
+      }
+    ]
+  }]
+}
+```
+
+### Step 4: Handle Response
+- **Use existing**: Load EPCC_EXPLORE.md, present summary, ask for next steps
+- **Start fresh**: Proceed with normal exploration flow (below)
+- **Refresh delta**: Run `git diff --stat [last_exploration_commit]..HEAD` to identify changed files, explore only those
+
+---
 
 ## Exploration Target
 $ARGUMENTS
@@ -624,6 +692,72 @@ Before finalizing EPCC_EXPLORE.md:
 - Team conventions known
 - Required checks identified
 
+## Session Exit: Progress Logging (Long-Running Project Support)
+
+**Before completing exploration**, update the progress log:
+
+### Step 1: Update epcc-progress.md
+
+If `epcc-progress.md` exists (long-running project):
+
+```markdown
+## Session: EXPLORE - [timestamp]
+**Target**: [exploration area from ARGUMENTS]
+**Thoroughness**: [quick|medium|deep]
+**Duration**: [approximate time spent]
+
+### Areas Explored
+- [area 1]: [brief finding]
+- [area 2]: [brief finding]
+
+### Key Patterns Found
+- [pattern]: [location]
+
+### Files Examined
+[count] files across [count] directories
+
+### Handoff Notes
+- Ready for: [PLAN/CODE phase]
+- Blockers: [any issues encountered]
+- Follow-up: [anything to investigate further]
+
+### Git State
+- Commit: [current HEAD short hash]
+- Branch: [current branch]
+- Clean: [yes/no]
+```
+
+### Step 2: Append Session Entry
+
+```python
+# Pseudo-code for progress update
+session_entry = {
+    "timestamp": now(),
+    "phase": "EXPLORE",
+    "target": ARGUMENTS,
+    "thoroughness": detected_level,
+    "output_file": "EPCC_EXPLORE.md",
+    "files_examined": count,
+    "patterns_found": count,
+    "git_commit": HEAD_short
+}
+append_to_progress_log(session_entry)
+```
+
+### Step 3: Report Completion
+
+```
+✅ Exploration complete!
+
+📄 **Output**: EPCC_EXPLORE.md
+📊 **Coverage**: [X] files examined, [Y] patterns documented
+📋 **Progress**: Session logged to epcc-progress.md
+
+**Recommended next phase**: /epcc-plan [feature-based-on-exploration]
+```
+
+---
+
 ## Remember
 
 **Time spent exploring saves time coding!**
@@ -631,3 +765,21 @@ Before finalizing EPCC_EXPLORE.md:
 🚫 **DO NOT**: Write code, create files, implement features, fix bugs, or modify anything
 
 ✅ **DO**: Be persistent, try multiple approaches, follow the trail, document thoroughly, save to EPCC_EXPLORE.md
+
+---
+
+## Long-Running Project Integration
+
+This command integrates with the EPCC long-running project tracking system:
+
+| Artifact | Role in EXPLORE |
+|----------|-----------------|
+| `epcc-features.json` | Read to understand feature context |
+| `epcc-progress.md` | Read prior sessions, write completion log |
+| `EPCC_EXPLORE.md` | Primary output document |
+
+**Session continuity**: If context runs low during exploration:
+1. Save current findings to EPCC_EXPLORE.md (partial)
+2. Log session to epcc-progress.md with "Status: Partial"
+3. Note remaining areas to explore
+4. Next session can `/epcc-resume` then continue with `/epcc-explore --refresh`

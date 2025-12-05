@@ -249,6 +249,35 @@ class CloudFormationManager:
         except Exception as e:
             return StackDeletionResult(success=False, error=str(e))
 
+    def get_failed_resources(self, stack_name: str) -> list[dict[str, str]]:
+        """
+        Get list of resources that failed to delete from a DELETE_FAILED stack.
+
+        Args:
+            stack_name: Name of the stack to query
+
+        Returns:
+            List of dicts with: logical_id, physical_id, resource_type, status_reason
+        """
+        try:
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            failed = []
+            for resource in response.get("StackResources", []):
+                if resource["ResourceStatus"] == "DELETE_FAILED":
+                    failed.append(
+                        {
+                            "logical_id": resource["LogicalResourceId"],
+                            "physical_id": resource.get("PhysicalResourceId", "N/A"),
+                            "resource_type": resource["ResourceType"],
+                            "status_reason": resource.get("ResourceStatusReason", "Unknown"),
+                        }
+                    )
+            return failed
+        except ClientError:
+            return []
+        except Exception:
+            return []
+
     def package_template(
         self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
     ) -> str:
@@ -335,21 +364,27 @@ class CloudFormationManager:
                             # Get bucket region to construct correct endpoint
                             try:
                                 bucket_location = self.s3_client.get_bucket_location(Bucket=s3_bucket)
-                                bucket_region = bucket_location.get('LocationConstraint') or 'us-east-1'
-                                
+                                bucket_region = bucket_location.get("LocationConstraint") or "us-east-1"
+
                                 # Determine partition from region
-                                if bucket_region.startswith('us-gov-'):
+                                if bucket_region.startswith("us-gov-"):
                                     s3_domain = f"s3.{bucket_region}.amazonaws.com"
-                                elif bucket_region.startswith('cn-'):
+                                elif bucket_region.startswith("cn-"):
                                     s3_domain = f"s3.{bucket_region}.amazonaws.com.cn"
                                 else:
                                     # Commercial partition - use regional endpoint
-                                    s3_domain = f"s3.{bucket_region}.amazonaws.com" if bucket_region != 'us-east-1' else "s3.amazonaws.com"
-                                
+                                    s3_domain = (
+                                        f"s3.{bucket_region}.amazonaws.com"
+                                        if bucket_region != "us-east-1"
+                                        else "s3.amazonaws.com"
+                                    )
+
                                 resource["Properties"]["TemplateURL"] = f"https://{s3_bucket}.{s3_domain}/{s3_key}"
                             except Exception:
                                 # Fallback to path-style URL which works across partitions
-                                resource["Properties"]["TemplateURL"] = f"https://s3.{self.region}.amazonaws.com/{s3_bucket}/{s3_key}"
+                                resource["Properties"][
+                                    "TemplateURL"
+                                ] = f"https://s3.{self.region}.amazonaws.com/{s3_bucket}/{s3_key}"
 
         # Return packaged template as YAML with CloudFormation intrinsic functions preserved
         return cfn_flip.dump_yaml(template)

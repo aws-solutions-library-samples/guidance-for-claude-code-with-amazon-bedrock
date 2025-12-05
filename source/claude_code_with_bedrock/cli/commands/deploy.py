@@ -148,8 +148,10 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
                 )
+                console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
+                console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
                 return 1
         else:
             # Deploy all configured stacks in dependency order
@@ -722,17 +724,35 @@ class DeployCommand(Command):
                 s3_bucket = networking_outputs["CfnArtifactsBucket"]
 
                 # Build parameters
-                monthly_limit = getattr(profile, "monthly_token_limit", 300000000)
+                monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
+                daily_limit = getattr(profile, "daily_token_limit", None)
+                daily_enforcement = getattr(profile, "daily_enforcement_mode", "alert")
+                monthly_enforcement = getattr(profile, "monthly_enforcement_mode", "block")
+                warning_80 = getattr(profile, "warning_threshold_80", int(monthly_limit * 0.8))
+                warning_90 = getattr(profile, "warning_threshold_90", int(monthly_limit * 0.9))
+
                 metrics_aggregator_role = dashboard_outputs.get(
                     "MetricsAggregatorRoleName", "claude-code-auth-dashboard-MetricsAggregatorRole-*"
                 )
+
+                # Get OIDC configuration for JWT authentication
+                oidc_issuer_url = profile.provider_domain
+                # Ensure issuer URL has https:// prefix
+                if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                    oidc_issuer_url = f"https://{oidc_issuer_url}"
+                oidc_client_id = profile.client_id
 
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
                     f"MetricsAggregatorRoleName={metrics_aggregator_role}",
-                    f"WarningThreshold80={int(monthly_limit * 0.8)}",
-                    f"WarningThreshold90={int(monthly_limit * 0.9)}",
+                    f"WarningThreshold80={warning_80}",
+                    f"WarningThreshold90={warning_90}",
+                    f"DailyTokenLimit={daily_limit or 0}",
+                    f"DailyEnforcementMode={daily_enforcement}",
+                    f"MonthlyEnforcementMode={monthly_enforcement}",
+                    f"OidcIssuerUrl={oidc_issuer_url}",
+                    f"OidcClientId={oidc_client_id}",
                 ]
 
                 # Package the template using AWS CLI
@@ -867,6 +887,38 @@ class DeployCommand(Command):
                 dashboard_url = dashboard_outputs.get("DashboardURL", "")
                 if dashboard_url:
                     console.print(f"• Dashboard URL: [cyan][link={dashboard_url}]{dashboard_url}[/link][/cyan]")
+
+            # Get quota monitoring stack outputs if enabled
+            if profile.quota_monitoring_enabled:
+                quota_stack = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+                quota_outputs = get_stack_outputs(quota_stack, profile.aws_region)
+
+                if quota_outputs:
+                    console.print("\n[bold]Quota Monitoring Stack:[/bold]")
+                    quota_endpoint = quota_outputs.get("QuotaCheckApiEndpoint")
+                    console.print(f"• Quota API Endpoint: [cyan]{quota_endpoint or 'N/A'}[/cyan]")
+                    console.print(f"• Alert Topic ARN: [cyan]{quota_outputs.get('QuotaAlertTopicArn', 'N/A')}[/cyan]")
+                    console.print(f"• User Metrics Table: [cyan]{quota_outputs.get('QuotaTableName', 'N/A')}[/cyan]")
+                    console.print(f"• Policies Table: [cyan]{quota_outputs.get('PoliciesTableName', 'N/A')}[/cyan]")
+
+                    # Show configured limits
+                    monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
+                    monthly_mode = getattr(profile, "monthly_enforcement_mode", "block")
+                    daily_limit = getattr(profile, "daily_token_limit", None)
+                    daily_mode = getattr(profile, "daily_enforcement_mode", "alert")
+
+                    console.print(f"• Monthly Limit: [cyan]{monthly_limit:,}[/cyan] tokens ({monthly_mode})")
+                    if daily_limit:
+                        console.print(f"• Daily Limit: [cyan]{daily_limit:,}[/cyan] tokens ({daily_mode})")
+
+                    # Save quota outputs to profile for test command and credential provider
+                    if quota_endpoint and quota_endpoint != "N/A":
+                        profile.quota_api_endpoint = quota_endpoint
+                    if quota_outputs.get("PoliciesTableName"):
+                        profile.quota_policies_table = quota_outputs["PoliciesTableName"]
+                    if quota_outputs.get("QuotaTableName"):
+                        profile.user_quota_metrics_table = quota_outputs["QuotaTableName"]
+                    config.save_profile(profile)
 
     def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
         """Update metrics aggregator Lambda environment variable to include quota table."""
