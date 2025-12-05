@@ -6,7 +6,6 @@
 import csv
 import json
 import re
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,7 +21,6 @@ from claude_code_with_bedrock.config import Config, Profile
 from claude_code_with_bedrock.models import EnforcementMode, PolicyType
 from claude_code_with_bedrock.quota_policies import (
     PolicyAlreadyExistsError,
-    PolicyNotFoundError,
     QuotaPolicyError,
     QuotaPolicyManager,
 )
@@ -31,7 +29,7 @@ from claude_code_with_bedrock.quota_policies import (
 MAX_UNBLOCK_DAYS = 7
 
 # Email validation pattern (RFC 5322 simplified)
-EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 MAX_EMAIL_LENGTH = 254
 
 
@@ -56,7 +54,7 @@ def _get_caller_identity() -> str:
         Caller ARN or 'unknown' if unable to determine.
     """
     try:
-        sts = boto3.client('sts')
+        sts = boto3.client("sts")
         identity = sts.get_caller_identity()
         return identity.get("Arn", "unknown")
     except Exception:
@@ -637,7 +635,9 @@ class QuotaShowCommand(Command):
                 return 0
 
             console.print(f"[bold]Applied Policy:[/bold] {policy.policy_type.value}:{policy.identifier}")
-            console.print(f"[bold]Status:[/bold] {'[green]Enabled[/green]' if policy.enabled else '[dim]Disabled[/dim]'}")
+            console.print(
+                f"[bold]Status:[/bold] {'[green]Enabled[/green]' if policy.enabled else '[dim]Disabled[/dim]'}"
+            )
             console.print(f"[bold]Enforcement:[/bold] {policy.enforcement_mode.value}")
             console.print()
 
@@ -762,7 +762,9 @@ class QuotaUsageCommand(Command):
 
             # Show warning if near/over quota
             if monthly_pct >= 100:
-                console.print("\n[red bold]QUOTA EXCEEDED[/red bold] - Access may be blocked depending on enforcement mode.")
+                console.print(
+                    "\n[red bold]QUOTA EXCEEDED[/red bold] - Access may be blocked depending on enforcement mode."
+                )
             elif monthly_pct >= 90:
                 console.print("\n[yellow]Warning: Approaching quota limit (90%+)[/yellow]")
 
@@ -782,8 +784,9 @@ class QuotaUsageCommand(Command):
         Returns:
             Dictionary with usage data (total_tokens, daily_tokens, etc.).
         """
-        import boto3
         from datetime import datetime
+
+        import boto3
 
         # Get the metrics table name from profile or derive it
         table_name = profile.user_quota_metrics_table
@@ -804,12 +807,7 @@ class QuotaUsageCommand(Command):
             current_month = datetime.utcnow().strftime("%Y-%m")
 
             # Query for user's monthly usage
-            response = table.get_item(
-                Key={
-                    "pk": f"USER#{email}",
-                    "sk": f"MONTH#{current_month}"
-                }
-            )
+            response = table.get_item(Key={"pk": f"USER#{email}", "sk": f"MONTH#{current_month}"})
 
             item = response.get("Item", {})
             return {
@@ -840,7 +838,13 @@ class QuotaUnblockCommand(Command):
 
     options = [
         option("profile", description="Configuration profile", flag=False, default=None),
-        option("duration", "d", description="Unblock duration: 24h, 7d, or until-reset (default: 24h)", flag=False, default="24h"),
+        option(
+            "duration",
+            "d",
+            description="Unblock duration: 24h, 7d, or until-reset (default: 24h)",
+            flag=False,
+            default="24h",
+        ),
         option("reason", "r", description="Reason for unblock (optional)", flag=False),
     ]
 
@@ -869,7 +873,9 @@ class QuotaUnblockCommand(Command):
         expires_at = self._calculate_expiry(now, duration)
 
         if expires_at is None:
-            console.print(f"[red]Invalid duration: {duration}. Use '24h', '{MAX_UNBLOCK_DAYS}d' (max), or 'until-reset'.[/red]")
+            console.print(
+                f"[red]Invalid duration: {duration}. Use '24h', '{MAX_UNBLOCK_DAYS}d' (max), or 'until-reset'.[/red]"
+            )
             return 1
 
         # Get the UserQuotaMetrics table name
@@ -916,7 +922,7 @@ class QuotaUnblockCommand(Command):
             if reason:
                 console.print(f"[bold]Reason:[/bold] {reason}")
 
-            console.print(f"\n[dim]The user can now access Claude Code until the unblock expires.[/dim]")
+            console.print("\n[dim]The user can now access Claude Code until the unblock expires.[/dim]")
             console.print(f"[dim]To remove the unblock early, delete the record from {quota_table_name}.[/dim]")
 
             return 0
@@ -984,7 +990,7 @@ class QuotaExportCommand(Command):
     description = "Export quota policies to JSON or CSV file"
 
     arguments = [
-        argument("file", description="Output file path (.json or .csv)", required=False),
+        argument("file?", description="Output file path (.json or .csv)"),
     ]
 
     options = [
@@ -1195,7 +1201,7 @@ class QuotaImportCommand(Command):
         """
         file_ext = Path(file_path).suffix.lower()
 
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             if file_ext == ".csv":
                 reader = csv.DictReader(f)
                 return list(reader)
@@ -1222,16 +1228,26 @@ class QuotaImportCommand(Command):
         # Show details
         for detail in results["details"]:
             if detail["action"] == "create":
-                console.print(f"[green]✓ {action_prefix}Created: {detail['identifier']} ({detail['type']}) - {detail.get('monthly_limit', '')}[/green]")
+                console.print(
+                    f"[green]✓ {action_prefix}Created: {detail['identifier']} "
+                    f"({detail['type']}) - {detail.get('monthly_limit', '')}[/green]"
+                )
             elif detail["action"] == "update":
-                console.print(f"[yellow]✓ {action_prefix}Updated: {detail['identifier']} ({detail['type']}) - {detail.get('monthly_limit', '')}[/yellow]")
+                console.print(
+                    f"[yellow]✓ {action_prefix}Updated: {detail['identifier']} "
+                    f"({detail['type']}) - {detail.get('monthly_limit', '')}[/yellow]"
+                )
             elif detail["action"] == "skip":
-                console.print(f"[dim]⚠ Skipped: {detail['identifier']} ({detail['type']}) - {detail.get('reason', '')}[/dim]")
+                console.print(
+                    f"[dim]⚠ Skipped: {detail['identifier']} ({detail['type']}) - {detail.get('reason', '')}[/dim]"
+                )
 
         # Show errors
         for error in results["errors"]:
             if "identifier" in error:
-                console.print(f"[red]✗ Error: {error['identifier']} ({error.get('type', '?')}) - {error['error']}[/red]")
+                console.print(
+                    f"[red]✗ Error: {error['identifier']} ({error.get('type', '?')}) - {error['error']}[/red]"
+                )
             else:
                 console.print(f"[red]✗ {error['error']}[/red]")
 
