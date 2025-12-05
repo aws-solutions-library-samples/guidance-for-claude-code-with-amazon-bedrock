@@ -48,3 +48,14 @@ repos:
         name: Format Python with Ruff
         files: ^source/.*\.py$
         exclude: ^source/(build|dist)/
+
+  # Comprehensive smoke tests (catches import errors, syntax errors, and instantiation issues)
+  - repo: local
+    hooks:
+      - id: test-smoke
+        name: Run comprehensive smoke tests
+        entry: bash -c 'cd source && poetry run python -m pytest tests/test_smoke.py -q'
+        language: system
+        files: ^source/(claude_code_with_bedrock/|credential_provider/).*\.py$
+        pass_filenames: false
+        # This test runs quickly (<1s) and catches critical errors before commit
