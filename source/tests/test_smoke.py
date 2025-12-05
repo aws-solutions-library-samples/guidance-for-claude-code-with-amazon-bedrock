@@ -234,7 +234,10 @@ class TestCommandImports:
         which is what happens when a user runs 'ccwb' command.
         """
         try:
-            pass
+            from claude_code_with_bedrock.cli import create_application
+
+            app = create_application()
+            assert app is not None
         except Exception as e:
             pytest.fail(f"Failed to import main CLI module: {e}")
 
