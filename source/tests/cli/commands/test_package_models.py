@@ -40,8 +40,8 @@ class TestPackageModelHandling:
                 pass
 
             # When monitoring is disabled, .claude directory might not be created
-            output_dir / ".claude" / "settings.json"
             # This is fine - settings.json is only for monitoring
+            assert not (output_dir / ".claude" / "settings.json").exists()
 
     def test_model_display_names(self):
         """Test that model display names are correctly mapped."""

@@ -43,19 +43,33 @@ poetry install  # Install all dependencies including test requirements
 tests/
 ├── cli/
 │   └── commands/      # CLI command tests
-│       ├── test_init_*.py
-│       ├── test_deploy_*.py
-│       └── test_package_*.py
-├── lambda/            # Lambda function tests
-│   ├── test_quota_monitor.py
-│   └── test_metrics_aggregator.py
-├── integration/       # End-to-end integration tests
-│   └── test_quota_monitoring_integration.py
-├── fixtures/          # Test data and utilities
-│   └── quota_fixtures.py
-├── test_models.py     # Model configuration tests
+│       ├── test_init.py            # Init command validation tests
+│       ├── test_init_e2e.py        # Init command E2E tests
+│       ├── test_init_models.py     # Init model selection tests
+│       ├── test_init_quota.py      # Init quota configuration tests
+│       ├── test_init_source_regions.py  # Init source region tests
+│       ├── test_deploy_quota.py    # Deploy quota monitoring tests
+│       ├── test_package.py         # Package command tests
+│       ├── test_package_async.py   # Package async build tests
+│       └── test_package_models.py  # Package model tests
+├── test_cloudformation.py  # CloudFormation template validation
+├── test_config.py          # Profile and config management tests
+├── test_config_models.py   # Model configuration persistence tests
+├── test_models.py          # Model configuration tests
+├── test_smoke.py           # Comprehensive smoke tests
 └── test_source_regions.py  # Source region tests
 ```
+
+### Future Test Categories (Not Yet Implemented)
+
+The following test categories are planned but not yet implemented:
+
+- **Lambda function tests** - Tests for quota monitoring and metrics aggregation lambdas
+  - Requires fixing boto3 module-level import isolation issues
+- **Integration tests** - End-to-end tests with AWS services
+  - Planned for LocalStack or dedicated test AWS account
+- **Additional CLI commands** - Tests for deploy, destroy, distribute, quota, status commands
+  - See guidance-docs/TESTING_TODO.md for full list
 
 ## Running Tests
 
@@ -85,34 +99,22 @@ poetry run pytest ../tests/cli/commands/test_deploy*.py  # Deploy command tests
 poetry run pytest ../tests/cli/commands/test_package*.py  # Package command tests
 ```
 
-#### Lambda Function Tests
-```bash
-# All Lambda tests
-poetry run pytest ../tests/lambda/
-
-# Quota monitoring Lambda tests
-poetry run pytest ../tests/lambda/test_quota_monitor.py
-
-# Metrics aggregator Lambda tests
-poetry run pytest ../tests/lambda/test_metrics_aggregator.py
-```
-
-#### Integration Tests
-```bash
-# All integration tests
-poetry run pytest ../tests/integration/
-
-# Quota monitoring integration test
-poetry run pytest ../tests/integration/test_quota_monitoring_integration.py
-```
-
-#### Unit Tests
+#### Core Functionality Tests
 ```bash
 # Model configuration tests
 poetry run pytest ../tests/test_models.py
 
 # Source regions tests
 poetry run pytest ../tests/test_source_regions.py
+
+# CloudFormation template validation
+poetry run pytest ../tests/test_cloudformation.py
+
+# Configuration and profile tests
+poetry run pytest ../tests/test_config*.py
+
+# Smoke tests (imports, instantiation)
+poetry run pytest ../tests/test_smoke.py
 ```
 
 ### Specific Test Files or Functions

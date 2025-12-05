@@ -226,8 +226,6 @@ class TestCognitoRegionDetection:
 
     def test_cognito_region_extraction_from_domain(self):
         """Test that region can be extracted from Cognito domains."""
-        import re
-
         # Test standard Cognito domain format
         test_cases = [
             ("myapp.auth.us-east-1.amazoncognito.com", "us-east-1"),
@@ -243,8 +241,6 @@ class TestCognitoRegionDetection:
 
     def test_cognito_region_fallback_pattern(self):
         """Test the fallback region pattern for non-standard domains."""
-        import re
-
         # Test fallback pattern for custom domains
         test_cases = [
             ("custom.us-west-2.example.com", "us-west-2"),
@@ -260,8 +256,6 @@ class TestCognitoRegionDetection:
 
     def test_region_detection_with_actual_init_code(self):
         """Test that the actual region detection code path works after our fix."""
-        import re
-
         # Simulate the exact code path from init.py
         provider_domain = "myapp.auth.us-east-1.amazoncognito.com"
 
