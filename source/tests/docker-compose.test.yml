@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  test-linux:
+    image: ubuntu:22.04
+    container_name: claude-code-test
+    ports:
+      - "8400:8400"    # OAuth callback port
+    stdin_open: true    # Keep container running
+    tty: true          # Interactive mode
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+      - TZ=UTC
+      - DISPLAY=host.docker.internal:0
+    volumes:
+      # Mount the distribution package
+      - ./dist:/package:ro
+      # Optional: Mount AWS credentials if you want to reuse existing auth
+      # - ~/.aws:/root/.aws
+    command: |
+      bash -c '
+        echo "============================================"
+        echo "Claude Code Linux Test Environment"
+        echo "============================================"
+        echo
+
+        # Set timezone
+        ln -snf /usr/share/zoneinfo/UTC /etc/localtime && echo UTC > /etc/timezone
+
+        # Install prerequisites
+        echo "Installing packages..."
+        apt-get update && apt-get install -y \
+          curl \
+          unzip \
+          python3 \
+          python3-pip \
+          awscli \
+          jq
+
+        # Install Node.js
+        echo "Installing Node.js..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+
+        # Install Claude Code
+        echo "Installing Claude Code CLI..."
+        npm install -g @anthropic-ai/claude-code
+
+        echo
+        echo "============================================"
+        echo "Environment ready!"
+        echo "============================================"
+        echo
+        echo "Available files in /package:"
+        ls -la /package/
+        echo
+        echo "To test the installation:"
+        echo "1. Create a test directory: mkdir /test && cd /test"
+        echo "2. Copy installer files: cp -r /package/* ."
+        echo "3. Run installer: ./install.sh"
+        echo "4. Test auth: export AWS_PROFILE=ClaudeCode && aws sts get-caller-identity"
+        echo
+        exec bash
+      '
+
+  # Alternative: Test with pre-built package zip
+  test-linux-zip:
+    image: ubuntu:22.04
+    container_name: claude-code-test-zip
+    ports:
+      - "8400:8400"
+    stdin_open: true
+    tty: true
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+      - TZ=UTC
+      - DISPLAY=host.docker.internal:0
+    volumes:
+      # Mount a specific zip file
+      - ./dist/claude-code-package-${PACKAGE_DATE:-latest}.zip:/package.zip:ro
+    command: |
+      bash -c '
+        ln -snf /usr/share/zoneinfo/UTC /etc/localtime && echo UTC > /etc/timezone
+
+        apt-get update && apt-get install -y curl unzip python3 awscli jq
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        npm install -g @anthropic-ai/claude-code
+
+        echo "Extracting package..."
+        cd /tmp
+        unzip /package.zip
+        cd claude-code-package
+
+        echo "Running installer..."
+        ./install.sh
+
+        echo "Ready for testing!"
+        exec bash
+      '
