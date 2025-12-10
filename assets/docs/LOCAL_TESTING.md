@@ -87,6 +87,55 @@ aws sts get-caller-identity --profile ClaudeCode
 
 Your browser opens to your organization's login page. After authentication, the terminal displays your federated identity.
 
+### No-Browser Authentication Mode
+
+For headless servers, SSH sessions, or environments where opening a browser is not practical, the credential process supports device code flow (RFC 8628):
+
+```bash
+# Test authentication without opening a browser
+~/claude-code-with-bedrock/credential-process --no-browser
+```
+
+Instead of opening a browser automatically, you'll see instructions like:
+
+```
+======================================================================
+  Azure AD Authentication - No Browser Mode
+======================================================================
+
+  1. Visit: https://microsoft.com/devicelogin
+  2. Enter code: ABCD-1234
+
+  Code expires in 15 minutes
+======================================================================
+
+Waiting for authentication to complete...
+```
+
+You can complete authentication on any device (phone, laptop, etc.) by visiting the URL and entering the code. The CLI polls for completion and continues once you approve the authentication.
+
+**Provider Support:**
+- ✅ Okta - Full support
+- ✅ Azure AD - Full support
+- ✅ Auth0 - Full support
+- ❌ Cognito User Pools - Not supported (use browser mode)
+
+**Configuration:**
+You can enable no-browser mode permanently by adding it to the config:
+
+```json
+{
+  "profiles": {
+    "YourProfile": {
+      "no_browser_mode": true,
+      ...
+    }
+  }
+}
+```
+
+Or use the `--no-browser` flag to override on a per-invocation basis.
+
 Credentials are cached after the first authentication. Test this by making successive calls:
 
 ```bash
@@ -98,6 +147,56 @@ time aws sts get-caller-identity --profile ClaudeCode
 ```
 
 The first call takes 3-10 seconds including authentication. Cached calls complete in under a second. Credentials remain valid for up to 8 hours.
+
+## Credential Process CLI Reference
+
+The credential-process binary supports several command-line options for testing and troubleshooting:
+
+```bash
+~/claude-code-with-bedrock/credential-process [OPTIONS]
+```
+
+**Available Options:**
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--profile NAME` | `-p` | Configuration profile to use (default: "ClaudeCode") |
+| `--version` | `-v` | Show program version and exit |
+| `--clear-cache` | | Clear cached credentials and force re-authentication |
+| `--check-expiration` | | Check if credentials need refresh (exit 0 if valid, 1 if expired) |
+| `--refresh-if-needed` | | Refresh credentials if expired (useful for cron jobs) |
+| `--no-browser` | | Use device code flow instead of opening a browser (for headless/SSH environments) |
+| `--get-monitoring-token` | | Get cached monitoring token instead of AWS credentials |
+| `--help` | `-h` | Show help message and exit |
+
+**Usage Examples:**
+
+```bash
+# Force re-authentication
+~/claude-code-with-bedrock/credential-process --clear-cache
+
+# Check if credentials are still valid
+~/claude-code-with-bedrock/credential-process --check-expiration
+if [ $? -eq 0 ]; then
+    echo "Credentials are valid"
+else
+    echo "Credentials expired"
+fi
+
+# Use device code flow (no browser)
+~/claude-code-with-bedrock/credential-process --no-browser
+
+# Use a different profile
+~/claude-code-with-bedrock/credential-process --profile MyProfile
+
+# Get monitoring token for debugging
+~/claude-code-with-bedrock/credential-process --get-monitoring-token
+```
+
+**Environment Variables:**
+
+- `CCWB_PROFILE` - Override the default profile name
+- `COGNITO_AUTH_DEBUG` - Enable debug logging (set to "1", "true", or "yes")
 
 ## Validating Bedrock Access
 

@@ -69,6 +69,9 @@ Make sure these are checked:
 - ✅ **Authorization Code**
 - ✅ **Refresh Token**
 - ✅ **Resource Owner Password** (optional, for testing)
+- ✅ **Device Authorization** (optional, for no-browser mode support)
+
+> **Note**: Enable **Device Authorization** if you want to support headless servers or SSH sessions using device code flow (`--no-browser` flag).
 
 #### Sign-in Redirect URIs
 
