@@ -12,7 +12,9 @@ from rich.table import Table
 from claude_code_with_bedrock.models import get_all_model_display_names
 
 
-def display_configuration_info(profile, identity_pool_id: str | None = None, format_type: str = "table") -> None:
+def display_configuration_info(
+    profile, identity_pool_id: str | None = None, format_type: str = "table", profile_name: str | None = None
+) -> None:
     """
     Display configuration information in a consistent format.
 
@@ -20,16 +22,20 @@ def display_configuration_info(profile, identity_pool_id: str | None = None, for
         profile: The configuration profile object
         identity_pool_id: Optional actual identity pool ID (from stack outputs)
         format_type: Display format - "table" for rich table, "simple" for simple text
+        profile_name: Optional profile name to display for AWS Profile (defaults to profile.name)
     """
     console = Console()
 
+    # Use provided profile_name or fall back to profile.name
+    aws_profile_name = profile_name or profile.name
+
     if format_type == "table":
-        _display_table_format(console, profile, identity_pool_id)
+        _display_table_format(console, profile, identity_pool_id, aws_profile_name)
     else:
-        _display_simple_format(console, profile, identity_pool_id)
+        _display_simple_format(console, profile, identity_pool_id, aws_profile_name)
 
 
-def _display_table_format(console: Console, profile, identity_pool_id: str | None) -> None:
+def _display_table_format(console: Console, profile, identity_pool_id: str | None, aws_profile_name: str) -> None:
     """Display configuration in rich table format."""
     config_table = Table(box=box.SIMPLE)
     config_table.add_column("Setting", style="dim")
@@ -37,7 +43,7 @@ def _display_table_format(console: Console, profile, identity_pool_id: str | Non
 
     # Configuration and AWS profile names
     config_table.add_row("Configuration Profile", profile.name)
-    config_table.add_row("AWS Profile", "ClaudeCode")
+    config_table.add_row("AWS Profile", aws_profile_name)
 
     # Provider information
     config_table.add_row("OIDC Provider", profile.provider_domain)
@@ -93,13 +99,13 @@ def _display_table_format(console: Console, profile, identity_pool_id: str | Non
     console.print(config_table)
 
 
-def _display_simple_format(console: Console, profile, identity_pool_id: str | None) -> None:
+def _display_simple_format(console: Console, profile, identity_pool_id: str | None, aws_profile_name: str) -> None:
     """Display configuration in simple text format."""
     console.print("\n[bold]Package Configuration:[/bold]")
 
     # Configuration and AWS profile names
     console.print(f"  Configuration Profile: [cyan]{profile.name}[/cyan]")
-    console.print("  AWS Profile: [cyan]ClaudeCode[/cyan]")
+    console.print(f"  AWS Profile: [cyan]{aws_profile_name}[/cyan]")
 
     # Provider information
     console.print(f"  OIDC Provider: [cyan]{profile.provider_domain}[/cyan]")
@@ -150,20 +156,26 @@ def _display_simple_format(console: Console, profile, identity_pool_id: str | No
         console.print("  Analytics: [cyan]Enabled (Athena + Kinesis Firehose)[/cyan]")
 
 
-def get_configuration_dict(profile, identity_pool_id: str | None = None) -> dict[str, Any]:
+def get_configuration_dict(
+    profile, identity_pool_id: str | None = None, profile_name: str | None = None
+) -> dict[str, Any]:
     """
     Get configuration information as a dictionary for JSON output.
 
     Args:
         profile: The configuration profile object
         identity_pool_id: Optional actual identity pool ID (from stack outputs)
+        profile_name: Optional profile name to display for AWS Profile (defaults to profile.name)
 
     Returns:
         Dictionary containing all configuration information
     """
+    # Use provided profile_name or fall back to profile.name
+    aws_profile_name = profile_name or profile.name
+
     config_dict = {
         "configuration_profile": profile.name,
-        "aws_profile": "ClaudeCode",
+        "aws_profile": aws_profile_name,
         "oidc_provider": profile.provider_domain,
         "client_id": profile.client_id,
         "aws_region": profile.aws_region,
