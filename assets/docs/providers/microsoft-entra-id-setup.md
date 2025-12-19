@@ -86,6 +86,8 @@ After registration, save these values:
 2. Toggle **Allow public client flows** to **Yes**
 3. Click **Save**
 
+> **Note**: Enabling **Allow public client flows** automatically enables device code flow, which allows users to authenticate from headless servers or SSH sessions using the `--no-browser` flag.
+
 ### Step 4.3: Verify API Permissions
 
 The default `User.Read` permission is sufficient. No changes needed.

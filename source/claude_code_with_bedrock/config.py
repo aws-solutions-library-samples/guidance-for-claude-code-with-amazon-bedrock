@@ -73,6 +73,9 @@ class Profile:
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
+    # Authentication mode configuration
+    no_browser_mode: bool = False  # Use device code flow instead of browser-based authentication
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
