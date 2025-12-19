@@ -190,8 +190,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-3",  # Spain
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Aragón
                 ],
                 "destination_regions": [
                     "eu-central-1",
@@ -200,8 +200,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
+                    "eu-south-1",
                     "eu-south-2",
-                    "eu-south-3",
                 ],
             },
             "japan": {
@@ -233,8 +233,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-3",  # Spain
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Spain
                     # Asia Pacific
                     "ap-southeast-3",  # Jakarta
                     "ap-northeast-1",  # Tokyo
@@ -262,8 +262,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
+                    "eu-south-1",
                     "eu-south-2",
-                    "eu-south-3",
                     # Asia Pacific
                     "ap-southeast-3",
                     "ap-northeast-1",
