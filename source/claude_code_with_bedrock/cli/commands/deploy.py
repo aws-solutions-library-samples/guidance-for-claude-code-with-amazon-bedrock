@@ -711,17 +711,17 @@ class DeployCommand(Command):
                     console.print("Run: [cyan]ccwb deploy dashboard[/cyan]")
                     return 1
 
-                # Get S3 bucket from networking stack for packaging
-                networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
-                networking_outputs = get_stack_outputs(networking_stack, profile.aws_region)
+                # Get S3 bucket from s3bucket stack for packaging
+                s3_stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack_name, profile.aws_region)
 
-                if not networking_outputs or not networking_outputs.get("CfnArtifactsBucket"):
-                    console.print(f"[red]Could not get S3 bucket from networking stack {networking_stack}[/red]")
-                    console.print("[yellow]The networking stack must be deployed first.[/yellow]")
-                    console.print("Run: [cyan]ccwb deploy networking[/cyan]")
+                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
+                    console.print(f"[red]Could not get S3 bucket from s3bucket stack {s3_stack_name}[/red]")
+                    console.print("[yellow]The s3bucket stack must be deployed first.[/yellow]")
+                    console.print("Run: [cyan]ccwb deploy s3bucket[/cyan]")
                     return 1
 
-                s3_bucket = networking_outputs["CfnArtifactsBucket"]
+                s3_bucket = s3_outputs["CfnArtifactsBucket"]
 
                 # Build parameters
                 monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
@@ -736,10 +736,23 @@ class DeployCommand(Command):
                 )
 
                 # Get OIDC configuration for JWT authentication
-                oidc_issuer_url = profile.provider_domain
-                # Ensure issuer URL has https:// prefix
-                if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
-                    oidc_issuer_url = f"https://{oidc_issuer_url}"
+                # For Cognito, the issuer URL must be the Cognito IdP URL format,
+                # not the hosted UI domain. API Gateway V2 JWT Authorizer requires
+                # the issuer to have a valid /.well-known/openid-configuration endpoint.
+                # See: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html
+                # The Cognito hosted UI domain (e.g., xxx.auth.region.amazoncognito.com) does NOT
+                # expose the OIDC discovery endpoint. Only the Cognito IdP URL format does:
+                # https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/openid-configuration
+                if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
+                    # Cognito IdP URL format: https://cognito-idp.{region}.amazonaws.com/{user_pool_id}
+                    region = profile.aws_region or "us-east-1"
+                    oidc_issuer_url = f"https://cognito-idp.{region}.amazonaws.com/{profile.cognito_user_pool_id}"
+                else:
+                    # For other OIDC providers (Okta, Auth0, Azure), use the provider domain
+                    oidc_issuer_url = profile.provider_domain
+                    # Ensure issuer URL has https:// prefix
+                    if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                        oidc_issuer_url = f"https://{oidc_issuer_url}"
                 oidc_client_id = profile.client_id
 
                 params = [
