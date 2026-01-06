@@ -365,8 +365,8 @@ class PackageCommand(Command):
         console.print("  • config.json - Configuration")
         console.print("  • install.sh - Installation script for macOS/Linux")
         # Check if Windows installer exists (created when Windows binaries are present)
-        if (output_dir / "install.bat").exists():
-            console.print("  • install.bat - Installation script for Windows")
+        if (output_dir / "install.ps1").exists():
+            console.print("  • install.ps1 - Installation script for Windows")
         console.print("  • README.md - Installation instructions")
         if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
@@ -1964,147 +1964,156 @@ echo
         return installer_path
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
-        """Create Windows batch installer script."""
+        """Create Windows powershell installer script."""
 
-        installer_content = f"""@echo off
-REM Claude Code Authentication Installer for Windows
-REM Organization: {profile.provider_domain}
-REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        installer_content = """# Claude Code Authentication Installer for Windows
+# Organization: login.microsoftonline.com/856e7b84-710d-454e-a71c-fc2b8bed66e0/v2.0
+# Generated: 2025-12-22 17:19:21
 
-echo ======================================
-echo Claude Code Authentication Installer
-echo ======================================
-echo.
-echo Organization: {profile.provider_domain}
-echo.
+$ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-REM Check prerequisites
-echo Checking prerequisites...
+Write-Host "======================================"
+Write-Host "Claude Code Authentication Installer"
+Write-Host "======================================"
+Write-Host ""
+Write-Host "Organization: login.microsoftonline.com/856e7b84-710d-454e-a71c-fc2b8bed66e0/v2.0"
+Write-Host ""
 
-where aws >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: AWS CLI is not installed
-    echo        Please install from https://aws.amazon.com/cli/
-    pause
-    exit /b 1
-)
+# Check prerequisites
+Write-Host "Checking prerequisites..."
 
-echo OK Prerequisites found
-echo.
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: AWS CLI is not installed" -ForegroundColor Red
+    Write-Host "       Please install from https://aws.amazon.com/cli/"
+    Read-Host "Press Enter to exit"
+    exit 1
+}
 
-REM Create directory
-echo Installing authentication tools...
-if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
+Write-Host "OK Prerequisites found"
+Write-Host ""
 
-REM Copy credential process executable with renamed target
-echo Copying credential process...
-copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy credential-process-windows.exe
-    pause
-    exit /b 1
-)
+# Create directory
+Write-Host "Installing authentication tools..."
+$installDir = "$env:USERPROFILE\claude-code-with-bedrock"
+if (-not (Test-Path $installDir)) {
+    New-Item -ItemType Directory -Path $installDir | Out-Null
+}
 
-REM Copy OTEL helper if it exists with renamed target
-if exist "otel-helper-windows.exe" (
-    echo Copying OTEL helper...
-    copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
-)
+# Copy credential process executable with renamed target
+Write-Host "Copying credential process..."
+try {
+    Copy-Item "$ScriptDir\credential-process-windows.exe" "$installDir\credential-process.exe" -Force
+} catch {
+    Write-Host "ERROR: Failed to copy credential-process-windows.exe" -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
 
-REM Copy configuration
-echo Copying configuration...
-copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+# Copy OTEL helper if it exists with renamed target
+if (Test-Path "$ScriptDir\otel-helper-windows.exe") {
+    Write-Host "Copying OTEL helper..."
+    Copy-Item "$ScriptDir\otel-helper-windows.exe" "$installDir\otel-helper.exe" -Force
+}
 
-REM Copy Claude Code settings if they exist
-if exist "claude-settings" (
-    echo Copying Claude Code telemetry settings...
-    if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
+# Copy configuration
+Write-Host "Copying configuration..."
+Copy-Item "$ScriptDir\config.json" "$installDir\" -Force
 
-    REM Copy settings and replace placeholders
-    if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
-        if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
-                echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
-            )
-        )
+# Copy Claude Code settings if they exist
+if (Test-Path "$ScriptDir\claude-settings") {
+    Write-Host "Copying Claude Code telemetry settings..."
+    $claudeDir = "$env:USERPROFILE\.claude"
+    if (-not (Test-Path $claudeDir)) {
+        New-Item -ItemType Directory -Path $claudeDir | Out-Null
+    }
 
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
-            echo OK Claude Code settings configured
-        )
-    )
-)
+    # Copy settings and replace placeholders
+    if (Test-Path "$ScriptDir\claude-settings\settings.json") {
+        $skipSettings = $false
 
-REM Configure AWS profiles
-echo.
-echo Configuring AWS profiles...
+        if (Test-Path "$claudeDir\settings.json") {
+            Write-Host "Existing Claude Code settings found"
+            $overwrite = Read-Host "Overwrite with new settings? (y/n)"
+            if ($overwrite -ne "y") {
+                Write-Host "Skipping Claude Code settings..."
+                $skipSettings = $true
+            }
+        }
 
-REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command ^
-"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
-    echo Configuring AWS profile: %%p
+        if (-not $skipSettings) {
+            # Get department from Active Directory
+            $searcher = [adsisearcher]"(sAMAccountName=$env:username)"
+            $userPath = $searcher.FindOne().Path
+            $department = ([adsi]$userPath).department.ToString().Replace(' ', '-')
 
-    REM Get profile-specific region
-    for /f %%r in ('powershell -Command ^
-    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
+            # Build paths with forward slashes
+            $otelPath = "$installDir\otel-helper.exe".Replace('\\', '/')
+            $credPath = "$installDir\credential-process.exe".Replace('\\', '/')
 
+            # Read and replace placeholders
+            $content = Get-Content "$ScriptDir\claude-settings\settings.json" -Raw
+            $content = $content -replace '__OTEL_HELPER_PATH__', $otelPath
+            $content = $content -replace '__DEPARTMENT__', $department
+            $content = $content -replace '__CREDENTIAL_PROCESS_PATH__', $credPath
+            $content | Set-Content "$claudeDir\settings.json"
 
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+            Write-Host "OK Claude Code settings configured"
+        }
+    }
+}
 
+# Configure AWS profiles
+Write-Host ""
+Write-Host "Configuring AWS profiles..."
 
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
-    )
+# Read profiles from config.json
+$config = Get-Content "$ScriptDir\config.json" | ConvertFrom-Json
 
-    echo   OK Created AWS profile '%%p'
-)
+foreach ($profile in $config.PSObject.Properties.Name) {
+    Write-Host "Configuring AWS profile: $profile"
 
-echo.
-echo ======================================
-echo Installation complete!
-echo ======================================
-echo.
-echo Available profiles:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
-    echo   - %%p
-)
-echo.
-echo To use Claude Code authentication:
-echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
-echo.
-echo Example:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
-)
-echo.
-echo Note: Authentication will automatically open your browser when needed.
-echo.
-pause
+    # Get profile-specific region
+    $profileRegion = $config.$profile.aws_region
+
+    # Set credential process with --profile flag
+    $credentialProcess = "$installDir\credential-process.exe --profile $profile"
+    aws configure set credential_process $credentialProcess --profile $profile
+
+    # Set region
+    if ($profileRegion) {
+        aws configure set region $profileRegion --profile $profile
+    } else {
+        aws configure set region eu-west-1 --profile $profile
+    }
+
+    Write-Host "  OK Created AWS profile '$profile'"
+}
+
+Write-Host ""
+Write-Host "======================================"
+Write-Host "Installation complete!"
+Write-Host "======================================"
+Write-Host ""
+Write-Host "Available profiles:"
+foreach ($profile in $config.PSObject.Properties.Name) {
+    Write-Host "  - $profile"
+}
+Write-Host ""
+Write-Host "To use Claude Code authentication:"
+Write-Host '  $env:AWS_PROFILE = "<profile-name>"'
+Write-Host "  aws sts get-caller-identity"
+Write-Host ""
+Write-Host "Example:"
+$firstProfile = $config.PSObject.Properties.Name | Select-Object -First 1
+Write-Host "  `$env:AWS_PROFILE = `"$firstProfile`""
+Write-Host "  aws sts get-caller-identity"
+Write-Host ""
+Write-Host "Note: Authentication will automatically open your browser when needed."
+Write-Host ""
 """
 
-        installer_path = output_dir / "install.bat"
+        installer_path = output_dir / "install.ps1"
         with open(installer_path, "w", encoding="utf-8") as f:
             f.write(installer_content)
 
@@ -2173,8 +2182,8 @@ cd claude-code-package
 ```
 
 #### Step 3: Run the Installer
-```cmd
-install.bat
+```powershell
+install.ps1
 ```
 
 The installer will:
@@ -2361,8 +2370,7 @@ Available metrics include:
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                                 # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": "department=__DEPARTMENT__,team.id=default,cost_center=default,organization=default",
                             }
                         )
 
