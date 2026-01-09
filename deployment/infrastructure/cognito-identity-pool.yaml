@@ -155,6 +155,12 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowMarketplaceAccess
+            Effect: Allow
+            Action:
+              - 'aws-marketplace:ViewSubscriptions'
+              - 'aws-marketplace:Subscribe'
+            Resource: '*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchOTLP
