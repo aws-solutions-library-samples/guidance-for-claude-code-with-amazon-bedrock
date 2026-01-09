@@ -711,17 +711,17 @@ class DeployCommand(Command):
                     console.print("Run: [cyan]ccwb deploy dashboard[/cyan]")
                     return 1
 
-                # Get S3 bucket from networking stack for packaging
-                networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
-                networking_outputs = get_stack_outputs(networking_stack, profile.aws_region)
+                # Get S3 bucket from s3bucket stack for packaging
+                s3_stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack_name, profile.aws_region)
 
-                if not networking_outputs or not networking_outputs.get("CfnArtifactsBucket"):
-                    console.print(f"[red]Could not get S3 bucket from networking stack {networking_stack}[/red]")
-                    console.print("[yellow]The networking stack must be deployed first.[/yellow]")
-                    console.print("Run: [cyan]ccwb deploy networking[/cyan]")
+                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
+                    console.print(f"[red]Could not get S3 bucket from s3bucket stack {s3_stack_name}[/red]")
+                    console.print("[yellow]The s3bucket stack must be deployed first.[/yellow]")
+                    console.print("Run: [cyan]ccwb deploy s3bucket[/cyan]")
                     return 1
 
-                s3_bucket = networking_outputs["CfnArtifactsBucket"]
+                s3_bucket = s3_outputs["CfnArtifactsBucket"]
 
                 # Build parameters
                 monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
