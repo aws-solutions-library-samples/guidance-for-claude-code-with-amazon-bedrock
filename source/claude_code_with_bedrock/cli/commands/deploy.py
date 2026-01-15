@@ -740,6 +740,9 @@ class DeployCommand(Command):
                 # Ensure issuer URL has https:// prefix
                 if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
                     oidc_issuer_url = f"https://{oidc_issuer_url}"
+                # Auth0 tokens include trailing slash in iss claim, so authorizer must match
+                if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
+                    oidc_issuer_url = f"{oidc_issuer_url}/"
                 oidc_client_id = profile.client_id
 
                 params = [
