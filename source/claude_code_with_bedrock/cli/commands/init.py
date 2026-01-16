@@ -1713,6 +1713,14 @@ class InitCommand(Command):
                 stacks_found = True
 
             # Build config from saved profile and stack outputs
+            # Extract VPC-related keys from flattened monitoring_config back into nested structure
+            vpc_config = None
+            if profile.monitoring_config:
+                vpc_keys = ["create_vpc", "vpc_id", "subnet_ids", "vpc_cidr", "subnet1_cidr", "subnet2_cidr"]
+                vpc_data = {k: v for k, v in profile.monitoring_config.items() if k in vpc_keys and v is not None}
+                if vpc_data:
+                    vpc_config = vpc_data
+
             existing_config = {
                 "_stacks_found": stacks_found,
                 "okta": {"domain": profile.provider_domain, "client_id": profile.client_id},
@@ -1725,7 +1733,7 @@ class InitCommand(Command):
                 },
                 "monitoring": {
                     "enabled": profile.monitoring_enabled,
-                    "vpc_config": profile.monitoring_config.get("vpc_config") if profile.monitoring_config else None,
+                    "vpc_config": vpc_config,
                     "custom_domain": profile.monitoring_config.get("custom_domain")
                     if profile.monitoring_config
                     else None,
