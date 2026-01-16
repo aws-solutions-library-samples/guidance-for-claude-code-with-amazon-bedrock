@@ -46,6 +46,8 @@ class TestPackageModelHandling:
     def test_model_display_names(self):
         """Test that model display names are correctly mapped."""
         model_names = {
+            "global.anthropic.claude-opus-4-5-20251101-v1:0": "Claude Opus 4.5 (Global)",
+            "us.anthropic.claude-opus-4-5-20251101-v1:0": "Claude Opus 4.5 (US)",
             "us.anthropic.claude-opus-4-1-20250805-v1:0": "Claude Opus 4.1",
             "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
             "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
@@ -55,7 +57,7 @@ class TestPackageModelHandling:
         # This mapping is used in the package command for display
         for model_id, expected_name in model_names.items():
             assert expected_name.startswith("Claude")
-            assert model_id.startswith("us.anthropic.claude")
+            assert "anthropic.claude" in model_id
 
     def test_cross_region_display_names(self):
         """Test that cross-region profiles are correctly displayed."""
