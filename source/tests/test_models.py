@@ -36,6 +36,7 @@ class TestModelConfiguration:
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
             "opus-4-6",
+            "opus-4-5",
             "opus-4-1",
             "opus-4",
             "sonnet-4",
