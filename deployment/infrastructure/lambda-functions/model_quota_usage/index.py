@@ -40,6 +40,18 @@ QUOTA_MAPPINGS = {
         "rpm_quota_code": "L-11DFF789",
         "regions": ["ap-southeast-2", "ap-southeast-4"]
     },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "name": "Haiku 4.5 (Global)",
+        "tpm_quota_code": "L-6E888CC2",  # TODO: Update with actual quota code when available
+        "rpm_quota_code": "L-3D8CC480",  # TODO: Update with actual quota code when available
+        "regions": ["us-east-1", "us-west-2", "us-east-2", "eu-central-1", "eu-west-1", "ap-northeast-1"]
+    },
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "name": "Haiku 4.5 (US)",
+        "tpm_quota_code": "L-6E888CC2",  # TODO: Update with actual quota code when available
+        "rpm_quota_code": "L-3D8CC480",  # TODO: Update with actual quota code when available
+        "regions": ["us-east-1", "us-west-2", "us-east-2"]
+    },
     "us.anthropic.claude-opus-4-1-20250805-v1:0": {
         "name": "Opus 4.1",
         "tpm_quota_code": "L-BD85BFCD",
