@@ -758,6 +758,7 @@ Resources:
               WHEN model LIKE '%opus-4%' THEN 15.00
               WHEN model LIKE '%sonnet-4%' THEN 3.00
               WHEN model LIKE '%sonnet-3-7%' THEN 3.00
+              WHEN model LIKE '%haiku-4-5%' THEN 0.80
               WHEN model LIKE '%haiku-3-5%' THEN 0.25
               ELSE 3.00
             END as price_per_million

@@ -23,14 +23,18 @@ class TestModelConfiguration:
 
     def test_default_regions_structure(self):
         """Test that DEFAULT_REGIONS has the expected structure."""
-        expected_profiles = {"us", "europe", "apac", "us-gov"}
+        expected_profiles = {"us", "europe", "eu", "apac", "japan", "australia", "us-gov", "global"}
         assert set(DEFAULT_REGIONS.keys()) == expected_profiles
 
         # Verify regions are valid AWS regions
         assert DEFAULT_REGIONS["us"] == "us-east-1"
         assert DEFAULT_REGIONS["europe"] == "eu-west-3"
+        assert DEFAULT_REGIONS["eu"] == "eu-central-1"
         assert DEFAULT_REGIONS["apac"] == "ap-northeast-1"
+        assert DEFAULT_REGIONS["japan"] == "ap-northeast-1"
+        assert DEFAULT_REGIONS["australia"] == "ap-southeast-2"
         assert DEFAULT_REGIONS["us-gov"] == "us-gov-west-1"
+        assert DEFAULT_REGIONS["global"] == "us-east-1"
 
     def test_claude_models_structure(self):
         """Test that CLAUDE_MODELS has the expected structure."""
@@ -42,6 +46,7 @@ class TestModelConfiguration:
             "sonnet-4-5-govcloud",
             "sonnet-3-7",
             "sonnet-3-7-govcloud",
+            "haiku-4-5",
         }
         assert set(CLAUDE_MODELS.keys()) == expected_models
 

@@ -1261,6 +1261,11 @@ class InitCommand(Command):
             "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
             "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
             "us.anthropic.claude-sonnet-4-20250514-v1:0": "Claude Sonnet 4",
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Global)",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (US)",
+            "eu.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (EU)",
+            "jp.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Japan)",
+            "au.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Australia)",
         }
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
@@ -1822,6 +1827,11 @@ class InitCommand(Command):
                 "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
                 "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
                 "us.anthropic.claude-sonnet-4-20250514-v1:0": "Claude Sonnet 4",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Global)",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (US)",
+                "eu.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (EU)",
+                "jp.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Japan)",
+                "au.anthropic.claude-haiku-4-5-20251001-v1:0": "Claude Haiku 4.5 (Australia)",
             }
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
 

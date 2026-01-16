@@ -35,6 +35,8 @@ def get_model_display_name(model_id):
         return "Sonnet 3.7"
     elif "sonnet-3.5" in model_lower or "sonnet-3-5" in model_lower:
         return "Sonnet 3.5"
+    elif "haiku-4-5" in model_lower or "haiku-4.5" in model_lower:
+        return "Haiku 4.5"
     elif "haiku-3.5" in model_lower or "haiku-3-5" in model_lower:
         return "Haiku 3.5"
     elif "haiku-3" in model_lower or "haiku-3.0" in model_lower:
@@ -61,6 +63,7 @@ def get_model_color(model_name):
         "Sonnet 3.7": "#ef4444", # Red
         "Sonnet 3.5": "#ec4899", # Pink
         "Sonnet": "#06b6d4",    # Cyan
+        "Haiku 4.5": "#14b8a6", # Teal
         "Haiku 3.5": "#8b5cf6", # Purple
         "Haiku 3.0": "#6366f1", # Indigo
         "Haiku": "#84cc16",     # Lime
