@@ -1434,7 +1434,8 @@ class InitCommand(Command):
         monitoring_dict = config_data.get("monitoring", {})
         monitoring_config = {}
         if monitoring_dict.get("vpc_config"):
-            monitoring_config["vpc_config"] = monitoring_dict["vpc_config"]
+            # Flatten vpc_config to match deploy.py expectations (lines 588-593)
+            monitoring_config.update(monitoring_dict["vpc_config"])
         if monitoring_dict.get("custom_domain"):
             monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
         if monitoring_dict.get("hosted_zone_id"):
