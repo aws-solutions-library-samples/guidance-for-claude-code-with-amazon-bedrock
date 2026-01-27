@@ -3,7 +3,7 @@ name: tool-use-structured-output
 description: Use Bedrock tool_use to guarantee structured JSON outputs from Claude models. Eliminates JSON parsing failures by forcing responses through typed tool schemas.
 ---
 
-This skill demonstrates using Amazon Bedrock's tool_use feature to guarantee structured JSON outputs from Claude models. Instead of hoping the model returns valid JSON, define a tool schema that forces the exact structure you need.
+This skill demonstrates using Amazon Bedrock's tool_use feature to get highly reliable structured JSON outputs from Claude models. Instead of hoping the model returns valid JSON, define a tool schema that forces the exact structure you need.
 
 ## The Problem
 
@@ -15,7 +15,7 @@ Asking Claude to "return JSON" fails 10-30% of the time:
 
 ## The Solution
 
-Define a tool with your exact output schema. Claude MUST call the tool with valid arguments matching the schema.
+Define a tool with your exact output schema. Claude will call the tool with arguments that should match the schema structure. While tool use strongly steers the model toward valid structured output, you should still validate the response and have fallback handling for edge cases.
 
 ## Implementation Pattern
 
@@ -120,7 +120,8 @@ for content_block in result.get('content', []):
         tool_name = content_block.get('name')
         tool_input = content_block.get('input')
 
-        # tool_input is GUARANTEED to match your schema
+        # tool_input should match your schema structure
+        # Always validate before using in production
         courses = tool_input['courses']
         confidence = tool_input['confidence']
         page_number = tool_input['page_number']
@@ -185,12 +186,16 @@ Complex structures:
 ```python
 import boto3
 import json
-from typing import TypedDict, List
+import logging
+from typing import TypedDict, List, NotRequired
+
+logger = logging.getLogger(__name__)
 
 class Course(TypedDict):
     course_code: str
     title: str
-    credits: float | None
+    credits: NotRequired[float | None]
+    description: NotRequired[str]
 
 class ExtractionResult(TypedDict):
     courses: List[Course]
@@ -222,11 +227,39 @@ def extract_courses(image_base64: str) -> ExtractionResult:
 
 ## Error Handling
 
-Tool use can still fail in edge cases:
+Tool use can still fail in edge cases. Always validate and handle errors:
 
 ```python
+import boto3
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 def safe_extract(image_base64: str) -> ExtractionResult | None:
+    """Extract courses with proper error handling."""
+    bedrock = boto3.client('bedrock-runtime')
+
     try:
+        response = bedrock.invoke_model(
+            modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 4096,
+                "tools": EXTRACTION_TOOLS,
+                "tool_choice": {"type": "tool", "name": "emit_extraction_result"},
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_base64}},
+                            {"type": "text", "text": "Extract all courses from this catalog page."}
+                        ]
+                    }
+                ]
+            })
+        )
+
         result = json.loads(response['body'].read())
 
         # Check for stop reason
@@ -243,6 +276,8 @@ def safe_extract(image_base64: str) -> ExtractionResult | None:
     except Exception as e:
         logger.error(f"Extraction failed: {e}")
         return None
+
+    return None
 ```
 
 ## Cost Considerations
@@ -261,4 +296,4 @@ For high-volume workloads, keep schemas minimal.
 | JSON mode (if available) | 90-95% |
 | **Tool use (forced)** | **99%+** |
 
-Tool use is the most reliable method for structured outputs from Claude on Bedrock.
+Tool use is the most reliable method for structured outputs from Claude on Bedrock. However, always validate the response matches your expected schema before using it in production.
