@@ -73,7 +73,12 @@ import {
   SageMakerRuntimeClient,
   InvokeEndpointAsyncCommand
 } from '@aws-sdk/client-sagemaker-runtime';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  ListObjectsV2Command
+} from '@aws-sdk/client-s3';
 import { v4 as uuid } from 'uuid';
 
 interface AsyncInferenceResult<T> {
@@ -116,7 +121,15 @@ export class SageMakerAsyncClient {
       RequestTTLSeconds: 21600,        // 6 hour TTL
     }));
 
-    const outputLocation = response.OutputLocation!;
+    // Validate OutputLocation is present
+    const outputLocation = response.OutputLocation;
+    if (!outputLocation) {
+      return {
+        success: false,
+        error: 'OutputLocation not returned from async invocation',
+        inferenceId,
+      };
+    }
 
     // 3. Poll for result
     return this.pollForResult<T>(inferenceId, outputLocation);
@@ -126,11 +139,15 @@ export class SageMakerAsyncClient {
     inferenceId: string,
     outputLocation: string,
     maxWaitMs: number = 1200000,  // 20 minutes
-    pollIntervalMs: number = 5000
+    initialPollIntervalMs: number = 5000,
+    maxPollIntervalMs: number = 30000
   ): Promise<AsyncInferenceResult<T>> {
     const startTime = Date.now();
     const outputKey = outputLocation.replace(`s3://${this.bucket}/`, '');
-    const failureKey = `failure/${inferenceId}/`;
+    // Extract output filename to construct failure path
+    const outputFileName = outputKey.split('/').pop()!;
+    const failureKey = `failure/${outputFileName}`;
+    let pollIntervalMs = initialPollIntervalMs;
 
     while (Date.now() - startTime < maxWaitMs) {
       // Check for success
@@ -139,14 +156,39 @@ export class SageMakerAsyncClient {
           Bucket: this.bucket,
           Key: outputKey,
         }));
-        const body = await result.Body!.transformToString();
+
+        if (!result.Body) {
+          return {
+            success: false,
+            error: 'Empty response body from S3',
+            inferenceId,
+          };
+        }
+
+        const body = await result.Body.transformToString();
+
+        // Parse JSON with explicit error handling
+        let parsed: T;
+        try {
+          parsed = JSON.parse(body) as T;
+        } catch (parseError: any) {
+          return {
+            success: false,
+            error: `Failed to parse inference result JSON: ${parseError?.message ?? 'Unknown parse error'}`,
+            inferenceId,
+          };
+        }
+
         return {
           success: true,
-          data: JSON.parse(body),
+          data: parsed,
           inferenceId,
         };
       } catch (e: any) {
-        if (e.name !== 'NoSuchKey') throw e;
+        // Only continue polling for missing objects
+        if (e.name !== 'NoSuchKey' && e?.$metadata?.httpStatusCode !== 404) {
+          throw e;
+        }
       }
 
       // Check for failure
@@ -160,11 +202,16 @@ export class SageMakerAsyncClient {
             inferenceId,
           };
         }
-      } catch (e) {
-        // No failure yet, continue polling
+      } catch (e: any) {
+        // Treat missing failure objects as "no failure yet", but surface other errors
+        if (e?.name !== 'NoSuchKey' && e?.$metadata?.httpStatusCode !== 404) {
+          throw e;
+        }
       }
 
+      // Exponential backoff for polling interval
       await this.sleep(pollIntervalMs);
+      pollIntervalMs = Math.min(pollIntervalMs * 1.5, maxPollIntervalMs);
     }
 
     return {
@@ -172,6 +219,27 @@ export class SageMakerAsyncClient {
       error: 'Timeout waiting for inference result',
       inferenceId,
     };
+  }
+
+  // Helper method to list S3 objects with a given prefix
+  private async listPrefix(prefix: string): Promise<string[]> {
+    const response = await this.s3.send(new ListObjectsV2Command({
+      Bucket: this.bucket,
+      Prefix: prefix,
+    }));
+    return (response.Contents ?? []).map(obj => obj.Key!).filter(Boolean);
+  }
+
+  // Helper method to get an S3 object's content as a string
+  private async getObject(key: string): Promise<string> {
+    const response = await this.s3.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    }));
+    if (!response.Body) {
+      throw new Error(`Empty body for S3 object: ${key}`);
+    }
+    return response.Body.transformToString();
   }
 
   private sleep(ms: number): Promise<void> {
@@ -190,10 +258,11 @@ interface InferenceRequest {
   prompt: string;
 }
 
+// Example response structure - customize based on your model's output
 interface InferenceResponse {
-  courses: Array<{
-    course_code: string;
-    title: string;
+  results: Array<{
+    id: string;
+    content: string;
   }>;
 }
 
@@ -227,6 +296,10 @@ export const handler = async (event: InferenceRequest) => {
 Scale to zero when idle (cost optimization):
 
 ```typescript
+import * as applicationautoscaling from 'aws-cdk-lib/aws-applicationautoscaling';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import { Duration } from 'aws-cdk-lib';
+
 const scalingTarget = new applicationautoscaling.ScalableTarget(this, 'ScalingTarget', {
   serviceNamespace: applicationautoscaling.ServiceNamespace.SAGEMAKER,
   resourceId: `endpoint/${endpoint.attrEndpointName}/variant/AllTraffic`,
@@ -279,14 +352,15 @@ async invokeWithRetry<T>(
         return result;
       }
 
-      // Check if error is retryable
+      // Only retry timeout-related or transient errors
       if (this.isRetryableError(result.error)) {
         lastError = new Error(result.error);
         await this.sleep(Math.pow(2, attempt) * 1000);  // Exponential backoff
         continue;
       }
 
-      return result;  // Non-retryable error
+      // Non-retryable error (model errors, validation failures, etc.)
+      return result;
     } catch (e) {
       lastError = e as Error;
       await this.sleep(Math.pow(2, attempt) * 1000);
@@ -302,9 +376,14 @@ async invokeWithRetry<T>(
 
 private isRetryableError(error?: string): boolean {
   if (!error) return false;
-  return error.includes('Timeout') ||
-         error.includes('ServiceUnavailable') ||
-         error.includes('ThrottlingException');
+  const retryablePatterns = [
+    'Timeout',
+    'ServiceUnavailable',
+    'ThrottlingException',
+    'InternalServerError',
+    'RequestTimeout',
+  ];
+  return retryablePatterns.some(pattern => error.includes(pattern));
 }
 ```
 
