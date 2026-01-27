@@ -30,6 +30,8 @@ Prompt → Generate N completions → Score each with rewards → Policy gradien
 Create reward functions that return scores between 0 and 1 (or custom ranges):
 
 ```python
+import json
+
 def formatting_reward_func(completions, **kwargs):
     """Reward valid JSON structure"""
     rewards = []
@@ -104,14 +106,17 @@ config = GRPOConfig(
 GRPO expects prompts and reference answers:
 
 ```python
+from datasets import Dataset
+from PIL import Image
+
 dataset = Dataset.from_dict({
     "prompt": [
         "Extract courses from this image...",
         "List all courses shown...",
     ],
     "image": [
-        PIL.Image.open("page1.png"),
-        PIL.Image.open("page2.png"),
+        Image.open("page1.png"),
+        Image.open("page2.png"),
     ],
     "answer": [
         '[{"course_code": "CS101", "title": "Intro to CS"}]',
@@ -173,16 +178,30 @@ GRPO requires more VRAM than SFT due to multiple generations:
 
 ### Docker Container
 
-Use the official Unsloth image for dependency compatibility:
+**Security Note**: The example below uses a mutable third-party image tag. For production use, you should:
+1. Pin to a specific version or image digest (e.g., `@sha256:...`)
+2. Mirror the image to your own registry (e.g., Amazon ECR)
+3. Scan the image for vulnerabilities before use
 
 ```dockerfile
-FROM ghcr.io/unslothai/unsloth:stable
+# Pin to a specific version for reproducibility and security
+# Check https://github.com/unslothai/unsloth/releases for latest stable versions
+FROM ghcr.io/unslothai/unsloth:2024.12  # Use specific version, not :stable
 
 # Add AWS dependencies without breaking numpy/scipy
 RUN pip install --no-cache-dir --no-deps boto3 botocore
 
 COPY grpo_train.py /opt/ml/code/
 ENTRYPOINT ["python3", "/opt/ml/code/grpo_train.py"]
+```
+
+For maximum security, mirror the image to your own ECR registry:
+
+```bash
+# Pull, scan, and push to ECR
+docker pull ghcr.io/unslothai/unsloth:2024.12
+docker tag ghcr.io/unslothai/unsloth:2024.12 ${AWS_ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/unsloth:2024.12
+docker push ${AWS_ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/unsloth:2024.12
 ```
 
 ### Training Time Estimation
