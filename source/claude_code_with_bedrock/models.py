@@ -15,7 +15,16 @@ from enum import Enum
 from typing import Any
 
 # Default regions for AWS profile based on cross-region profile
-DEFAULT_REGIONS = {"us": "us-east-1", "europe": "eu-west-3", "apac": "ap-northeast-1", "us-gov": "us-gov-west-1"}
+DEFAULT_REGIONS = {
+    "us": "us-east-1",
+    "europe": "eu-west-3",
+    "eu": "eu-central-1",
+    "apac": "ap-northeast-1",
+    "japan": "ap-northeast-1",
+    "australia": "ap-southeast-2",
+    "us-gov": "us-gov-west-1",
+    "global": "us-east-1",
+}
 
 # Claude model configurations
 # Each model defines its availability across different cross-region profiles
@@ -359,6 +368,140 @@ CLAUDE_MODELS = {
                 "description": "US GovCloud regions",
                 "source_regions": ["us-gov-west-1", "us-gov-east-1"],
                 "destination_regions": ["us-gov-west-1", "us-gov-east-1"],
+            },
+        },
+    },
+    "haiku-4-5": {
+        "name": "Claude Haiku 4.5",
+        "base_model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "profiles": {
+            "global": {
+                "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Global CRIS - All commercial AWS regions",
+                "source_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # South America
+                    "sa-east-1",
+                ],
+                "destination_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # South America
+                    "sa-east-1",
+                ],
+            },
+            "us": {
+                "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "US CRIS - US and Canada regions",
+                "source_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                ],
+                "destination_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                ],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "EU CRIS - European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+            },
+            "japan": {
+                "model_id": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Japan CRIS - Tokyo and Osaka regions",
+                "source_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+                "destination_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+            },
+            "australia": {
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Australia CRIS - Sydney and Melbourne regions",
+                "source_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+                "destination_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
             },
         },
     },
