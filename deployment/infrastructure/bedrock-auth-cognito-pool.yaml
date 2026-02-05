@@ -142,6 +142,12 @@ Resources:
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
             Resource: '*'
+          - Sid: AllowMarketplaceAccess
+            Effect: Allow
+            Action:
+              - 'aws-marketplace:ViewSubscriptions'
+              - 'aws-marketplace:Subscribe'
+            Resource: '*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics
