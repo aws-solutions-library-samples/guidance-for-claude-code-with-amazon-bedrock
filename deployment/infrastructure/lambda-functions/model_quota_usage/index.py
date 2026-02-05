@@ -16,6 +16,18 @@ from html_utils import generate_error_html, get_status_color
 
 # Quota code mappings for each model
 QUOTA_MAPPINGS = {
+    "global.anthropic.claude-opus-4-6-v1": {
+        "name": "Opus 4.6 (Global)",
+        "tpm_quota_code": "L-BD85BFCD",
+        "rpm_quota_code": "L-7EC72A47",
+        "regions": ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
+    },
+    "us.anthropic.claude-opus-4-6-v1": {
+        "name": "Opus 4.6",
+        "tpm_quota_code": "L-BD85BFCD",
+        "rpm_quota_code": "L-7EC72A47",
+        "regions": ["us-east-1", "us-west-2", "us-east-2"]
+    },
     "us.anthropic.claude-opus-4-1-20250805-v1:0": {
         "name": "Opus 4.1",
         "tpm_quota_code": "L-BD85BFCD",
