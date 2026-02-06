@@ -91,6 +91,9 @@ After creation, you'll see:
 2. Ensure these are enabled:
    - ✅ **Authorization Code**
    - ✅ **Refresh Token**
+   - ✅ **Device Code** (optional, for no-browser mode support)
+
+> **Note**: Enable **Device Code** if you want to support headless servers or SSH sessions using device code flow (`--no-browser` flag).
 
 ### Step 4.5: Save Changes
 

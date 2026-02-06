@@ -42,6 +42,7 @@ PROVIDER_CONFIGS = {
         "name": "Okta",
         "authorize_endpoint": "/oauth2/v1/authorize",
         "token_endpoint": "/oauth2/v1/token",
+        "device_authorization_endpoint": "/oauth2/v1/device/authorize",
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -50,6 +51,7 @@ PROVIDER_CONFIGS = {
         "name": "Auth0",
         "authorize_endpoint": "/authorize",
         "token_endpoint": "/oauth/token",
+        "device_authorization_endpoint": "/oauth/device/code",
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -58,7 +60,8 @@ PROVIDER_CONFIGS = {
         "name": "Azure AD",
         "authorize_endpoint": "/oauth2/v2.0/authorize",
         "token_endpoint": "/oauth2/v2.0/token",
-        "scopes": "openid profile email",
+        "device_authorization_endpoint": "/oauth2/v2.0/devicecode",
+        "scopes": "openid profile email offline_access",
         "response_type": "code",
         "response_mode": "query",
     },
@@ -66,6 +69,7 @@ PROVIDER_CONFIGS = {
         "name": "AWS Cognito User Pool",
         "authorize_endpoint": "/oauth2/authorize",
         "token_endpoint": "/oauth2/token",
+        "device_authorization_endpoint": None,  # Cognito User Pools don't support device code flow
         "scopes": "openid email",
         "response_type": "code",
         "response_mode": "query",
@@ -74,9 +78,12 @@ PROVIDER_CONFIGS = {
 
 
 class MultiProviderAuth:
-    def __init__(self, profile=None):
+    def __init__(self, profile=None, no_browser=None):
         # Debug mode - set before loading config since _load_config may use _debug_print
         self.debug = os.getenv("COGNITO_AUTH_DEBUG", "").lower() in ("1", "true", "yes")
+
+        # Store no_browser override (command line takes precedence over config)
+        self.no_browser_override = no_browser
 
         # Load configuration from environment or config file
         # Auto-detect profile from config.json if not specified
@@ -106,6 +113,12 @@ class MultiProviderAuth:
         """Print debug message only if debug mode is enabled"""
         if self.debug:
             print(f"Debug: {message}", file=sys.stderr)
+
+    def _is_no_browser_mode(self):
+        """Check if no-browser mode is enabled (CLI arg takes precedence over config)"""
+        if self.no_browser_override is not None:
+            return self.no_browser_override
+        return self.config.get("no_browser_mode", False)
 
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
@@ -207,6 +220,7 @@ class MultiProviderAuth:
         profile_config.setdefault(
             "max_session_duration", 43200 if profile_config.get("federation_type") == "direct" else 28800
         )
+        profile_config.setdefault("no_browser_mode", False)
 
         return profile_config
 
@@ -869,6 +883,170 @@ class MultiProviderAuth:
 
         return tokens["id_token"], id_token_claims
 
+    def authenticate_device_code(self):
+        """Perform OIDC authentication using device code flow (RFC 8628)"""
+        # Check if provider supports device code flow
+        device_auth_endpoint = self.provider_config.get("device_authorization_endpoint")
+        if not device_auth_endpoint:
+            raise Exception(
+                f"{self.provider_config['name']} does not support device code flow. "
+                "Please disable no_browser_mode or use a different provider."
+            )
+
+        provider_domain = self.config["provider_domain"]
+
+        # For Azure/Microsoft, strip /v2.0 if present
+        if self.provider_type == "azure" and provider_domain.endswith("/v2.0"):
+            provider_domain = provider_domain[:-5]
+
+        base_url = f"https://{provider_domain}"
+
+        # Step 1: Request device and user codes
+        self._debug_print(f"Requesting device code from {self.provider_config['name']}...")
+
+        device_auth_params = {
+            "client_id": self.config["client_id"],
+            "scope": self.provider_config["scopes"],
+        }
+
+        device_auth_url = f"{base_url}{device_auth_endpoint}"
+
+        try:
+            device_response = requests.post(
+                device_auth_url,
+                data=device_auth_params,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30,
+            )
+
+            if not device_response.ok:
+                raise Exception(f"Device authorization request failed: {device_response.text}")
+
+            device_data = device_response.json()
+
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to connect to {self.provider_config['name']}: {str(e)}") from e
+
+        # Extract device code flow parameters
+        device_code = device_data.get("device_code")
+        user_code = device_data.get("user_code")
+        verification_uri = device_data.get("verification_uri") or device_data.get("verification_url")
+        verification_uri_complete = device_data.get("verification_uri_complete")
+        expires_in = device_data.get("expires_in", 900)  # Default 15 minutes
+        interval = device_data.get("interval", 5)  # Default 5 seconds
+
+        if not device_code or not user_code or not verification_uri:
+            raise Exception(f"Invalid device authorization response: {device_data}")
+
+        # Step 2: Display instructions to user
+        print("\n" + "=" * 70, file=sys.stderr)
+        print(f"  {self.provider_config['name']} Authentication - No Browser Mode", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
+        print(f"\n  1. Visit: {verification_uri}", file=sys.stderr)
+        print(f"  2. Enter code: {user_code}", file=sys.stderr)
+
+        if verification_uri_complete:
+            print(f"\n  Or visit: {verification_uri_complete}", file=sys.stderr)
+            print("  (This URL includes the code pre-filled)", file=sys.stderr)
+
+        print(f"\n  Code expires in {expires_in // 60} minutes", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
+        print("\nWaiting for authentication to complete...\n", file=sys.stderr)
+
+        # Step 3: Poll token endpoint
+        token_url = f"{base_url}{self.provider_config['token_endpoint']}"
+        start_time = time.time()
+        poll_count = 0
+
+        while time.time() - start_time < expires_in:
+            # Sleep only after the first poll (RFC 8628 best practice)
+            if poll_count > 0:
+                time.sleep(interval)
+            poll_count += 1
+
+            token_params = {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": self.config["client_id"],
+            }
+
+            try:
+                token_response = requests.post(
+                    token_url,
+                    data=token_params,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=30,
+                )
+
+                if token_response.ok:
+                    # Success! User completed authentication
+                    tokens = token_response.json()
+
+                    if "id_token" not in tokens:
+                        raise Exception(
+                            "No id_token in response. Ensure your OIDC client is configured for OpenID Connect."
+                        )
+
+                    # Decode and validate ID token
+                    id_token_claims = jwt.decode(tokens["id_token"], options={"verify_signature": False})
+
+                    # Enhanced debug logging for claims
+                    if self.debug:
+                        self._debug_print("\n=== ID Token Claims ===")
+                        self._debug_print(json.dumps(id_token_claims, indent=2, default=str))
+
+                        # Log specific important claims
+                        important_claims = [
+                            "sub",
+                            "email",
+                            "name",
+                            "preferred_username",
+                            "groups",
+                            "cognito:groups",
+                            "custom:department",
+                            "custom:role",
+                        ]
+                        self._debug_print("\n=== Key Claims for Mapping ===")
+                        for claim in important_claims:
+                            if claim in id_token_claims:
+                                self._debug_print(f"{claim}: {id_token_claims[claim]}")
+
+                    print("\n✓ Authentication successful!\n", file=sys.stderr)
+                    return tokens["id_token"], id_token_claims
+
+                else:
+                    # Check error response
+                    error_data = (
+                        token_response.json()
+                        if token_response.headers.get("content-type", "").startswith("application/json")
+                        else {}
+                    )
+                    error = error_data.get("error", "")
+
+                    if error == "authorization_pending":
+                        # Still waiting for user to complete authentication
+                        self._debug_print("Still waiting for user authentication...")
+                        continue
+                    elif error == "slow_down":
+                        # Increase polling interval
+                        interval += 5
+                        self._debug_print(f"Slowing down polling interval to {interval}s")
+                        continue
+                    elif error == "expired_token":
+                        raise Exception("Device code expired. Please try again.")
+                    elif error == "access_denied":
+                        raise Exception("User denied the authentication request.")
+                    else:
+                        raise Exception(f"Token request failed: {error_data.get('error_description', error)}")
+
+            except requests.exceptions.RequestException as e:
+                self._debug_print(f"Network error during polling: {e}")
+                # Continue polling despite network errors
+                continue
+
+        # Timeout reached
+        raise Exception("Authentication timeout - device code expired without completion")
+
     def _create_callback_handler(self, expected_state, result_container):
         """Create HTTP handler for OAuth callback"""
         parent = self
@@ -1238,7 +1416,10 @@ class MultiProviderAuth:
 
             # Authenticate with OIDC provider
             self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
-            id_token, token_claims = self.authenticate_oidc()
+            if self._is_no_browser_mode():
+                id_token, token_claims = self.authenticate_device_code()
+            else:
+                id_token, token_claims = self.authenticate_oidc()
 
             # Get AWS credentials (we need them but won't output them)
             self._debug_print("Exchanging token for AWS credentials...")
@@ -1408,9 +1589,7 @@ class MultiProviderAuth:
             # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
             # The API extracts email/groups from validated JWT claims, not query params
             response = requests.get(
-                f"{quota_api_endpoint}/check",
-                headers={"Authorization": f"Bearer {id_token}"},
-                timeout=timeout
+                f"{quota_api_endpoint}/check", headers={"Authorization": f"Bearer {id_token}"}, timeout=timeout
             )
 
             if response.status_code == 200:
@@ -1424,7 +1603,7 @@ class MultiProviderAuth:
                     return {
                         "allowed": False,
                         "reason": "jwt_invalid",
-                        "message": "Quota check authentication failed - invalid or expired token"
+                        "message": "Quota check authentication failed - invalid or expired token",
                     }
                 return {"allowed": True, "reason": "jwt_invalid"}
             else:
@@ -1434,18 +1613,14 @@ class MultiProviderAuth:
                     return {
                         "allowed": False,
                         "reason": "api_error",
-                        "message": f"Quota check failed with status {response.status_code}"
+                        "message": f"Quota check failed with status {response.status_code}",
                     }
                 return {"allowed": True, "reason": "api_error"}
 
         except requests.exceptions.Timeout:
             self._debug_print("Quota check timed out")
             if fail_mode == "closed":
-                return {
-                    "allowed": False,
-                    "reason": "timeout",
-                    "message": "Quota check timed out. Please try again."
-                }
+                return {"allowed": False, "reason": "timeout", "message": "Quota check timed out. Please try again."}
             return {"allowed": True, "reason": "timeout"}
 
         except requests.exceptions.RequestException as e:
@@ -1454,18 +1629,14 @@ class MultiProviderAuth:
                 return {
                     "allowed": False,
                     "reason": "connection_error",
-                    "message": f"Could not connect to quota service: {e}"
+                    "message": f"Could not connect to quota service: {e}",
                 }
             return {"allowed": True, "reason": "connection_error"}
 
         except Exception as e:
             self._debug_print(f"Quota check error: {e}")
             if fail_mode == "closed":
-                return {
-                    "allowed": False,
-                    "reason": "error",
-                    "message": f"Quota check failed: {e}"
-                }
+                return {"allowed": False, "reason": "error", "message": f"Quota check failed: {e}"}
             return {"allowed": True, "reason": "error"}
 
     def _handle_quota_blocked(self, quota_result: dict) -> int:
@@ -1491,9 +1662,15 @@ class MultiProviderAuth:
         if usage:
             print("Current Usage:", file=sys.stderr)
             if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+                print(
+                    f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)",
+                    file=sys.stderr,
+                )
             if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+                print(
+                    f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)",
+                    file=sys.stderr,
+                )
 
         if policy:
             print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)
@@ -1746,9 +1923,15 @@ class MultiProviderAuth:
 
         if usage:
             if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
+                print(
+                    f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)",
+                    file=sys.stderr,
+                )
             if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
+                print(
+                    f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)",
+                    file=sys.stderr,
+                )
 
         print("=" * 60 + "\n", file=sys.stderr)
 
@@ -1819,7 +2002,10 @@ class MultiProviderAuth:
 
             # Authenticate with OIDC provider
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
-            id_token, token_claims = self.authenticate_oidc()
+            if self._is_no_browser_mode():
+                id_token, token_claims = self.authenticate_device_code()
+            else:
+                id_token, token_claims = self.authenticate_oidc()
 
             # Check quota before issuing credentials (if configured)
             if self._should_check_quota():
@@ -1903,10 +2089,15 @@ def main():
         action="store_true",
         help="Refresh credentials if expired (for cron jobs with session storage)",
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Use device code flow instead of opening a browser (for headless/SSH environments)",
+    )
 
     args = parser.parse_args()
 
-    auth = MultiProviderAuth(profile=args.profile)
+    auth = MultiProviderAuth(profile=args.profile, no_browser=args.no_browser)
 
     # Handle cache clearing request
     if args.clear_cache:
