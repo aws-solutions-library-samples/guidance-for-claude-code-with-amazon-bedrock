@@ -64,15 +64,38 @@ class DestroyCommand(Command):
 
         stacks_to_destroy = []
         if stack_arg:
-            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics", "s3bucket"]:
+            if stack_arg in [
+                "auth",
+                "distribution",
+                "codebuild",
+                "networking",
+                "monitoring",
+                "dashboard",
+                "analytics",
+                "quota",
+                "s3bucket",
+            ]:
                 stacks_to_destroy.append(stack_arg)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, s3bucket")
+                console.print(
+                    "Valid stacks: auth, distribution, codebuild, networking, monitoring, "
+                    "dashboard, analytics, quota, s3bucket"
+                )
                 return 1
         else:
-            # Destroy all stacks in reverse order
-            stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "s3bucket", "auth"]
+            # Destroy all stacks in reverse order (dependencies last)
+            stacks_to_destroy = [
+                "quota",
+                "analytics",
+                "dashboard",
+                "monitoring",
+                "s3bucket",
+                "networking",
+                "distribution",
+                "codebuild",
+                "auth",
+            ]
 
         # Show what will be destroyed
         console.print(
@@ -106,13 +129,20 @@ class DestroyCommand(Command):
         stacks_with_failures = []
 
         for stack in stacks_to_destroy:
+            # Skip stacks that aren't enabled in the profile
+            if stack == "distribution" and not (profile.enable_distribution or profile.distribution_type):
+                continue
+            if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
+                continue
+            if stack == "quota" and not getattr(profile, "quota_monitoring_enabled", False):
+                continue
+            if stack == "analytics" and not getattr(profile, "analytics_enabled", True):
+                continue
             if stack == "monitoring" and not profile.monitoring_enabled:
                 continue
             if stack == "dashboard" and not profile.monitoring_enabled:
                 continue
             if stack == "networking" and not profile.monitoring_enabled:
-                continue
-            if stack == "analytics" and not profile.monitoring_enabled:
                 continue
             if stack == "s3bucket" and not profile.monitoring_enabled:
                 continue
@@ -127,9 +157,7 @@ class DestroyCommand(Command):
                 if failed:
                     all_failed_resources.extend(failed)
                     stacks_with_failures.append(stack_name)
-                console.print(
-                    f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n"
-                )
+                console.print(f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n")
             else:
                 console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 

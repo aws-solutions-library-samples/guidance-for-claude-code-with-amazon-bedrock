@@ -59,11 +59,11 @@ class StatusCommand(Command):
         detailed = self.option("detailed")
 
         if json_output:
-            return self._show_json_status(profile, console)
+            return self._show_json_status(profile, console, profile_name)
         else:
-            return self._show_rich_status(profile, console, detailed)
+            return self._show_rich_status(profile, console, detailed, profile_name)
 
-    def _show_rich_status(self, profile, console: Console, detailed: bool) -> int:
+    def _show_rich_status(self, profile, console: Console, detailed: bool, profile_name: str | None = None) -> int:
         """Show status in rich formatted output."""
         # Header
         console.print(
@@ -82,7 +82,9 @@ class StatusCommand(Command):
         identity_pool_id = endpoints.get("identity_pool_id")
 
         # Use shared display utility
-        display_configuration_info(profile, identity_pool_id, format_type="table")
+        display_configuration_info(
+            profile, identity_pool_id, format_type="table", profile_name=profile_name or profile.name
+        )
 
         # Stack status section
         console.print("\n[bold]Stack Status[/bold]")
@@ -154,7 +156,7 @@ class StatusCommand(Command):
 
         return 0
 
-    def _show_json_status(self, profile, console: Console) -> int:
+    def _show_json_status(self, profile, console: Console, profile_name: str | None = None) -> int:
         """Show status in JSON format."""
         # Get endpoints to extract identity pool ID
         endpoints = self._get_endpoints(profile)
@@ -162,7 +164,9 @@ class StatusCommand(Command):
 
         status = {
             "profile": profile.name,
-            "configuration": get_configuration_dict(profile, identity_pool_id),
+            "configuration": get_configuration_dict(
+                profile, identity_pool_id, profile_name=profile_name or profile.name
+            ),
             "stacks": self._get_stack_status(profile),
             "endpoints": endpoints,
         }
@@ -179,14 +183,44 @@ class StatusCommand(Command):
         auth_status = self._check_stack(auth_stack, profile.aws_region)
         stacks["auth"] = auth_status
 
+        # Check distribution stack if enabled
+        if profile.enable_distribution or profile.distribution_type:
+            distribution_stack = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+            stacks["distribution"] = self._check_stack(distribution_stack, profile.aws_region)
+
+        # Check codebuild stack if enabled
+        if getattr(profile, "enable_codebuild", False):
+            codebuild_stack = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+            stacks["codebuild"] = self._check_stack(codebuild_stack, profile.aws_region)
+
         if profile.monitoring_enabled:
+            # Check networking stack
+            vpc_config = profile.monitoring_config or {}
+            if vpc_config.get("create_vpc", True):
+                networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+                stacks["networking"] = self._check_stack(networking_stack, profile.aws_region)
+
+            # Check s3bucket stack
+            s3bucket_stack = profile.stack_names.get("s3bucket", f"{profile.identity_pool_name}-s3bucket")
+            stacks["s3bucket"] = self._check_stack(s3bucket_stack, profile.aws_region)
+
             # Check monitoring stack
-            monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-monitoring")
+            monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
             stacks["monitoring"] = self._check_stack(monitoring_stack, profile.aws_region)
 
             # Check dashboard stack
             dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             stacks["dashboard"] = self._check_stack(dashboard_stack, profile.aws_region)
+
+            # Check analytics stack if enabled
+            if getattr(profile, "analytics_enabled", True):
+                analytics_stack = profile.stack_names.get("analytics", f"{profile.identity_pool_name}-analytics")
+                stacks["analytics"] = self._check_stack(analytics_stack, profile.aws_region)
+
+            # Check quota stack if enabled
+            if getattr(profile, "quota_monitoring_enabled", False):
+                quota_stack = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+                stacks["quota"] = self._check_stack(quota_stack, profile.aws_region)
 
         return stacks
 
