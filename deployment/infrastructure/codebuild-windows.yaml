@@ -147,6 +147,10 @@ Resources:
                 - C:\Python312\python.exe -m pip install boto3 requests PyJWT cryptography
                 - C:\Python312\python.exe -m pip install keyring pywin32
                 - C:\Python312\python.exe -m pip install questionary rich cleo pydantic pyyaml
+                - echo Pre-downloading MinGW compiler to avoid SSL issues...
+                - mkdir "C:\Users\ContainerAdministrator\AppData\Local\Nuitka\Nuitka\Cache\downloads\gcc\x86_64\14.2.0posix-19.1.1-12.0.0-msvcrt-r2"
+                - powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/brechtsanders/winlibs_mingw/releases/download/14.2.0posix-19.1.1-12.0.0-msvcrt-r2/winlibs-x86_64-posix-seh-gcc-14.2.0-llvm-19.1.1-mingw-w64msvcrt-12.0.0-r2.zip' -OutFile 'C:\Users\ContainerAdministrator\AppData\Local\Nuitka\Nuitka\Cache\downloads\gcc\x86_64\14.2.0posix-19.1.1-12.0.0-msvcrt-r2\winlibs-x86_64-posix-seh-gcc-14.2.0-llvm-19.1.1-mingw-w64msvcrt-12.0.0-r2.zip'"
+                - echo MinGW compiler downloaded successfully
 
             build:
               commands:
