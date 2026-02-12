@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# ABOUTME: OTEL helper script that extracts user attributes from JWT tokens
+# ABOUTME: OTEL helper script that extracts user attributes from JWT tokens or AWS caller identity
 # ABOUTME: Outputs HTTP headers for OpenTelemetry collector to enable user attribution
+# ABOUTME: Supports anonymous mode when authentication is disabled
 """
 OTEL Headers Helper Script for Claude Code
 
@@ -8,6 +9,12 @@ This script retrieves authentication tokens from the storage method chosen by th
 (system keyring or session file) and formats them as HTTP headers for use with the OTEL collector.
 It extracts user information from JWT tokens and provides properly formatted headers
 that the OTEL collector's attributes processor converts to resource attributes.
+
+When authentication is disabled, the script falls back to anonymous mode:
+- Uses AWS STS GetCallerIdentity to obtain the IAM caller's ARN
+- Hashes the ARN to create a unique, anonymous user identifier
+- Provides consistent tracking across sessions for the same IAM principal
+- All user attributes (email, department, team, etc.) are set to "anonymous"
 """
 
 import argparse
@@ -18,6 +25,14 @@ import logging
 import os
 import subprocess
 import sys
+
+try:
+    import boto3
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    logger = logging.getLogger("claude-otel-headers")
+    logger.warning("boto3 not available, anonymous mode will not work")
 
 # Configure debug mode if requested
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ("true", "1", "yes", "y")
@@ -237,6 +252,60 @@ def get_token_via_credential_process():
         return None
 
 
+def get_aws_caller_identity():
+    """Get AWS caller identity using STS GetCallerIdentity API"""
+    if not BOTO3_AVAILABLE:
+        logger.warning("boto3 not available, cannot get AWS caller identity")
+        return None
+
+    try:
+        sts_client = boto3.client('sts')
+        identity = sts_client.get_caller_identity()
+
+        logger.info(f"Retrieved AWS caller identity: {identity.get('Arn', 'unknown')}")
+        return identity
+    except Exception as e:
+        logger.warning(f"Failed to get AWS caller identity: {e}")
+        return None
+
+
+def create_anonymous_user_info(caller_identity=None):
+    """Create anonymous user information for metrics when auth is disabled"""
+    # Generate anonymous user ID from AWS caller identity
+    if caller_identity and caller_identity.get('Arn'):
+        arn = caller_identity['Arn']
+        # Hash the ARN to create a consistent anonymous user ID
+        arn_hash = hashlib.sha256(arn.encode()).hexdigest()[:36]
+        user_id = f"anon-{arn_hash[:8]}-{arn_hash[8:12]}-{arn_hash[12:16]}-{arn_hash[16:20]}-{arn_hash[20:32]}"
+
+        # Extract account ID for organization
+        account_id = caller_identity.get('Account', 'unknown')
+        org_id = f"aws-{account_id}"
+
+        logger.info(f"Created anonymous user ID from ARN: {user_id}")
+    else:
+        # Fallback to completely anonymous if we can't get AWS identity
+        user_id = "anon-unknown"
+        org_id = "unknown"
+        logger.warning("No AWS caller identity available, using fallback anonymous ID")
+
+    return {
+        "email": "anonymous@example.com",
+        "user_id": user_id,
+        "username": "anonymous",
+        "organization_id": org_id,
+        "department": "anonymous",
+        "team": "anonymous",
+        "cost_center": "anonymous",
+        "manager": "anonymous",
+        "location": "anonymous",
+        "role": "anonymous",
+        "account_uuid": "",
+        "issuer": "anonymous-mode",
+        "subject": user_id,
+    }
+
+
 def main():
     """Main function to generate OTEL headers"""
     parse_args()
@@ -250,16 +319,18 @@ def main():
         # This avoids direct keychain access from OTEL helper
         token = get_token_via_credential_process()
 
-        if not token:
-            logger.warning("Could not obtain authentication token")
-            # Return failure to indicate we couldn't get user attributes
-            # Claude Code should handle this gracefully
-            return 1
-
     # Decode token and extract user info
     try:
-        payload = decode_jwt_payload(token)
-        user_info = extract_user_info(payload)
+        if token:
+            # Auth mode: Extract user info from JWT token
+            payload = decode_jwt_payload(token)
+            user_info = extract_user_info(payload)
+            logger.info("Using authenticated user information from JWT token")
+        else:
+            # Anonymous mode: Use AWS caller identity for unique tracking
+            logger.info("No authentication token available, using anonymous mode")
+            caller_identity = get_aws_caller_identity()
+            user_info = create_anonymous_user_info(caller_identity)
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
@@ -267,7 +338,11 @@ def main():
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")
-            print("Generated HTTP Headers:")
+            if token:
+                print("Mode: Authenticated (JWT Token)")
+            else:
+                print("Mode: Anonymous (AWS Caller Identity)")
+            print("\nGenerated HTTP Headers:")
             for header_name, header_value in headers_dict.items():
                 # Display in uppercase for readability but actual values are lowercase
                 display_name = header_name.replace("x-", "X-").replace("-id", "-ID")
