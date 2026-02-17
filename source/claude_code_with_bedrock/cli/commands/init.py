@@ -1257,6 +1257,10 @@ class InitCommand(Command):
         # Show selected model
         selected_model = config["aws"].get("selected_model", "")
         model_display = {
+            "global.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (Global)",
+            "us.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6",
+            "eu.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (EU)",
+            "au.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (AU)",
             "us.anthropic.claude-opus-4-1-20250805-v1:0": "Claude Opus 4.1",
             "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
             "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
@@ -1818,6 +1822,10 @@ class InitCommand(Command):
         selected_model = config["aws"].get("selected_model")
         if selected_model:
             model_names = {
+                "global.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (Global)",
+                "us.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6",
+                "eu.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (EU)",
+                "au.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (AU)",
                 "us.anthropic.claude-opus-4-1-20250805-v1:0": "Claude Opus 4.1",
                 "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
                 "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
