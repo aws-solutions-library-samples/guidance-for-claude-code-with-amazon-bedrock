@@ -175,7 +175,7 @@ Resources:
           - Sid: AWSLogDeliveryWrite
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::127311923021:root'  # ELB service account for us-east-1
+              Service: logdelivery.elasticloadbalancing.amazonaws.com
             Action: s3:PutObject
             Resource: !Sub '${ALBLogsBucket.Arn}/*'
           - Sid: AWSLogDeliveryAclCheck
