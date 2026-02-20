@@ -1,6 +1,6 @@
 # Quota Management
 
-This guide explains how the token quota system works, how quotas are evaluated and enforced, and what administrators and end users can expect. For CLI command reference, see the [Administrator Guide](ADMINISTRATOR_GUIDE.md). For the underlying infrastructure and DynamoDB schema, see [Quota Monitoring](assets/docs/QUOTA_MONITORING.md).
+This guide explains how the token quota system works, how quotas are evaluated and enforced, and what administrators and end users can expect. For CLI command reference, see the [Administrator Guide](ADMINISTRATOR_GUIDE.md). For the underlying infrastructure and DynamoDB schema, see [Quota Monitoring](QUOTA_MONITORING.md).
 
 ---
 

@@ -84,6 +84,8 @@ The wizard will guide you through:
 - Credential storage method (keyring or session files)
 - Optional monitoring setup with VPC configuration
 
+For a detailed explanation of every prompt, see the [Init Walkthrough](assets/docs/INIT_WALKTHROUGH.md).
+
 #### Understanding Profiles (v2.0+)
 
 **What are profiles?** Profiles let you manage multiple deployments from one machine (different AWS accounts, regions, or organizations).
@@ -313,6 +315,9 @@ For detailed troubleshooting, see [Deployment Guide](assets/docs/DEPLOYMENT.md).
 
 ## Next Steps
 
+- [Administrator Guide](assets/docs/ADMINISTRATOR_GUIDE.md) - User onboarding, package distribution, quota management, and operations
+- [User Guide](assets/docs/USER_GUIDE.md) - Share with end users for installation and daily use
+- [Quota Management](assets/docs/QUOTA_MANAGEMENT.md) - Token quota architecture, enforcement, and administration
 - [Architecture Deep Dive](assets/docs/ARCHITECTURE.md) - Technical architecture details
 - [Enable Monitoring](assets/docs/MONITORING.md) - Setup OpenTelemetry monitoring
 - [Setup Analytics](assets/docs/ANALYTICS.md) - Configure S3 data lake and Athena queries
