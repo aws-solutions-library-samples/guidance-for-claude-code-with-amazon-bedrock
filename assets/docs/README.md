@@ -51,3 +51,4 @@ This folder contains documentation for users implementing and operating Claude C
 - **Microsoft Entra ID (Azure AD)**: [microsoft-entra-id-setup.md](./providers/microsoft-entra-id-setup.md)
 - **Auth0**: [auth0-setup.md](./providers/auth0-setup.md)
 - **AWS Cognito User Pool**: [cognito-user-pool-setup.md](./providers/cognito-user-pool-setup.md)
+- **Keycloak**: [keycloak-setup.md](./providers/keycloak-setup.md)

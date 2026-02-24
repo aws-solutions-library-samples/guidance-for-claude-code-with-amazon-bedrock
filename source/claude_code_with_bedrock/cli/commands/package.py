@@ -21,6 +21,7 @@ from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
+    get_models_for_tier,
     get_source_region_for_profile,
 )
 
@@ -434,7 +435,7 @@ class PackageCommand(Command):
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
 
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=self._get_codebuild_region(profile))
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -1237,6 +1238,13 @@ RUN pyinstaller \
                 subprocess.run(["docker", "rm", container_name], capture_output=True)
                 subprocess.run(["docker", "rmi", image_tag], capture_output=True)
 
+    def _get_codebuild_region(self, profile):
+        windows_regions = {
+            "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
+            "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
+        }
+        return profile.aws_region if profile.aws_region in windows_regions else "us-east-1"
+
     def _build_windows_via_codebuild(self, output_dir: Path) -> Path:
         """Build Windows binaries using AWS CodeBuild."""
         import json
@@ -1254,7 +1262,7 @@ RUN pyinstaller \
 
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=self._get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -1292,7 +1300,8 @@ RUN pyinstaller \
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            codebuild_region = self._get_codebuild_region(profile)
+            stack_outputs = get_stack_outputs(stack_name, codebuild_region)
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -1314,7 +1323,7 @@ RUN pyinstaller \
 
             # Upload to S3
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=codebuild_region)
             try:
                 s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
@@ -1323,7 +1332,7 @@ RUN pyinstaller \
 
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]
@@ -1707,6 +1716,12 @@ RUN pyinstaller \
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
 
+        # Add quota monitoring fields if quota endpoint is configured
+        if getattr(profile, "quota_api_endpoint", None):
+            config[profile_name]["quota_api_endpoint"] = profile.quota_api_endpoint
+            config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
+            config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
+
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -1747,6 +1762,8 @@ RUN pyinstaller \
                 return "azure"
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 return "cognito"
+            elif '/realms/' in domain:
+                return "keycloak"
             else:
                 return "oidc"  # Default to generic OIDC
         except Exception:
@@ -1948,6 +1965,9 @@ credential_process = $HOME/claude-code-with-bedrock/credential-process --profile
 region = $PROFILE_REGION
 EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+
+    # Clear stale cached credentials from previous deployments
+    $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME --clear-cache 2>/dev/null || true
 done
 
 echo
@@ -2096,6 +2116,9 @@ for /f %%p in ('powershell -Command ^
     )
 
     echo   OK Created AWS profile '%%p'
+
+    REM Clear stale cached credentials from previous deployments
+    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile %%p --clear-cache >nul 2>&1
 )
 
 echo.
@@ -2334,15 +2357,20 @@ Available metrics include:
             if hasattr(profile, "selected_model") and profile.selected_model:
                 settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
 
-                # Determine and set small/fast model based on selected model family
-                if "opus" in profile.selected_model:
-                    # For Opus, use Haiku as small/fast model
-                    model_id = profile.selected_model
-                    prefix = model_id.split(".anthropic")[0]  # Get us/eu/apac prefix
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = f"{prefix}.anthropic.claude-3-5-haiku-20241022-v1:0"
-                else:
-                    # For other models, use same model as small/fast (or could use Haiku)
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = profile.selected_model
+            # Set per-tier model defaults for /model opus, /model sonnet, /model haiku
+            # These are configured during ccwb init and stored in the profile
+            # Independent of selected_model — tier defaults apply even when auto-select is used
+            if profile.default_opus_model:
+                settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = profile.default_opus_model
+            if profile.default_sonnet_model:
+                settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = profile.default_sonnet_model
+            if profile.default_haiku_model:
+                settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = profile.default_haiku_model
+            elif profile.default_sonnet_model:
+                # Only fallback to sonnet when no haiku model exists for this profile
+                cross_region_profile = getattr(profile, "cross_region_profile", None) or "us"
+                if not get_models_for_tier("haiku", cross_region_profile):
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = profile.default_sonnet_model
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
@@ -2382,8 +2410,10 @@ Available metrics include:
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                                 # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": (
+                                    "department=engineering,team.id=default,"
+                                    "cost_center=default,organization=default"
+                                ),
                             }
                         )
 
