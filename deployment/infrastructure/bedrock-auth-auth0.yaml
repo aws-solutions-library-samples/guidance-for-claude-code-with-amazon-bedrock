@@ -102,25 +102,17 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
             Resource:
               - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
               - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
             Condition:
-              StringEquals:
+              StringLike:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - Sid: AllowBedrockInvokeGlobal
             Effect: Allow
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
             Resource:
               - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
           - Sid: AllowBedrockListRegional
@@ -133,7 +125,7 @@ Resources:
               - 'bedrock:GetInferenceProfile'
             Resource: '*'
             Condition:
-              StringEquals:
+              StringLike:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - Sid: AllowBedrockListGlobal
             Effect: Allow
@@ -170,14 +162,29 @@ Resources:
       Description: Direct IAM role for Auth0 users accessing Bedrock
       MaxSessionDuration: 43200 # 12 hours
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !GetAtt Auth0OIDCProvider.Arn
-            Action:
-              - 'sts:AssumeRoleWithWebIdentity'
-              - 'sts:TagSession'
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "${OIDCProviderArn}"
+                },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:TagSession"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "https://${Domain}/:aud": "${ClientId}"
+                  }
+                }
+              }]
+            }
+          - OIDCProviderArn: !GetAtt Auth0OIDCProvider.Arn
+            Domain: !Ref Auth0Domain
+            ClientId: !Ref Auth0ClientId
       ManagedPolicyArns:
         - !Ref BedrockAccessPolicy
       Tags:
