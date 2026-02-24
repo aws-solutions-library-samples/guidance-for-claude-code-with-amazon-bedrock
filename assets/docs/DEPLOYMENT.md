@@ -10,13 +10,13 @@ Deploying Claude Code authentication involves four key phases: configuring your 
 
 ## Phase 1: Configuring Your Identity Provider
 
-The journey begins in your organization's identity provider console. Whether you're using Okta, Azure AD, or Auth0, you'll create a new application that serves as the authentication gateway for Claude Code.
+The journey begins in your organization's identity provider console. Whether you're using Okta, Azure AD, Auth0, or Keycloak, you'll create a new application that serves as the authentication gateway for Claude Code.
 
 Log into your provider's admin console and navigate to the application creation section. You're creating what's known as a "Native Application" in OIDC terms - this tells the provider that users will authenticate from their local machines rather than a web server. Name it something clear like "Claude Code Authentication" or "Amazon Bedrock CLI Access" so users recognize it during login.
 
 The critical configuration involves setting up the OAuth2 flow with specific parameters. Enable "Authorization Code" and "Refresh Token" grant types, which allow secure authentication and token renewal. The redirect URI must be exactly `http://localhost:8400/callback` - this is where the authentication process returns after users log in. Request the standard OIDC scopes: `openid`, `profile`, and `email`. Most importantly, enable PKCE (Proof Key for Code Exchange), which provides security without requiring client secrets.
 
-> **Provider-Specific Guides**: For detailed instructions specific to your identity provider, see our guides for [Okta](providers/okta-setup.md), [Azure AD](providers/microsoft-entra-id-setup.md), or [Auth0](providers/auth0-setup.md).
+> **Provider-Specific Guides**: For detailed instructions specific to your identity provider, see our guides for [Okta](providers/okta-setup.md), [Azure AD](providers/microsoft-entra-id-setup.md), [Auth0](providers/auth0-setup.md), [Keycloak](providers/keycloak-setup.md), or [Cognito User Pool](providers/cognito-user-pool-setup.md).
 
 Next, determine who should have access. The cleanest approach is creating a dedicated group like "Claude Code Users" and assigning it to the application. This gives you centralized control over access - simply add users to the group to grant access, or remove them to revoke it. Apply any additional policies your organization requires, such as MFA or device trust requirements.
 
@@ -32,11 +32,13 @@ cd guidance-for-claude-code-with-amazon-bedrock/source
 poetry install
 ```
 
-The `ccwb` (Claude Code with Bedrock) CLI tool guides you through deployment with an interactive wizard. Run `poetry run ccwb init` to begin. The wizard walks you through each configuration decision, starting with your OIDC provider details - enter the domain and Client ID you noted earlier.
+The `ccwb` (Claude Code with Bedrock) CLI tool guides you through deployment with an interactive wizard. Run `poetry run ccwb init` to begin. The wizard uses a region-first flow, starting with your source region selection and then guiding you through model and provider configuration.
 
-The wizard asks you to choose an authentication method. You can select either Direct IAM federation or Cognito Identity Pool based on your organization's requirements. Both methods provide secure OIDC federation to AWS credentials.
+First, you'll select your source region and configure cross-region inference. Choose a cross-region profile (US, Europe, Japan, Australia, APAC, Global) or use the "Auto-select" option to let Claude Code pick the optimal model for your region. Then select a Claude model (Opus, Sonnet, Haiku) or use auto-select, followed by per-tier model defaults for each usage tier.
 
-Next, you'll select your Claude model and configure regional access. Choose from available Claude models (Opus, Sonnet, Haiku) and select a cross-region inference profile (US, Europe, or APAC) for optimal performance. The wizard will then prompt you to select a source region within your chosen profile for model inference. Finally, choose where to deploy the authentication infrastructure (typically your primary AWS region) and configure optional monitoring setup, which provides usage analytics and cost tracking through OpenTelemetry.
+Next, the wizard asks for your OIDC provider details — enter the domain and Client ID you noted earlier. You'll choose an authentication method: Direct IAM federation or Cognito Identity Pool. Both methods provide secure OIDC federation to AWS credentials.
+
+Finally, configure optional monitoring setup (usage analytics and cost tracking through OpenTelemetry) and distribution options. For landing page distribution, you can choose to use an external DNS provider instead of Route 53 if your domain is managed outside AWS.
 
 Once configuration is complete, deploy the infrastructure with:
 

@@ -164,9 +164,15 @@ class TestSourceRegionFunctionality:
 
     def test_source_regions_do_not_overlap_inappropriately(self):
         """Test that source regions are regionally appropriate."""
+        eu_regions = [
+            "eu-central-1", "eu-central-2", "eu-north-1",
+            "eu-south-1", "eu-south-2", "eu-south-3",
+            "eu-west-1", "eu-west-2", "eu-west-3",
+        ]
         regional_tests = {
-            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2"],
-            "europe": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "ca-west-1"],
+            "europe": eu_regions,
+            "eu": eu_regions,
             "apac": [
                 "ap-northeast-1",
                 "ap-northeast-2",
@@ -176,6 +182,8 @@ class TestSourceRegionFunctionality:
                 "ap-southeast-1",
                 "ap-southeast-2",
             ],
+            "japan": ["ap-northeast-1", "ap-northeast-3"],
+            "australia": ["ap-southeast-2", "ap-southeast-4"],
         }
 
         for model_key, model_config in CLAUDE_MODELS.items():
