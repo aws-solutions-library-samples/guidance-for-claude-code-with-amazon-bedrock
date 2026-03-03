@@ -754,8 +754,10 @@ Resources:
             SUM(token_usage) as tokens,
             -- Approximate pricing per million tokens
             CASE
+              WHEN model LIKE '%opus-4-5%' THEN 15.00
               WHEN model LIKE '%opus-4-1%' THEN 15.00
               WHEN model LIKE '%opus-4%' THEN 15.00
+              WHEN model LIKE '%sonnet-4-5%' THEN 3.00
               WHEN model LIKE '%sonnet-4%' THEN 3.00
               WHEN model LIKE '%sonnet-3-7%' THEN 3.00
               WHEN model LIKE '%haiku-3-5%' THEN 0.25
