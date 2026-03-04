@@ -95,9 +95,10 @@ class MultiProviderAuth:
             )
         self.provider_config = PROVIDER_CONFIGS[self.provider_type]
 
-        # OAuth configuration
-        self.redirect_port = int(os.getenv("REDIRECT_PORT", "8400"))
-        self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
+        # OAuth configuration - port selection deferred until authentication
+        self.preferred_port = int(os.getenv("REDIRECT_PORT", "8400"))
+        self.redirect_port = None
+        self.redirect_uri = None
 
         # Initialize credential storage
         self._init_credential_storage()
@@ -106,6 +107,31 @@ class MultiProviderAuth:
         """Print debug message only if debug mode is enabled"""
         if self.debug:
             print(f"Debug: {message}", file=sys.stderr)
+
+    def _get_available_port(self):
+        """Find an available port for OAuth callback, preferring the configured port."""
+        if self.redirect_port is not None:
+            return self.redirect_port
+
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            test_socket.bind(("127.0.0.1", self.preferred_port))
+            test_socket.close()
+            self.redirect_port = self.preferred_port
+        except OSError as e:
+            test_socket.close()
+            if e.errno == errno.EADDRINUSE:
+                self._debug_print(f"Port {self.preferred_port} in use, selecting available port")
+                auto_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                auto_socket.bind(("127.0.0.1", 0))
+                self.redirect_port = auto_socket.getsockname()[1]
+                auto_socket.close()
+                self._debug_print(f"Using port {self.redirect_port} for OAuth callback")
+            else:
+                raise
+
+        self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
+        return self.redirect_port
 
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
@@ -742,6 +768,8 @@ class MultiProviderAuth:
 
     def authenticate_oidc(self):
         """Perform OIDC authentication with PKCE"""
+        self._get_available_port()
+
         state = secrets.token_urlsafe(16)
         nonce = secrets.token_urlsafe(16)
 
@@ -1182,7 +1210,7 @@ class MultiProviderAuth:
             # Check if port is still in use (another auth in progress)
             test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
+                test_socket.bind(("127.0.0.1", self.preferred_port))
                 test_socket.close()
                 # Port is free, auth must have completed or failed
                 # Check for cached credentials
@@ -1210,33 +1238,8 @@ class MultiProviderAuth:
     def authenticate_for_monitoring(self):
         """Authenticate specifically for monitoring token (no AWS credential output)"""
         try:
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
-                # We got the port, we can proceed with authentication
-                self._debug_print("Port available, proceeding with monitoring authentication")
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port in use, another auth is in progress
-                    self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
-
-                    # Wait for the other process to complete
-                    # After waiting, check if we now have a monitoring token
-                    self._wait_for_auth_completion()
-                    token = self.get_monitoring_token()
-                    if token:
-                        return token
-                    else:
-                        self._debug_print("Authentication timeout or failed in another process")
-                        return None
-                else:
-                    test_socket.close()
-                    raise
-
             # Authenticate with OIDC provider
+            # Note: Port selection is handled dynamically in authenticate_oidc()
             self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
             id_token, token_claims = self.authenticate_oidc()
 
@@ -1784,40 +1787,8 @@ class MultiProviderAuth:
                 print(json.dumps(cached))  # noqa: S105
                 return 0
 
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
-                # We got the port, we can proceed with authentication
-                self._debug_print("Port available, proceeding with authentication")
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port in use, another auth is in progress
-                    self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
-
-                    # Wait for the other process to complete
-                    cached = self._wait_for_auth_completion()
-                    if cached:
-                        print(json.dumps(cached))
-                        return 0
-                    else:
-                        # Only print error to stderr for actual failures
-                        self._debug_print("Authentication timeout or failed in another process")
-                        return 1
-                else:
-                    test_socket.close()
-                    raise
-
-            # Check cache again (another process might have just finished)
-            cached = self.get_cached_credentials()
-            if cached:
-                # Output cached credentials (intended behavior for AWS CLI)
-                print(json.dumps(cached))  # noqa: S105
-                return 0
-
             # Authenticate with OIDC provider
+            # Note: Port selection is handled dynamically in authenticate_oidc()
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
             id_token, token_claims = self.authenticate_oidc()
 
