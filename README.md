@@ -325,7 +325,14 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 ### Getting Started
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
+- [Init Walkthrough](assets/docs/INIT_WALKTHROUGH.md) - Detailed guide to every prompt in `ccwb init`
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+
+### Guides
+
+- [Administrator Guide](assets/docs/ADMINISTRATOR_GUIDE.md) - User onboarding, package distribution, monitoring, and operational tasks
+- [User Guide](assets/docs/USER_GUIDE.md) - End-user installation, authentication, and daily use
+- [Quota Management](assets/docs/QUOTA_MANAGEMENT.md) - How token quotas are evaluated, enforced, and managed
 
 ### Architecture & Deployment
 
