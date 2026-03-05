@@ -2016,36 +2016,44 @@ echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
 
 REM Copy Claude Code settings if they exist
+setlocal EnableDelayedExpansion
+
+REM Use PowerShell to replace placeholders
+set PS_COMMAND=^
+$otel = '%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe'.Replace('\', '/'); ^
+$cred = '%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe'.Replace('\', '/'); ^
+(Get-Content 'claude-settings\\settings.json') ^
+-replace '__OTEL_HELPER_PATH__', $otel ^
+-replace '__CREDENTIAL_PROCESS_PATH__', $cred ^| ^
+Set-Content '%USERPROFILE%\\.claude\\settings.json'
+
+REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
     if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
 
     REM Copy settings and replace placeholders
     if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
+        set "SKIP_SETTINGS=false"
+
         if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
+            echo Existing Claude Code settings found.
+            set /p "OVERWRITE=Overwrite with new settings? (y/n): "
+            if /i "!OVERWRITE!" neq "y" (
                 echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
+                set "SKIP_SETTINGS=true"
             )
         )
 
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
-            echo OK Claude Code settings configured
+        if "!SKIP_SETTINGS!"=="false" (
+            echo Configuring Claude Code settings...
+            REM Just call the variable. No parentheses to break the IF block!
+            powershell -NoProfile -Command "!PS_COMMAND!"
+            echo OK: Claude Code settings configured.
         )
     )
+) else (
+    echo "claude-settings" folder not found.
 )
 
 REM Configure AWS profiles
@@ -2053,29 +2061,29 @@ echo.
 echo Configuring AWS profiles...
 
 REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command ^
-"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
+set GET_PROFILE_NAMES=powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"
+
+for /f "tokens=*" %%p in ('!GET_PROFILE_NAMES!') do (
     echo Configuring AWS profile: %%p
 
     REM Get profile-specific region
-    for /f %%r in ('powershell -Command ^
-    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
-
+    set "PROFILE_REGION="
+    for /f "usebackq tokens=*" %%r in (`powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).'%%p'.aws_region"`) do set "PROFILE_REGION=%%r"
 
     REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
+    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
 
     REM Set region
-    if defined PROFILE_REGION (
+    if "!PROFILE_REGION!" neq "" (
         aws configure set region !PROFILE_REGION! --profile %%p
     ) else (
         aws configure set region {profile.aws_region} --profile %%p
     )
 
-    echo   OK Created AWS profile '%%p'
+    echo    OK Created AWS profile '%%p'
 )
+
+endlocal
 
 echo.
 echo ======================================
@@ -2083,8 +2091,7 @@ echo Installation complete!
 echo ======================================
 echo.
 echo Available profiles:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
     echo   - %%p
 )
 echo.
@@ -2093,8 +2100,7 @@ echo   set AWS_PROFILE=^<profile-name^>
 echo   aws sts get-caller-identity
 echo.
 echo Example:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
+for /f %%p in ('powershell -Command "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
     echo   set AWS_PROFILE=%%p
     echo   aws sts get-caller-identity
 )
