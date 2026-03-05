@@ -70,7 +70,6 @@ Resources:
           Value: !Ref AWS::StackName
 
   # Security Groups
-  # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
