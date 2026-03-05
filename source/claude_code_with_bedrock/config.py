@@ -35,14 +35,14 @@ class Profile:
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "keycloak"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
     distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
-    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_provider: str | None = None  # "okta"|"azure"|"auth0"|"cognito"|"keycloak" (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
@@ -58,17 +58,25 @@ class Profile:
     burst_buffer_percent: int = 10  # Burst buffer for daily limit (5-25%, default 10%)
     daily_enforcement_mode: str = "alert"  # Daily limit enforcement: "alert" or "block"
     monthly_enforcement_mode: str = "block"  # Monthly limit enforcement: "alert" or "block"
-    enable_finegrained_quotas: bool = False  # Enable fine-grained quota policies (user/group/default)
+    enable_finegrained_quotas: bool = True  # Enable fine-grained quota policies (user/group/default)
     quota_policies_table: str | None = None  # DynamoDB table name for quota policies
     user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics
     quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
 
+    # Keycloak-specific configuration
+    keycloak_thumbprint: str | None = None  # TLS certificate SHA-1 thumbprint (40 hex chars)
+
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+
+    # Per-tier model defaults for /model switching in Claude Code
+    default_opus_model: str | None = None  # Bedrock model ID for /model opus
+    default_sonnet_model: str | None = None  # Bedrock model ID for /model sonnet
+    default_haiku_model: str | None = None  # Bedrock model ID for /model haiku
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
@@ -138,6 +146,12 @@ class Profile:
                             data["provider_type"] = "azure"
                         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                             data["provider_type"] = "cognito"
+
+                    # Keycloak detection uses path, not hostname
+                    if not data.get("provider_type"):
+                        domain = data.get("provider_domain", "")
+                        if "/realms/" in domain:
+                            data["provider_type"] = "keycloak"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 

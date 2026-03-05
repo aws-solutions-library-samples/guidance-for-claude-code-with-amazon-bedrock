@@ -28,10 +28,25 @@ Parameters:
   HostedZoneId:
     Type: String
     Default: ''
-    Description: Route53 hosted zone ID for custom domain (required if CustomDomainName is provided)
+    Description: Route53 hosted zone ID for automatic DNS (optional - leave empty for external DNS)
+
+  OidcIssuerUrl:
+    Type: String
+    Default: ''
+    Description: OIDC issuer URL for ALB JWT validation
+
+  OidcJwksEndpoint:
+    Type: String
+    Default: ''
+    Description: JWKS endpoint URL for ALB JWT signature validation
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasCustomDomainWithRoute53: !And
+    - !Condition HasCustomDomain
+    - !Condition HasRoute53Zone
+  HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -102,6 +117,11 @@ Resources:
           ToPort: 4318
           SourceSecurityGroupId: !Ref ALBSecurityGroup
           Description: OTLP ports from ALB
+        - IpProtocol: tcp
+          FromPort: 13133
+          ToPort: 13133
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Health check port from ALB
       Tags:
         - Key: Name
           Value: otel-collector-task-sg
@@ -112,9 +132,11 @@ Resources:
     Condition: HasCustomDomain
     Properties:
       DomainName: !Ref CustomDomainName
-      DomainValidationOptions:
-        - DomainName: !Ref CustomDomainName
-          HostedZoneId: !Ref HostedZoneId
+      DomainValidationOptions: !If
+        - HasRoute53Zone
+        - - DomainName: !Ref CustomDomainName
+            HostedZoneId: !Ref HostedZoneId
+        - !Ref 'AWS::NoValue'
       ValidationMethod: DNS
       Tags:
         - Key: Name
@@ -123,7 +145,7 @@ Resources:
   # Route53 Record for custom domain
   DNSRecord:
     Type: AWS::Route53::RecordSet
-    Condition: HasCustomDomain
+    Condition: HasCustomDomainWithRoute53
     DependsOn: Certificate
     Properties:
       HostedZoneId: !Ref HostedZoneId
@@ -165,13 +187,14 @@ Resources:
       VpcId: !Ref VpcId
       HealthCheckEnabled: true
       HealthCheckPath: /
+      HealthCheckPort: '13133'
       HealthCheckProtocol: HTTP
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 10
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
       Matcher:
-        HttpCode: '200,404'
+        HttpCode: '200'
 
   # Listeners
   # IMPORTANT: Enabling HTTPS on an existing HTTP-only stack requires deletion and recreation
@@ -208,9 +231,18 @@ Resources:
       Protocol: HTTPS
       Certificates:
         - CertificateArn: !Ref Certificate
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref HTTPTargetGroup
+      DefaultActions: !If
+        - HasJwtAuth
+        - - Type: jwt-validation
+            Order: 1
+            JwtValidationConfig:
+              Issuer: !Ref OidcIssuerUrl
+              JwksEndpoint: !Ref OidcJwksEndpoint
+          - Type: forward
+            Order: 2
+            TargetGroupArn: !Ref HTTPTargetGroup
+        - - Type: forward
+            TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
 
   # IAM Roles
@@ -459,6 +491,7 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn:
       - HTTPListener
+      - HTTPSListener
     Properties:
       ServiceName: otel-collector-service
       Cluster: !Ref ECSCluster
@@ -539,11 +572,17 @@ Outputs:
     Description: Important deployment information
     Value: !If
       - HasCustomDomain
-      - !Sub |
-        OTEL collector is available at: https://${CustomDomainName}
-        Certificate validation is automatic via Route53.
-        Claude Code settings will use this HTTPS endpoint.
+      - !If
+        - HasRoute53Zone
+        - !Sub |
+          OTEL collector is available at: https://${CustomDomainName}
+          Certificate validation is automatic via Route53.
+        - !Sub |
+          OTEL collector is available at: https://${CustomDomainName}
+          EXTERNAL DNS: Create a CNAME record in your DNS provider:
+            ${CustomDomainName} -> ${LoadBalancer.DNSName}
+          ACM certificate requires manual DNS validation (check ACM console).
       - !Sub |
         OTEL collector is available at: http://${LoadBalancer.DNSName}
         WARNING: Using HTTP - data is not encrypted in transit.
-        For HTTPS, provide CustomDomainName and HostedZoneId parameters.
+        For HTTPS, provide CustomDomainName parameter.
