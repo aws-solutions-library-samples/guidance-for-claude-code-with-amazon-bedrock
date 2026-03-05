@@ -30,8 +30,19 @@ Parameters:
     Default: ''
     Description: Route53 hosted zone ID for custom domain (required if CustomDomainName is provided)
 
+  OidcIssuerUrl:
+    Type: String
+    Default: ''
+    Description: OIDC issuer URL for ALB JWT validation
+
+  OidcJwksEndpoint:
+    Type: String
+    Default: ''
+    Description: JWKS endpoint URL for ALB JWT signature validation
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -208,9 +219,18 @@ Resources:
       Protocol: HTTPS
       Certificates:
         - CertificateArn: !Ref Certificate
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref HTTPTargetGroup
+      DefaultActions: !If
+        - HasJwtAuth
+        - - Type: jwt-validation
+            Order: 1
+            JwtValidationConfig:
+              Issuer: !Ref OidcIssuerUrl
+              JwksEndpoint: !Ref OidcJwksEndpoint
+          - Type: forward
+            Order: 2
+            TargetGroupArn: !Ref HTTPTargetGroup
+        - - Type: forward
+            TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
 
   # IAM Roles

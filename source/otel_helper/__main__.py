@@ -263,6 +263,7 @@ def main():
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
+        headers_dict["authorization"] = f"Bearer {token}"
 
         # In test mode, print detailed output
         if TEST_MODE:
