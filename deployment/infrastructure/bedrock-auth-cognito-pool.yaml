@@ -19,7 +19,7 @@ Parameters:
   CognitoUserPoolClientId:
     Type: String
     Description: Cognito User Pool App Client ID
-    AllowedPattern: '^[a-z0-9]{26}$'
+    AllowedPattern: '^[a-z0-9]{1,128}$'
     ConstraintDescription: Must be a valid Cognito User Pool Client ID
 
   CognitoUserPoolDomain:
