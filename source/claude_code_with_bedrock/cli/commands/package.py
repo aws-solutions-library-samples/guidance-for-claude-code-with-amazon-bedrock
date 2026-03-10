@@ -562,7 +562,7 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux"
         elif target_platform == "windows":
             platform_variant = "x86_64"
-            # binary_name already set above
+            binary_name = "credential-process-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -598,7 +598,7 @@ class PackageCommand(Command):
         # Check if Nuitka is available (through Poetry)
         source_dir = Path(__file__).parent.parent.parent.parent
         nuitka_check = subprocess.run(
-            ["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir
+            ["poetry", "run", "python", "-m", "nuitka", "--version"], capture_output=True, text=True, cwd=source_dir
         )
         if nuitka_check.returncode != 0:
             raise RuntimeError(
