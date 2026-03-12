@@ -18,13 +18,16 @@ from format_utils import format_number, format_percentage
 def get_model_display_name(model_id):
     """Convert model ID to display name."""
     # Remove common prefixes
-    model_display = model_id.replace("us.anthropic.", "").replace("eu.anthropic.", "").replace("apac.anthropic.", "").replace("anthropic.", "")
+    model_display = model_id.replace("us.anthropic.", "").replace("eu.anthropic.", "").replace("apac.anthropic.", "").replace("global.anthropic.", "").replace("anthropic.", "")
     
     # Detect model family and version
+    # IMPORTANT: Check more specific patterns first (e.g., opus-4-5 before opus-4)
     model_lower = model_display.lower()
     
     if "opus-4-6" in model_lower or "opus-4.6" in model_lower:
         return "Opus 4.6"
+    elif "opus-4-5" in model_lower or "opus-4.5" in model_lower:
+        return "Opus 4.5"
     elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
         return "Opus 4.1"
     elif "opus-4" in model_lower:
@@ -37,6 +40,8 @@ def get_model_display_name(model_id):
         return "Sonnet 3.7"
     elif "sonnet-3.5" in model_lower or "sonnet-3-5" in model_lower:
         return "Sonnet 3.5"
+    elif "haiku-4-5" in model_lower or "haiku-4.5" in model_lower:
+        return "Haiku 4.5"
     elif "haiku-3.5" in model_lower or "haiku-3-5" in model_lower:
         return "Haiku 3.5"
     elif "haiku-3" in model_lower or "haiku-3.0" in model_lower:
@@ -56,6 +61,7 @@ def get_model_color(model_name):
     """Get color for model based on family."""
     colors = {
         "Opus 4.6": "#14b8a6",  # Teal
+        "Opus 4.5": "#7c3aed",  # Violet
         "Opus 4.1": "#3b82f6",  # Blue
         "Opus 4": "#f97316",    # Orange
         "Opus": "#8b5cf6",      # Purple
@@ -64,6 +70,7 @@ def get_model_color(model_name):
         "Sonnet 3.7": "#ef4444", # Red
         "Sonnet 3.5": "#ec4899", # Pink
         "Sonnet": "#06b6d4",    # Cyan
+        "Haiku 4.5": "#14b8a6", # Teal
         "Haiku 3.5": "#8b5cf6", # Purple
         "Haiku 3.0": "#6366f1", # Indigo
         "Haiku": "#84cc16",     # Lime
