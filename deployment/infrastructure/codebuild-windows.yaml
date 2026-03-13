@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CodeBuild for Windows binaries with Nuitka - Claude Code w/ Bedrock'
+Description: 'CodeBuild for binary builds (Windows, Linux x64, Linux ARM64) - Claude Code w/ Bedrock'
 
 Parameters:
   ProjectNamePrefix:
@@ -60,7 +60,7 @@ Resources:
         - Key: Application
           Value: ClaudeCodeWithBedrock
         - Key: Purpose
-          Value: WindowsBuildArtifacts
+          Value: BuildArtifacts
 
   # IAM Role for CodeBuild
   CodeBuildServiceRole:
@@ -96,14 +96,29 @@ Resources:
         - Key: Application
           Value: ClaudeCodeWithBedrock
 
-  # Log Group for CodeBuild
+  # Log Groups
+  # Keep original logical ID to avoid CloudFormation replacement conflict
   CodeBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/codebuild/${ProjectNamePrefix}-windows-build'
       RetentionInDays: 7
 
-  # CodeBuild Project
+  LinuxX64BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectNamePrefix}-linux-x64-build'
+      RetentionInDays: 7
+
+  LinuxArm64BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectNamePrefix}-linux-arm64-build'
+      RetentionInDays: 7
+
+  # ============================================================
+  # Windows Build Project (Nuitka + MinGW)
+  # ============================================================
   WindowsBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -133,10 +148,14 @@ Resources:
                 - echo Starting Windows build environment setup...
                 - echo Installing Python 3.12...
                 - choco install python312 -y --no-progress
+                - echo Installing MinGW C compiler for Nuitka...
+                - choco install mingw -y --no-progress
                 - echo Checking Python version...
                 - C:\Python312\python.exe --version
                 - echo Checking pip version...
                 - C:\Python312\python.exe -m pip --version
+                - echo Checking gcc version...
+                - C:\ProgramData\mingw64\mingw64\bin\gcc.exe --version
 
             pre_build:
               commands:
@@ -152,9 +171,9 @@ Resources:
               commands:
                 - echo Building Windows executables sequentially...
                 - echo Building credential-process Windows executable...
-                - C:\Python312\python.exe -m nuitka --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code Credential Process" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="AWS Credential Process for Claude Code" --include-package=keyring.backends --output-filename=credential-process-windows.exe --output-dir=. --remove-output source/credential_provider/__main__.py
+                - $env:PATH = "C:\ProgramData\mingw64\mingw64\bin;" + $env:PATH; C:\Python312\python.exe -m nuitka --mingw64 --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code Credential Process" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="AWS Credential Process for Claude Code" --include-package=keyring.backends --output-filename=credential-process-windows.exe --output-dir=. --remove-output source/credential_provider/__main__.py
                 - echo Building otel-helper Windows executable...
-                - C:\Python312\python.exe -m nuitka --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code OTEL Helper" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="OpenTelemetry Helper for Claude Code" --output-filename=otel-helper-windows.exe --output-dir=. --remove-output source/otel_helper/__main__.py
+                - $env:PATH = "C:\ProgramData\mingw64\mingw64\bin;" + $env:PATH; C:\Python312\python.exe -m nuitka --mingw64 --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code OTEL Helper" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="OpenTelemetry Helper for Claude Code" --output-filename=otel-helper-windows.exe --output-dir=. --remove-output source/otel_helper/__main__.py
             post_build:
               commands:
                 - echo Build completed successfully
@@ -179,6 +198,156 @@ Resources:
         - Key: Purpose
           Value: WindowsBinaryBuild
 
+  # ============================================================
+  # Linux x64 Build Project (PyInstaller)
+  # ============================================================
+  LinuxX64BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectNamePrefix}-linux-x64-build'
+      Description: Build Linux x64 binaries for Claude Code with PyInstaller
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Ref BuildBucket
+        Name: linux-x64-binaries.zip
+        Packaging: ZIP
+        OverrideArtifactName: false
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+      Source:
+        Type: S3
+        Location: !Sub '${BuildBucket}/source.zip'
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            install:
+              runtime-versions:
+                python: 3.12
+              commands:
+                - echo Starting Linux x64 build environment setup...
+                - python3 --version
+                - pip3 --version
+
+            pre_build:
+              commands:
+                - echo Installing build dependencies...
+                - pip3 install --upgrade pip
+                - pip3 install pyinstaller==6.3.0
+                - echo Installing application dependencies...
+                - pip3 install boto3 requests PyJWT cryptography keyring
+                - pip3 install SecretStorage jeepney
+
+            build:
+              commands:
+                - echo Building Linux x64 executables...
+                - echo Building credential-process...
+                - python3 -m PyInstaller --onefile --clean --noconfirm --name=credential-process-linux-x64 --distpath=. --workpath=/tmp/pyinstaller --specpath=/tmp/pyinstaller --log-level=WARN --hidden-import=keyring.backends.SecretService --hidden-import=keyring.backends.chainer --hidden-import=six --hidden-import=six.moves --hidden-import=six.moves._thread --hidden-import=six.moves.urllib --hidden-import=six.moves.urllib.parse --hidden-import=dateutil source/credential_provider/__main__.py
+                - echo Building otel-helper...
+                - python3 -m PyInstaller --onefile --clean --noconfirm --name=otel-helper-linux-x64 --distpath=. --workpath=/tmp/pyinstaller --specpath=/tmp/pyinstaller --log-level=WARN source/otel_helper/__main__.py
+
+            post_build:
+              commands:
+                - echo Build completed successfully
+                - ls -lh credential-process-linux-x64 otel-helper-linux-x64
+                - chmod +x credential-process-linux-x64 otel-helper-linux-x64
+
+          artifacts:
+            files:
+              - credential-process-linux-x64
+              - otel-helper-linux-x64
+            name: linux-x64-binaries
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref LinuxX64BuildLogGroup
+      TimeoutInMinutes: 30
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: LinuxX64BinaryBuild
+
+  # ============================================================
+  # Linux ARM64 Build Project (PyInstaller)
+  # ============================================================
+  LinuxArm64BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectNamePrefix}-linux-arm64-build'
+      Description: Build Linux ARM64 binaries for Claude Code with PyInstaller
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Ref BuildBucket
+        Name: linux-arm64-binaries.zip
+        Packaging: ZIP
+        OverrideArtifactName: false
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        PrivilegedMode: false
+      Source:
+        Type: S3
+        Location: !Sub '${BuildBucket}/source.zip'
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            install:
+              runtime-versions:
+                python: 3.12
+              commands:
+                - echo Starting Linux ARM64 build environment setup...
+                - python3 --version
+                - pip3 --version
+
+            pre_build:
+              commands:
+                - echo Installing build dependencies...
+                - pip3 install --upgrade pip
+                - pip3 install pyinstaller==6.3.0
+                - echo Installing application dependencies...
+                - pip3 install boto3 requests PyJWT cryptography keyring
+                - pip3 install SecretStorage jeepney || true
+
+            build:
+              commands:
+                - echo Building Linux ARM64 executables...
+                - echo Building credential-process...
+                - python3 -m PyInstaller --onefile --clean --noconfirm --name=credential-process-linux-arm64 --distpath=. --workpath=/tmp/pyinstaller --specpath=/tmp/pyinstaller --log-level=WARN --hidden-import=keyring.backends.SecretService --hidden-import=keyring.backends.chainer --hidden-import=six --hidden-import=six.moves --hidden-import=six.moves._thread --hidden-import=six.moves.urllib --hidden-import=six.moves.urllib.parse --hidden-import=dateutil source/credential_provider/__main__.py
+                - echo Building otel-helper...
+                - python3 -m PyInstaller --onefile --clean --noconfirm --name=otel-helper-linux-arm64 --distpath=. --workpath=/tmp/pyinstaller --specpath=/tmp/pyinstaller --log-level=WARN source/otel_helper/__main__.py
+
+            post_build:
+              commands:
+                - echo Build completed successfully
+                - ls -lh credential-process-linux-arm64 otel-helper-linux-arm64
+                - chmod +x credential-process-linux-arm64 otel-helper-linux-arm64
+
+          artifacts:
+            files:
+              - credential-process-linux-arm64
+              - otel-helper-linux-arm64
+            name: linux-arm64-binaries
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref LinuxArm64BuildLogGroup
+      TimeoutInMinutes: 30
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+        - Key: Purpose
+          Value: LinuxArm64BinaryBuild
+
 Outputs:
   BuildBucket:
     Description: S3 bucket for build source and artifacts
@@ -193,16 +362,28 @@ Outputs:
       Name: !Sub '${AWS::StackName}-BuildBucketArn'
 
   ProjectName:
-    Description: CodeBuild project name
+    Description: CodeBuild project name (Windows)
     Value: !Ref WindowsBuildProject
     Export:
       Name: !Sub '${AWS::StackName}-ProjectName'
 
   ProjectArn:
-    Description: CodeBuild project ARN
+    Description: CodeBuild project ARN (Windows)
     Value: !GetAtt WindowsBuildProject.Arn
     Export:
       Name: !Sub '${AWS::StackName}-ProjectArn'
+
+  LinuxX64ProjectName:
+    Description: CodeBuild project name (Linux x64)
+    Value: !Ref LinuxX64BuildProject
+    Export:
+      Name: !Sub '${AWS::StackName}-LinuxX64ProjectName'
+
+  LinuxArm64ProjectName:
+    Description: CodeBuild project name (Linux ARM64)
+    Value: !Ref LinuxArm64BuildProject
+    Export:
+      Name: !Sub '${AWS::StackName}-LinuxArm64ProjectName'
 
   ServiceRoleArn:
     Description: CodeBuild service role ARN
