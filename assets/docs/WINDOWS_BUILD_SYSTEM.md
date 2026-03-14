@@ -7,10 +7,11 @@
 3. [Prerequisites](#prerequisites)
 4. [Initial Setup](#initial-setup)
 5. [Build Process](#build-process)
-6. [CLI Commands](#cli-commands)
-7. [Distribution](#distribution)
-8. [Troubleshooting](#troubleshooting)
-9. [Technical Details](#technical-details)
+6. [Building from a Windows Machine](#building-from-a-windows-machine)
+7. [CLI Commands](#cli-commands)
+8. [Distribution](#distribution)
+9. [Troubleshooting](#troubleshooting)
+10. [Technical Details](#technical-details)
 
 ## Overview
 
@@ -270,6 +271,94 @@ Output:
 │ ghi11111 │ ✗ Failed       │ 2024-08-24 08:00 │ 2 min    │ BUILD     │
 └──────────┴────────────────┴──────────────────┴──────────┴───────────┘
 ```
+
+## Building from a Windows Machine
+
+If you are deploying from a Windows machine rather than macOS/Linux, you can build Windows binaries natively using Nuitka without CodeBuild. macOS and Linux binaries require their respective platforms or Docker.
+
+### Prerequisites
+
+- Python 3.10, 3.11, or 3.12 (not 3.13+)
+- Poetry package manager
+- Nuitka and its dependencies (see below)
+- (Optional) Docker Desktop for Windows — required for Linux binary builds
+
+### Install Nuitka
+
+```powershell
+poetry add --group dev nuitka ordered-set zstandard
+```
+
+### Build Windows Binaries
+
+```powershell
+poetry run ccwb package --target-platform windows
+```
+
+This builds both `credential-process-windows.exe` and `otel-helper-windows.exe` (if monitoring is enabled) using Nuitka native compilation. Build time is approximately 10-15 minutes.
+
+Output directory: `source/dist/<profile-name>/<timestamp>/`
+
+### Cross-Platform Build Matrix
+
+When building from Windows, not all platforms are available:
+
+| Target Platform | Method | Available from Windows? |
+|----------------|--------|------------------------|
+| **Windows** | Nuitka (native) | Yes |
+| **Linux x64** | Docker (PyInstaller) | Yes, if Docker Desktop is installed |
+| **Linux arm64** | Docker (PyInstaller) | Yes, if Docker Desktop is installed |
+| **macOS arm64** | PyInstaller (native) | No — must build on a Mac |
+| **macOS Intel** | PyInstaller (native) | No — must build on a Mac |
+
+### Building All Available Platforms
+
+To build everything possible from Windows:
+
+```powershell
+# Windows only (always works)
+poetry run ccwb package --target-platform windows
+
+# All available (Windows native + Linux via Docker if installed)
+poetry run ccwb package
+```
+
+> **Note:** If Docker is not installed, Linux builds will be skipped with a warning. macOS builds will fail — this is expected. Use `--target-platform windows` to avoid these errors.
+
+### Multi-Platform Distribution Strategy
+
+If your organization needs packages for all platforms:
+
+1. **Windows** — Build natively on the Windows machine
+2. **Linux** — Either install Docker Desktop on Windows, or build from a Linux machine
+3. **macOS** — Must be built on a Mac (`poetry run ccwb package --target-platform macos`)
+
+Combine the binaries from each platform into a single `dist/` folder before running `poetry run ccwb distribute`.
+
+### Troubleshooting Windows Native Builds
+
+#### Python version not supported
+
+```
+The currently activated Python version 3.13.x is not supported by the project (>=3.10,<3.13).
+```
+
+Install Python 3.12 from [python.org](https://www.python.org/downloads/) and run:
+
+```powershell
+poetry env use py -3.12
+poetry install
+```
+
+#### Nuitka not found
+
+If you get "Nuitka not found" after installing it, verify the installation:
+
+```powershell
+poetry run python -m nuitka --version
+```
+
+If this works but the package command still fails, ensure you are running the latest version of `package.py` which uses a cross-platform Nuitka detection method.
 
 ## CLI Commands
 
