@@ -68,6 +68,7 @@ class DistributeCommand(Command):
         option("build-profile", description="Select build by profile name", flag=False),
         option("timestamp", description="Select build by timestamp (YYYY-MM-DD-HHMMSS)", flag=False),
         option("latest", description="Auto-select latest build without wizard", flag=True),
+        option("per-os", description="Create separate packages per OS (smaller downloads)", flag=True),
     ]
 
     def _check_old_flat_structure(self, dist_dir: Path) -> bool:
@@ -495,6 +496,7 @@ class DistributeCommand(Command):
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
                 ("install.bat", "install.bat"),
+                ("ccwb-install.ps1", "ccwb-install.ps1"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
             ],
@@ -823,6 +825,8 @@ class DistributeCommand(Command):
             console.print("  ✓ Unix installer script")
         if (package_path / "install.bat").exists():
             console.print("  ✓ Windows installer script")
+        if (package_path / "ccwb-install.ps1").exists():
+            console.print("  ✓ Windows PowerShell installer")
         if (package_path / "config.json").exists():
             console.print("  ✓ Configuration file")
 
@@ -855,6 +859,10 @@ class DistributeCommand(Command):
         except ValueError:
             console.print("[red]Invalid expiration hours.[/red]")
             return 1
+
+        # Per-OS distribution: create separate packages per platform
+        if self.option("per-os"):
+            return self._distribute_per_os(package_path, profile, found_platforms, expires_hours, console)
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
@@ -1084,6 +1092,85 @@ class DistributeCommand(Command):
 
         return 0
 
+    def _distribute_per_os(
+        self, package_path: Path, profile: object, found_platforms: list, expires_hours: int, console: Console
+    ) -> int:
+        """Create and distribute separate packages per OS platform."""
+        console.print("\n[cyan]Creating per-OS distribution packages...[/cyan]\n")
+
+        archives = self._create_per_os_archives(package_path)
+        if not archives:
+            console.print("[red]No platform binaries found to package.[/red]")
+            return 1
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        # Get S3 bucket if distribution is enabled
+        s3 = None
+        bucket_name = None
+        if profile.enable_distribution:
+            dist_stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+            try:
+                stack_outputs = get_stack_outputs(dist_stack_name, profile.aws_region)
+                bucket_name = stack_outputs.get("DistributionBucket")
+                s3 = boto3.client("s3", region_name=profile.aws_region)
+            except Exception as e:
+                console.print(f"[red]Error getting distribution stack: {e}[/red]")
+                return 1
+
+        results = []
+        for platform, label, archive_path in archives:
+            size = archive_path.stat().st_size
+            size_mb = size / (1024 * 1024)
+            filename = f"claude-code-{platform}-{timestamp}.zip"
+
+            if s3 and bucket_name:
+                package_key = f"packages/{timestamp}/{filename}"
+                try:
+                    s3.upload_file(str(archive_path), bucket_name, package_key)
+                    url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": bucket_name, "Key": package_key},
+                        ExpiresIn=expires_hours * 3600,
+                    )
+                    results.append((platform, label, filename, size_mb, url))
+                    console.print(f"  [green]OK[/green]  {label} ({size_mb:.1f} MB)")
+                except ClientError as e:
+                    console.print(f"  [red]FAIL[/red] {label}: {e}")
+            else:
+                local_dir = Path("dist")
+                local_dir.mkdir(exist_ok=True)
+                shutil.copy2(archive_path, local_dir / filename)
+                results.append((platform, label, filename, size_mb, None))
+                console.print(f"  [green]OK[/green]  {label} ({size_mb:.1f} MB) -> dist/{filename}")
+
+            archive_path.unlink()
+
+        if not results:
+            console.print("\n[red]No packages were created.[/red]")
+            return 1
+
+        # Display results
+        expiration = datetime.now() + timedelta(hours=expires_hours)
+        console.print(f"\n[bold green]{len(results)} per-OS packages created.[/bold green]")
+        if s3:
+            console.print(f"[dim]URLs expire: {expiration.strftime('%Y-%m-%d %H:%M')}[/dim]")
+
+        for platform, label, filename, size_mb, url in results:
+            console.print(f"\n[bold]{label}[/bold] ({size_mb:.1f} MB)")
+            if url:
+                if "windows" in platform:
+                    console.print("  PowerShell: $ProgressPreference = 'SilentlyContinue'")
+                    print(f'  Invoke-WebRequest -Uri "{url}" -OutFile "{filename}"')
+                else:
+                    print(f'  curl -L -o "{filename}" "{url}"')
+
+        console.print("\n[bold]After downloading, extract and run the installer:[/bold]")
+        console.print("  Windows:    Expand-Archive <file>.zip . && cd claude-code-package && .\\install.bat")
+        console.print("  Linux/Mac:  unzip <file>.zip && cd claude-code-package && ./install.sh")
+
+        return 0
+
     def _create_archive(self, package_path: Path) -> Path:
         """Create a zip archive of the package directory."""
         import zipfile
@@ -1113,6 +1200,7 @@ class DistributeCommand(Command):
             # Installation scripts
             "install.sh",
             "install.bat",
+            "ccwb-install.ps1",
             # Configuration
             "config.json",
             "README.md",
@@ -1144,6 +1232,89 @@ class DistributeCommand(Command):
         shutil.rmtree(package_temp_dir)
 
         return archive_path
+
+    # Platform-to-files mapping for per-OS packages
+    PLATFORM_FILES = {
+        "windows": {
+            "binaries": ["credential-process-windows.exe", "otel-helper-windows.exe"],
+            "installer": ["install.bat", "ccwb-install.ps1"],
+            "label": "Windows",
+        },
+        "linux-x64": {
+            "binaries": ["credential-process-linux-x64", "otel-helper-linux-x64"],
+            "installer": "install.sh",
+            "label": "Linux x64",
+        },
+        "linux-arm64": {
+            "binaries": ["credential-process-linux-arm64", "otel-helper-linux-arm64"],
+            "installer": "install.sh",
+            "label": "Linux ARM64",
+        },
+        "macos-arm64": {
+            "binaries": ["credential-process-macos-arm64", "otel-helper-macos-arm64"],
+            "installer": "install.sh",
+            "label": "macOS ARM64",
+        },
+        "macos-intel": {
+            "binaries": ["credential-process-macos-intel", "otel-helper-macos-intel"],
+            "installer": "install.sh",
+            "label": "macOS Intel",
+        },
+    }
+
+    def _create_per_os_archives(self, package_path: Path) -> list[tuple[str, Path]]:
+        """Create separate zip archives per OS platform. Returns list of (platform_label, archive_path)."""
+        import zipfile
+
+        archives = []
+        shared_files = ["config.json", "README.md"]
+
+        for platform, pconfig in self.PLATFORM_FILES.items():
+            # Check if the primary binary exists
+            primary_binary = pconfig["binaries"][0]
+            if not (package_path / primary_binary).exists():
+                continue
+
+            temp_dir = Path(tempfile.mkdtemp())
+            archive_path = temp_dir / f"claude-code-{platform}.zip"
+            pkg_dir = temp_dir / "claude-code-package"
+            pkg_dir.mkdir()
+
+            # Copy platform binaries
+            for binary in pconfig["binaries"]:
+                src = package_path / binary
+                if src.exists():
+                    shutil.copy2(src, pkg_dir / binary)
+
+            # Copy installer(s)
+            installers = pconfig["installer"] if isinstance(pconfig["installer"], list) else [pconfig["installer"]]
+            for inst in installers:
+                src = package_path / inst
+                if src.exists():
+                    shutil.copy2(src, pkg_dir / inst)
+
+            # Copy shared files
+            for sf in shared_files:
+                src = package_path / sf
+                if src.exists():
+                    shutil.copy2(src, pkg_dir / sf)
+
+            # Copy claude-settings
+            settings_dir = package_path / "claude-settings"
+            if settings_dir.exists() and settings_dir.is_dir():
+                shutil.copytree(settings_dir, pkg_dir / "claude-settings")
+
+            # Create zip
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for file in pkg_dir.rglob("*"):
+                    if file.is_file():
+                        arcname = f"claude-code-package/{file.relative_to(pkg_dir)}"
+                        zf.write(file, arcname)
+
+            shutil.rmtree(pkg_dir)
+            archives.append((platform, pconfig["label"], archive_path))
+
+        return archives
 
     def _calculate_checksum(self, file_path: Path) -> str:
         """Calculate SHA256 checksum of a file."""

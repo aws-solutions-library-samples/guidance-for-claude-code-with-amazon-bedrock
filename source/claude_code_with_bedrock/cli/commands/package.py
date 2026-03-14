@@ -112,6 +112,28 @@ class PackageCommand(Command):
             default=False,
         ).ask()
 
+        # Prompt for custom OTel resource attributes (only when monitoring is enabled)
+        otel_resource_attributes = None
+        if profile.monitoring_enabled:
+            customize_otel = questionary.confirm(
+                "Customize telemetry resource attributes? (department, team, cost center)",
+                default=False,
+            ).ask()
+
+            if customize_otel:
+                console.print(
+                    "[dim]Example: department=platform, team.id=infra-core, "
+                    "cost_center=CC-4521, organization=acme-corp[/dim]"
+                )
+                department = questionary.text("Department:", default="engineering").ask()
+                team_id = questionary.text("Team ID:", default="default").ask()
+                cost_center = questionary.text("Cost center:", default="default").ask()
+                organization = questionary.text("Organization:", default="default").ask()
+                otel_resource_attributes = (
+                    f"department={department},team.id={team_id},"
+                    f"cost_center={cost_center},organization={organization}"
+                )
+
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
         if isinstance(target_platform, list):
@@ -350,7 +372,7 @@ class PackageCommand(Command):
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name)
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
@@ -367,6 +389,7 @@ class PackageCommand(Command):
         # Check if Windows installer exists (created when Windows binaries are present)
         if (output_dir / "install.bat").exists():
             console.print("  • install.bat - Installation script for Windows")
+            console.print("  • ccwb-install.ps1 - PowerShell installer (called by install.bat)")
         console.print("  • README.md - Installation instructions")
         if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
@@ -1974,149 +1997,140 @@ echo
         return installer_path
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
-        """Create Windows batch installer script."""
+        """Create Windows batch installer script and PowerShell helper."""
 
-        installer_content = f"""@echo off
+        # Create the PowerShell script that does the actual work
+        ps1_content = f"""# Claude Code Authentication Installer for Windows
+# Organization: {profile.provider_domain}
+# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+param(
+    [string]$ScriptDir = (Split-Path -Parent $MyInvocation.MyCommand.Path)
+)
+
+$ErrorActionPreference = 'Stop'
+Set-Location $ScriptDir
+
+Write-Host '======================================'
+Write-Host 'Claude Code Authentication Installer'
+Write-Host '======================================'
+Write-Host ''
+Write-Host 'Organization: {profile.provider_domain}'
+Write-Host ''
+
+# Check prerequisites
+Write-Host 'Checking prerequisites...'
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {{
+    Write-Host 'ERROR: AWS CLI is not installed'
+    Write-Host '       Please install from https://aws.amazon.com/cli/'
+    Read-Host 'Press Enter to exit'
+    exit 1
+}}
+Write-Host 'OK Prerequisites found'
+Write-Host ''
+
+# Create directory
+Write-Host 'Installing authentication tools...'
+$installDir = Join-Path $env:USERPROFILE 'claude-code-with-bedrock'
+if (-not (Test-Path $installDir)) {{ New-Item -ItemType Directory -Path $installDir -Force | Out-Null }}
+
+# Copy credential process
+Write-Host 'Copying credential process...'
+Copy-Item -Force 'credential-process-windows.exe' (Join-Path $installDir 'credential-process.exe')
+
+# Copy OTEL helper if it exists
+if (Test-Path 'otel-helper-windows.exe') {{
+    Write-Host 'Copying OTEL helper...'
+    Copy-Item -Force 'otel-helper-windows.exe' (Join-Path $installDir 'otel-helper.exe')
+}}
+
+# Copy configuration
+Write-Host 'Copying configuration...'
+Copy-Item -Force 'config.json' $installDir
+
+# Install Claude Code settings
+$claudeDir = Join-Path $env:USERPROFILE '.claude'
+if (Test-Path 'claude-settings/settings.json') {{
+    Write-Host ''
+    Write-Host 'Installing Claude Code settings...'
+    if (-not (Test-Path $claudeDir)) {{ New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }}
+
+    $doWrite = $true
+    $settingsTarget = Join-Path $claudeDir 'settings.json'
+    if (Test-Path $settingsTarget) {{
+        Write-Host 'Existing Claude Code settings found'
+        $answer = Read-Host 'Overwrite with new settings? (Y/n)'
+        if ($answer -and $answer -ne 'y' -and $answer -ne 'Y') {{
+            $doWrite = $false
+            Write-Host 'Skipping Claude Code settings...'
+        }}
+    }}
+
+    if ($doWrite) {{
+        $otelPath = (Join-Path $installDir 'otel-helper.exe') -replace '\\\\', '/'
+        $credPath = (Join-Path $installDir 'credential-process.exe') -replace '\\\\', '/'
+        (Get-Content 'claude-settings/settings.json') `
+            -replace '__OTEL_HELPER_PATH__', $otelPath `
+            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath |
+            Set-Content $settingsTarget
+        Write-Host 'OK Claude Code settings configured'
+    }}
+}}
+
+# Configure AWS profiles
+Write-Host ''
+Write-Host 'Configuring AWS profiles...'
+$configJson = Get-Content 'config.json' | ConvertFrom-Json
+$profiles = $configJson.PSObject.Properties.Name
+
+foreach ($p in $profiles) {{
+    Write-Host "Configuring AWS profile: $p"
+    $region = $configJson.$p.aws_region
+    if (-not $region) {{ $region = '{profile.aws_region}' }}
+    $credProc = (Join-Path $installDir 'credential-process.exe') + " --profile $p"
+    aws configure set credential_process $credProc --profile $p
+    aws configure set region $region --profile $p
+    Write-Host "  OK Created AWS profile '$p'"
+}}
+
+# Summary
+Write-Host ''
+Write-Host '======================================'
+Write-Host 'Installation complete!'
+Write-Host '======================================'
+Write-Host ''
+Write-Host 'Available profiles:'
+foreach ($p in $profiles) {{ Write-Host "  - $p" }}
+Write-Host ''
+Write-Host 'To use Claude Code authentication:'
+Write-Host '  set AWS_PROFILE=<profile-name>'
+Write-Host '  aws sts get-caller-identity'
+Write-Host ''
+Write-Host 'Example:'
+$first = $profiles | Select-Object -First 1
+Write-Host "  set AWS_PROFILE=$first"
+Write-Host '  aws sts get-caller-identity'
+Write-Host ''
+Write-Host 'Note: Authentication will automatically open your browser when needed.'
+"""
+
+        ps1_path = output_dir / "ccwb-install.ps1"
+        with open(ps1_path, "w", encoding="utf-8") as f:
+            f.write(ps1_content)
+
+        # Create the batch launcher that calls the PowerShell script
+        bat_content = f"""@echo off
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-echo ======================================
-echo Claude Code Authentication Installer
-echo ======================================
-echo.
-echo Organization: {profile.provider_domain}
-echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ccwb-install.ps1"
 
-REM Check prerequisites
-echo Checking prerequisites...
-
-where aws >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: AWS CLI is not installed
-    echo        Please install from https://aws.amazon.com/cli/
-    pause
-    exit /b 1
-)
-
-echo OK Prerequisites found
-echo.
-
-REM Create directory
-echo Installing authentication tools...
-if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
-
-REM Copy credential process executable with renamed target
-echo Copying credential process...
-copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy credential-process-windows.exe
-    pause
-    exit /b 1
-)
-
-REM Copy OTEL helper if it exists with renamed target
-if exist "otel-helper-windows.exe" (
-    echo Copying OTEL helper...
-    copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
-)
-
-REM Copy configuration
-echo Copying configuration...
-copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
-
-REM Copy Claude Code settings if they exist
-if exist "claude-settings" (
-    echo Copying Claude Code telemetry settings...
-    if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
-
-    REM Copy settings and replace placeholders
-    if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
-        if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
-                echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
-            )
-        )
-
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
-            echo OK Claude Code settings configured
-        )
-    )
-)
-
-REM Configure AWS profiles
-echo.
-echo Configuring AWS profiles...
-
-REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command ^
-"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
-    echo Configuring AWS profile: %%p
-
-    REM Get profile-specific region
-    for /f %%r in ('powershell -Command ^
-    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
-
-
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
-    )
-
-    echo   OK Created AWS profile '%%p'
-)
-
-echo.
-echo ======================================
-echo Installation complete!
-echo ======================================
-echo.
-echo Available profiles:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
-    echo   - %%p
-)
-echo.
-echo To use Claude Code authentication:
-echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
-echo.
-echo Example:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
-)
-echo.
-echo Note: Authentication will automatically open your browser when needed.
-echo.
 pause
 """
 
         installer_path = output_dir / "install.bat"
         with open(installer_path, "w", encoding="utf-8") as f:
-            f.write(installer_content)
+            f.write(bat_content)
 
         # Note: chmod not needed on Windows batch files
         return installer_path
@@ -2289,8 +2303,13 @@ Available metrics include:
             f.write(readme_content)
 
     def _create_claude_settings(
-        self, output_dir: Path, profile, include_coauthored_by: bool = True, profile_name: str = "ClaudeCode"
-    ):
+        self,
+        output_dir: Path,
+        profile: object,
+        include_coauthored_by: bool = True,
+        profile_name: str = "ClaudeCode",
+        otel_resource_attributes: str | None = None,
+    ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
 
@@ -2363,6 +2382,10 @@ Available metrics include:
 
                     if endpoint:
                         # Add monitoring configuration
+                        resource_attrs = otel_resource_attributes or (
+                            "department=engineering,team.id=default,"
+                            "cost_center=default,organization=default"
+                        )
                         settings["env"].update(
                             {
                                 "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
@@ -2370,9 +2393,7 @@ Available metrics include:
                                 "OTEL_LOGS_EXPORTER": "otlp",
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
                             }
                         )
 

@@ -1,6 +1,51 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Authenticated distribution landing page with ALB + Lambda + OIDC + S3'
 
+Mappings:
+  RegionELBAccountId:
+    us-east-1:
+      AccountId: '127311923021'
+    us-east-2:
+      AccountId: '033677994240'
+    us-west-1:
+      AccountId: '027434742980'
+    us-west-2:
+      AccountId: '797873946194'
+    af-south-1:
+      AccountId: '098369216593'
+    ap-east-1:
+      AccountId: '754344448648'
+    ap-south-1:
+      AccountId: '718504428378'
+    ap-northeast-1:
+      AccountId: '582318560864'
+    ap-northeast-2:
+      AccountId: '600734575887'
+    ap-northeast-3:
+      AccountId: '383597477331'
+    ap-southeast-1:
+      AccountId: '114774131450'
+    ap-southeast-2:
+      AccountId: '783225319266'
+    ca-central-1:
+      AccountId: '985666609251'
+    eu-central-1:
+      AccountId: '054676820928'
+    eu-west-1:
+      AccountId: '156460612806'
+    eu-west-2:
+      AccountId: '652711504416'
+    eu-west-3:
+      AccountId: '009996457667'
+    eu-south-1:
+      AccountId: '635631232127'
+    eu-north-1:
+      AccountId: '897822967062'
+    me-south-1:
+      AccountId: '076674570225'
+    sa-east-1:
+      AccountId: '507241528517'
+
 Parameters:
   IdentityPoolName:
     Type: String
@@ -128,16 +173,6 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      Tags:
-        - Key: Application
-          Value: ClaudeCodeWithBedrock
-        - Key: Purpose
-          Value: LandingPageDistribution
 
   # S3 Bucket for ALB access logs
   ALBLogsBucket:
@@ -175,13 +210,30 @@ Resources:
           - Sid: AWSLogDeliveryWrite
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::127311923021:root'  # ELB service account for us-east-1
+              AWS: !Sub
+                - 'arn:aws:iam::${ElbAccountId}:root'
+                - ElbAccountId: !FindInMap [RegionELBAccountId, !Ref 'AWS::Region', AccountId]
             Action: s3:PutObject
             Resource: !Sub '${ALBLogsBucket.Arn}/*'
+          - Sid: AWSLogDeliveryWriteAcl
+            Effect: Allow
+            Principal:
+              Service: elasticloadbalancing.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${ALBLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
           - Sid: AWSLogDeliveryAclCheck
             Effect: Allow
             Principal:
               Service: logdelivery.elasticloadbalancing.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt ALBLogsBucket.Arn
+          - Sid: DeliveryLoggingAclCheck
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
             Action: s3:GetBucketAcl
             Resource: !GetAtt ALBLogsBucket.Arn
 
