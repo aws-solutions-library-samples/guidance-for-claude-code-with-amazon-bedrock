@@ -167,7 +167,7 @@ Share the `dist/` folder through your normal software distribution channels - pe
 **Installation by Platform:**
 
 - **Windows**: Users run `install.bat`
-- **macOS/Linux**: Users run `./install.sh`
+- **macOS/Linux**: Users run `chmod +x install.sh && ./install.sh`
 
 Regardless of distribution method, the user experience remains simple. They receive the package, run the installer for their platform, and they're done. The installer:
 

@@ -403,6 +403,7 @@ unzip claude-code-package.zip
 
 # Install
 cd dist
+chmod +x install.sh
 ./install.sh
 ```
 

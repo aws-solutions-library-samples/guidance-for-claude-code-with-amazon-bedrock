@@ -392,7 +392,7 @@ class DistributeCommand(Command):
             # Use regular print to avoid Rich console line wrapping
             print(f'   curl -L -o "{filename}" "{data["url"]}"')
             console.print("2. Extract and install:")
-            console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
+            console.print(f"   unzip {filename} && cd claude-code-package && chmod +x install.sh && ./install.sh")
 
             console.print("\n[cyan]For Windows PowerShell:[/cyan]")
             console.print("1. Download (copy entire line):")
@@ -1059,7 +1059,7 @@ class DistributeCommand(Command):
             # Use regular print to avoid Rich console line wrapping
             print(f'   curl -L -o "{filename}" "{url}"')
             console.print("2. Extract and install:")
-            console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
+            console.print(f"   unzip {filename} && cd claude-code-package && chmod +x install.sh && ./install.sh")
 
             console.print("\n[cyan]For Windows PowerShell:[/cyan]")
             console.print("1. Download (copy entire line):")
@@ -1082,7 +1082,7 @@ class DistributeCommand(Command):
             console.print(f"   unzip dist/{filename}")
             console.print("2. Install:")
             console.print("   cd claude-code-package")
-            console.print("   ./install.sh  (macOS/Linux)")
+            console.print("   chmod +x install.sh && ./install.sh  (macOS/Linux)")
             console.print("   .\\install.bat  (Windows)")
 
             console.print("\n[dim]To enable distribution features:[/dim]")
@@ -1167,7 +1167,7 @@ class DistributeCommand(Command):
 
         console.print("\n[bold]After downloading, extract and run the installer:[/bold]")
         console.print("  Windows:    Expand-Archive <file>.zip . && cd claude-code-package && .\\install.bat")
-        console.print("  Linux/Mac:  unzip <file>.zip && cd claude-code-package && ./install.sh")
+        console.print("  Linux/Mac:  unzip <file>.zip && cd claude-code-package && chmod +x install.sh && ./install.sh")
 
         return 0
 

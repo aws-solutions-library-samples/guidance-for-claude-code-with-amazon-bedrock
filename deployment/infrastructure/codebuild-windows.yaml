@@ -176,10 +176,8 @@ Resources:
                 - $env:PATH = "C:\ProgramData\mingw64\mingw64\bin;" + $env:PATH; C:\Python312\python.exe -m nuitka --mingw64 --standalone --onefile --assume-yes-for-downloads --company-name="Claude Code" --product-name="Claude Code OTEL Helper" --file-version="1.0.0.0" --product-version="1.0.0.0" --windows-file-description="OpenTelemetry Helper for Claude Code" --output-filename=otel-helper-windows.exe --output-dir=. --remove-output source/otel_helper/__main__.py
             post_build:
               commands:
-                - echo Build completed successfully
-                - Get-ChildItem *.exe
-                - echo Checking file sizes...
-                - Get-ChildItem *.exe | ForEach-Object { Write-Host "$($_.Name) - $($_.Length) bytes" }
+                - echo Build completed
+                - Get-ChildItem *.exe | ForEach-Object { Write-Host "$($_.Name) - $([math]::Round($_.Length/1MB, 1)) MB" }
 
           artifacts:
             files:
@@ -216,7 +214,7 @@ Resources:
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_LARGE
-        Image: aws/codebuild/standard:7.0
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
         PrivilegedMode: false
       Source:
         Type: S3

@@ -399,12 +399,12 @@ class PackageCommand(Command):
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
         console.print("1. Send users the entire dist folder")
-        console.print("2. Users run: ./install.sh")
+        console.print("2. Users run: chmod +x install.sh && ./install.sh")
         console.print("3. Authentication is configured automatically")
 
         console.print("\n[bold]To test locally:[/bold]")
         console.print(f"cd {output_dir}")
-        console.print("./install.sh")
+        console.print("chmod +x install.sh && ./install.sh")
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
@@ -1986,7 +1986,7 @@ echo
 """
 
         installer_path = output_dir / "install.sh"
-        with open(installer_path, "w", encoding="utf-8") as f:
+        with open(installer_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
 
@@ -2151,7 +2151,7 @@ pause
 
 2. Run the installer:
    ```bash
-   ./install.sh
+   chmod +x install.sh && ./install.sh
    ```
 
 3. Use the AWS profile:

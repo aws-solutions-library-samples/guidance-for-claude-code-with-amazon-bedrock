@@ -101,7 +101,7 @@ The template creates a User Pool with the following settings:
 ### Sign-in Options
 - Username with email alias
 - Email as required attribute
-- preferred_username as optional attribute (used as sign-in alias)
+- preferred_username as required attribute
 
 ### Security Settings
 - Self-registration disabled
