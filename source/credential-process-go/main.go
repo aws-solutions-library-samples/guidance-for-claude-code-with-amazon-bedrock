@@ -17,7 +17,7 @@ import (
 	"credential-process-go/internal/storage"
 )
 
-var version = "1.0.0" // overridden by -ldflags
+var version = "1.0.0-beta" // overridden by -ldflags
 
 func main() {
 	os.Exit(run())

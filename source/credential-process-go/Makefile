@@ -1,4 +1,4 @@
-VERSION ?= 1.0.0
+VERSION ?= 1.0.0-beta
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 BINARY := credential-process
 
