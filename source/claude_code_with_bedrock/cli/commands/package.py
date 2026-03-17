@@ -298,6 +298,7 @@ class PackageCommand(Command):
         built_executables = []
         built_go_executables = []
         built_otel_helpers = []
+        built_go_otel_helpers = []
 
         console.print()
         for platform_name in platforms_to_build:
@@ -337,6 +338,14 @@ class PackageCommand(Command):
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
+                    # Build Go OTEL helper (beta)
+                    console.print(f"[cyan]Building Go OTEL helper (beta) for {platform_name}...[/cyan]")
+                    try:
+                        go_otel_path = self._build_go_otel_helper(output_dir, platform_name)
+                        built_go_otel_helpers.append((platform_name, go_otel_path))
+                    except Exception as e:
+                        console.print(f"[yellow]Warning: Could not build Go OTEL helper for {platform_name}: {e}[/yellow]")
+
         # Check if any binaries were built
         if not built_executables:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
@@ -351,7 +360,7 @@ class PackageCommand(Command):
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
-        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+        self._create_installer(output_dir, profile, built_executables, built_otel_helpers, built_go_otel_helpers)
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
@@ -384,6 +393,8 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+            for platform_name, go_otel_path in built_go_otel_helpers:
+                console.print(f"  • {go_otel_path.name} - [bold]Beta[/bold] Go OTEL helper for {platform_name}")
 
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
@@ -542,7 +553,7 @@ class PackageCommand(Command):
         env["GOARCH"] = goarch
         env["CGO_ENABLED"] = "0"
 
-        cmd = ["go", "build", f"-ldflags={ldflags}", "-o", str(binary_path), "."]
+        cmd = ["go", "build", f"-ldflags={ldflags}", "-o", str(binary_path), "./cmd/credential-process"]
 
         console.print(f"[dim]  Go cross-compile: GOOS={goos} GOARCH={goarch}[/dim]")
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=go_source_dir, env=env)
@@ -554,6 +565,80 @@ class PackageCommand(Command):
 
         binary_path.chmod(0o755)
         console.print(f"[green]  ✓ Go binary built: {binary_name}[/green]")
+        return binary_path
+
+    def _build_go_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
+        """Build Go OTEL helper binary via cross-compilation."""
+        console = Console()
+        go_source_dir = Path(__file__).parent.parent.parent.parent / "credential-process-go"
+
+        if not go_source_dir.exists():
+            raise FileNotFoundError(f"Go source not found at {go_source_dir}")
+
+        # Check if Go is installed
+        go_check = subprocess.run(["go", "version"], capture_output=True, text=True)
+        if go_check.returncode != 0:
+            raise RuntimeError(
+                "Go is not installed. Install from https://go.dev/dl/\n"
+                "The Go OTEL helper is optional - the standard Python version will still be built."
+            )
+
+        # Map target platform to GOOS/GOARCH (same as _build_go_executable)
+        platform_map = {
+            "macos-arm64": ("darwin", "arm64"),
+            "macos-intel": ("darwin", "amd64"),
+            "macos-universal": None,
+            "linux-x64": ("linux", "amd64"),
+            "linux-arm64": ("linux", "arm64"),
+            "linux": ("linux", "amd64"),
+            "windows": ("windows", "amd64"),
+            "macos": None,
+        }
+
+        target = platform_map.get(target_platform)
+        if target is None:
+            if target_platform in ("macos", "macos-universal"):
+                import platform as plat
+                if plat.machine().lower() == "arm64":
+                    target = ("darwin", "arm64")
+                else:
+                    target = ("darwin", "amd64")
+            else:
+                raise ValueError(f"Unsupported Go build target: {target_platform}")
+
+        goos, goarch = target
+
+        # Determine output binary name
+        suffix_map = {
+            ("darwin", "arm64"): "macos-arm64",
+            ("darwin", "amd64"): "macos-intel",
+            ("linux", "amd64"): "linux-x64",
+            ("linux", "arm64"): "linux-arm64",
+            ("windows", "amd64"): "windows",
+        }
+        platform_suffix = suffix_map.get((goos, goarch), f"{goos}-{goarch}")
+        ext = ".exe" if goos == "windows" else ""
+        binary_name = f"otel-helper-go-{platform_suffix}{ext}"
+        binary_path = output_dir / binary_name
+
+        ldflags = "-s -w -X main.version=1.0.0-beta"
+        env = os.environ.copy()
+        env["GOOS"] = goos
+        env["GOARCH"] = goarch
+        env["CGO_ENABLED"] = "0"
+
+        cmd = ["go", "build", f"-ldflags={ldflags}", "-o", str(binary_path), "./cmd/otel-helper"]
+
+        console.print(f"[dim]  Go cross-compile OTEL helper: GOOS={goos} GOARCH={goarch}[/dim]")
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=go_source_dir, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Go OTEL helper build failed:\n{result.stderr}")
+
+        if not binary_path.exists():
+            raise RuntimeError(f"Go OTEL helper binary not created: {binary_path}")
+
+        binary_path.chmod(0o755)
+        console.print(f"[green]  ✓ Go OTEL helper built: {binary_name}[/green]")
         return binary_path
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
@@ -1827,7 +1912,7 @@ RUN pyinstaller \
         except Exception:
             return "oidc"  # Default to generic OIDC on parsing error
 
-    def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
+    def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None, built_go_otel_helpers=None) -> Path:
         """Create simple installer script."""
 
         # Determine which binaries were built
@@ -1893,6 +1978,7 @@ fi
 CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX"
 GO_CREDENTIAL_BINARY="credential-process-go-$BINARY_SUFFIX"
 OTEL_BINARY="otel-helper-$BINARY_SUFFIX"
+GO_OTEL_BINARY="otel-helper-go-$BINARY_SUFFIX"
 
 if [ ! -f "$CREDENTIAL_BINARY" ]; then
     echo "Binary not found for your platform: $CREDENTIAL_BINARY"
@@ -1983,10 +2069,37 @@ if [ -d "claude-settings" ]; then
 fi
 
 # Copy OTEL helper executable if present
-if [ -f "$OTEL_BINARY" ]; then
+SELECTED_OTEL_BINARY="$OTEL_BINARY"
+if [ -f "$OTEL_BINARY" ] && [ -f "$GO_OTEL_BINARY" ]; then
+    echo
+    echo "--------------------------------------"
+    echo "OTEL Helper Engine Selection"
+    echo "--------------------------------------"
+    echo
+    echo "Two OTEL helper engines are available:"
+    echo
+    echo "  [1] Standard (Python) - Stable, well-tested"
+    echo "  [2] Beta: High-performance (Go) - Faster startup (~50ms vs 10-20s)"
+    echo
+    read -p "Select OTEL helper engine [1]: " OTEL_ENGINE_CHOICE
+    if [[ -z "$OTEL_ENGINE_CHOICE" ]]; then
+        OTEL_ENGINE_CHOICE="1"
+    fi
+    if [[ "$OTEL_ENGINE_CHOICE" == "2" ]]; then
+        SELECTED_OTEL_BINARY="$GO_OTEL_BINARY"
+        echo "Using Go OTEL helper (beta)"
+    else
+        echo "Using standard OTEL helper"
+    fi
+    echo
+elif [ -f "$GO_OTEL_BINARY" ] && [ ! -f "$OTEL_BINARY" ]; then
+    SELECTED_OTEL_BINARY="$GO_OTEL_BINARY"
+fi
+
+if [ -f "$SELECTED_OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
+    cp "$SELECTED_OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
     chmod +x ~/claude-code-with-bedrock/otel-helper
     echo "✓ OTEL helper installed"
 fi
