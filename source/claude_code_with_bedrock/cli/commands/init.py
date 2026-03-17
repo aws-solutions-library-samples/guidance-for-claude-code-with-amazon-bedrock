@@ -448,6 +448,76 @@ class InitCommand(Command):
             config["federation_type"] = federation_type
             config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
 
+            # Deployment mode selection
+            console.print("\n[cyan]Deployment Mode[/cyan]")
+            console.print("Choose how this profile will be used:")
+            console.print("  • [cyan]Standalone[/cyan]: Single-account deployment (default)")
+            console.print("  • [cyan]Hub[/cyan]: Central account for multi-account hub-and-spoke deployment\n")
+
+            existing_deployment_mode = config.get("deployment_mode", "standalone")
+
+            deployment_mode = questionary.select(
+                "Deployment mode:",
+                choices=[
+                    questionary.Choice("Standalone (single account)", value="standalone"),
+                    questionary.Choice("Hub (multi-account, deploy auth to spoke accounts via StackSets)", value="hub"),
+                ],
+                default=existing_deployment_mode,
+            ).ask()
+
+            if not deployment_mode:
+                return None
+
+            config["deployment_mode"] = deployment_mode
+
+            if deployment_mode == "hub":
+                console.print("\n[yellow]Hub Mode Configuration[/yellow]")
+                console.print("Specify which spoke accounts should receive auth infrastructure.")
+                console.print("You can target an Organizational Unit (OU) or provide explicit account IDs.\n")
+
+                target_method = questionary.select(
+                    "How should spoke accounts be targeted?",
+                    choices=[
+                        questionary.Choice("Organizational Unit (OU ID)", value="ou"),
+                        questionary.Choice("Explicit account IDs", value="accounts"),
+                    ],
+                    default="ou" if config.get("spoke_ou_id") else ("accounts" if config.get("spoke_account_ids") else "ou"),
+                ).ask()
+
+                if not target_method:
+                    return None
+
+                if target_method == "ou":
+                    spoke_ou_id = questionary.text(
+                        "Enter the OU ID for spoke accounts:",
+                        default=config.get("spoke_ou_id", ""),
+                        validate=lambda x: bool(re.match(r"^ou-[a-z0-9]{4,32}-[a-z0-9]{8,32}$", x))
+                        or "Invalid OU ID format (e.g., ou-xxxx-xxxxxxxx)",
+                        instruction="(e.g., ou-xxxx-xxxxxxxx)",
+                    ).ask()
+
+                    if not spoke_ou_id:
+                        return None
+
+                    config["spoke_ou_id"] = spoke_ou_id
+                    config["spoke_account_ids"] = []
+                else:
+                    account_ids_str = questionary.text(
+                        "Enter spoke account IDs (comma-separated):",
+                        default=",".join(config.get("spoke_account_ids", [])),
+                        validate=lambda x: all(
+                            re.match(r"^\d{12}$", aid.strip()) for aid in x.split(",") if aid.strip()
+                        ) or "Each account ID must be exactly 12 digits",
+                    ).ask()
+
+                    if not account_ids_str:
+                        return None
+
+                    config["spoke_account_ids"] = [aid.strip() for aid in account_ids_str.split(",") if aid.strip()]
+                    config["spoke_ou_id"] = None
+
+                console.print(f"[green]✓[/green] Hub mode configured")
+
             # Save progress
             progress.save_step("oidc_complete", config)
 
@@ -1489,6 +1559,9 @@ class InitCommand(Command):
             daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
+            deployment_mode=config_data.get("deployment_mode", "standalone"),
+            spoke_ou_id=config_data.get("spoke_ou_id"),
+            spoke_account_ids=config_data.get("spoke_account_ids", []),
         )
 
         config.add_profile(profile)

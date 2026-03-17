@@ -124,6 +124,23 @@ class StatusCommand(Command):
         if endpoints.get("dashboard_url"):
             console.print(f"\n• CloudWatch Dashboard: [cyan]{endpoints['dashboard_url']}[/cyan]")
 
+        # StackSet status for hub mode
+        if getattr(profile, "deployment_mode", "standalone") == "hub" and getattr(profile, "stackset_name", None):
+            console.print("\n[bold]Spoke StackSet[/bold]")
+            stackset_info = self._get_stackset_status(profile)
+            if stackset_info:
+                status_color = "green" if stackset_info["status"] == "ACTIVE" else "yellow"
+                console.print(f"• StackSet: [cyan]{profile.stackset_name}[/cyan]")
+                console.print(f"• Status: [{status_color}]{stackset_info['status']}[/{status_color}]")
+                console.print(
+                    f"• Spoke Accounts: [cyan]{stackset_info['total']}[/cyan] total, "
+                    f"[green]{stackset_info['current']}[/green] current, "
+                    f"[red]{stackset_info['failed']}[/red] failed"
+                )
+            else:
+                console.print(f"• StackSet: [cyan]{profile.stackset_name}[/cyan]")
+                console.print("• Status: [yellow]Could not retrieve status[/yellow]")
+
         # Package info
         dist_dir = Path.home() / "claude-code-with-bedrock" / "dist"
         if dist_dir.exists():
@@ -166,6 +183,15 @@ class StatusCommand(Command):
             "stacks": self._get_stack_status(profile),
             "endpoints": endpoints,
         }
+
+        # Add stackset info for hub mode
+        if getattr(profile, "deployment_mode", "standalone") == "hub" and getattr(profile, "stackset_name", None):
+            stackset_info = self._get_stackset_status(profile)
+            if stackset_info:
+                status["stackset"] = {
+                    "name": profile.stackset_name,
+                    **stackset_info,
+                }
 
         console.print(json.dumps(status, indent=2))
         return 0
@@ -213,6 +239,38 @@ class StatusCommand(Command):
             pass
 
         return {"status": "NOT_FOUND", "last_updated": None}
+
+    def _get_stackset_status(self, profile) -> dict[str, Any] | None:
+        """Get StackSet status for hub mode profiles."""
+        try:
+            import boto3
+
+            cf_client = boto3.client("cloudformation", region_name=profile.aws_region)
+            response = cf_client.describe_stack_set(
+                StackSetName=profile.stackset_name,
+                CallAs="SELF",
+            )
+            stackset = response["StackSet"]
+
+            # Get instance counts
+            summary = cf_client.list_stack_instances(
+                StackSetName=profile.stackset_name,
+            )
+            instances = summary.get("Summaries", [])
+
+            total = len(instances)
+            current = sum(1 for i in instances if i.get("StackInstanceStatus", {}).get("DetailedStatus") == "SUCCEEDED"
+                          or i.get("Status") == "CURRENT")
+            failed = sum(1 for i in instances if i.get("Status") in ("INOPERABLE", "OUTDATED"))
+
+            return {
+                "status": stackset.get("Status", "UNKNOWN"),
+                "total": total,
+                "current": current,
+                "failed": failed,
+            }
+        except Exception:
+            return None
 
     def _get_endpoints(self, profile) -> dict[str, Any]:
         """Get all relevant endpoints."""

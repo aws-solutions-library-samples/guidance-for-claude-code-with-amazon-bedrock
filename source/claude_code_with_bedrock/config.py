@@ -70,6 +70,12 @@ class Profile:
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
 
+    # Hub-and-spoke multi-account configuration
+    deployment_mode: str = "standalone"  # "standalone" or "hub"
+    spoke_ou_id: str | None = None  # OU ID for StackSet targeting (e.g., ou-xxxx-xxxxxxxx)
+    spoke_account_ids: list[str] = field(default_factory=list)  # Explicit account list (alternative to OU)
+    stackset_name: str | None = None  # StackSet name (set after deploy)
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
@@ -146,6 +152,10 @@ class Profile:
             # If distribution was enabled but no type specified, default to presigned-s3
             if "distribution_type" not in data or data["distribution_type"] is None:
                 data["distribution_type"] = "presigned-s3"
+
+        # Default deployment_mode to standalone for existing profiles
+        if "deployment_mode" not in data:
+            data["deployment_mode"] = "standalone"
 
         # Set default cross-region profile if not present
         if "cross_region_profile" not in data:
