@@ -127,35 +127,50 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get actual Identity Pool ID or Role ARN from stack outputs
-        console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+        # Hub mode with StackSet: generate per-account configs instead of single config
+        is_hub_with_stackset = (
+            getattr(profile, "deployment_mode", "standalone") == "hub"
+            and getattr(profile, "stackset_name", None)
         )
 
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
+        # Get actual Identity Pool ID or Role ARN from stack outputs
+        console.print("[yellow]Fetching deployment information...[/yellow]")
 
-        # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
-        identity_pool_id = None
-        federated_role_arn = None
-
-        if federation_type == "direct":
-            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
-            # Then fallback to FederatedRoleArn (new templates)
-            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                federated_role_arn = stack_outputs.get("FederatedRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                return 1
+        if is_hub_with_stackset:
+            # In hub mode, auth is deployed to spoke accounts via StackSet
+            # We'll generate per-account configs after building binaries
+            federation_type = "direct"
+            identity_pool_id = None
+            federated_role_arn = None  # Will be constructed per-account
+            console.print(f"[dim]Hub mode: auth deployed via StackSet '{profile.stackset_name}'[/dim]")
         else:
-            identity_pool_id = stack_outputs.get("IdentityPoolId")
-            if not identity_pool_id:
-                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
                 return 1
+
+            # Check federation type and get appropriate identifier
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+            identity_pool_id = None
+            federated_role_arn = None
+
+            if federation_type == "direct":
+                # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
+                # Then fallback to FederatedRoleArn (new templates)
+                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                    return 1
+            else:
+                identity_pool_id = stack_outputs.get("IdentityPoolId")
+                if not identity_pool_id:
+                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                    return 1
 
         # Welcome
         console.print(
@@ -336,9 +351,16 @@ class PackageCommand(Command):
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
-        # Pass the appropriate identifier based on federation type
-        federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
-        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
+        if is_hub_with_stackset:
+            # Generate per-account config files for spoke accounts
+            spoke_configs_dir = self._create_multi_account_configs(output_dir, profile, profile_name, console)
+            if not spoke_configs_dir:
+                console.print("[red]Failed to generate spoke account configurations.[/red]")
+                return 1
+        else:
+            # Pass the appropriate identifier based on federation type
+            federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
+            self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -1700,6 +1722,90 @@ RUN pyinstaller \
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
         return config_path
+
+    def _create_multi_account_configs(
+        self,
+        output_dir: Path,
+        profile,
+        profile_name: str,
+        console,
+    ) -> Path | None:
+        """Generate per-account config files for hub-and-spoke deployments.
+
+        Queries the StackSet for all spoke account IDs, constructs the
+        federated_role_arn for each account, and generates a config.json
+        per account in spoke-configs/.
+
+        Returns:
+            Path to spoke-configs directory, or None on failure.
+        """
+        import boto3
+
+        try:
+            cf_client = boto3.client("cloudformation", region_name=profile.aws_region)
+
+            # Get all stack instances from the StackSet
+            spoke_accounts = []
+            paginator = cf_client.get_paginator("list_stack_instances")
+            for page in paginator.paginate(StackSetName=profile.stackset_name):
+                for instance in page.get("Summaries", []):
+                    if instance.get("Status") == "CURRENT":
+                        spoke_accounts.append(instance["Account"])
+
+            if not spoke_accounts:
+                console.print("[yellow]No CURRENT spoke account instances found in StackSet.[/yellow]")
+                return None
+
+            console.print(f"[dim]Found {len(spoke_accounts)} spoke accounts in StackSet[/dim]")
+
+            # Determine the role name from the stack. The auth templates create a role
+            # with a predictable name based on the stack name. We can get this from any
+            # stack instance, or construct it from the template's output pattern.
+            # The role name in the auth templates follows: {IdentityPoolName}-BedrockAccessRole
+            role_name = f"{profile.identity_pool_name}-BedrockAccessRole"
+
+            # Create spoke-configs directory
+            spoke_configs_dir = output_dir / "spoke-configs"
+            spoke_configs_dir.mkdir(parents=True, exist_ok=True)
+
+            for account_id in spoke_accounts:
+                # Construct the role ARN for this spoke account
+                role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+
+                config = {
+                    profile_name: {
+                        "provider_domain": profile.provider_domain,
+                        "client_id": profile.client_id,
+                        "aws_region": profile.aws_region,
+                        "provider_type": profile.provider_type or self._detect_provider_type(profile.provider_domain),
+                        "credential_storage": profile.credential_storage,
+                        "cross_region_profile": profile.cross_region_profile or "us",
+                        "federation_type": "direct",
+                        "federated_role_arn": role_arn,
+                        "max_session_duration": profile.max_session_duration,
+                    }
+                }
+
+                # Add cognito_user_pool_id if applicable
+                if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
+                    config[profile_name]["cognito_user_pool_id"] = profile.cognito_user_pool_id
+
+                # Add selected_model if available
+                if hasattr(profile, "selected_model") and profile.selected_model:
+                    config[profile_name]["selected_model"] = profile.selected_model
+
+                config_path = spoke_configs_dir / f"config-{account_id}.json"
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+
+            console.print(
+                f"[green]✓ Generated {len(spoke_accounts)} spoke account configs in {spoke_configs_dir}[/green]"
+            )
+            return spoke_configs_dir
+
+        except Exception as e:
+            console.print(f"[red]Error generating multi-account configs: {e}[/red]")
+            return None
 
     def _get_bedrock_region_for_profile(self, profile) -> str:
         """Get the correct AWS region for Bedrock API calls based on user-selected source region."""
