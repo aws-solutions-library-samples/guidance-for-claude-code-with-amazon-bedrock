@@ -141,7 +141,7 @@ Resources:
               - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
               - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
             Condition:
-              StringEquals:
+              StringLike:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - Sid: AllowBedrockList
             Effect: Allow
@@ -153,7 +153,7 @@ Resources:
               - 'bedrock:GetInferenceProfile'
             Resource: '*'
             Condition:
-              StringEquals:
+              StringLike:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - !If
             - MonitoringEnabled
@@ -167,6 +167,7 @@ Resources:
                   'cloudwatch:namespace':
                     - 'ClaudeCode'
                     - 'AWS/Bedrock'
+                StringLike:
                   'aws:RequestedRegion': !Ref AllowedBedrockRegions
             - !Ref 'AWS::NoValue'
 
