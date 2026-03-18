@@ -332,6 +332,9 @@ def main():
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
+        # Only include Bearer token when ALB JWT validation is enabled (set by installer)
+        if os.environ.get("OTEL_JWT_AUTH", "").lower() in ("true", "1", "yes"):
+            headers_dict["authorization"] = f"Bearer {token}"
 
         # In test mode, print detailed output
         if TEST_MODE:
