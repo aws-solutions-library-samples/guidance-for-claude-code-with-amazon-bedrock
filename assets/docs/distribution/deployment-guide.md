@@ -710,7 +710,7 @@ Packages are created in `dist/` directory:
 
 - Credential process executables for each platform
 - OTEL helper executables (if monitoring enabled)
-- Installation scripts (`install.sh`, `install.bat`)
+- Installation scripts (`install.sh`, `install.bat` + `ccwb-install.ps1`)
 - Configuration file (`config.json`)
 - Claude Code settings directory (if configured)
 

@@ -12,9 +12,9 @@ Parameters:
 
   OktaDomain:
     Type: String
-    Description: Your Okta domain (e.g., company.okta.com)
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(-emea)?\.com$'
-    ConstraintDescription: Must be a valid Okta domain
+    Description: Your Okta domain (e.g., company.okta.com or dev-123456.oktapreview.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(preview|-emea)?\.com$'
+    ConstraintDescription: Must be a valid Okta domain (okta.com, oktapreview.com, or okta-emea.com)
 
   OktaClientId:
     Type: String

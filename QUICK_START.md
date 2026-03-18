@@ -165,7 +165,8 @@ The `dist/` folder will contain:
 - `credential-process-linux` - Authentication executable for Linux (if built on Linux)
 - `config.json` - Embedded configuration
 - `install.sh` - Installation script for Unix systems
-- `install.bat` - Installation script for Windows
+- `install.bat` - Installation script for Windows (launcher)
+- `ccwb-install.ps1` - PowerShell installer logic (called by install.bat)
 - `README.md` - User instructions
 - `.claude/settings.json` - Claude Code telemetry settings (if monitoring enabled)
 - `otel-helper-*` - OTEL helper executables for each platform (if monitoring enabled)
