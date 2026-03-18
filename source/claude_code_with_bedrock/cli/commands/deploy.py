@@ -157,16 +157,18 @@ class DeployCommand(Command):
             # Deploy all configured stacks in dependency order
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
-            if profile.enable_distribution:
-                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
-
-            # Deploy remaining monitoring stacks
+            # Deploy networking and s3bucket before distribution (distribution ALB needs VPC)
             if profile.monitoring_enabled:
                 vpc_config = profile.monitoring_config or {}
                 if vpc_config.get("create_vpc", True):
                     stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+
+            if profile.enable_distribution:
+                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+            # Deploy remaining monitoring stacks
+            if profile.monitoring_enabled:
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 # Check if analytics is enabled (default to True for backward compatibility)
@@ -490,7 +492,7 @@ class DeployCommand(Command):
                         # Extract tenant ID from domain or use full domain
                         params.extend(
                             [
-                                f"AzureTenantId={profile.distribution_idp_domain}",
+                                f"AzureTenantId={__import__("re").search(r"[0-9a-f-]{36}", profile.distribution_idp_domain).group(0)}",
                                 f"AzureClientId={profile.distribution_idp_client_id}",
                                 f"AzureClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]
