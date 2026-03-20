@@ -95,6 +95,14 @@ poetry run ccwb init [options]
 - Prompts for Windows build support via AWS CodeBuild (optional)
 - Saves configuration to `.ccwb-config/config.json` in the project directory
 
+**Additional Configuration Options:**
+
+After running `init`, you can manually edit the configuration to enable additional features:
+
+- `no_browser_mode`: Set to `true` to use device code flow (RFC 8628) instead of browser-based authentication. Useful for headless servers or SSH sessions. Users can also override this per-invocation using `--no-browser` flag.
+  - Supported providers: Okta, Azure AD, Auth0
+  - Not supported: Cognito User Pools
+
 **Note:** This command only creates configuration. Use `deploy` to create AWS resources.
 
 ### `deploy` - Deploy Infrastructure
