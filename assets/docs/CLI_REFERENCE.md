@@ -255,8 +255,23 @@ poetry run ccwb package [options]
   - Selected Claude model and cross-region profile
   - Source region for model inference
 - Generates installer script (install.sh for Unix, install.bat for Windows)
+  - Installer creates an AWS profile in end users' `~/.aws/config`
+  - AWS profile name matches the configuration profile name (e.g., `claude-code-dev-us-west-2`)
 - Creates user documentation
 - Optionally uploads to S3 and generates presigned URL (with --distribute)
+
+**Understanding the output:**
+
+When you run `ccwb package`, you'll see:
+```
+Configuration Profile: claude-code-dev-us-west-2
+AWS Profile: claude-code-dev-us-west-2
+```
+
+- **Configuration Profile:** The ccwb configuration name in `~/.ccwb/profiles/`
+- **AWS Profile:** The AWS CLI profile name that will be created in end users' `~/.aws/config`
+
+These names are typically the same. End users will use this profile: `export AWS_PROFILE=claude-code-dev-us-west-2`
 
 **Platform Support (Hybrid Build System):**
 
@@ -507,7 +522,8 @@ poetry run ccwb status [options]
 **What it does:**
 
 - Shows current configuration including:
-  - Configuration profile and AWS profile names
+  - Configuration profile (ccwb configuration name in `~/.ccwb/profiles/`)
+  - AWS profile (the AWS CLI profile name used for end-user authentication)
   - OIDC provider and client ID
   - Selected Claude model and cross-region profile
   - Source region for model inference
@@ -515,6 +531,8 @@ poetry run ccwb status [options]
 - Checks CloudFormation stack status
 - Displays Identity Pool information
 - Shows monitoring configuration and endpoints
+
+**Note:** The AWS Profile shown is what end users will use in their `~/.aws/config`. This name typically matches the configuration profile name and is created by the installer script when end users install the package.
 
 ### `cleanup` - Remove Installed Components
 
@@ -535,6 +553,8 @@ poetry run ccwb cleanup [options]
 - Removes AWS profile from `~/.aws/config`
 - Removes Claude settings from `~/.claude/settings.json`
 - Shows what will be removed before taking action
+
+**Note:** The profile name refers to the end-user authentication profile in `~/.aws/config`. The default "ClaudeCode" is for backward compatibility with older installations. For new installations using profile names like `claude-code-dev-us-west-2`, specify the profile explicitly: `--profile claude-code-dev-us-west-2`
 
 **Use this to:**
 
@@ -1043,7 +1063,7 @@ poetry run ccwb destroy [stack] [options]
 
 **Arguments:**
 
-- `stack` - Specific stack to destroy: auth, networking, monitoring, dashboard, or analytics (optional)
+- `stack` - Specific stack to destroy: auth, distribution, codebuild, networking, monitoring, dashboard, analytics, quota, or s3bucket (optional)
 
 **Options:**
 
@@ -1052,7 +1072,9 @@ poetry run ccwb destroy [stack] [options]
 
 **What it does:**
 
-- Deletes CloudFormation stacks in reverse order (analytics → dashboard → monitoring → networking → auth)
+- Deletes CloudFormation stacks in reverse dependency order:
+  - quota → analytics → dashboard → monitoring → s3bucket → networking → distribution → codebuild → auth
+- Automatically skips stacks that are not enabled in the profile
 - Shows resources to be deleted before proceeding
 - Warns about manual cleanup requirements (e.g., CloudWatch LogGroups)
 
