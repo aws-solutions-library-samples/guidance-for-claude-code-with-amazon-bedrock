@@ -49,7 +49,11 @@ class PackageCommand(Command):
             flag=False,
             default=None,
         ),
+        option("build-local", description="Build binaries locally instead of downloading pre-built", flag=True),
+        option("no-cache", description="Force re-download of pre-built binaries", flag=True),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
+        option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
+        option("go", description="Build binaries using Go cross-compilation (native binaries, no AV false positives)", flag=True),
     ]
 
     def handle(self) -> int:
@@ -79,6 +83,13 @@ class PackageCommand(Command):
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
+        # Regenerate installers from existing binaries (no rebuild needed)
+        if self.option("regenerate-installers"):
+            return self._regenerate_installers(profile, profile_name, console)
+
+        # Go build mode: all platforms always available via cross-compilation
+        use_go = self.option("go")
+
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
         if target_platform == "all":  # Default value, prompt user
@@ -92,8 +103,10 @@ class PackageCommand(Command):
                 "linux-arm64",
             ]
 
-            # Only include Windows if CodeBuild is enabled
-            if hasattr(profile, "enable_codebuild") and profile.enable_codebuild:
+            # With Go, Windows is always available (cross-compile from any platform)
+            if use_go:
+                platform_choices.append("windows")
+            elif hasattr(profile, "enable_codebuild") and profile.enable_codebuild:
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
@@ -111,6 +124,28 @@ class PackageCommand(Command):
             "Include 'Co-Authored-By: Claude' in git commits?",
             default=False,
         ).ask()
+
+        # Prompt for custom OTel resource attributes (only when monitoring is enabled)
+        otel_resource_attributes = None
+        if profile.monitoring_enabled:
+            customize_otel = questionary.confirm(
+                "Customize telemetry resource attributes? (department, team, cost center)",
+                default=False,
+            ).ask()
+
+            if customize_otel:
+                console.print(
+                    "[dim]Example: department=platform, team.id=infra-core, "
+                    "cost_center=CC-4521, organization=acme-corp[/dim]"
+                )
+                department = questionary.text("Department:", default="engineering").ask()
+                team_id = questionary.text("Team ID:", default="default").ask()
+                cost_center = questionary.text("Cost center:", default="default").ask()
+                organization = questionary.text("Organization:", default="default").ask()
+                otel_resource_attributes = (
+                    f"department={department},team.id={team_id},"
+                    f"cost_center={cost_center},organization={organization}"
+                )
 
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
@@ -198,8 +233,8 @@ class PackageCommand(Command):
         # Build package
         console.print("\n[bold]Building package...[/bold]")
 
-        # Pre-flight check for Intel builds on ARM Macs
-        if platform.system().lower() == "darwin" and platform.machine().lower() == "arm64":
+        # Pre-flight check for Intel builds on ARM Macs (not needed for Go cross-compile)
+        if not use_go and platform.system().lower() == "darwin" and platform.machine().lower() == "arm64":
             if target_platform in ["macos-intel", "all"]:
                 x86_venv_path = Path.home() / "venv-x86"
                 if not (x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists()):
@@ -218,9 +253,13 @@ class PackageCommand(Command):
                         console.print("[dim]   arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring[/dim]")
                         console.print()
 
-        # Build executable(s) using PyInstaller/Docker
-        # Handle both list and single platform selection
-        if isinstance(target_platform, list):
+        # Build executable(s)
+        # With Go, cross-compilation makes all platforms available from any machine
+        if use_go and not isinstance(target_platform, list) and target_platform == "all":
+            platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif use_go and isinstance(target_platform, list) and "all" in target_platform:
+            platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif isinstance(target_platform, list):
             # User selected multiple platforms via checkbox
             platforms_to_build = []
             for platform_choice in target_platform:
@@ -299,34 +338,46 @@ class PackageCommand(Command):
         built_otel_helpers = []
 
         console.print()
-        for platform_name in platforms_to_build:
-            # Build credential process
-            console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
-            try:
-                executable_path = self._build_executable(output_dir, platform_name)
-                # Check if this was an async Windows build
-                if executable_path is None:
-                    # Windows build started in CodeBuild, continue without local binary
-                    console.print("[dim]Windows binaries will be built in CodeBuild[/dim]")
-                else:
-                    built_executables.append((platform_name, executable_path))
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
 
-            # Build OTEL helper if monitoring is enabled
-            if profile.monitoring_enabled:
-                # Skip OTEL helper for Windows if being built in CodeBuild
-                if platform_name == "windows" and executable_path is None:
-                    console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
-                else:
-                    console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
-                    try:
-                        otel_helper_path = self._build_otel_helper(output_dir, platform_name)
-                        # Only add to list if build was successful (not None)
-                        if otel_helper_path is not None:
-                            built_otel_helpers.append((platform_name, otel_helper_path))
-                    except Exception as e:
-                        console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
+        if use_go:
+            # Go cross-compilation: build all selected platforms at once
+            console.print("[cyan]Building Go binaries (cross-compilation)...[/cyan]")
+            try:
+                go_results = self._build_go_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
+                built_executables = go_results["executables"]
+                built_otel_helpers = go_results["otel_helpers"]
+            except Exception as e:
+                console.print(f"[red]Go build failed: {e}[/red]")
+                return 1
+        else:
+            for platform_name in platforms_to_build:
+                # Build credential process
+                console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
+                try:
+                    executable_path = self._build_executable(output_dir, platform_name)
+                    # Check if this was an async Windows build
+                    if executable_path is None:
+                        # Windows build started in CodeBuild, continue without local binary
+                        console.print("[dim]Windows binaries will be built in CodeBuild[/dim]")
+                    else:
+                        built_executables.append((platform_name, executable_path))
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
+
+                # Build OTEL helper if monitoring is enabled
+                if profile.monitoring_enabled:
+                    # Skip OTEL helper for Windows if being built in CodeBuild
+                    if platform_name == "windows" and executable_path is None:
+                        console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
+                    else:
+                        console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
+                        try:
+                            otel_helper_path = self._build_otel_helper(output_dir, platform_name)
+                            # Only add to list if build was successful (not None)
+                            if otel_helper_path is not None:
+                                built_otel_helpers.append((platform_name, otel_helper_path))
+                        except Exception as e:
+                            console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
         # Check if any binaries were built
         if not built_executables:
@@ -344,24 +395,13 @@ class PackageCommand(Command):
         console.print("[cyan]Creating installer script...[/cyan]")
         self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
 
-        # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
-        if built_otel_helpers:
-            import shutil as _shutil
-
-            shell_wrapper_src = Path(__file__).parent.parent.parent.parent / "otel_helper" / "otel-helper.sh"
-            if shell_wrapper_src.exists():
-                shell_wrapper_dst = output_dir / "otel-helper.sh"
-                _shutil.copy2(shell_wrapper_src, shell_wrapper_dst)
-                shell_wrapper_dst.chmod(0o755)
-                console.print("[green]✓ OTEL helper shell wrapper included[/green]")
-
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
         self._create_documentation(output_dir, profile, timestamp)
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name)
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
@@ -378,6 +418,7 @@ class PackageCommand(Command):
         # Check if Windows installer exists (created when Windows binaries are present)
         if (output_dir / "install.bat").exists():
             console.print("  • install.bat - Installation script for Windows")
+            console.print("  • ccwb-install.ps1 - PowerShell installer (called by install.bat)")
         console.print("  • README.md - Installation instructions")
         if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
@@ -387,12 +428,12 @@ class PackageCommand(Command):
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
         console.print("1. Send users the entire dist folder")
-        console.print("2. Users run: ./install.sh")
+        console.print("2. Users run: chmod +x install.sh && ./install.sh")
         console.print("3. Authentication is configured automatically")
 
         console.print("\n[bold]To test locally:[/bold]")
         console.print(f"cd {output_dir}")
-        console.print("./install.sh")
+        console.print("chmod +x install.sh && ./install.sh")
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
@@ -480,6 +521,81 @@ class PackageCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
+
+    def _build_go_binaries(self, output_dir: Path, platforms: list, monitoring_enabled: bool) -> dict:
+        """Build binaries using Go cross-compilation.
+
+        Produces native statically-linked binaries for all platforms from a single machine.
+        No Docker, CodeBuild, or per-platform toolchains needed.
+
+        Returns dict with 'executables' and 'otel_helpers' lists of (platform, Path) tuples.
+        """
+        go_src = Path(__file__).parents[3] / "go"
+        if not go_src.exists():
+            raise FileNotFoundError(f"Go source directory not found at {go_src}")
+
+        # Verify Go is installed
+        try:
+            result = subprocess.run(["go", "version"], capture_output=True, text=True, check=True)
+            self.line(f"  <info>{result.stdout.strip()}</info>")
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise RuntimeError(
+                "Go is not installed or not in PATH. Install from https://go.dev/dl/ "
+                "or run: brew install go"
+            )
+
+        platform_map = {
+            "macos-arm64": ("darwin", "arm64"),
+            "macos-intel": ("darwin", "amd64"),
+            "macos": ("darwin", "arm64"),  # Default to arm64 for generic macos
+            "linux-x64": ("linux", "amd64"),
+            "linux-arm64": ("linux", "arm64"),
+            "linux": ("linux", "amd64"),  # Default to amd64 for generic linux
+            "windows": ("windows", "amd64"),
+        }
+
+        executables = []
+        otel_helpers = []
+
+        binaries_to_build = ["credential-process"]
+        if monitoring_enabled:
+            binaries_to_build.append("otel-helper")
+
+        for plat in platforms:
+            if plat not in platform_map:
+                raise ValueError(f"Unsupported platform for Go build: {plat}")
+
+            goos, goarch = platform_map[plat]
+
+            for binary in binaries_to_build:
+                if plat == "windows":
+                    suffix = "-windows.exe"
+                else:
+                    suffix = f"-{plat}"
+
+                output_name = f"{binary}{suffix}"
+                output_path = output_dir / output_name
+
+                self.line(f"  Building <comment>{output_name}</comment>...")
+
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                cmd = [
+                    "go", "build",
+                    "-ldflags", "-s -w",
+                    "-o", str(output_path),
+                    f"./cmd/{binary}/",
+                ]
+                result = subprocess.run(cmd, cwd=str(go_src), env=env, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(f"Go build failed for {output_name}:\n{result.stderr}")
+
+                if binary == "credential-process":
+                    executables.append((plat, output_path))
+                else:
+                    otel_helpers.append((plat, output_path))
+
+        self.line(f"  <info>Built {len(executables) + len(otel_helpers)} binaries</info>")
+        return {"executables": executables, "otel_helpers": otel_helpers}
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for target platform using appropriate tool."""
@@ -573,7 +689,7 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux"
         elif target_platform == "windows":
             platform_variant = "x86_64"
-            # binary_name already set above
+            binary_name = "credential-process-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -609,7 +725,7 @@ class PackageCommand(Command):
         # Check if Nuitka is available (through Poetry)
         source_dir = Path(__file__).parent.parent.parent.parent
         nuitka_check = subprocess.run(
-            ["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir
+            ["poetry", "run", "python", "-m", "nuitka", "--version"], capture_output=True, text=True, cwd=source_dir
         )
         if nuitka_check.returncode != 0:
             raise RuntimeError(
@@ -760,6 +876,7 @@ class PackageCommand(Command):
                 "--hidden-import=keyring.backends.SecretService",
                 "--hidden-import=keyring.backends.Windows",
                 "--hidden-import=keyring.backends.chainer",
+                "--hidden-import=charset_normalizer",
                 str(src_file),
             ]
         else:
@@ -782,6 +899,7 @@ class PackageCommand(Command):
                 "--hidden-import=keyring.backends.SecretService",
                 "--hidden-import=keyring.backends.Windows",
                 "--hidden-import=keyring.backends.chainer",
+                "--hidden-import=charset_normalizer",
                 str(src_file),
             ]
 
@@ -841,6 +959,7 @@ class PackageCommand(Command):
             # Hidden imports for our dependencies
             "--hidden-import=keyring.backends.SecretService",
             "--hidden-import=keyring.backends.chainer",
+            "--hidden-import=charset_normalizer",
             "--hidden-import=six",
             "--hidden-import=six.moves",
             "--hidden-import=six.moves._thread",
@@ -967,6 +1086,7 @@ RUN pyinstaller \
     --log-level WARN \
     --hidden-import keyring.backends.SecretService \
     --hidden-import keyring.backends.chainer \
+    --hidden-import charset_normalizer \
     --hidden-import six \
     --hidden-import six.moves \
     --hidden-import six.moves._thread \
@@ -1402,7 +1522,8 @@ RUN pyinstaller \
         with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             # Add all Python files from source directory
             for py_file in source_dir.rglob("*.py"):
-                arcname = str(py_file.relative_to(source_dir.parent))
+                # Use forward slashes in zip (POSIX format) for CodeBuild compatibility
+                arcname = py_file.relative_to(source_dir.parent).as_posix()
                 zf.write(py_file, arcname)
 
             # Add pyproject.toml for dependencies
@@ -1414,14 +1535,18 @@ RUN pyinstaller \
 
     def _build_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for OTEL helper script."""
-        # Windows uses Nuitka via CodeBuild
+        import platform as platform_mod
+
+        # Windows builds
         if target_platform == "windows":
-            # Check if the Windows binary already exists (built by _build_executable)
+            if platform_mod.system().lower() == "windows":
+                # Native Windows build with Nuitka
+                return self._build_native_otel_helper(output_dir, "windows")
+            # Check if the Windows binary already exists (built via CodeBuild)
             windows_binary = output_dir / "otel-helper-windows.exe"
             if windows_binary.exists():
                 return windows_binary
             else:
-                # If not, we need to build via CodeBuild (but this should have been done already)
                 raise RuntimeError("Windows otel-helper should have been built with credential-process")
 
         # macOS builds use PyInstaller
@@ -1584,6 +1709,9 @@ RUN pyinstaller \
         elif target_platform == "linux":
             platform_variant = "x86_64"
             binary_name = "otel-helper-linux"
+        elif target_platform == "windows":
+            platform_variant = "x86_64"
+            binary_name = "otel-helper-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -1592,6 +1720,8 @@ RUN pyinstaller \
             raise RuntimeError(f"Cannot build macOS binary on {current_system}. Nuitka requires native builds.")
         elif target_platform == "linux" and current_system != "linux":
             raise RuntimeError(f"Cannot build Linux binary on {current_system}. Nuitka requires native builds.")
+        elif target_platform == "windows" and current_system != "windows":
+            raise RuntimeError(f"Cannot build Windows binary on {current_system}. Nuitka requires native builds.")
 
         # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent / "otel_helper" / "__main__.py"
@@ -1661,6 +1791,148 @@ RUN pyinstaller \
             raise RuntimeError(f"Nuitka build failed for OTEL helper: {result.stderr}")
 
         return output_dir / binary_name
+
+    def _regenerate_installers(self, profile, profile_name: str, console: Console) -> int:
+        """Regenerate installer scripts using existing binaries from the latest dist folder."""
+        import shutil
+
+        # Find latest dist folder for this profile
+        dist_base = Path("./dist") / profile_name
+        if not dist_base.exists():
+            console.print(f"[red]No dist folder found for profile '{profile_name}'.[/red]")
+            console.print("Run 'ccwb package' first to build binaries.")
+            return 1
+
+        # Find the latest timestamped directory
+        timestamp_dirs = sorted(
+            [d for d in dist_base.iterdir() if d.is_dir()],
+            key=lambda d: d.name,
+            reverse=True,
+        )
+        if not timestamp_dirs:
+            console.print(f"[red]No builds found in {dist_base}.[/red]")
+            return 1
+
+        source_dir = timestamp_dirs[0]
+        console.print(f"[cyan]Using existing binaries from: {source_dir}[/cyan]")
+
+        # Detect existing binaries and otel helpers
+        binary_patterns = {
+            "macos-arm64": "credential-process-macos-arm64",
+            "macos-intel": "credential-process-macos-intel",
+            "linux-x64": "credential-process-linux-x64",
+            "linux-arm64": "credential-process-linux-arm64",
+            "windows": "credential-process-windows.exe",
+        }
+        otel_patterns = {
+            "macos-arm64": "otel-helper-macos-arm64",
+            "macos-intel": "otel-helper-macos-intel",
+            "linux-x64": "otel-helper-linux-x64",
+            "linux-arm64": "otel-helper-linux-arm64",
+            "windows": "otel-helper-windows.exe",
+        }
+
+        built_executables = []
+        built_otel_helpers = []
+        for plat, binary_name in binary_patterns.items():
+            binary_path = source_dir / binary_name
+            if binary_path.exists():
+                built_executables.append((plat, binary_path))
+        for plat, helper_name in otel_patterns.items():
+            helper_path = source_dir / helper_name
+            if helper_path.exists():
+                built_otel_helpers.append((plat, helper_path))
+
+        if not built_executables:
+            console.print("[red]No binaries found in the dist folder.[/red]")
+            return 1
+
+        console.print(f"[green]Found {len(built_executables)} binaries, {len(built_otel_helpers)} OTEL helpers[/green]")
+        for plat, path in built_executables:
+            console.print(f"  • {path.name}")
+
+        # Create new timestamped output directory
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        output_dir = Path("./dist") / profile_name / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy existing binaries to new output dir
+        console.print("\n[cyan]Copying binaries...[/cyan]")
+        for plat, binary_path in built_executables:
+            shutil.copy2(binary_path, output_dir / binary_path.name)
+        for plat, helper_path in built_otel_helpers:
+            shutil.copy2(helper_path, output_dir / helper_path.name)
+
+        # Get federation info from stack outputs
+        console.print("[cyan]Fetching deployment information...[/cyan]")
+        stack_outputs = get_stack_outputs(
+            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+        )
+        if not stack_outputs:
+            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+            return 1
+
+        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        if federation_type == "direct":
+            federation_identifier = stack_outputs.get("DirectSTSRoleArn") or stack_outputs.get("FederatedRoleArn")
+        else:
+            federation_identifier = stack_outputs.get("IdentityPoolId")
+
+        if not federation_identifier or federation_identifier == "N/A":
+            console.print("[red]Federation identifier not found in stack outputs.[/red]")
+            return 1
+
+        # Prompt for co-authorship and OTEL attributes
+        include_coauthored_by = questionary.confirm(
+            "Include 'Co-Authored-By: Claude' in git commits?", default=False
+        ).ask()
+
+        otel_resource_attributes = None
+        if profile.monitoring_enabled:
+            customize_otel = questionary.confirm(
+                "Customize telemetry resource attributes?", default=False
+            ).ask()
+            if customize_otel:
+                department = questionary.text("Department:", default="engineering").ask()
+                team_id = questionary.text("Team ID:", default="default").ask()
+                cost_center = questionary.text("Cost center:", default="default").ask()
+                organization = questionary.text("Organization:", default="default").ask()
+                otel_resource_attributes = (
+                    f"department={department},team.id={team_id},"
+                    f"cost_center={cost_center},organization={organization}"
+                )
+
+        # Regenerate config.json
+        console.print("[cyan]Generating configuration...[/cyan]")
+        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
+
+        # Regenerate installer scripts
+        console.print("[cyan]Generating installer scripts...[/cyan]")
+        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+
+        # Regenerate documentation
+        console.print("[cyan]Generating documentation...[/cyan]")
+        self._create_documentation(output_dir, profile, timestamp)
+
+        # Regenerate Claude Code settings
+        console.print("[cyan]Generating Claude Code settings...[/cyan]")
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+
+        # Summary
+        console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
+        console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
+        console.print("\nRegenerated files:")
+        console.print("  • config.json")
+        console.print("  • install.sh")
+        if (output_dir / "install.bat").exists():
+            console.print("  • install.bat")
+            console.print("  • ccwb-install.ps1")
+        console.print("  • README.md")
+        if (output_dir / "claude-settings" / "settings.json").exists():
+            console.print("  • claude-settings/settings.json")
+        console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
+        console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
+        return 0
 
     def _create_config(
         self,
@@ -1737,7 +2009,8 @@ RUN pyinstaller \
 
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
-            if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+            okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+            if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                 return "okta"
             elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
@@ -1747,10 +2020,12 @@ RUN pyinstaller \
                 return "azure"
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 return "cognito"
+            elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                return "cognito"
             else:
-                return "oidc"  # Default to generic OIDC
+                return "auto"  # Let credential_provider auto-detect from domain at runtime
         except Exception:
-            return "oidc"  # Default to generic OIDC on parsing error
+            return "auto"  # Let credential_provider auto-detect from domain at runtime
 
     def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
         """Create simple installer script."""
@@ -1776,14 +2051,43 @@ echo
 
 # Check prerequisites
 echo "Checking prerequisites..."
+HAS_ERRORS=false
 
 if ! command -v aws &> /dev/null; then
-    echo "❌ AWS CLI is not installed"
-    echo "   Please install from https://aws.amazon.com/cli/"
+    echo "ERROR: AWS CLI is not installed"
+    echo "       Please install from https://aws.amazon.com/cli/"
+    HAS_ERRORS=true
+fi
+
+if [ ! -f "config.json" ]; then
+    echo "ERROR: config.json not found in current directory"
+    echo "       Make sure you are running this from the extracted package folder"
+    HAS_ERRORS=true
+fi
+
+# Find a Python interpreter (needed for config parsing)
+PYTHON=""
+if command -v python3 &> /dev/null; then
+    PYTHON="python3"
+elif command -v python &> /dev/null; then
+    PYTHON="python"
+else
+    echo "ERROR: Python is not installed (python3 or python)"
+    echo "       Python is needed to parse configuration files"
+    HAS_ERRORS=true
+fi
+
+if [ "$HAS_ERRORS" = "true" ]; then
     exit 1
 fi
 
-echo "✓ Prerequisites found"
+if [ ! -f "claude-settings/settings.json" ]; then
+    echo "WARNING: claude-settings/settings.json not found"
+    echo "         Claude Code IDE settings will not be configured automatically"
+    echo ""
+fi
+
+echo "OK Prerequisites validated"
 
 # Detect platform and architecture
 echo
@@ -1858,6 +2162,10 @@ if [ -d "claude-settings" ]; then
         # Check if settings file already exists
         if [ -f ~/.claude/settings.json ]; then
             echo "Existing Claude Code settings found"
+            # Backup existing settings
+            BACKUP_NAME="settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+            cp ~/.claude/settings.json ~/.claude/$BACKUP_NAME
+            echo "  Backed up to: ~/.claude/$BACKUP_NAME"
             read -p "Overwrite with new settings? (Y/n): " -n 1 -r
             echo
             # Default to Yes if user just presses enter (empty REPLY)
@@ -1875,27 +2183,24 @@ if [ -d "claude-settings" ]; then
             sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
                 -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
-            echo "✓ Claude Code settings configured"
+
+            # Verify placeholders were replaced
+            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' ~/.claude/settings.json 2>/dev/null; then
+                echo "WARNING: Some path placeholders were not replaced in settings.json"
+                echo "         You may need to edit the file manually: ~/.claude/settings.json"
+            else
+                echo "OK Claude Code settings configured: ~/.claude/settings.json"
+            fi
         fi
     fi
 fi
 
-# Copy OTEL helper executable and shell wrapper if present
+# Copy OTEL helper executable if present
 if [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
-    chmod +x ~/claude-code-with-bedrock/otel-helper-bin
-    # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
-    if [ -f "otel-helper.sh" ]; then
-        cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
-        chmod +x ~/claude-code-with-bedrock/otel-helper
-    else
-        # Fallback: if shell wrapper not in package, point directly to binary
-        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
-        chmod +x ~/claude-code-with-bedrock/otel-helper
-    fi
+    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
+    chmod +x ~/claude-code-with-bedrock/otel-helper
     echo "✓ OTEL helper installed"
 fi
 
@@ -1903,7 +2208,7 @@ fi
 if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
     echo "and include them in metrics. To test the helper, run:"
-    echo "  ~/claude-code-with-bedrock/otel-helper-bin --test"
+    echo "  ~/claude-code-with-bedrock/otel-helper --test"
 fi
 
 # Update AWS config
@@ -1912,7 +2217,7 @@ echo "Configuring AWS profiles..."
 mkdir -p ~/.aws
 
 # Read all profiles from config.json
-PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
+PROFILES=$($PYTHON -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
 
 if [ -z "$PROFILES" ]; then
     echo "❌ No profiles found in config.json"
@@ -1924,8 +2229,10 @@ echo
 
 # Get region from package settings (for Bedrock calls, not infrastructure)
 if [ -f "claude-settings/settings.json" ]; then
-    DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
-    'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+    DEFAULT_REGION=$($PYTHON -c "
+import json
+print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])
+" 2>/dev/null || echo "{profile.aws_region}")
 else
     DEFAULT_REGION="{profile.aws_region}"
 fi
@@ -1938,8 +2245,10 @@ for PROFILE_NAME in $PROFILES; do
     sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
 
     # Get profile-specific region from config.json
-    PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
-    {{}}).get('aws_region', '$DEFAULT_REGION'))")
+    PROFILE_REGION=$($PYTHON -c "
+import json
+print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region', '$DEFAULT_REGION'))
+")
 
     # Add new profile with --profile flag (cross-platform, no shell required)
     cat >> ~/.aws/config << EOF
@@ -1950,9 +2259,23 @@ EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
+# Post-install validation
+echo
+echo "Validating installation..."
+if [ -f ~/claude-code-with-bedrock/credential-process ]; then
+    echo "  OK credential-process: ~/claude-code-with-bedrock/credential-process"
+else
+    echo "  FAIL credential-process not found at: ~/claude-code-with-bedrock/credential-process"
+fi
+if [ -f ~/.claude/settings.json ]; then
+    echo "  OK settings.json: ~/.claude/settings.json"
+else
+    echo "  WARN settings.json not found at: ~/.claude/settings.json"
+fi
+
 echo
 echo "======================================"
-echo "✓ Installation complete!"
+echo "Installation complete!"
 echo "======================================"
 echo
 echo "Available profiles:"
@@ -1974,7 +2297,7 @@ echo
 """
 
         installer_path = output_dir / "install.sh"
-        with open(installer_path, "w") as f:
+        with open(installer_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
 
@@ -1985,149 +2308,239 @@ echo
         return installer_path
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
-        """Create Windows batch installer script."""
+        """Create Windows batch installer script and PowerShell helper."""
 
-        installer_content = f"""@echo off
+        # Create the PowerShell script that does the actual work
+        ps1_content = f"""# Claude Code Authentication Installer for Windows
+# Organization: {profile.provider_domain}
+# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+param(
+    [string]$ScriptDir = (Split-Path -Parent $MyInvocation.MyCommand.Path)
+)
+
+$ErrorActionPreference = 'Stop'
+Set-Location $ScriptDir
+
+Write-Host '======================================'
+Write-Host 'Claude Code Authentication Installer'
+Write-Host '======================================'
+Write-Host ''
+Write-Host 'Organization: {profile.provider_domain}'
+Write-Host ''
+
+# Check prerequisites
+Write-Host 'Checking prerequisites...'
+$hasErrors = $false
+
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {{
+    Write-Host 'ERROR: AWS CLI is not installed'
+    Write-Host '       Please install from https://aws.amazon.com/cli/'
+    $hasErrors = $true
+}}
+
+if (-not (Test-Path 'config.json')) {{
+    Write-Host 'ERROR: config.json not found in current directory'
+    Write-Host '       Make sure you are running this from the extracted package folder'
+    $hasErrors = $true
+}}
+
+if (-not (Test-Path 'credential-process-windows.exe')) {{
+    Write-Host 'ERROR: credential-process-windows.exe not found'
+    Write-Host '       The package may be incomplete or corrupted'
+    $hasErrors = $true
+}}
+
+if ($hasErrors) {{
+    Read-Host 'Press Enter to exit'
+    exit 1
+}}
+
+if (-not (Test-Path 'claude-settings/settings.json')) {{
+    Write-Host 'WARNING: claude-settings/settings.json not found'
+    Write-Host '         Claude Code IDE settings will not be configured automatically'
+    Write-Host '         You may need to create ~/.claude/settings.json manually'
+    Write-Host ''
+}}
+
+Write-Host 'OK Prerequisites validated'
+Write-Host ''
+
+# Create directory
+Write-Host 'Installing authentication tools...'
+$installDir = Join-Path $env:USERPROFILE 'claude-code-with-bedrock'
+if (-not (Test-Path $installDir)) {{ New-Item -ItemType Directory -Path $installDir -Force | Out-Null }}
+
+# Copy credential process
+Write-Host 'Copying credential process...'
+Copy-Item -Force 'credential-process-windows.exe' (Join-Path $installDir 'credential-process.exe')
+
+# Copy OTEL helper if it exists
+if (Test-Path 'otel-helper-windows.exe') {{
+    Write-Host 'Copying OTEL helper...'
+    Copy-Item -Force 'otel-helper-windows.exe' (Join-Path $installDir 'otel-helper.exe')
+}}
+
+# Copy configuration
+Write-Host 'Copying configuration...'
+Copy-Item -Force 'config.json' $installDir
+
+# Install Claude Code settings
+$claudeDir = Join-Path $env:USERPROFILE '.claude'
+if (Test-Path 'claude-settings/settings.json') {{
+    Write-Host ''
+    Write-Host 'Installing Claude Code settings...'
+    if (-not (Test-Path $claudeDir)) {{ New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }}
+
+    $doWrite = $true
+    $settingsTarget = Join-Path $claudeDir 'settings.json'
+    if (Test-Path $settingsTarget) {{
+        Write-Host 'Existing Claude Code settings found'
+        # Backup existing settings
+        $backupName = "settings.json.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        $backupPath = Join-Path $claudeDir $backupName
+        Copy-Item $settingsTarget $backupPath
+        Write-Host "  Backed up to: $backupPath"
+        $answer = Read-Host 'Overwrite with new settings? (Y/n)'
+        if ($answer -and $answer -ne 'y' -and $answer -ne 'Y') {{
+            $doWrite = $false
+            Write-Host 'Skipping Claude Code settings...'
+        }}
+    }}
+
+    if ($doWrite) {{
+        $otelPath = ((Join-Path $installDir 'otel-helper.exe') -replace '\\\\', '/')
+        $credPath = ((Join-Path $installDir 'credential-process.exe') -replace '\\\\', '/')
+        # Use JSON parsing to properly handle paths with spaces
+        # ConvertTo-Json automatically escapes quotes inside string values
+        $settings = Get-Content 'claude-settings/settings.json' -Raw | ConvertFrom-Json
+        # Quote the executable paths to handle spaces in Windows usernames
+        if ($settings.otelHeadersHelper) {{
+            $settings.otelHeadersHelper = "`"$otelPath`""
+        }}
+        if ($settings.awsAuthRefresh) {{
+            $settings.awsAuthRefresh = $settings.awsAuthRefresh -replace '__CREDENTIAL_PROCESS_PATH__', "`"$credPath`""
+        }}
+        $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $settingsTarget
+
+        # Verify placeholders were replaced
+        $settingsContent = Get-Content $settingsTarget -Raw
+        if ($settingsContent -match '__CREDENTIAL_PROCESS_PATH__|__OTEL_HELPER_PATH__') {{
+            Write-Host 'WARNING: Some path placeholders were not replaced in settings.json'
+            Write-Host '         You may need to edit the file manually:'
+            Write-Host "         $settingsTarget"
+        }} else {{
+            Write-Host "OK Claude Code settings configured: $settingsTarget"
+        }}
+    }}
+}} else {{
+    Write-Host ''
+    Write-Host 'WARNING: No claude-settings/settings.json found in package'
+    Write-Host '         Skipping Claude Code IDE settings configuration'
+}}
+
+# Configure AWS profiles
+Write-Host ''
+Write-Host 'Configuring AWS profiles...'
+$configJson = Get-Content 'config.json' | ConvertFrom-Json
+$profiles = $configJson.PSObject.Properties.Name
+
+foreach ($p in $profiles) {{
+    Write-Host "Configuring AWS profile: $p"
+    $region = $configJson.$p.aws_region
+    if (-not $region) {{ $region = '{profile.aws_region}' }}
+    $credExe = (Join-Path $installDir 'credential-process.exe') -replace '\\\\', '/'
+    # Write AWS config directly to avoid quote-stripping by aws configure set
+    $awsConfigDir = Join-Path $env:USERPROFILE '.aws'
+    if (-not (Test-Path $awsConfigDir)) {{ New-Item -ItemType Directory -Path $awsConfigDir -Force | Out-Null }}
+    $awsConfigFile = Join-Path $awsConfigDir 'config'
+    $profileBlock = "[profile $p]`ncredential_process = `"$credExe`" --profile $p`nregion = $region`n"
+    if (Test-Path $awsConfigFile) {{
+        # Read existing content and remove old profile section if present
+        $lines = Get-Content $awsConfigFile
+        $newLines = @()
+        $skipSection = $false
+        foreach ($line in $lines) {{
+            if ($line -match "^\[profile $p\]") {{
+                $skipSection = $true
+                continue
+            }}
+            if ($skipSection -and $line -match '^\[') {{
+                $skipSection = $false
+            }}
+            if (-not $skipSection) {{
+                $newLines += $line
+            }}
+        }}
+        # Remove trailing empty lines
+        while ($newLines.Count -gt 0 -and $newLines[-1] -eq '') {{ $newLines = $newLines[0..($newLines.Count-2)] }}
+        if ($newLines.Count -gt 0) {{
+            $newContent = ($newLines -join "`n") + "`n`n" + $profileBlock
+        }} else {{
+            $newContent = $profileBlock
+        }}
+    }} else {{
+        $newContent = $profileBlock
+    }}
+    # Write without BOM (UTF8 BOM breaks AWS CLI config parser)
+    [System.IO.File]::WriteAllText($awsConfigFile, $newContent)
+    Write-Host "  OK Created AWS profile '$p'"
+}}
+
+# Post-install validation
+Write-Host ''
+Write-Host 'Validating installation...'
+$credBinary = Join-Path $installDir 'credential-process.exe'
+if (Test-Path $credBinary) {{
+    Write-Host "  OK credential-process.exe: $credBinary"
+}} else {{
+    Write-Host "  FAIL credential-process.exe not found at: $credBinary"
+}}
+$settingsFile = Join-Path (Join-Path $env:USERPROFILE '.claude') 'settings.json'
+if (Test-Path $settingsFile) {{
+    Write-Host "  OK settings.json: $settingsFile"
+}} else {{
+    Write-Host "  WARN settings.json not found at: $settingsFile"
+}}
+
+# Summary
+Write-Host ''
+Write-Host '======================================'
+Write-Host 'Installation complete!'
+Write-Host '======================================'
+Write-Host ''
+Write-Host 'Available profiles:'
+foreach ($p in $profiles) {{ Write-Host "  - $p" }}
+Write-Host ''
+Write-Host 'To use Claude Code authentication:'
+Write-Host '  set AWS_PROFILE=<profile-name>'
+Write-Host '  aws sts get-caller-identity'
+Write-Host ''
+Write-Host 'Example:'
+$first = $profiles | Select-Object -First 1
+Write-Host "  set AWS_PROFILE=$first"
+Write-Host '  aws sts get-caller-identity'
+Write-Host ''
+Write-Host 'Note: Authentication will automatically open your browser when needed.'
+"""
+
+        ps1_path = output_dir / "ccwb-install.ps1"
+        with open(ps1_path, "w", encoding="utf-8") as f:
+            f.write(ps1_content)
+
+        # Create the batch launcher that calls the PowerShell script
+        bat_content = f"""@echo off
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-echo ======================================
-echo Claude Code Authentication Installer
-echo ======================================
-echo.
-echo Organization: {profile.provider_domain}
-echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ccwb-install.ps1"
 
-REM Check prerequisites
-echo Checking prerequisites...
-
-where aws >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: AWS CLI is not installed
-    echo        Please install from https://aws.amazon.com/cli/
-    pause
-    exit /b 1
-)
-
-echo OK Prerequisites found
-echo.
-
-REM Create directory
-echo Installing authentication tools...
-if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
-
-REM Copy credential process executable with renamed target
-echo Copying credential process...
-copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy credential-process-windows.exe
-    pause
-    exit /b 1
-)
-
-REM Copy OTEL helper if it exists with renamed target
-if exist "otel-helper-windows.exe" (
-    echo Copying OTEL helper...
-    copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
-)
-
-REM Copy configuration
-echo Copying configuration...
-copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
-
-REM Copy Claude Code settings if they exist
-if exist "claude-settings" (
-    echo Copying Claude Code telemetry settings...
-    if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
-
-    REM Copy settings and replace placeholders
-    if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
-        if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
-                echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
-            )
-        )
-
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
-            echo OK Claude Code settings configured
-        )
-    )
-)
-
-REM Configure AWS profiles
-echo.
-echo Configuring AWS profiles...
-
-REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command ^
-"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
-    echo Configuring AWS profile: %%p
-
-    REM Get profile-specific region
-    for /f %%r in ('powershell -Command ^
-    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
-
-
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
-    )
-
-    echo   OK Created AWS profile '%%p'
-)
-
-echo.
-echo ======================================
-echo Installation complete!
-echo ======================================
-echo.
-echo Available profiles:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
-    echo   - %%p
-)
-echo.
-echo To use Claude Code authentication:
-echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
-echo.
-echo Example:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
-)
-echo.
-echo Note: Authentication will automatically open your browser when needed.
-echo.
 pause
 """
 
         installer_path = output_dir / "install.bat"
         with open(installer_path, "w", encoding="utf-8") as f:
-            f.write(installer_content)
+            f.write(bat_content)
 
         # Note: chmod not needed on Windows batch files
         return installer_path
@@ -2148,7 +2561,7 @@ pause
 
 2. Run the installer:
    ```bash
-   ./install.sh
+   chmod +x install.sh && ./install.sh
    ```
 
 3. Use the AWS profile:
@@ -2296,12 +2709,17 @@ Available metrics include:
 
         readme_content += "\n" ""
 
-        with open(output_dir / "README.md", "w") as f:
+        with open(output_dir / "README.md", "w", encoding="utf-8") as f:
             f.write(readme_content)
 
     def _create_claude_settings(
-        self, output_dir: Path, profile, include_coauthored_by: bool = True, profile_name: str = "ClaudeCode"
-    ):
+        self,
+        output_dir: Path,
+        profile: object,
+        include_coauthored_by: bool = True,
+        profile_name: str = "ClaudeCode",
+        otel_resource_attributes: str | None = None,
+    ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
 
@@ -2374,6 +2792,10 @@ Available metrics include:
 
                     if endpoint:
                         # Add monitoring configuration
+                        resource_attrs = otel_resource_attributes or (
+                            "department=engineering,team.id=default,"
+                            "cost_center=default,organization=default"
+                        )
                         settings["env"].update(
                             {
                                 "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
@@ -2381,9 +2803,7 @@ Available metrics include:
                                 "OTEL_LOGS_EXPORTER": "otlp",
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
                             }
                         )
 
