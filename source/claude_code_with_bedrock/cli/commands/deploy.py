@@ -772,13 +772,18 @@ class DeployCommand(Command):
                 )
 
                 # Get OIDC configuration for JWT authentication
-                oidc_issuer_url = profile.provider_domain
-                # Ensure issuer URL has https:// prefix
-                if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
-                    oidc_issuer_url = f"https://{oidc_issuer_url}"
-                # Auth0 tokens include trailing slash in iss claim, so authorizer must match
-                if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
-                    oidc_issuer_url = f"{oidc_issuer_url}/"
+                # Cognito issuer URL uses cognito-idp endpoint, not the hosted UI domain
+                if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
+                    region = profile.cognito_user_pool_id.split("_")[0]
+                    oidc_issuer_url = f"https://cognito-idp.{region}.amazonaws.com/{profile.cognito_user_pool_id}"
+                else:
+                    oidc_issuer_url = profile.provider_domain
+                    # Ensure issuer URL has https:// prefix
+                    if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                        oidc_issuer_url = f"https://{oidc_issuer_url}"
+                    # Auth0 tokens include trailing slash in iss claim, so authorizer must match
+                    if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
+                        oidc_issuer_url = f"{oidc_issuer_url}/"
                 oidc_client_id = profile.client_id
 
                 params = [
