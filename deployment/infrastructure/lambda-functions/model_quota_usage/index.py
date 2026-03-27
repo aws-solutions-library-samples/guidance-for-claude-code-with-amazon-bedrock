@@ -40,6 +40,30 @@ QUOTA_MAPPINGS = {
         "rpm_quota_code": "L-11DFF789",
         "regions": ["ap-southeast-2", "ap-southeast-4"]
     },
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": {
+        "name": "Opus 4.5 (Global)",
+        "tpm_quota_code": "L-3ABF6ACC",
+        "rpm_quota_code": "L-58424D95",
+        "regions": ["us-east-1", "us-west-2", "us-east-2", "eu-central-1", "eu-west-1", "ap-northeast-1"]
+    },
+    "us.anthropic.claude-opus-4-5-20251101-v1:0": {
+        "name": "Opus 4.5 (US)",
+        "tpm_quota_code": "L-7007E9C9",
+        "rpm_quota_code": "L-27989F42",
+        "regions": ["us-east-1", "us-west-2", "us-east-2"]
+    },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "name": "Haiku 4.5 (Global)",
+        "tpm_quota_code": "L-6E888CC2",  # TODO: Update with actual quota code when available
+        "rpm_quota_code": "L-3D8CC480",  # TODO: Update with actual quota code when available
+        "regions": ["us-east-1", "us-west-2", "us-east-2", "eu-central-1", "eu-west-1", "ap-northeast-1"]
+    },
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "name": "Haiku 4.5 (US)",
+        "tpm_quota_code": "L-6E888CC2",  # TODO: Update with actual quota code when available
+        "rpm_quota_code": "L-3D8CC480",  # TODO: Update with actual quota code when available
+        "regions": ["us-east-1", "us-west-2", "us-east-2"]
+    },
     "us.anthropic.claude-opus-4-1-20250805-v1:0": {
         "name": "Opus 4.1",
         "tpm_quota_code": "L-BD85BFCD",
@@ -225,6 +249,10 @@ def get_service_quota(quota_code, region='us-east-1', quota_name=''):
             'L-11DFF789': 500,     # Opus 4.6 Cross-region RPM
             'L-3DCCFAA4': 5000000, # Opus 4.6 Global TPM
             'L-3DD46812': 1000,    # Opus 4.6 Global RPM
+            'L-7007E9C9': 2000000, # Opus 4.5 Cross-region TPM
+            'L-27989F42': 500,     # Opus 4.5 Cross-region RPM
+            'L-3ABF6ACC': 5000000, # Opus 4.5 Global TPM
+            'L-58424D95': 1000,    # Opus 4.5 Global RPM
             'L-29C2B0A3': 300000,  # Opus 4 V1 TPM
             'L-C99C7EF6': 200,     # Opus 4 V1 RPM
             'L-59759B4A': 200000,  # Sonnet 4 TPM
