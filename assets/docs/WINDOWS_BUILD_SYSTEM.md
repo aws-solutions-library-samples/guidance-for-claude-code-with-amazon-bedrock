@@ -369,7 +369,8 @@ dist/
 ├── otel-helper-macos-arm64            # macOS telemetry helper (~26 MB)
 ├── config.json                        # Configuration with Cognito settings
 ├── install.sh                         # macOS/Linux installer script
-├── install.bat                        # Windows installer script
+├── install.bat                        # Windows installer launcher
+├── ccwb-install.ps1                   # Windows PowerShell installer logic
 ├── README.md                          # Installation instructions
 └── .claude/
     └── settings.json                  # Claude Code telemetry settings
@@ -402,6 +403,7 @@ unzip claude-code-package.zip
 
 # Install
 cd dist
+chmod +x install.sh
 ./install.sh
 ```
 

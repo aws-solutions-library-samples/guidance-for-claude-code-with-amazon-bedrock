@@ -91,7 +91,7 @@ The resulting `dist/` folder contains everything users need:
 
 - Platform-specific executables (`credential-process-<platform>`) handle the OAuth2 authentication flow
 - The configuration file includes all necessary settings
-- Intelligent installer scripts (`install.sh` for Unix, `install.bat` for Windows) detect the user's architecture and set up their AWS profile automatically
+- Intelligent installer scripts (`install.sh` for Unix, `install.bat` + `ccwb-install.ps1` for Windows) detect the user's architecture and set up their AWS profile automatically
 - If you enabled monitoring, OTEL helper executables and Claude Code telemetry settings that point to your OpenTelemetry collector
 
 ### Windows Build System (Optional)
@@ -167,7 +167,7 @@ Share the `dist/` folder through your normal software distribution channels - pe
 **Installation by Platform:**
 
 - **Windows**: Users run `install.bat`
-- **macOS/Linux**: Users run `./install.sh`
+- **macOS/Linux**: Users run `chmod +x install.sh && ./install.sh`
 
 Regardless of distribution method, the user experience remains simple. They receive the package, run the installer for their platform, and they're done. The installer:
 
