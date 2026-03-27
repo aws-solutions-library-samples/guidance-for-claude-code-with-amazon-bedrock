@@ -291,6 +291,17 @@ Force re-authentication:
 ~/claude-code-with-bedrock/credential-process --clear-cache
 ```
 
+### Port Conflicts
+
+The credential provider uses port 8400 by default for OAuth callbacks.
+If this port is in use by another application, authentication will automatically use an available port.
+
+To manually specify a different port, set the `REDIRECT_PORT` environment variable:
+
+```bash
+export REDIRECT_PORT=8401
+```
+
 ### Build Failures
 
 Check Windows build status:
