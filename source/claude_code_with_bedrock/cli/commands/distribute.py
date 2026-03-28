@@ -148,6 +148,18 @@ class DistributeCommand(Command):
             if (build_dir / filename).exists():
                 platforms.append(platform)
 
+        # Check for Go beta binaries
+        go_platform_files = {
+            "macos-arm64": "credential-process-go-macos-arm64",
+            "macos-intel": "credential-process-go-macos-intel",
+            "linux-x64": "credential-process-go-linux-x64",
+            "linux-arm64": "credential-process-go-linux-arm64",
+            "windows": "credential-process-go-windows.exe",
+        }
+        has_go = any((build_dir / f).exists() for f in go_platform_files.values())
+        if has_go:
+            platforms.append("go-beta")
+
         return platforms
 
     def _format_size(self, bytes_size: int) -> str:
@@ -493,6 +505,7 @@ class DistributeCommand(Command):
         platform_files = {
             "windows": [
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
+                ("credential-process-go-windows.exe", "credential-process-go-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
                 ("install.bat", "install.bat"),
                 ("config.json", "config.json"),
@@ -501,6 +514,8 @@ class DistributeCommand(Command):
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
                 ("credential-process-linux-arm64", "credential-process-linux-arm64"),
+                ("credential-process-go-linux-x64", "credential-process-go-linux-x64"),
+                ("credential-process-go-linux-arm64", "credential-process-go-linux-arm64"),
                 ("otel-helper-linux-x64", "otel-helper-linux-x64"),
                 ("otel-helper-linux-arm64", "otel-helper-linux-arm64"),
                 ("install.sh", "install.sh"),
@@ -510,6 +525,8 @@ class DistributeCommand(Command):
             "mac": [
                 ("credential-process-macos-arm64", "credential-process-macos-arm64"),
                 ("credential-process-macos-intel", "credential-process-macos-intel"),
+                ("credential-process-go-macos-arm64", "credential-process-go-macos-arm64"),
+                ("credential-process-go-macos-intel", "credential-process-go-macos-intel"),
                 ("otel-helper-macos-arm64", "otel-helper-macos-arm64"),
                 ("otel-helper-macos-intel", "otel-helper-macos-intel"),
                 ("install.sh", "install.sh"),
