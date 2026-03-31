@@ -582,6 +582,130 @@ def get_profile_description(model_key: str, profile_key: str) -> str:
     return model_config["profiles"][profile_key]["description"]
 
 
+# =============================================================================
+# Application Inference Profile Models
+# Single source of truth for the models used when creating per-user
+# Bedrock Application Inference Profiles.
+#
+# To add support for a new Anthropic model:
+#   1. Add a new entry below with the correct foundation model ARN.
+#   2. Set enabled=True.
+#   3. Re-deploy — the credential_provider will create the new profile for
+#      each user on their next login.
+#
+# To retire a model:
+#   1. Set enabled=False.
+#   2. Existing profiles are NOT deleted; they simply stop being created for
+#      new users and stop being returned by get_enabled_inference_profile_models().
+# =============================================================================
+
+INFERENCE_PROFILE_MODELS: dict[str, dict] = {
+    "opus-4-6": {
+        # ARN template — {region} is replaced at runtime with the deployment region
+        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-opus-4-6-v1",
+        "display_name": "Claude Opus 4.6",
+        "description": "Most capable model — complex reasoning and analysis",
+        "enabled": True,
+    },
+    "sonnet-4-6": {
+        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-sonnet-4-6-20251120-v1:0",
+        "display_name": "Claude Sonnet 4.6",
+        "description": "Balanced performance and cost — recommended default",
+        "enabled": True,
+    },
+    "haiku-4-5": {
+        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "display_name": "Claude Haiku 4.5",
+        "description": "Fastest and most cost-effective — simple tasks and high-volume use",
+        "enabled": True,
+    },
+}
+
+# Default model used when patching ~/.claude.json after first login.
+# Must be a key present in INFERENCE_PROFILE_MODELS with enabled=True.
+DEFAULT_INFERENCE_PROFILE_MODEL = "sonnet-4-6"
+
+
+def get_enabled_inference_profile_models() -> dict[str, dict]:
+    """Return only the enabled entries from INFERENCE_PROFILE_MODELS."""
+    return {k: v for k, v in INFERENCE_PROFILE_MODELS.items() if v.get("enabled", False)}
+
+
+def get_inference_profile_source_arn(model_key: str, region: str) -> str:
+    """Return the source foundation model ARN for a given model key and region.
+
+    Raises ValueError if the model key is unknown or disabled.
+    """
+    if model_key not in INFERENCE_PROFILE_MODELS:
+        raise ValueError(f"Unknown inference profile model: {model_key}")
+    entry = INFERENCE_PROFILE_MODELS[model_key]
+    if not entry.get("enabled", False):
+        raise ValueError(f"Inference profile model '{model_key}' is disabled")
+    return entry["source_model_arn"].format(region=region)
+
+
+def get_application_profile_name(email: str, model_key: str) -> str:
+    """Build the Application Inference Profile name for a user/model pair.
+
+    Sanitizes the email to produce a safe AWS resource name:
+    - All non-alphanumeric characters (except '-') are replaced with '-'
+    - The result is lowercased
+    - A short SHA-256 suffix (8 hex chars) of the original email is appended
+      to prevent name collisions between emails that normalize to the same string
+      (e.g. user+tag@example.com and user-tag@example.com)
+    - The full name is truncated to stay within the 64-character AWS limit
+
+    Example:
+        mario.rossi@example.com + sonnet-4-6
+        → claude-code-mario-rossi-example-com-1a2b3c4d-sonnet-4-6
+    """
+    import hashlib
+    import re
+
+    email_hash = hashlib.sha256(email.encode()).hexdigest()[:8]
+    sanitized = re.sub(r"[^a-z0-9-]", "-", email.lower())
+    # Remove consecutive dashes for readability
+    sanitized = re.sub(r"-{2,}", "-", sanitized).strip("-")
+
+    # Budget: "claude-code-" (12) + sanitized + "-" + hash (8) + "-" + model_key
+    suffix = f"-{email_hash}-{model_key}"
+    max_email_len = 64 - len("claude-code-") - len(suffix)
+    sanitized = sanitized[:max_email_len]
+    return f"claude-code-{sanitized}{suffix}"
+
+
+def get_application_profile_tags(email: str, claims: dict) -> list[dict]:
+    """Build the tag list to attach to a Bedrock Application Inference Profile.
+
+    Reads well-known JWT claims and maps them to AWS resource tags used for
+    CloudWatch cost attribution and ABAC access control.
+
+    Args:
+        email:  The user's email address (must be present).
+        claims: Decoded JWT payload from the OIDC id_token.
+
+    Returns:
+        List of {"Key": ..., "Value": ...} dicts ready for boto3.
+    """
+    # AWS tag values have a 256-character maximum length
+    _MAX_TAG_VALUE = 256
+
+    tags = [{"Key": "user.email", "Value": email[:_MAX_TAG_VALUE]}]
+
+    claim_map = {
+        "custom:cost_center": "cost_center",
+        "custom:department":  "department",
+        "custom:organization": "organization",
+        "custom:team":        "team",
+    }
+    for claim_key, tag_key in claim_map.items():
+        value = claims.get(claim_key)
+        if value:
+            tags.append({"Key": tag_key, "Value": str(value)[:_MAX_TAG_VALUE]})
+
+    return tags
+
+
 def get_source_region_for_profile(profile, model_key: str = None, profile_key: str = None) -> str:
     """Get the source region for a profile, with model-specific logic if available."""
     # First priority: Use user-selected source region if available

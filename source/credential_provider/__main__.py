@@ -1884,6 +1884,186 @@ class MultiProviderAuth:
             self._debug_print(f"Silent refresh failed, will require browser auth: {e}")
             return None, None, None
 
+    # ------------------------------------------------------------------
+    # Application Inference Profiles
+    # ------------------------------------------------------------------
+
+    def _get_inference_profiles_cache_path(self) -> Path:
+        """Return the path to the local ARN cache file for this ccwb profile."""
+        session_dir = Path.home() / ".claude-code-session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir / f"{self.profile}-inference-profiles.json"
+
+    def _load_inference_profiles_cache(self) -> dict[str, str]:
+        """Load cached {model_key: profile_arn} mapping from disk, or return {}."""
+        cache_path = self._get_inference_profiles_cache_path()
+        if cache_path.exists():
+            try:
+                with open(cache_path) as f:
+                    return json.load(f)
+            except Exception as e:
+                self._debug_print(f"Could not read inference profiles cache: {e}")
+        return {}
+
+    def _save_inference_profiles_cache(self, arns: dict[str, str]) -> None:
+        """Persist {model_key: profile_arn} mapping to disk."""
+        cache_path = self._get_inference_profiles_cache_path()
+        try:
+            with open(cache_path, "w") as f:
+                json.dump(arns, f, indent=2)
+        except Exception as e:
+            self._debug_print(f"Could not write inference profiles cache: {e}")
+
+    def _ensure_user_inference_profiles(self, token_claims: dict, aws_credentials: dict) -> dict[str, str]:
+        """Create Bedrock Application Inference Profiles for the user if they do not exist yet.
+
+        One profile is created per enabled model in INFERENCE_PROFILE_MODELS.
+        Creation is idempotent — if the profile already exists the existing ARN is returned.
+        ARNs are cached locally to avoid redundant API calls on subsequent logins.
+
+        Args:
+            token_claims:    Decoded JWT payload (used to build tags).
+            aws_credentials: Freshly issued AWS credentials for the authenticated user.
+
+        Returns:
+            Dict mapping model_key → application inference profile ARN.
+        """
+        # Lazy import to keep the module self-contained when running standalone
+        try:
+            from claude_code_with_bedrock.models import (
+                DEFAULT_INFERENCE_PROFILE_MODEL,  # noqa: F401 — imported for reference
+                get_application_profile_name,
+                get_application_profile_tags,
+                get_enabled_inference_profile_models,
+                get_inference_profile_source_arn,
+            )
+        except ImportError:
+            self._debug_print("claude_code_with_bedrock package not available — skipping inference profile creation")
+            return {}
+
+        email = token_claims.get("email", "")
+        if not email:
+            self._debug_print("No email in token claims — skipping inference profile creation")
+            return {}
+
+        # Load what we already know from the local cache
+        cached_arns = self._load_inference_profiles_cache()
+        enabled_models = get_enabled_inference_profile_models()
+
+        # If all enabled models are already cached, return immediately
+        if all(k in cached_arns for k in enabled_models):
+            self._debug_print("All inference profiles already cached — skipping API calls")
+            return cached_arns
+
+        region = self.config.get("aws_region", "us-east-1")
+        tags = get_application_profile_tags(email, token_claims)
+
+        bedrock_client = boto3.client(
+            "bedrock",
+            region_name=region,
+            aws_access_key_id=aws_credentials["AccessKeyId"],
+            aws_secret_access_key=aws_credentials["SecretAccessKey"],
+            aws_session_token=aws_credentials["SessionToken"],
+        )
+
+        result_arns = dict(cached_arns)
+
+        for model_key in enabled_models:
+            if model_key in result_arns:
+                self._debug_print(f"Inference profile for '{model_key}' already in cache — skipping")
+                continue
+
+            profile_name = get_application_profile_name(email, model_key)
+            self._debug_print(f"Ensuring inference profile '{profile_name}' for model '{model_key}'...")
+
+            try:
+                source_arn = get_inference_profile_source_arn(model_key, region)
+                response = bedrock_client.create_inference_profile(
+                    inferenceProfileName=profile_name,
+                    description=f"Claude Code profile for {email} — {model_key}",
+                    modelSource={"copyFrom": source_arn},
+                    tags=tags,
+                )
+                arn = response["inferenceProfileArn"]
+                result_arns[model_key] = arn
+                self._debug_print(f"Created inference profile '{model_key}': {arn}")
+
+            except bedrock_client.exceptions.ConflictException:
+                # Profile already exists — retrieve its ARN
+                self._debug_print(f"Profile '{profile_name}' already exists — fetching ARN")
+                try:
+                    list_response = bedrock_client.list_inference_profiles(
+                        typeEquals="APPLICATION",
+                    )
+                    for p in list_response.get("inferenceProfileSummaries", []):
+                        if p.get("inferenceProfileName") == profile_name:
+                            result_arns[model_key] = p["inferenceProfileArn"]
+                            self._debug_print(f"Found existing ARN for '{model_key}': {p['inferenceProfileArn']}")
+                            break
+                except Exception as e:
+                    self._debug_print(f"Could not retrieve existing profile ARN for '{model_key}': {e}")
+
+            except Exception as e:
+                # Non-fatal: log and continue — missing one profile should not block login
+                self._debug_print(f"Could not create inference profile for '{model_key}': {e}")
+
+        self._save_inference_profiles_cache(result_arns)
+        return result_arns
+
+    def _patch_claude_json(self, profile_arns: dict[str, str]) -> None:
+        """Write the default inference profile ARN into ~/.claude.json.
+
+        This sets the model Claude Code uses so the user does not need to
+        configure it manually. Only runs when inference_profiles_enabled is True
+        and the default model ARN is available.
+
+        Args:
+            profile_arns: Dict mapping model_key → application inference profile ARN.
+        """
+        try:
+            from claude_code_with_bedrock.models import DEFAULT_INFERENCE_PROFILE_MODEL
+        except ImportError:
+            return
+
+        # Allow the ccwb profile config to override the default model
+        default_model = self.config.get("inference_profiles_default_model", DEFAULT_INFERENCE_PROFILE_MODEL)
+        arn = profile_arns.get(default_model)
+        if not arn:
+            self._debug_print(f"No ARN found for default model '{default_model}' — skipping ~/.claude.json patch")
+            return
+
+        claude_json_path = Path.home() / ".claude.json"
+        data: dict = {}
+        if claude_json_path.exists():
+            try:
+                with open(claude_json_path) as f:
+                    data = json.load(f)
+            except Exception as e:
+                self._debug_print(f"Could not read ~/.claude.json: {e}")
+                return
+
+        if data.get("model") == arn:
+            self._debug_print("~/.claude.json already set to correct ARN — no update needed")
+            return
+
+        data["model"] = arn
+        try:
+            # Atomic write: write to a temp file then rename to avoid partial writes
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=claude_json_path.parent, prefix=".claude.json.tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp_path, claude_json_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+            self._debug_print(f"Updated ~/.claude.json with model ARN: {arn}")
+        except Exception as e:
+            self._debug_print(f"Could not write ~/.claude.json: {e}")
+
     def run(self):
         """Main execution flow"""
         try:
@@ -1982,6 +2162,16 @@ class MultiProviderAuth:
 
             # Save monitoring token (non-blocking, failures don't affect AWS auth)
             self.save_monitoring_token(id_token, token_claims)
+
+            # Create per-user Bedrock Application Inference Profiles and patch ~/.claude.json
+            # Non-blocking — failures here must never prevent credential issuance
+            if self.config.get("inference_profiles_enabled", False):
+                try:
+                    profile_arns = self._ensure_user_inference_profiles(token_claims, credentials)
+                    if profile_arns:
+                        self._patch_claude_json(profile_arns)
+                except Exception as e:
+                    self._debug_print(f"Inference profile setup failed (non-fatal): {e}")
 
             # Output credentials
             # CodeQL: This is not a security issue - this is an AWS credential provider

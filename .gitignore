@@ -48,10 +48,10 @@ Thumbs.db
 # Local documentation and feedback
 FEEDBACK.md
 
-# Temporary test files
+# Temporary test files (root-level scratch files only, not source/tests/)
 output.json
 *.bak
-test_*.py
+/test_*.py
 
 CLAUDE.md
 
