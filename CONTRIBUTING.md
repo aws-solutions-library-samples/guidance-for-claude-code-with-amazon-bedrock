@@ -20,6 +20,32 @@ reported the issue. Please try to include as much information as you can. Detail
 * Anything unusual about your environment or deployment
 
 
+## Contributing with Claude Code (AI-Assisted)
+
+This repository is configured with Claude Code skills, agents, and hooks to help contributors of all skill levels. If you have [Claude Code](https://claude.ai/code) installed, you can use the following slash commands to get started quickly:
+
+| Command | Description |
+|---------|-------------|
+| `/setup` | Set up your development environment (checks Python, installs dependencies, runs smoke tests) |
+| `/validate` | Run the full validation suite: linting, formatting, CloudFormation validation, and smoke tests |
+| `/test [path]` | Run tests with coverage and get plain-English explanations of any failures |
+| `/troubleshoot [area]` | Diagnose common issues (areas: `env`, `auth`, `deploy`, `tests`) |
+| `/add-command <name>` | Scaffold a new CLI command with boilerplate, registration, and test file |
+| `/add-provider <name>` | Scaffold support for a new identity provider with CloudFormation template and docs |
+| `/check-cfn [template]` | Deep-validate CloudFormation templates for common issues |
+
+Three specialized agents are also available and will be used automatically when relevant:
+- **cfn-expert** — CloudFormation template specialist (multi-partition patterns, IAM, cross-stack references)
+- **auth-expert** — OIDC/OAuth2 authentication flow specialist
+- **test-runner** — Test execution and failure analysis specialist
+
+Automated hooks run in the background to help catch issues early:
+- **Auto-validation** — After editing Python files, ruff checks run automatically. After editing CloudFormation templates, cfn-lint runs automatically.
+- **Config protection** — Warnings are surfaced before editing critical files like `models.py` or `config.py`.
+
+Path-specific rules in `.claude/rules/` provide contextual guidance when working on CloudFormation templates, CLI commands, tests, the credential provider, or model configuration.
+
+
 ## Contributing via Pull Requests
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
 
@@ -31,7 +57,7 @@ To send us a pull request, please:
 
 1. Fork the repository.
 2. Modify the source; please focus on the specific change you are contributing. If you also reformat all the code, it will be hard for us to focus on your change.
-3. Ensure local tests pass.
+3. Ensure local tests pass. (Tip: use `/validate` in Claude Code to run all checks at once.)
 4. If your change warrants a version bump, update **both** `source/pyproject.toml` and `CHANGELOG.md` in the same PR.
 5. Commit to your fork using clear commit messages.
 6. Send us a pull request, answering any default questions in the pull request interface.
