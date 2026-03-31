@@ -70,6 +70,11 @@ class Profile:
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
 
+    # Application Inference Profiles configuration
+    inference_profiles_enabled: bool = False  # Enable per-user Bedrock Application Inference Profiles
+    inference_profiles_models: list[str] = field(default_factory=list)  # Model keys to create profiles for (empty = all enabled models)
+    inference_profiles_default_model: str = "sonnet-4-6"  # Model key whose ARN is written to ~/.claude.json on first login
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 

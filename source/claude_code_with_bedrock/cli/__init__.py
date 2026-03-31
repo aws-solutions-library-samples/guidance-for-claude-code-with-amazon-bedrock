@@ -33,6 +33,7 @@ from .commands.quota import (
     QuotaUnblockCommand,
     QuotaUsageCommand,
 )
+from .commands.profiles import ProfilesListCommand, ProfilesSetDefaultCommand
 from .commands.status import StatusCommand
 from .commands.test import TestCommand
 
@@ -54,6 +55,10 @@ def create_application() -> Application:
     application.add(DestroyCommand())
     application.add(CleanupCommand())
     # application.add(TokenCommand())  # Temporarily disabled
+
+    # Inference profiles commands
+    application.add(ProfilesListCommand())
+    application.add(ProfilesSetDefaultCommand())
 
     # Context management commands
     application.add(ContextListCommand())

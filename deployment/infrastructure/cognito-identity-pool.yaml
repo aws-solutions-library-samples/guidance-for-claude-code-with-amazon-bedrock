@@ -132,7 +132,9 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowBedrockInvoke
+          # Allow invoking foundation models and system/cross-region inference profiles
+          # (these are shared resources not owned by a specific user)
+          - Sid: AllowBedrockInvokeShared
             Effect: Allow
             Action:
               - 'bedrock:InvokeModel'
@@ -143,6 +145,20 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          # Allow invoking Application Inference Profiles only when the resource
+          # tag user.email matches the authenticated user's email claim from the
+          # OIDC token (ABAC — each user can only invoke their own profiles)
+          - Sid: AllowBedrockInvokeOwnApplicationProfiles
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+                'aws:ResourceTag/user.email': '${aws:PrincipalTag/email}'
           - Sid: AllowBedrockList
             Effect: Allow
             Action:
@@ -155,6 +171,35 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          # Allow creating Application Inference Profiles.
+          # The aws:RequestTag condition ensures the user.email tag on the new
+          # profile matches the caller's email session tag — prevents creating
+          # profiles with a different user's email.
+          - Sid: AllowCreateOwnApplicationProfiles
+            Effect: Allow
+            Action:
+              - 'bedrock:CreateInferenceProfile'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+                'aws:RequestTag/user.email': '${aws:PrincipalTag/email}'
+          # Allow tagging only profiles that already belong to the caller
+          # (aws:ResourceTag check) and only with their own email
+          # (aws:RequestTag check). Both conditions must match to prevent
+          # users from re-tagging other users' profiles to seize ownership.
+          - Sid: AllowTagOwnApplicationProfiles
+            Effect: Allow
+            Action:
+              - 'bedrock:TagResource'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+                'aws:RequestTag/user.email': '${aws:PrincipalTag/email}'
+                'aws:ResourceTag/user.email': '${aws:PrincipalTag/email}'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchOTLP
@@ -282,8 +327,12 @@ Resources:
         - !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
       UseDefaults: false
       PrincipalTags:
-        UserEmail: email
-        UserId: sub
+        # 'email' maps the OIDC claim 'email' to the session tag key 'email'.
+        # This must match the ${aws:PrincipalTag/email} variable used in the
+        # ABAC conditions on AllowBedrockInvokeOwnApplicationProfiles and
+        # AllowCreateOwnApplicationProfiles.
+        email: email
+        sub: sub
 
   # CloudWatch Log Group for Bedrock Access Tracking
   BedrockAccessLogGroup:

@@ -30,7 +30,8 @@ This guidance provides enterprise deployment patterns for Claude Code with Amazo
 4. [AWS Partition Support](#aws-partition-support)
 5. [What Gets Deployed](#what-gets-deployed)
 6. [Monitoring and Operations](#monitoring-and-operations)
-7. [Additional Resources](#additional-resources)
+7. [Per-User CloudWatch Monitoring with Application Inference Profiles](#per-user-cloudwatch-monitoring-with-application-inference-profiles)
+8. [Additional Resources](#additional-resources)
 
 ## Quick Start
 
@@ -319,6 +320,171 @@ The monitoring stack (deployed with `ccwb deploy monitoring`) includes:
 
 See [Monitoring Guide](assets/docs/MONITORING.md) for setup details and dashboard examples.
 See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical data.
+
+## Per-User CloudWatch Monitoring with Application Inference Profiles
+
+This deployment supports an alternative monitoring approach based on **Bedrock Application Inference Profiles** that provides server-side usage tracking with zero client-side configuration. Unlike the OpenTelemetry stack, metrics are generated directly by AWS Bedrock and are always available regardless of how the end user has configured their environment.
+
+### Why Use This Approach
+
+The OpenTelemetry monitoring stack collects metrics from the client side. If a user's machine does not send data (misconfiguration, network issue, outdated binary), their token consumption is invisible to cost managers — but the AWS bill is not. Application Inference Profiles solve this:
+
+- **Metrics are written server-side by Bedrock** — no client configuration required
+- **Four native CloudWatch metrics** per invocation: `InputTokenCount`, `OutputTokenCount`, `CacheReadInputTokenCount`, `CacheWriteInputTokenCount`
+- **Full cost attribution** by user, cost center, department, and organization via resource tags
+- **Hourly (and finer) cost controls** — metrics are available at 1-minute granularity
+- **Per-user isolation** — each user can only invoke their own profiles (ABAC enforcement)
+
+### How It Works
+
+On each user's **first login**, the credential provider automatically:
+
+1. Creates one Bedrock Application Inference Profile per enabled model, named `claude-code-{email-hash}-{model-key}`
+2. Tags each profile with `user.email`, `cost_center`, `department`, `organization` (from the OIDC JWT claims)
+3. Patches `~/.claude.json` with the ARN of the default model so Claude Code uses it immediately
+
+From that point, every Claude Code invocation is tracked in CloudWatch under the `Bedrock` namespace with the user's tags, with no further setup needed.
+
+### Default Models
+
+Three models are pre-configured. To add or retire a model, update `INFERENCE_PROFILE_MODELS` in [source/claude_code_with_bedrock/models.py](source/claude_code_with_bedrock/models.py):
+
+| Model Key | Model | Role |
+|---|---|---|
+| `sonnet-4-6` | Claude Sonnet 4.6 | **Default** — recommended for most workloads |
+| `opus-4-6` | Claude Opus 4.6 | Most capable — complex reasoning |
+| `haiku-4-5` | Claude Haiku 4.5 | Fastest and most cost-effective |
+
+### Prerequisites
+
+Before enabling this feature, ensure your deployment satisfies these requirements:
+
+1. **Bedrock Application Inference Profiles quota** — the default limit is 2000 per account per region. With 3 models, this supports up to ~666 users before hitting the limit. Request an increase via [AWS Service Quotas](https://console.aws.amazon.com/servicequotas/) (`Amazon Bedrock > Application inference profiles per account`) if needed.
+
+2. **OIDC JWT must include an `email` claim** — this is standard for Okta, Azure AD (Microsoft Entra), Auth0, and Cognito User Pools. Verify your OIDC application is configured to include it.
+
+3. **Optional cost attribution claims** — the following custom claims are mapped to CloudWatch tags automatically if present in the JWT:
+
+   | JWT Claim | CloudWatch Tag |
+   |---|---|
+   | `custom:cost_center` | `cost_center` |
+   | `custom:department` | `department` |
+   | `custom:organization` | `organization` |
+   | `custom:team` | `team` |
+
+### Deployment Steps
+
+**Step 1 — Enable the feature in your ccwb profile**
+
+Edit your profile configuration (`~/.ccwb/profiles/<profile-name>.json`) and set:
+
+```json
+{
+  "inference_profiles_enabled": true,
+  "inference_profiles_default_model": "sonnet-4-6"
+}
+```
+
+Or set it during `ccwb init` when prompted.
+
+**Step 2 — Re-deploy the Cognito Identity Pool stack**
+
+The IAM policy on the Cognito authenticated role must be updated to grant users permission to create and invoke their own Application Inference Profiles:
+
+```bash
+poetry run ccwb deploy auth --profile <your-profile>
+```
+
+This updates the `cognito-identity-pool.yaml` stack with the new ABAC IAM statements. The update is non-destructive and takes approximately 2 minutes.
+
+**Step 3 — Re-package and redistribute (if using distribution)**
+
+If you use the landing page or presigned S3 distribution, rebuild and redistribute the package so end users receive the updated credential provider binary:
+
+```bash
+poetry run ccwb package --profile <your-profile>
+# then: ccwb distribute ...
+```
+
+**Step 4 — Verify on first user login**
+
+After the first login, check that profiles were created:
+
+```bash
+# As the end user:
+ccwb profiles list
+```
+
+Expected output:
+
+```
+Your Bedrock Application Inference Profiles
+
+  Model Key    Display Name          ARN                                                                      Default
+  opus-4-6     Claude Opus 4.6       arn:aws:bedrock:eu-central-1:123456789:application-inference-profile/…
+  sonnet-4-6   Claude Sonnet 4.6     arn:aws:bedrock:eu-central-1:123456789:application-inference-profile/…   ●
+  haiku-4-5    Claude Haiku 4.5      arn:aws:bedrock:eu-central-1:123456789:application-inference-profile/…
+
+Default model in ~/.claude.json: arn:aws:bedrock:eu-central-1:123456789:application-inference-profile/…
+```
+
+### Changing the Default Model
+
+Users can switch their active model at any time without re-authenticating:
+
+```bash
+ccwb profiles set-default opus-4-6
+```
+
+This updates `~/.claude.json` immediately. The change takes effect on the next Claude Code command.
+
+### CloudWatch Cost Monitoring
+
+Once profiles are active, navigate to **CloudWatch → Metrics → Bedrock** in the AWS Console. Filter by the tag `user.email` to see per-user consumption broken down into all four token types.
+
+To set up a cost alarm for a specific user or cost center:
+
+```bash
+aws cloudwatch put-metric-alarm \
+  --alarm-name "bedrock-cost-alert-user" \
+  --metric-name InputTokenCount \
+  --namespace Bedrock \
+  --dimensions Name=user.email,Value=user@example.com \
+  --statistic Sum \
+  --period 3600 \
+  --threshold 1000000 \
+  --comparison-operator GreaterThanThreshold \
+  --evaluation-periods 1 \
+  --alarm-actions arn:aws:sns:<region>:<account>:<topic>
+```
+
+### Adding a New Claude Model
+
+When Anthropic releases a new model, add it to `INFERENCE_PROFILE_MODELS` in [source/claude_code_with_bedrock/models.py](source/claude_code_with_bedrock/models.py):
+
+```python
+INFERENCE_PROFILE_MODELS = {
+    # ... existing models ...
+    "new-model-key": {
+        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-new-model-v1:0",
+        "display_name": "Claude New Model",
+        "description": "Description of the new model",
+        "enabled": True,
+    },
+}
+```
+
+Re-deploy and re-package. On their next login, each user will automatically get a new Application Inference Profile for the new model.
+
+To retire a model without deleting existing profiles, set `"enabled": False`. The model will no longer be created for new users and will be excluded from `ccwb profiles list`.
+
+### Compatibility with the OpenTelemetry Stack
+
+The two monitoring approaches can coexist during a transition period. You can enable Application Inference Profiles while keeping the OTEL stack running. Once all users have logged in and their profiles are confirmed via `ccwb profiles list`, you can decommission the OTEL collector stack to reduce costs:
+
+```bash
+poetry run ccwb destroy monitoring --profile <your-profile>
+```
 
 ## Additional Resources
 
