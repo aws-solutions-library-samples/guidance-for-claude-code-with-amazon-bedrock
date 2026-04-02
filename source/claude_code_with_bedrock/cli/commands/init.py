@@ -1445,52 +1445,102 @@ class InitCommand(Command):
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
-        profile = Profile(
-            name=profile_name,
-            provider_domain=config_data["okta"]["domain"],
-            client_id=config_data["okta"]["client_id"],
-            credential_storage=config_data.get("credential_storage", "session"),
-            aws_region=config_data["aws"]["region"],
-            identity_pool_name=config_data["aws"]["identity_pool_name"],
-            stack_names=config_data["aws"]["stacks"],
-            monitoring_enabled=config_data["monitoring"]["enabled"],
-            monitoring_config=monitoring_config,
-            analytics_enabled=(
+        # Load existing profile to preserve fields not managed by the init wizard
+        existing_profile = config.get_profile(profile_name)
+
+        if existing_profile:
+            # Update only the fields managed by the init wizard; preserve everything else
+            existing_profile.provider_domain = config_data["okta"]["domain"]
+            existing_profile.client_id = config_data["okta"]["client_id"]
+            existing_profile.credential_storage = config_data.get("credential_storage", "session")
+            existing_profile.aws_region = config_data["aws"]["region"]
+            existing_profile.identity_pool_name = config_data["aws"]["identity_pool_name"]
+            existing_profile.stack_names = config_data["aws"]["stacks"]
+            existing_profile.monitoring_enabled = config_data["monitoring"]["enabled"]
+            existing_profile.monitoring_config = monitoring_config
+            existing_profile.analytics_enabled = (
                 config_data.get("analytics", {}).get("enabled", True)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
-            ),
-            allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
-            cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
-            selected_model=config_data["aws"].get("selected_model"),
-            selected_source_region=config_data["aws"].get("selected_source_region"),
-            provider_type=config_data.get("provider_type"),
-            cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
-            federation_type=config_data.get("federation_type", "cognito"),
-            max_session_duration=config_data.get("max_session_duration", 28800),
-            enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
-            enable_distribution=config_data.get("distribution", {}).get("enabled", False),
-            distribution_type=config_data.get("distribution", {}).get("type"),
-            distribution_idp_provider=config_data.get("distribution", {}).get("idp_provider"),
-            distribution_idp_domain=config_data.get("distribution", {}).get("idp_domain"),
-            distribution_idp_client_id=config_data.get("distribution", {}).get("idp_client_id"),
-            distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
-            distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
-            distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
-            quota_monitoring_enabled=(
+            )
+            existing_profile.allowed_bedrock_regions = config_data["aws"]["allowed_bedrock_regions"]
+            existing_profile.cross_region_profile = config_data["aws"].get("cross_region_profile", "us")
+            existing_profile.selected_model = config_data["aws"].get("selected_model")
+            existing_profile.selected_source_region = config_data["aws"].get("selected_source_region")
+            existing_profile.provider_type = config_data.get("provider_type")
+            existing_profile.cognito_user_pool_id = config_data.get("cognito_user_pool_id")
+            existing_profile.federation_type = config_data.get("federation_type", "cognito")
+            existing_profile.max_session_duration = config_data.get("max_session_duration", 28800)
+            existing_profile.enable_codebuild = config_data.get("codebuild", {}).get("enabled", False)
+            existing_profile.enable_distribution = config_data.get("distribution", {}).get("enabled", False)
+            existing_profile.distribution_type = config_data.get("distribution", {}).get("type")
+            existing_profile.distribution_idp_provider = config_data.get("distribution", {}).get("idp_provider")
+            existing_profile.distribution_idp_domain = config_data.get("distribution", {}).get("idp_domain")
+            existing_profile.distribution_idp_client_id = config_data.get("distribution", {}).get("idp_client_id")
+            existing_profile.distribution_idp_client_secret_arn = config_data.get("distribution", {}).get("idp_client_secret_arn")
+            existing_profile.distribution_custom_domain = config_data.get("distribution", {}).get("custom_domain")
+            existing_profile.distribution_hosted_zone_id = config_data.get("distribution", {}).get("hosted_zone_id")
+            existing_profile.quota_monitoring_enabled = (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
-            ),
-            monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
-            warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
-            warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
-            daily_token_limit=config_data.get("quota", {}).get("daily_limit"),
-            burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
-            daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
-            monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
-            quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
-        )
+            )
+            existing_profile.monthly_token_limit = config_data.get("quota", {}).get("monthly_limit", 300000000)
+            existing_profile.warning_threshold_80 = config_data.get("quota", {}).get("warning_threshold_80", 240000000)
+            existing_profile.warning_threshold_90 = config_data.get("quota", {}).get("warning_threshold_90", 270000000)
+            existing_profile.daily_token_limit = config_data.get("quota", {}).get("daily_limit")
+            existing_profile.burst_buffer_percent = config_data.get("quota", {}).get("burst_buffer_percent", 10)
+            existing_profile.daily_enforcement_mode = config_data.get("quota", {}).get("daily_enforcement_mode", "alert")
+            existing_profile.monthly_enforcement_mode = config_data.get("quota", {}).get("monthly_enforcement_mode", "block")
+            existing_profile.quota_check_interval = config_data.get("quota", {}).get("check_interval", 30)
+            profile = existing_profile
+        else:
+            profile = Profile(
+                name=profile_name,
+                provider_domain=config_data["okta"]["domain"],
+                client_id=config_data["okta"]["client_id"],
+                credential_storage=config_data.get("credential_storage", "session"),
+                aws_region=config_data["aws"]["region"],
+                identity_pool_name=config_data["aws"]["identity_pool_name"],
+                stack_names=config_data["aws"]["stacks"],
+                monitoring_enabled=config_data["monitoring"]["enabled"],
+                monitoring_config=monitoring_config,
+                analytics_enabled=(
+                    config_data.get("analytics", {}).get("enabled", True)
+                    if config_data.get("monitoring", {}).get("enabled")
+                    else False
+                ),
+                allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
+                cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
+                selected_model=config_data["aws"].get("selected_model"),
+                selected_source_region=config_data["aws"].get("selected_source_region"),
+                provider_type=config_data.get("provider_type"),
+                cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+                federation_type=config_data.get("federation_type", "cognito"),
+                max_session_duration=config_data.get("max_session_duration", 28800),
+                enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
+                enable_distribution=config_data.get("distribution", {}).get("enabled", False),
+                distribution_type=config_data.get("distribution", {}).get("type"),
+                distribution_idp_provider=config_data.get("distribution", {}).get("idp_provider"),
+                distribution_idp_domain=config_data.get("distribution", {}).get("idp_domain"),
+                distribution_idp_client_id=config_data.get("distribution", {}).get("idp_client_id"),
+                distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
+                distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
+                distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
+                quota_monitoring_enabled=(
+                    config_data.get("quota", {}).get("enabled", False)
+                    if config_data.get("monitoring", {}).get("enabled")
+                    else False
+                ),
+                monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
+                warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
+                warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
+                daily_token_limit=config_data.get("quota", {}).get("daily_limit"),
+                burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
+                daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+                monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
+                quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
+            )
 
         config.add_profile(profile)
         # Set as active profile when creating/updating
@@ -1795,6 +1845,11 @@ class InitCommand(Command):
                     "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
                     "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
                     "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                    "daily_limit": getattr(profile, "daily_token_limit", None),
+                    "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
+                    "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
+                    "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "check_interval": getattr(profile, "quota_check_interval", 30),
                 }
 
             # Add analytics configuration if present
