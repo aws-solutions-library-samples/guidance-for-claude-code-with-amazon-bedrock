@@ -357,7 +357,7 @@ class PackageCommand(Command):
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
-        self._create_documentation(output_dir, profile, timestamp, profile_name)
+        self._create_documentation(output_dir, profile, timestamp, profile_name, built_executables)
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
@@ -2132,13 +2132,33 @@ pause
         # Note: chmod not needed on Windows batch files
         return installer_path
 
-    def _create_documentation(self, output_dir: Path, profile, timestamp: str, profile_name: str = "ClaudeCode"):
+    def _create_documentation(
+        self, output_dir: Path, profile, timestamp: str, profile_name: str = "ClaudeCode", built_executables=None
+    ):
         """Create user documentation."""
+        # Determine which platform families were built
+        built_platforms = {p for p, _ in (built_executables or [])}
+        has_macos = any(p.startswith("macos") for p in built_platforms)
+        has_linux = any(p.startswith("linux") for p in built_platforms)
+        has_windows = any(p.startswith("windows") for p in built_platforms)
+        has_unix = has_macos or has_linux
+
         readme_content = f"""# Claude Code Authentication Setup
 
 ## Quick Start
+"""
 
-### macOS/Linux
+        if has_unix:
+            # Build a contextual header based on which unix platforms are included
+            if has_macos and has_linux:
+                unix_header = "macOS/Linux"
+            elif has_macos:
+                unix_header = "macOS"
+            else:
+                unix_header = "Linux"
+
+            readme_content += f"""
+### {unix_header}
 
 1. Extract the package:
    ```bash
@@ -2156,7 +2176,10 @@ pause
    export AWS_PROFILE={profile_name}
    aws sts get-caller-identity
    ```
+"""
 
+        if has_windows:
+            readme_content += f"""
 ### Windows
 
 #### Step 1: Download the Package
@@ -2220,7 +2243,9 @@ For PowerShell users:
 $env:AWS_PROFILE = "{profile_name}"
 aws sts get-caller-identity
 ```
+"""
 
+        readme_content += f"""
 ## What This Does
 
 - Installs the Claude Code authentication tools
@@ -2234,11 +2259,16 @@ aws sts get-caller-identity
 - pip3
 
 ## Troubleshooting
+"""
 
+        if has_macos and profile.credential_storage != "session":
+            readme_content += """
 ### macOS Keychain Access Popup
 On first use, macOS will ask for permission to access the keychain. This is normal and required for \
 secure credential storage. Click "Always Allow" to avoid repeated prompts.
+"""
 
+        readme_content += f"""
 ### Authentication Issues
 If you encounter issues with authentication:
 - Ensure you're assigned to the Claude Code application in your identity provider
