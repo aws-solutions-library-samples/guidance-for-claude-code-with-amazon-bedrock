@@ -773,6 +773,12 @@ class DeployCommand(Command):
 
                 # Get OIDC configuration for JWT authentication
                 oidc_issuer_url = profile.provider_domain
+                if profile.provider_type == "cognito":
+                    # Cognito OIDC issuer is cognito-idp URL, not the hosted UI domain
+                    pool_id = getattr(profile, "cognito_user_pool_id", None)
+                    if pool_id:
+                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
                 # Ensure issuer URL has https:// prefix
                 if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
                     oidc_issuer_url = f"https://{oidc_issuer_url}"
