@@ -1814,14 +1814,18 @@ class MultiProviderAuth:
             self._debug_print(f"Could not write inference profiles cache: {e}")
 
     def _ensure_user_inference_profiles(self, token_claims: dict, aws_credentials: dict) -> dict[str, str]:
-        """Create Bedrock Application Inference Profiles for the user if they do not exist yet.
+        """Provision Bedrock Application Inference Profiles for the user via the provisioner Lambda.
 
         One profile is created per enabled model in INFERENCE_PROFILE_MODELS.
         Creation is idempotent — if the profile already exists the existing ARN is returned.
-        ARNs are cached locally to avoid redundant API calls on subsequent logins.
+        ARNs are cached locally to avoid redundant Lambda invocations on subsequent logins.
+
+        The InferenceProfileProvisionerFunction Lambda is the sole principal with
+        bedrock:CreateInferenceProfile and bedrock:TagResource. User credentials only need
+        lambda:InvokeFunction on that function — no direct Bedrock management-plane access.
 
         Args:
-            token_claims:    Decoded JWT payload (used to build tags).
+            token_claims:    Decoded JWT payload (email used for cache lookup / logging).
             aws_credentials: Freshly issued AWS credentials for the authenticated user.
 
         Returns:
@@ -1831,10 +1835,7 @@ class MultiProviderAuth:
         try:
             from claude_code_with_bedrock.models import (
                 DEFAULT_INFERENCE_PROFILE_MODEL,  # noqa: F401 — imported for reference
-                get_application_profile_name,
-                get_application_profile_tags,
                 get_enabled_inference_profile_models,
-                get_inference_profile_source_arn,
             )
         except ImportError:
             self._debug_print("claude_code_with_bedrock package not available — skipping inference profile creation")
@@ -1851,63 +1852,58 @@ class MultiProviderAuth:
 
         # If all enabled models are already cached, return immediately
         if all(k in cached_arns for k in enabled_models):
-            self._debug_print("All inference profiles already cached — skipping API calls")
+            self._debug_print("All inference profiles already cached — skipping Lambda invocation")
+            return cached_arns
+
+        provisioner_arn = self.config.get("inference_profiles_provisioner_arn", "")
+        if not provisioner_arn:
+            self._debug_print(
+                "inference_profiles_provisioner_arn not configured — skipping profile creation"
+            )
             return cached_arns
 
         region = self.config.get("aws_region", "us-east-1")
-        tags = get_application_profile_tags(email, token_claims)
+        self._debug_print(f"Invoking inference profile provisioner Lambda: {provisioner_arn}")
 
-        bedrock_client = boto3.client(
-            "bedrock",
-            region_name=region,
-            aws_access_key_id=aws_credentials["AccessKeyId"],
-            aws_secret_access_key=aws_credentials["SecretAccessKey"],
-            aws_session_token=aws_credentials["SessionToken"],
-        )
+        try:
+            lambda_client = boto3.client(
+                "lambda",
+                region_name=region,
+                aws_access_key_id=aws_credentials["AccessKeyId"],
+                aws_secret_access_key=aws_credentials["SecretAccessKey"],
+                aws_session_token=aws_credentials["SessionToken"],
+            )
+            payload = json.dumps({"email": email, "claims": token_claims}).encode()
+            response = lambda_client.invoke(
+                FunctionName=provisioner_arn,
+                InvocationType="RequestResponse",
+                Payload=payload,
+            )
+            payload = json.loads(response["Payload"].read())
 
-        result_arns = dict(cached_arns)
+            if response.get("FunctionError"):
+                self._debug_print(f"Provisioner Lambda returned function error: {payload}")
+                return cached_arns
 
-        for model_key in enabled_models:
-            if model_key in result_arns:
-                self._debug_print(f"Inference profile for '{model_key}' already in cache — skipping")
-                continue
+            # Unwrap API Gateway envelope when present
+            if "body" in payload:
+                body = json.loads(payload["body"]) if isinstance(payload["body"], str) else payload["body"]
+            else:
+                body = payload
 
-            profile_name = get_application_profile_name(email, model_key)
-            self._debug_print(f"Ensuring inference profile '{profile_name}' for model '{model_key}'...")
+            profile_arns = body.get("profile_arns", {})
+            if not profile_arns:
+                self._debug_print("Provisioner Lambda returned no profile ARNs")
+                return cached_arns
 
-            try:
-                source_arn = get_inference_profile_source_arn(model_key, region)
-                response = bedrock_client.create_inference_profile(
-                    inferenceProfileName=profile_name,
-                    description="Claude Code inference profile",
-                    modelSource={"copyFrom": source_arn},
-                    tags=tags,
-                )
-                arn = response["inferenceProfileArn"]
-                result_arns[model_key] = arn
-                self._debug_print(f"Created inference profile '{model_key}': {arn}")
+            result_arns = {**cached_arns, **profile_arns}
+            self._save_inference_profiles_cache(result_arns)
+            self._debug_print(f"Provisioner returned {len(profile_arns)} ARN(s)")
+            return result_arns
 
-            except bedrock_client.exceptions.ConflictException:
-                # Profile already exists — retrieve its ARN
-                self._debug_print(f"Profile '{profile_name}' already exists — fetching ARN")
-                try:
-                    list_response = bedrock_client.list_inference_profiles(
-                        typeEquals="APPLICATION",
-                    )
-                    for p in list_response.get("inferenceProfileSummaries", []):
-                        if p.get("inferenceProfileName") == profile_name:
-                            result_arns[model_key] = p["inferenceProfileArn"]
-                            self._debug_print(f"Found existing ARN for '{model_key}': {p['inferenceProfileArn']}")
-                            break
-                except Exception as e:
-                    self._debug_print(f"Could not retrieve existing profile ARN for '{model_key}': {e}")
-
-            except Exception as e:
-                # Non-fatal: log and continue — missing one profile should not block login
-                self._debug_print(f"Could not create inference profile for '{model_key}': {e}")
-
-        self._save_inference_profiles_cache(result_arns)
-        return result_arns
+        except Exception as e:
+            self._debug_print(f"Provisioner Lambda invocation failed (non-fatal): {e}")
+            return cached_arns
 
     def _patch_claude_json(self, profile_arns: dict[str, str]) -> None:
         """Write the default inference profile ARN into ~/.claude.json.

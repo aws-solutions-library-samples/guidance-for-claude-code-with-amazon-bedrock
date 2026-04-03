@@ -218,18 +218,17 @@ Resources:
                 StringLike:
                   'bedrock:InferenceProfileArn': !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
             - !Ref 'AWS::NoValue'
-          # --- Inference profile management (only when inference profiles are ENABLED) ---
+          # --- Inference profile provisioner Lambda invocation (only when inference profiles are ENABLED) ---
+          # bedrock:CreateInferenceProfile and bedrock:TagResource are no longer granted to the user role.
+          # Users invoke the InferenceProfileProvisionerFunction Lambda instead; that function holds
+          # the elevated permissions and enforces naming conventions and tag schema server-side.
           - !If
             - UseInferenceProfiles
-            - Sid: AllowBedrockManageInferenceProfiles
+            - Sid: AllowInvokeInferenceProfileProvisioner
               Effect: Allow
               Action:
-                - 'bedrock:CreateInferenceProfile'
-                - 'bedrock:TagResource'
-              Resource:
-                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
-                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
-                - !Sub 'arn:${AWS::Partition}:bedrock:*::inference-profile/*'
+                - 'lambda:InvokeFunction'
+              Resource: !GetAtt InferenceProfileProvisionerFunction.Arn
               Condition:
                 StringEquals:
                   'aws:RequestedRegion': !Ref AllowedBedrockRegions
@@ -434,6 +433,162 @@ Resources:
         UserId: sub
 
   # ===============================================
+  # Inference Profile Provisioner Lambda (when inference profiles are ENABLED)
+  # ===============================================
+  # This Lambda is the sole principal with bedrock:CreateInferenceProfile and
+  # bedrock:TagResource. The Cognito user role only has lambda:InvokeFunction on
+  # this function, removing direct Bedrock management-plane access from users.
+
+  InferenceProfileProvisionerRole:
+    Type: AWS::IAM::Role
+    Condition: UseInferenceProfiles
+    Properties:
+      Description: Execution role for the inference profile provisioner Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockProfileProvisioning
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Create application inference profiles (copying from system cross-region profiles)
+              - Sid: AllowCreateInferenceProfile
+                Effect: Allow
+                Action:
+                  - 'bedrock:CreateInferenceProfile'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::inference-profile/*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestedRegion': !Ref AllowedBedrockRegions
+              # Tag newly created profiles for ABAC and cost attribution
+              - Sid: AllowTagInferenceProfile
+                Effect: Allow
+                Action:
+                  - 'bedrock:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestedRegion': !Ref AllowedBedrockRegions
+              # List and get profiles — required to resolve ARNs after ConflictException
+              - Sid: AllowListGetInferenceProfiles
+                Effect: Allow
+                Action:
+                  - 'bedrock:ListInferenceProfiles'
+                  - 'bedrock:GetInferenceProfile'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestedRegion': !Ref AllowedBedrockRegions
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Inference Profile Provisioner
+
+  InferenceProfileProvisionerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: UseInferenceProfiles
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-inference-profile-provisioner'
+      RetentionInDays: 30
+
+  InferenceProfileProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Condition: UseInferenceProfiles
+    DependsOn: InferenceProfileProvisionerLogGroup
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-inference-profile-provisioner'
+      Description: >-
+        Provisions Bedrock Application Inference Profiles for authenticated users.
+        Sole principal with bedrock:CreateInferenceProfile — users invoke this instead
+        of calling the Bedrock management plane directly.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt InferenceProfileProvisionerRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      LoggingConfig:
+        LogGroup: !Sub '/aws/lambda/${AWS::StackName}-inference-profile-provisioner'
+      Code:
+        ZipFile: |
+          import json, logging, re, hashlib, boto3
+          from botocore.exceptions import ClientError
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          _EU_REGIONS = {"eu-west-1","eu-west-2","eu-west-3","eu-central-1","eu-central-2","eu-north-1","eu-south-1","eu-south-2"}
+          INFERENCE_PROFILE_MODELS = {
+            "opus-4-6":  {"cross_region_profile_id": "{geo}.anthropic.claude-opus-4-6-v1",            "enabled": True},
+            "sonnet-4-6":{"cross_region_profile_id": "{geo}.anthropic.claude-sonnet-4-6",             "enabled": True},
+            "haiku-4-5": {"cross_region_profile_id": "{geo}.anthropic.claude-haiku-4-5-20251001-v1:0","enabled": True},
+          }
+          _MAX_TAG_VALUE = 256
+          _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+          def _geo(region): return "eu" if region in _EU_REGIONS else "us"
+          def _source_arn(model_key, region):
+            e = INFERENCE_PROFILE_MODELS[model_key]
+            pid = e["cross_region_profile_id"].format(geo=_geo(region))
+            return f"arn:aws:bedrock:{region}::inference-profile/{pid}"
+          def _profile_name(email, model_key):
+            h = hashlib.sha256(email.encode()).hexdigest()[:8]
+            s = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9-]", "-", email.lower())).strip("-")
+            suffix = f"-{h}-{model_key}"
+            return f"claude-code-{s[:64-12-len(suffix)]}{suffix}"
+          def _tags(email, claims):
+            tags = [{"key":"user.email","value":email[:_MAX_TAG_VALUE]}]
+            for ck, tk in [("custom:cost_center","cost_center"),("custom:department","department"),("custom:organization","organization"),("custom:team","team")]:
+              v = claims.get(ck)
+              if v: tags.append({"key":tk,"value":str(v)[:_MAX_TAG_VALUE]})
+            return tags
+          def handler(event, context):
+            region = boto3.session.Session().region_name
+            bedrock = boto3.client("bedrock", region_name=region)
+            email = (event.get("email") or "").strip()
+            if not email or not _EMAIL_RE.match(email):
+              logger.error("Invalid or missing email: %r", email)
+              return {"statusCode":400,"body":json.dumps({"error":"Invalid or missing email in payload"})}
+            claims = event.get("claims") or {}
+            tags = _tags(email, claims)
+            arns = {}
+            enabled = {k:v for k,v in INFERENCE_PROFILE_MODELS.items() if v.get("enabled")}
+            expected = {_profile_name(email, mk): mk for mk in enabled}
+            try:
+              pg = bedrock.get_paginator("list_inference_profiles")
+              for page in pg.paginate(typeEquals="APPLICATION"):
+                for p in page.get("inferenceProfileSummaries",[]):
+                  pn = p.get("inferenceProfileName","")
+                  if pn in expected:
+                    arns[expected[pn]] = p["inferenceProfileArn"]
+                    logger.info("Found existing '%s': %s", expected[pn], p["inferenceProfileArn"])
+            except Exception as e: logger.warning("Could not list profiles: %s", e)
+            if all(mk in arns for mk in enabled):
+              logger.info("All %d profiles exist for %s", len(arns), email)
+              return {"statusCode":200,"body":json.dumps({"profile_arns":arns})}
+            for mk in enabled:
+              if mk in arns: continue
+              pname = _profile_name(email, mk)
+              logger.info("Creating profile '%s' for '%s'", pname, mk)
+              try:
+                r = bedrock.create_inference_profile(inferenceProfileName=pname, description="Claude Code inference profile", modelSource={"copyFrom":_source_arn(mk,region)}, tags=tags)
+                arns[mk] = r["inferenceProfileArn"]
+                logger.info("Created '%s': %s", mk, arns[mk])
+              except ClientError as e: logger.warning("Could not create profile for '%s': %s", mk, e)
+              except Exception as e: logger.warning("Unexpected error for '%s': %s", mk, e)
+            logger.info("Returning %d ARN(s) for %s", len(arns), email)
+            return {"statusCode":200,"body":json.dumps({"profile_arns":arns})}
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Inference Profile Provisioner
+
+  # ===============================================
   # Optional Monitoring Resources
   # ===============================================
 
@@ -496,29 +651,68 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-BedrockPolicyArn'
 
+  InferenceProfileProvisionerArn:
+    Description: ARN of the Lambda function that provisions per-user inference profiles
+    Condition: UseInferenceProfiles
+    Value: !GetAtt InferenceProfileProvisionerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-InferenceProfileProvisionerArn'
+
   ConfigurationJson:
     Description: Configuration JSON for CLI tool
+    # Four variants: (direct | cognito) × (inference profiles enabled | disabled).
+    # !Sub cannot nest !If inside a string, so we enumerate all combinations here.
     Value: !If
       - UseDirectIAM
-      - !Sub |
-        {
-          "federation_type": "direct",
-          "provider_type": "cognito",
-          "cognito_user_pool_id": "${CognitoUserPoolId}",
-          "cognito_domain": "${CognitoUserPoolDomain}",
-          "client_id": "${CognitoUserPoolClientId}",
-          "federated_role_arn": "${DirectIAMRole.Arn}",
-          "aws_region": "${AWS::Region}",
-          "max_session_duration": 43200
-        }
-      - !Sub |
-        {
-          "federation_type": "cognito",
-          "provider_type": "cognito",
-          "cognito_user_pool_id": "${CognitoUserPoolId}",
-          "cognito_domain": "${CognitoUserPoolDomain}",
-          "client_id": "${CognitoUserPoolClientId}",
-          "identity_pool_id": "${CognitoIdentityPool}",
-          "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
-          "aws_region": "${AWS::Region}"
-        }
+      - !If
+        - UseInferenceProfiles
+        - !Sub |
+          {
+            "federation_type": "direct",
+            "provider_type": "cognito",
+            "cognito_user_pool_id": "${CognitoUserPoolId}",
+            "cognito_domain": "${CognitoUserPoolDomain}",
+            "client_id": "${CognitoUserPoolClientId}",
+            "federated_role_arn": "${DirectIAMRole.Arn}",
+            "aws_region": "${AWS::Region}",
+            "max_session_duration": 43200,
+            "inference_profiles_enabled": true,
+            "inference_profiles_provisioner_arn": "${InferenceProfileProvisionerFunction.Arn}"
+          }
+        - !Sub |
+          {
+            "federation_type": "direct",
+            "provider_type": "cognito",
+            "cognito_user_pool_id": "${CognitoUserPoolId}",
+            "cognito_domain": "${CognitoUserPoolDomain}",
+            "client_id": "${CognitoUserPoolClientId}",
+            "federated_role_arn": "${DirectIAMRole.Arn}",
+            "aws_region": "${AWS::Region}",
+            "max_session_duration": 43200
+          }
+      - !If
+        - UseInferenceProfiles
+        - !Sub |
+          {
+            "federation_type": "cognito",
+            "provider_type": "cognito",
+            "cognito_user_pool_id": "${CognitoUserPoolId}",
+            "cognito_domain": "${CognitoUserPoolDomain}",
+            "client_id": "${CognitoUserPoolClientId}",
+            "identity_pool_id": "${CognitoIdentityPool}",
+            "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
+            "aws_region": "${AWS::Region}",
+            "inference_profiles_enabled": true,
+            "inference_profiles_provisioner_arn": "${InferenceProfileProvisionerFunction.Arn}"
+          }
+        - !Sub |
+          {
+            "federation_type": "cognito",
+            "provider_type": "cognito",
+            "cognito_user_pool_id": "${CognitoUserPoolId}",
+            "cognito_domain": "${CognitoUserPoolDomain}",
+            "client_id": "${CognitoUserPoolClientId}",
+            "identity_pool_id": "${CognitoIdentityPool}",
+            "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
+            "aws_region": "${AWS::Region}"
+          }

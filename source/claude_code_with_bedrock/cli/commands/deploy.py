@@ -938,6 +938,13 @@ class DeployCommand(Command):
                 profile.federated_role_arn = direct_sts_role
                 config.save_profile(profile)
 
+            # Save inference profile provisioner Lambda ARN when inference profiles are enabled
+            provisioner_arn = outputs.get("InferenceProfileProvisionerArn")
+            if provisioner_arn and provisioner_arn.startswith("arn:"):
+                profile.inference_profiles_provisioner_arn = provisioner_arn
+                config.save_profile(profile)
+                console.print(f"• Inference Profile Provisioner: [cyan]{provisioner_arn}[/cyan]")
+
         # Get networking outputs if enabled
         if profile.monitoring_enabled:
             networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
