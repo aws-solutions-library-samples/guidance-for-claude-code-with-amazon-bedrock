@@ -1286,7 +1286,7 @@ class InitCommand(Command):
 
         # Show VPC config if monitoring is enabled
         if config.get("monitoring", {}).get("enabled"):
-            vpc_config = config.get("monitoring", {}).get("vpc_config", {})
+            vpc_config = config.get("monitoring", {}).get("vpc_config") or {}
             if vpc_config.get("create_vpc"):
                 table.add_row("Monitoring VPC", "New VPC will be created")
             else:
