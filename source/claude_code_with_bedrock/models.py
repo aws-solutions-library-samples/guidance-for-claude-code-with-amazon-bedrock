@@ -601,24 +601,32 @@ def get_profile_description(model_key: str, profile_key: str) -> str:
 
 INFERENCE_PROFILE_MODELS: dict[str, dict] = {
     "opus-4-6": {
-        # ARN template — {region} is replaced at runtime with the deployment region
-        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-opus-4-6-v1",
+        # Cross-region inference profile ID — {geo} is replaced at runtime with 'us' or 'eu'
+        "cross_region_profile_id": "{geo}.anthropic.claude-opus-4-6-v1",
         "display_name": "Claude Opus 4.6",
         "description": "Most capable model — complex reasoning and analysis",
         "enabled": True,
     },
     "sonnet-4-6": {
-        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-sonnet-4-6-20251120-v1:0",
+        "cross_region_profile_id": "{geo}.anthropic.claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
         "description": "Balanced performance and cost — recommended default",
         "enabled": True,
     },
     "haiku-4-5": {
-        "source_model_arn": "arn:aws:bedrock:{region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "cross_region_profile_id": "{geo}.anthropic.claude-haiku-4-5-20251001-v1:0",
         "display_name": "Claude Haiku 4.5",
         "description": "Fastest and most cost-effective — simple tasks and high-volume use",
         "enabled": True,
     },
+}
+
+# Regions that map to the 'eu' cross-region inference profile geo prefix.
+# All other regions fall back to 'us'.
+_EU_REGIONS = {
+    "eu-west-1", "eu-west-2", "eu-west-3",
+    "eu-central-1", "eu-central-2",
+    "eu-north-1", "eu-south-1", "eu-south-2",
 }
 
 # Default model used when patching ~/.claude.json after first login.
@@ -632,7 +640,11 @@ def get_enabled_inference_profile_models() -> dict[str, dict]:
 
 
 def get_inference_profile_source_arn(model_key: str, region: str) -> str:
-    """Return the source foundation model ARN for a given model key and region.
+    """Return the cross-region system inference profile ARN to use as copyFrom source.
+
+    Application inference profiles must copy from a system (cross-region) inference
+    profile, not a foundation model ARN directly. The geo prefix ('us' or 'eu') is
+    derived from the deployment region.
 
     Raises ValueError if the model key is unknown or disabled.
     """
@@ -641,7 +653,9 @@ def get_inference_profile_source_arn(model_key: str, region: str) -> str:
     entry = INFERENCE_PROFILE_MODELS[model_key]
     if not entry.get("enabled", False):
         raise ValueError(f"Inference profile model '{model_key}' is disabled")
-    return entry["source_model_arn"].format(region=region)
+    geo = "eu" if region in _EU_REGIONS else "us"
+    profile_id = entry["cross_region_profile_id"].format(geo=geo)
+    return f"arn:aws:bedrock:{region}::inference-profile/{profile_id}"
 
 
 def get_application_profile_name(email: str, model_key: str) -> str:
@@ -685,12 +699,13 @@ def get_application_profile_tags(email: str, claims: dict) -> list[dict]:
         claims: Decoded JWT payload from the OIDC id_token.
 
     Returns:
-        List of {"Key": ..., "Value": ...} dicts ready for boto3.
+        List of {"key": ..., "value": ...} dicts ready for boto3
+        (bedrock.create_inference_profile uses lowercase key/value).
     """
     # AWS tag values have a 256-character maximum length
     _MAX_TAG_VALUE = 256
 
-    tags = [{"Key": "user.email", "Value": email[:_MAX_TAG_VALUE]}]
+    tags = [{"key": "user.email", "value": email[:_MAX_TAG_VALUE]}]
 
     claim_map = {
         "custom:cost_center": "cost_center",
@@ -701,7 +716,7 @@ def get_application_profile_tags(email: str, claims: dict) -> list[dict]:
     for claim_key, tag_key in claim_map.items():
         value = claims.get(claim_key)
         if value:
-            tags.append({"Key": tag_key, "Value": str(value)[:_MAX_TAG_VALUE]})
+            tags.append({"key": tag_key, "value": str(value)[:_MAX_TAG_VALUE]})
 
     return tags
 

@@ -139,6 +139,8 @@ class DeployCommand(Command):
                     console.print("[yellow]Distribution features not enabled in profile.[/yellow]")
                     console.print("Run 'poetry run ccwb init' and enable distribution features.")
                     return 1
+            elif stack_arg == "s3bucket":
+                stacks_to_deploy.append(("s3bucket", "S3 Bucket (for dashboard packaging)"))
             elif stack_arg == "codebuild":
                 if profile.enable_codebuild:
                     stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -148,7 +150,7 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, s3bucket, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -157,21 +159,34 @@ class DeployCommand(Command):
             # Deploy all configured stacks in dependency order
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
+            # Deploy networking + distribution if landing-page type requires ALB (needs VPC)
             if profile.enable_distribution:
+                if getattr(profile, "distribution_type", "") == "landing-page":
+                    # Landing page uses ALB which requires a VPC — always add networking first
+                    stacks_to_deploy.append(("networking", "VPC Networking for ALB (landing page)"))
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
 
-            # Deploy remaining monitoring stacks
+            # Deploy remaining monitoring stacks.
+            # When inference_profiles_enabled is True, metrics flow directly from Bedrock
+            # to CloudWatch — no OTEL collector, no VPC, no S3 bucket, no analytics pipeline.
+            # Only the dashboard and quota stacks are still relevant.
             if profile.monitoring_enabled:
-                vpc_config = profile.monitoring_config or {}
-                if vpc_config.get("create_vpc", True):
-                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
-                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
+                using_inference_profiles = getattr(profile, "inference_profiles_enabled", False)
+                if not using_inference_profiles:
+                    vpc_config = profile.monitoring_config or {}
+                    already_has_networking = any(s[0] == "networking" for s in stacks_to_deploy)
+                    if not already_has_networking and vpc_config.get("create_vpc", True):
+                        stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+                    stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                    stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
+                    # Check if analytics is enabled (default to True for backward compatibility)
+                    if getattr(profile, "analytics_enabled", True):
+                        stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+                else:
+                    # inference_profiles mode skips OTEL/monitoring but dashboard still needs
+                    # an S3 bucket to package its Lambda functions
+                    stacks_to_deploy.append(("s3bucket", "S3 Bucket (for dashboard packaging)"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
-                # Check if analytics is enabled (default to True for backward compatibility)
-                if getattr(profile, "analytics_enabled", True):
-                    stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
                 # Check if quota monitoring is enabled
                 if getattr(profile, "quota_monitoring_enabled", False):
                     stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
@@ -424,6 +439,7 @@ class DeployCommand(Command):
                         f"IdentityPoolName={profile.identity_pool_name}",
                         f"AllowedBedrockRegions={','.join(profile.allowed_bedrock_regions)}",
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                        f"InferenceProfilesEnabled={'true' if getattr(profile, 'inference_profiles_enabled', False) else 'false'}",
                     ]
                 )
 
@@ -517,8 +533,14 @@ class DeployCommand(Command):
                     # Add optional custom domain parameters
                     if profile.distribution_custom_domain:
                         params.append(f"CustomDomainName={profile.distribution_custom_domain}")
-                    if profile.distribution_hosted_zone_id:
-                        params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
+                    # Use existing ACM certificate if provided — skips certificate creation entirely
+                    existing_cert_arn = getattr(profile, "distribution_certificate_arn", None)
+                    if existing_cert_arn:
+                        params.append(f"ExistingCertificateArn={existing_cert_arn}")
+                    # Only pass HostedZoneId if it is an actual Route53 zone ID (starts with Z or is numeric)
+                    hosted_zone_id = profile.distribution_hosted_zone_id
+                    if hosted_zone_id and str(hosted_zone_id).strip().startswith(("Z", "z")) and " " not in str(hosted_zone_id):
+                        params.append(f"HostedZoneId={hosted_zone_id}")
 
                     # Add deployment timestamp to force custom resource re-execution
                     import datetime
@@ -575,7 +597,7 @@ class DeployCommand(Command):
 
             elif stack_type == "s3bucket":
                 template = project_root / "deployment" / "infrastructure" / "s3bucket.yaml"
-                stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-s3bucket")
+                stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
                 params = []
                 return deploy_with_cf(template, stack_name, params, task_description="Deploying S3 Bucket...")
             elif stack_type == "monitoring":
@@ -772,13 +794,32 @@ class DeployCommand(Command):
                 )
 
                 # Get OIDC configuration for JWT authentication
-                oidc_issuer_url = profile.provider_domain
-                # Ensure issuer URL has https:// prefix
-                if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
-                    oidc_issuer_url = f"https://{oidc_issuer_url}"
-                # Auth0 tokens include trailing slash in iss claim, so authorizer must match
-                if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
-                    oidc_issuer_url = f"{oidc_issuer_url}/"
+                # Build the correct issuer URL based on provider type
+                provider_type = profile.provider_type or ""
+                if provider_type == "cognito":
+                    pool_id = getattr(profile, "cognito_user_pool_id", "")
+                    if pool_id:
+                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+                    else:
+                        oidc_issuer_url = f"https://{profile.provider_domain}"
+                elif provider_type == "azure":
+                    uuid_pat = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                    tenant_match = re.search(uuid_pat, profile.provider_domain)
+                    if tenant_match:
+                        oidc_issuer_url = f"https://login.microsoftonline.com/{tenant_match.group(0)}/v2.0"
+                    else:
+                        oidc_issuer_url = f"https://{profile.provider_domain}"
+                elif provider_type == "okta":
+                    domain = profile.provider_domain.rstrip("/")
+                    oidc_issuer_url = f"https://{domain}/oauth2/default"
+                elif provider_type == "auth0":
+                    domain = profile.provider_domain.rstrip("/")
+                    oidc_issuer_url = f"https://{domain}/"
+                else:
+                    oidc_issuer_url = profile.provider_domain
+                    if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                        oidc_issuer_url = f"https://{oidc_issuer_url}"
                 oidc_client_id = profile.client_id
 
                 params = [

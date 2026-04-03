@@ -1879,7 +1879,7 @@ class MultiProviderAuth:
                 source_arn = get_inference_profile_source_arn(model_key, region)
                 response = bedrock_client.create_inference_profile(
                     inferenceProfileName=profile_name,
-                    description=f"Claude Code profile for {email} — {model_key}",
+                    description="Claude Code inference profile",
                     modelSource={"copyFrom": source_arn},
                     tags=tags,
                 )
@@ -1962,6 +1962,93 @@ class MultiProviderAuth:
             self._debug_print(f"Updated ~/.claude.json with model ARN: {arn}")
         except Exception as e:
             self._debug_print(f"Could not write ~/.claude.json: {e}")
+
+    def _patch_settings_json(self, profile_arns: dict[str, str]) -> None:
+        """Update all 5 model env vars in ~/.claude/settings.json with inference profile ARNs.
+
+        Args:
+            profile_arns: Dict mapping model_key → application inference profile ARN.
+                          Expected keys: "opus-4-6", "sonnet-4-6", "haiku-4-5".
+        """
+        try:
+            from claude_code_with_bedrock.models import DEFAULT_INFERENCE_PROFILE_MODEL
+        except ImportError:
+            self._debug_print("claude_code_with_bedrock package not available — skipping settings.json patch")
+            return
+
+        # Allow the ccwb profile config to override the default model for ANTHROPIC_MODEL
+        default_model = self.config.get("inference_profiles_default_model", DEFAULT_INFERENCE_PROFILE_MODEL)
+
+        # Map inference profile ARNs to the 5 Claude Code env vars
+        model_env_mapping = {
+            "ANTHROPIC_MODEL": profile_arns.get(default_model),
+            "ANTHROPIC_SMALL_FAST_MODEL": profile_arns.get("haiku-4-5"),
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": profile_arns.get("opus-4-6"),
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": profile_arns.get("sonnet-4-6"),
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": profile_arns.get("haiku-4-5"),
+        }
+
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if not settings_path.exists():
+            self._debug_print("~/.claude/settings.json not found — skipping patch")
+            return
+
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+        except Exception as e:
+            self._debug_print(f"Could not read ~/.claude/settings.json: {e}")
+            return
+
+        env = settings.setdefault("env", {})
+        updated = False
+        for env_var, arn in model_env_mapping.items():
+            if arn and env.get(env_var) != arn:
+                env[env_var] = arn
+                updated = True
+
+        if not updated:
+            self._debug_print("~/.claude/settings.json already has correct inference profile ARNs")
+            return
+
+        try:
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=settings_path.parent, prefix=".settings.json.tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w") as f:
+                    json.dump(settings, f, indent=2)
+                os.replace(tmp_path, settings_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+            self._debug_print("Updated ~/.claude/settings.json with inference profile ARNs")
+        except Exception as e:
+            self._debug_print(f"Could not write ~/.claude/settings.json: {e}")
+
+    def _patch_settings_json_if_needed(self, profile_arns: dict[str, str]) -> None:
+        """Safety net: patch settings.json only if it still has a generic model ID.
+
+        Called on every credential refresh when inference profiles are enabled.
+        If ANTHROPIC_MODEL already contains 'application-inference-profile', skip.
+        """
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if not settings_path.exists():
+            return
+
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+        except Exception:
+            return
+
+        current_model = settings.get("env", {}).get("ANTHROPIC_MODEL", "")
+        if "application-inference-profile" in current_model:
+            return  # Already correct
+
+        self._debug_print("settings.json has generic model ID — patching with inference profile ARNs")
+        self._patch_settings_json(profile_arns)
 
     def run(self):
         """Main execution flow"""
@@ -2069,6 +2156,7 @@ class MultiProviderAuth:
                     profile_arns = self._ensure_user_inference_profiles(token_claims, credentials)
                     if profile_arns:
                         self._patch_claude_json(profile_arns)
+                        self._patch_settings_json_if_needed(profile_arns)
                 except Exception as e:
                     self._debug_print(f"Inference profile setup failed (non-fatal): {e}")
 
@@ -2133,6 +2221,11 @@ def main():
         action="store_true",
         help="Refresh credentials if expired (for cron jobs with session storage)",
     )
+    parser.add_argument(
+        "--setup-profiles",
+        action="store_true",
+        help="Create per-user Bedrock inference profiles and update ~/.claude/settings.json (run during install)",
+    )
 
     args = parser.parse_args()
 
@@ -2192,6 +2285,44 @@ def main():
             auth._debug_print(f"Credentials still valid for profile '{args.profile}', no refresh needed")
             sys.exit(0)
         # Credentials expired, fall through to normal auth flow
+
+    # Handle --setup-profiles: create inference profiles and patch settings.json
+    if args.setup_profiles:
+        if not auth.config.get("inference_profiles_enabled", False):
+            print("Inference profiles not enabled for this profile — skipping.", file=sys.stderr)
+            sys.exit(0)
+
+        try:
+            # Authenticate to get credentials
+            print("Authenticating to set up inference profiles...", file=sys.stderr)
+            id_token, token_claims = auth.authenticate_oidc()
+            credentials = auth.get_aws_credentials(id_token, token_claims)
+
+            # Create per-user inference profiles
+            print("Creating per-user Bedrock inference profiles...", file=sys.stderr)
+            profile_arns = auth._ensure_user_inference_profiles(token_claims, credentials)
+            if not profile_arns:
+                print("ERROR: Failed to create inference profiles.", file=sys.stderr)
+                sys.exit(1)
+
+            # Patch ~/.claude/settings.json with the ARNs
+            auth._patch_settings_json(profile_arns)
+
+            # Also patch ~/.claude.json for backward compat
+            auth._patch_claude_json(profile_arns)
+
+            # Cache credentials for subsequent use
+            auth.save_credentials(credentials)
+
+            print("\nInference profiles configured:", file=sys.stderr)
+            for model_key, arn in sorted(profile_arns.items()):
+                print(f"  {model_key}: {arn}", file=sys.stderr)
+            print("\nAll 5 model env vars updated in ~/.claude/settings.json", file=sys.stderr)
+            sys.exit(0)
+
+        except Exception as e:
+            print(f"ERROR: Inference profile setup failed: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Normal AWS credential flow (credential_process mode)
     # For session storage, this automatically uses ~/.aws/credentials

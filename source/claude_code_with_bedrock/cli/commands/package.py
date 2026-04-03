@@ -86,10 +86,14 @@ class PackageCommand(Command):
             # Note: "macos" is omitted because it's just a smart alias for the current architecture
             # Users should explicitly choose macos-arm64 or macos-intel for clarity
             platform_choices = [
-                "macos-arm64",
-                "macos-intel",
-                "linux-x64",
-                "linux-arm64",
+                "macos-arm64 (pyinstaller)",
+                "macos-arm64 (shiv)",
+                "macos-intel (pyinstaller)",
+                "macos-intel (shiv)",
+                "linux-x64 (pyinstaller)",
+                "linux-x64 (shiv)",
+                "linux-arm64 (pyinstaller)",
+                "linux-arm64 (shiv)",
             ]
 
             # Only include Windows if CodeBuild is enabled
@@ -113,7 +117,15 @@ class PackageCommand(Command):
         ).ask()
 
         # Validate platform
-        valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
+        valid_platforms = [
+            "macos", "macos-arm64", "macos-intel",
+            "macos-arm64 (pyinstaller)", "macos-arm64 (shiv)",
+            "macos-intel (pyinstaller)", "macos-intel (shiv)",
+            "linux", "linux-x64", "linux-arm64",
+            "linux-x64 (pyinstaller)", "linux-x64 (shiv)",
+            "linux-arm64 (pyinstaller)", "linux-arm64 (shiv)",
+            "windows", "all",
+        ]
         if isinstance(target_platform, list):
             for platform_name in target_platform:
                 if platform_name not in valid_platforms:
@@ -500,18 +512,26 @@ class PackageCommand(Command):
                 return None  # No local binary created
 
         # macOS builds use PyInstaller for cross-architecture support
-        if target_platform == "macos-arm64":
+        if target_platform in ("macos-arm64", "macos-arm64 (pyinstaller)"):
             return self._build_macos_pyinstaller(output_dir, "arm64")
-        elif target_platform == "macos-intel":
+        elif target_platform == "macos-arm64 (shiv)":
+            return self._build_shiv_pyz(output_dir, "macos-arm64")
+        elif target_platform in ("macos-intel", "macos-intel (pyinstaller)"):
             return self._build_macos_pyinstaller(output_dir, "x86_64")
+        elif target_platform == "macos-intel (shiv)":
+            return self._build_shiv_pyz(output_dir, "macos-intel")
         elif target_platform == "macos-universal":
             return self._build_macos_pyinstaller(output_dir, "universal2")
-        elif target_platform == "linux-x64":
+        elif target_platform in ("linux-x64", "linux-x64 (pyinstaller)"):
             # Build Linux x64 binary via Docker with PyInstaller
             return self._build_linux_via_docker(output_dir, "x64")
-        elif target_platform == "linux-arm64":
+        elif target_platform == "linux-x64 (shiv)":
+            return self._build_linux_shiv_via_docker(output_dir, "x64")
+        elif target_platform in ("linux-arm64", "linux-arm64 (pyinstaller)"):
             # Build Linux ARM64 binary via Docker with PyInstaller
             return self._build_linux_via_docker(output_dir, "arm64")
+        elif target_platform == "linux-arm64 (shiv)":
+            return self._build_linux_shiv_via_docker(output_dir, "arm64")
         elif target_platform == "linux":
             # Native Linux build with PyInstaller
             return self._build_linux_pyinstaller(output_dir)
@@ -524,6 +544,78 @@ class PackageCommand(Command):
 
         # Fallback - shouldn't reach here
         raise ValueError(f"Unsupported target platform: {target_platform}")
+
+    def _build_shiv_pyz(self, output_dir: Path, target_platform: str) -> Path:
+        """Build a platform-specific shiv .pyz bundle for credential-process.
+
+        shiv zips all installed site-packages from the current Poetry environment
+        together with the source, producing a self-contained .pyz that runs with
+        the system Python on the target machine (no glibc/libpython linking issues).
+        """
+        import shutil
+        import tempfile
+
+        console = Console()
+        verbose = self.option("build-verbose")
+
+        binary_name = f"credential-process-{target_platform}.pyz"
+        pyz_path = output_dir / binary_name
+
+        source_dir = Path(__file__).parent.parent.parent.parent
+
+        console.print(f"[yellow]Building {target_platform} shiv bundle...[/yellow]")
+
+        # Resolve the Poetry virtualenv so we can pass its site-packages to shiv
+        venv_result = subprocess.run(
+            ["poetry", "env", "info", "--path"],
+            capture_output=True, text=True, cwd=source_dir,
+        )
+        if venv_result.returncode != 0:
+            raise RuntimeError(f"Could not determine Poetry venv path: {venv_result.stderr}")
+        venv_path = Path(venv_result.stdout.strip())
+
+        # Build a temporary requirements install dir so shiv gets a clean set of deps
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_site = Path(tmp) / "site-packages"
+            tmp_site.mkdir()
+
+            # Install runtime deps into the temp dir
+            pip_cmd = [
+                str(venv_path / "bin" / "pip"), "install",
+                "--target", str(tmp_site),
+                "--quiet",
+                "boto3", "requests", "PyJWT", "cryptography",
+                "keyring", "keyrings.alt", "pydantic", "pyyaml",
+                "six", "python-dateutil",
+            ]
+            pip_result = subprocess.run(pip_cmd, capture_output=not verbose, text=True)
+            if pip_result.returncode != 0:
+                raise RuntimeError(f"pip install failed: {pip_result.stderr}")
+
+            # Also copy our credential_provider package into the site-packages
+            shutil.copytree(
+                source_dir / "credential_provider",
+                tmp_site / "credential_provider",
+                dirs_exist_ok=True,
+            )
+
+            shiv_cmd = [
+                str(venv_path / "bin" / "shiv"),
+                "--site-packages", str(tmp_site),
+                "--compressed",
+                "-e", "credential_provider.__main__:main",
+                "-o", str(pyz_path),
+            ]
+            shiv_result = subprocess.run(shiv_cmd, capture_output=not verbose, text=True, cwd=source_dir)
+            if shiv_result.returncode != 0:
+                raise RuntimeError(f"shiv build failed: {shiv_result.stderr}")
+
+        if not pyz_path.exists():
+            raise RuntimeError(f"shiv bundle not created: {pyz_path}")
+
+        pyz_path.chmod(0o755)
+        console.print(f"[green]✓ {target_platform} shiv bundle built successfully[/green]")
+        return pyz_path
 
     def _build_native_executable_nuitka(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable using native Nuitka compiler (for Windows only)."""
@@ -1060,6 +1152,120 @@ RUN pyinstaller \
                 subprocess.run(["docker", "rm", container_name], capture_output=True)
                 subprocess.run(["docker", "rmi", image_tag], capture_output=True)
 
+    def _build_linux_shiv_via_docker(self, output_dir: Path, arch: str = "x64") -> Path:
+        """Build a Linux shiv .pyz bundle using Docker (for cross-platform builds)."""
+        import shutil
+        import tempfile
+
+        console = Console()
+        verbose = self.option("build-verbose")
+
+        if arch == "arm64":
+            docker_platform = "linux/arm64"
+            target_platform = "linux-arm64"
+        else:
+            docker_platform = "linux/amd64"
+            target_platform = "linux-x64"
+
+        binary_name = f"credential-process-{target_platform}.pyz"
+
+        # Check Docker availability
+        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+        if docker_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} shiv build[/yellow]")
+            return None
+
+        daemon_check = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if daemon_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker daemon not running - skipping Linux {arch} shiv build[/yellow]")
+            return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            source_dir = Path(__file__).parent.parent.parent.parent
+            shutil.copytree(source_dir / "credential_provider", temp_path / "credential_provider")
+
+            dockerfile_content = f"""FROM --platform={docker_platform} python:3.12-slim
+
+RUN pip install --no-cache-dir \\
+    shiv \\
+    boto3 \\
+    requests \\
+    PyJWT \\
+    cryptography \\
+    keyring \\
+    keyrings.alt \\
+    pydantic \\
+    pyyaml \\
+    six \\
+    python-dateutil
+
+WORKDIR /build
+COPY credential_provider /build/credential_provider
+
+RUN pip install --no-cache-dir --target /build/site-packages \\
+    boto3 requests PyJWT cryptography keyring keyrings.alt \\
+    pydantic pyyaml six python-dateutil && \\
+    cp -r /build/credential_provider /build/site-packages/credential_provider
+
+RUN mkdir -p /output && shiv \\
+    --site-packages /build/site-packages \\
+    --compressed \\
+    -e credential_provider.__main__:main \\
+    -o /output/{binary_name}
+"""
+
+            (temp_path / "Dockerfile").write_text(dockerfile_content)
+            # Create output dir inside container via entrypoint
+            import time
+            image_tag = f"ccwb-linux-{arch}-shiv-builder-{int(time.time())}"
+
+            console.print(f"[yellow]Building Linux {arch} shiv bundle via Docker...[/yellow]")
+            build_result = subprocess.run(
+                [
+                    "docker", "buildx", "build",
+                    "--no-cache",
+                    "--platform", docker_platform,
+                    "-t", image_tag,
+                    "--load", ".",
+                ],
+                cwd=temp_path,
+                capture_output=not verbose,
+                text=True,
+            )
+
+            if build_result.returncode != 0:
+                raise RuntimeError(f"Docker build failed: {build_result.stderr}")
+
+            container_name = f"ccwb-shiv-extract-{arch}-{int(time.time())}"
+            run_result = subprocess.run(
+                ["docker", "create", "--name", container_name, image_tag],
+                capture_output=True, text=True,
+            )
+            if run_result.returncode != 0:
+                raise RuntimeError(f"Failed to create container: {run_result.stderr}")
+
+            try:
+                copy_result = subprocess.run(
+                    ["docker", "cp", f"{container_name}:/output/{binary_name}", str(output_dir)],
+                    capture_output=True, text=True,
+                )
+                if copy_result.returncode != 0:
+                    raise RuntimeError(f"Failed to copy .pyz from container: {copy_result.stderr}")
+
+                pyz_path = output_dir / binary_name
+                if not pyz_path.exists():
+                    raise RuntimeError(f"Linux {arch} shiv bundle was not created successfully")
+
+                pyz_path.chmod(0o755)
+                console.print(f"[green]✓ Linux {arch} shiv bundle built successfully via Docker[/green]")
+                return pyz_path
+
+            finally:
+                subprocess.run(["docker", "rm", container_name], capture_output=True)
+                subprocess.run(["docker", "rmi", image_tag], capture_output=True)
+
     def _build_linux_otel_helper_via_docker(self, output_dir: Path, arch: str = "x64") -> Path:
         """Build Linux OTEL helper binary using Docker with PyInstaller."""
         import shutil
@@ -1425,10 +1631,14 @@ RUN pyinstaller \
                 raise RuntimeError("Windows otel-helper should have been built with credential-process")
 
         # macOS builds use PyInstaller
-        if target_platform == "macos-arm64":
+        if target_platform in ("macos-arm64", "macos-arm64 (pyinstaller)"):
             return self._build_otel_helper_pyinstaller(output_dir, "macos", "arm64")
-        elif target_platform == "macos-intel":
+        elif target_platform == "macos-arm64 (shiv)":
+            return self._build_otel_helper_shiv(output_dir, "macos-arm64")
+        elif target_platform in ("macos-intel", "macos-intel (pyinstaller)"):
             return self._build_otel_helper_pyinstaller(output_dir, "macos", "x86_64")
+        elif target_platform == "macos-intel (shiv)":
+            return self._build_otel_helper_shiv(output_dir, "macos-intel")
         elif target_platform == "macos-universal":
             return self._build_otel_helper_pyinstaller(output_dir, "macos", "universal2")
         elif target_platform == "macos":
@@ -1441,10 +1651,14 @@ RUN pyinstaller \
                 return self._build_otel_helper_pyinstaller(output_dir, "macos", "x86_64")
 
         # Linux builds use PyInstaller via Docker
-        elif target_platform == "linux-x64":
+        elif target_platform in ("linux-x64", "linux-x64 (pyinstaller)"):
             return self._build_linux_otel_helper_via_docker(output_dir, "x64")
-        elif target_platform == "linux-arm64":
+        elif target_platform == "linux-x64 (shiv)":
+            return self._build_linux_otel_helper_shiv_via_docker(output_dir, "x64")
+        elif target_platform in ("linux-arm64", "linux-arm64 (pyinstaller)"):
             return self._build_linux_otel_helper_via_docker(output_dir, "arm64")
+        elif target_platform == "linux-arm64 (shiv)":
+            return self._build_linux_otel_helper_shiv_via_docker(output_dir, "arm64")
         elif target_platform == "linux":
             return self._build_otel_helper_pyinstaller(output_dir, "linux", None)
 
@@ -1556,6 +1770,169 @@ RUN pyinstaller \
             return binary_path
         else:
             raise RuntimeError(f"OTEL helper binary not created: {binary_path}")
+
+    def _build_otel_helper_shiv(self, output_dir: Path, target_platform: str) -> Path:
+        """Build OTEL helper as a shiv .pyz bundle (native, for macOS or native Linux)."""
+        import shutil
+        import tempfile
+
+        console = Console()
+        verbose = self.option("build-verbose")
+
+        binary_name = f"otel-helper-{target_platform}.pyz"
+        pyz_path = output_dir / binary_name
+
+        source_dir = Path(__file__).parent.parent.parent.parent
+
+        console.print(f"[yellow]Building OTEL helper shiv bundle for {target_platform}...[/yellow]")
+
+        venv_result = subprocess.run(
+            ["poetry", "env", "info", "--path"],
+            capture_output=True, text=True, cwd=source_dir,
+        )
+        if venv_result.returncode != 0:
+            raise RuntimeError(f"Could not determine Poetry venv path: {venv_result.stderr}")
+        venv_path = Path(venv_result.stdout.strip())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_site = Path(tmp) / "site-packages"
+            tmp_site.mkdir()
+
+            pip_cmd = [
+                str(venv_path / "bin" / "pip"), "install",
+                "--target", str(tmp_site),
+                "--quiet",
+                "PyJWT", "cryptography", "six",
+            ]
+            pip_result = subprocess.run(pip_cmd, capture_output=not verbose, text=True)
+            if pip_result.returncode != 0:
+                raise RuntimeError(f"pip install failed: {pip_result.stderr}")
+
+            shutil.copytree(
+                source_dir / "otel_helper",
+                tmp_site / "otel_helper",
+                dirs_exist_ok=True,
+            )
+
+            shiv_cmd = [
+                str(venv_path / "bin" / "shiv"),
+                "--site-packages", str(tmp_site),
+                "--compressed",
+                "-e", "otel_helper.__main__:main",
+                "-o", str(pyz_path),
+            ]
+            shiv_result = subprocess.run(shiv_cmd, capture_output=not verbose, text=True, cwd=source_dir)
+            if shiv_result.returncode != 0:
+                raise RuntimeError(f"shiv build failed for OTEL helper: {shiv_result.stderr}")
+
+        if not pyz_path.exists():
+            raise RuntimeError(f"OTEL helper shiv bundle not created: {pyz_path}")
+
+        pyz_path.chmod(0o755)
+        console.print(f"[green]✓ OTEL helper shiv bundle built successfully for {target_platform}[/green]")
+        return pyz_path
+
+    def _build_linux_otel_helper_shiv_via_docker(self, output_dir: Path, arch: str = "x64") -> Path:
+        """Build Linux OTEL helper as a shiv .pyz bundle using Docker."""
+        import shutil
+        import tempfile
+
+        console = Console()
+        verbose = self.option("build-verbose")
+
+        if arch == "arm64":
+            docker_platform = "linux/arm64"
+            target_platform = "linux-arm64"
+        else:
+            docker_platform = "linux/amd64"
+            target_platform = "linux-x64"
+
+        binary_name = f"otel-helper-{target_platform}.pyz"
+
+        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+        if docker_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} OTEL helper shiv build[/yellow]")
+            return None
+
+        daemon_check = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if daemon_check.returncode != 0:
+            console.print(f"\n[yellow]⚠️  Docker daemon not running - skipping Linux {arch} OTEL helper shiv build[/yellow]")
+            return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            source_dir = Path(__file__).parent.parent.parent.parent
+            shutil.copytree(source_dir / "otel_helper", temp_path / "otel_helper")
+
+            dockerfile_content = f"""FROM --platform={docker_platform} python:3.12-slim
+
+RUN pip install --no-cache-dir shiv PyJWT cryptography six
+
+WORKDIR /build
+COPY otel_helper /build/otel_helper
+
+RUN pip install --no-cache-dir --target /build/site-packages \\
+    PyJWT cryptography six && \\
+    cp -r /build/otel_helper /build/site-packages/otel_helper
+
+RUN mkdir -p /output && shiv \\
+    --site-packages /build/site-packages \\
+    --compressed \\
+    -e otel_helper.__main__:main \\
+    -o /output/{binary_name}
+"""
+
+            (temp_path / "Dockerfile").write_text(dockerfile_content)
+
+            import time
+            image_tag = f"ccwb-otel-{arch}-shiv-builder-{int(time.time())}"
+
+            console.print(f"[yellow]Building Linux {arch} OTEL helper shiv bundle via Docker...[/yellow]")
+            build_result = subprocess.run(
+                [
+                    "docker", "buildx", "build",
+                    "--no-cache",
+                    "--platform", docker_platform,
+                    "-t", image_tag,
+                    "--load", ".",
+                ],
+                cwd=temp_path,
+                capture_output=not verbose,
+                text=True,
+            )
+
+            if build_result.returncode != 0:
+                raise RuntimeError(f"Docker build failed for OTEL helper shiv: {build_result.stderr}")
+
+            import time as _time
+            container_name = f"ccwb-otel-shiv-extract-{arch}-{int(_time.time())}"
+            run_result = subprocess.run(
+                ["docker", "create", "--name", container_name, image_tag],
+                capture_output=True, text=True,
+            )
+            if run_result.returncode != 0:
+                raise RuntimeError(f"Failed to create container: {run_result.stderr}")
+
+            try:
+                copy_result = subprocess.run(
+                    ["docker", "cp", f"{container_name}:/output/{binary_name}", str(output_dir)],
+                    capture_output=True, text=True,
+                )
+                if copy_result.returncode != 0:
+                    raise RuntimeError(f"Failed to copy OTEL helper .pyz from container: {copy_result.stderr}")
+
+                pyz_path = output_dir / binary_name
+                if not pyz_path.exists():
+                    raise RuntimeError(f"Linux {arch} OTEL helper shiv bundle was not created successfully")
+
+                pyz_path.chmod(0o755)
+                console.print(f"[green]✓ Linux {arch} OTEL helper shiv bundle built successfully via Docker[/green]")
+                return pyz_path
+
+            finally:
+                subprocess.run(["docker", "rm", container_name], capture_output=True)
+                subprocess.run(["docker", "rmi", image_tag], capture_output=True)
 
     def _build_native_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
         """Build OTEL helper using native Nuitka compiler."""
@@ -1707,6 +2084,14 @@ RUN pyinstaller \
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
 
+        # Add inference profile configuration
+        if getattr(profile, "inference_profiles_enabled", False):
+            config[profile_name]["inference_profiles_enabled"] = True
+            config[profile_name]["inference_profiles_models"] = getattr(profile, "inference_profiles_models", [])
+            config[profile_name]["inference_profiles_default_model"] = getattr(
+                profile, "inference_profiles_default_model", "sonnet-4-6"
+            )
+
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -1783,6 +2168,24 @@ if ! command -v aws &> /dev/null; then
     exit 1
 fi
 
+# If a shiv .pyz bundle is present, python3 >= 3.10 is required
+if [ -f "credential-process-$BINARY_SUFFIX.pyz" ] 2>/dev/null || [ -f "otel-helper-$BINARY_SUFFIX.pyz" ] 2>/dev/null; then
+    if ! command -v python3 &> /dev/null; then
+        echo "❌ python3 is not installed (required for .pyz bundles)"
+        echo "   Please install Python 3.10 or later from https://www.python.org/"
+        exit 1
+    fi
+    PYTHON_VERSION=$(python3 -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor))")
+    PYTHON_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
+    PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ( [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ] ); then
+        echo "❌ Python 3.10 or later is required (found $PYTHON_VERSION)"
+        echo "   Please upgrade Python from https://www.python.org/"
+        exit 1
+    fi
+    echo "✓ python3 $PYTHON_VERSION found"
+fi
+
 echo "✓ Prerequisites found"
 
 # Detect platform and architecture
@@ -1814,14 +2217,25 @@ else
     exit 1
 fi
 
-# Check if binary for platform exists
-CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX"
-OTEL_BINARY="otel-helper-$BINARY_SUFFIX"
-
-if [ ! -f "$CREDENTIAL_BINARY" ]; then
-    echo "❌ Binary not found for your platform: $CREDENTIAL_BINARY"
+# Check if binary for platform exists (PyInstaller binary or shiv .pyz bundle)
+if [ -f "credential-process-$BINARY_SUFFIX" ]; then
+    CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX"
+elif [ -f "credential-process-$BINARY_SUFFIX.pyz" ]; then
+    CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX.pyz"
+    CREDENTIAL_IS_PYZ=true
+else
+    echo "❌ Binary not found for your platform: credential-process-$BINARY_SUFFIX"
     echo "   Please ensure you have the correct package for your architecture."
     exit 1
+fi
+
+if [ -f "otel-helper-$BINARY_SUFFIX" ]; then
+    OTEL_BINARY="otel-helper-$BINARY_SUFFIX"
+elif [ -f "otel-helper-$BINARY_SUFFIX.pyz" ]; then
+    OTEL_BINARY="otel-helper-$BINARY_SUFFIX.pyz"
+    OTEL_IS_PYZ=true
+else
+    OTEL_BINARY=""
 fi
 """
 
@@ -1831,12 +2245,20 @@ echo
 echo "Installing authentication tools..."
 mkdir -p ~/claude-code-with-bedrock
 
-# Copy appropriate binary
-cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+# Copy credential binary (or .pyz bundle + wrapper)
+if [ "$CREDENTIAL_IS_PYZ" = "true" ]; then
+    cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process.pyz
+    chmod +x ~/claude-code-with-bedrock/credential-process.pyz
+    printf '#!/bin/sh\nexec python3 "%s/claude-code-with-bedrock/credential-process.pyz" "$@"\n' "$HOME" \
+        > ~/claude-code-with-bedrock/credential-process
+    chmod +x ~/claude-code-with-bedrock/credential-process
+else
+    cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+    chmod +x ~/claude-code-with-bedrock/credential-process
+fi
 
 # Copy config
 cp config.json ~/claude-code-with-bedrock/
-chmod +x ~/claude-code-with-bedrock/credential-process
 
 # macOS Keychain Notice
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -1881,19 +2303,26 @@ if [ -d "claude-settings" ]; then
 fi
 
 # Copy OTEL helper executable and shell wrapper if present
-if [ -f "$OTEL_BINARY" ]; then
+if [ -n "$OTEL_BINARY" ] && [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
-    chmod +x ~/claude-code-with-bedrock/otel-helper-bin
-    # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
+    if [ "$OTEL_IS_PYZ" = "true" ]; then
+        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin.pyz
+        chmod +x ~/claude-code-with-bedrock/otel-helper-bin.pyz
+        printf '#!/bin/sh\nexec python3 "%s/claude-code-with-bedrock/otel-helper-bin.pyz" "$@"\n' "$HOME" \
+            > ~/claude-code-with-bedrock/otel-helper-bin
+        chmod +x ~/claude-code-with-bedrock/otel-helper-bin
+    else
+        # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
+        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
+        chmod +x ~/claude-code-with-bedrock/otel-helper-bin
+    fi
+    # Install shell wrapper as otel-helper (fast cache check, avoids startup overhead)
     if [ -f "otel-helper.sh" ]; then
         cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
         chmod +x ~/claude-code-with-bedrock/otel-helper
     else
-        # Fallback: if shell wrapper not in package, point directly to binary
-        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
+        cp ~/claude-code-with-bedrock/otel-helper-bin ~/claude-code-with-bedrock/otel-helper
         chmod +x ~/claude-code-with-bedrock/otel-helper
     fi
     echo "✓ OTEL helper installed"
@@ -1949,7 +2378,37 @@ region = $PROFILE_REGION
 EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
+"""
 
+        # Add mandatory inference profile setup block AFTER AWS config (profiles must exist first)
+        if getattr(profile, "inference_profiles_enabled", False):
+            installer_content += """
+# --- Inference Profile Setup (MANDATORY) ---
+echo
+echo "Setting up your personal Bedrock inference profiles..."
+echo "A browser window will open for authentication."
+echo
+
+for PROFILE_NAME in $PROFILES; do
+    echo "Setting up inference profiles for AWS profile: $PROFILE_NAME"
+    if ! "$HOME/claude-code-with-bedrock/credential-process" --profile "$PROFILE_NAME" --setup-profiles; then
+        echo
+        echo "ERROR: Inference profile setup failed for profile '$PROFILE_NAME'."
+        echo "Claude Code requires personal inference profiles to function."
+        echo
+        echo "To retry, run:"
+        echo "  $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME --setup-profiles"
+        echo
+        echo "Contact your IT administrator if the problem persists."
+        exit 1
+    fi
+    echo "  ✓ Inference profiles configured for '$PROFILE_NAME'"
+done
+
+echo "✓ All inference profiles configured successfully"
+"""
+
+        installer_content += f"""
 echo
 echo "======================================"
 echo "✓ Installation complete!"
@@ -2330,19 +2789,36 @@ Available metrics include:
             if profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
-            # Add selected model as environment variable if available
-            if hasattr(profile, "selected_model") and profile.selected_model:
-                settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
+            # Add model environment variables
+            if getattr(profile, "inference_profiles_enabled", False):
+                # When inference profiles are enabled, use placeholders that will be
+                # replaced by --setup-profiles during install. This ensures Claude Code
+                # cannot bypass inference profiles if setup wasn't run.
+                placeholder = "INFERENCE_PROFILE_REQUIRED"
+                settings["env"]["ANTHROPIC_MODEL"] = placeholder
+                settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = placeholder
+                settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = placeholder
+                settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = placeholder
+                settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = placeholder
+            elif hasattr(profile, "selected_model") and profile.selected_model:
+                # Inference profiles disabled — use cross-region model IDs
+                model_id = profile.selected_model
+                prefix = model_id.split(".anthropic")[0] if ".anthropic" in model_id else ""
 
-                # Determine and set small/fast model based on selected model family
-                if "opus" in profile.selected_model:
-                    # For Opus, use Haiku as small/fast model
-                    model_id = profile.selected_model
-                    prefix = model_id.split(".anthropic")[0]  # Get us/eu/apac prefix
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = f"{prefix}.anthropic.claude-3-5-haiku-20241022-v1:0"
+                settings["env"]["ANTHROPIC_MODEL"] = model_id
+
+                # Set all 3 explicit model tier env vars
+                if prefix:
+                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = f"{prefix}.anthropic.claude-opus-4-6-v1"
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = f"{prefix}.anthropic.claude-sonnet-4-6-20251120-v1:0"
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = f"{prefix}.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = f"{prefix}.anthropic.claude-haiku-4-5-20251001-v1:0"
                 else:
-                    # For other models, use same model as small/fast (or could use Haiku)
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = profile.selected_model
+                    # No cross-region prefix — use the selected model for all
+                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = model_id
+                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model_id
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model_id
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model_id
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:

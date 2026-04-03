@@ -145,7 +145,8 @@ class DistributeCommand(Command):
         }
 
         for platform, filename in platform_files.items():
-            if (build_dir / filename).exists():
+            # Check both with and without .pyz extension
+            if (build_dir / filename).exists() or (build_dir / (filename + ".pyz")).exists():
                 platforms.append(platform)
 
         return platforms
@@ -518,20 +519,35 @@ class DistributeCommand(Command):
             ],
         }
 
+        def _resolve_source_file(pkg_path: Path, source_file: str) -> str | None:
+            """Return the actual filename (possibly with .pyz) if it exists, else None."""
+            if (pkg_path / source_file).exists():
+                return source_file
+            if (pkg_path / (source_file + ".pyz")).exists():
+                return source_file + ".pyz"
+            return None
+
         # Determine which platforms are available
         available_platforms = {}
         for platform, files in platform_files.items():
-            # Check if at least one executable exists for this platform
+            # Check if at least one executable exists for this platform (with or without .pyz)
             has_platform = False
-            for source_file, _ in files:
-                # Check if this is an executable (contains these strings, not just ends with them)
-                if source_file.endswith(".exe") or "credential-process" in source_file or "otel-helper" in source_file:
-                    if (package_path / source_file).exists():
+            resolved_files = []
+            for source_file, archive_name in files:
+                is_executable = (
+                    source_file.endswith(".exe") or "credential-process" in source_file or "otel-helper" in source_file
+                )
+                actual = _resolve_source_file(package_path, source_file)
+                if actual:
+                    resolved_files.append((actual, archive_name))
+                    if is_executable:
                         has_platform = True
-                        break
+                else:
+                    # Non-executable optional files (install scripts, config) — keep original name
+                    resolved_files.append((source_file, archive_name))
 
             if has_platform:
-                available_platforms[platform] = files
+                available_platforms[platform] = resolved_files
                 console.print(f"  ✓ {platform.capitalize()} platform detected")
 
         if not available_platforms:

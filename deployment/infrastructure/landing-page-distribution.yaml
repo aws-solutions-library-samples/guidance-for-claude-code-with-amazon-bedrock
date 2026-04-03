@@ -95,14 +95,19 @@ Parameters:
   # REQUIRED: Custom domain for HTTPS/OIDC authentication
   CustomDomainName:
     Type: String
-    Description: 'REQUIRED: Custom domain for landing page (e.g., downloads.example.com). ACM certificate must exist.'
+    Description: 'REQUIRED: Custom domain for landing page (e.g., downloads.example.com).'
     AllowedPattern: '.+'
     ConstraintDescription: 'Custom domain is required for authenticated landing page.'
+
+  ExistingCertificateArn:
+    Type: String
+    Default: ''
+    Description: '(Optional) ARN of an existing ACM certificate. If provided, no new certificate is created.'
 
   HostedZoneId:
     Type: String
     Default: ''
-    Description: '(Optional) Route53 hosted zone ID for automatic DNS configuration.'
+    Description: '(Optional) Route53 hosted zone ID for automatic DNS record creation. Not needed if using ExistingCertificateArn.'
 
   DeploymentTimestamp:
     Type: String
@@ -115,6 +120,8 @@ Conditions:
   IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
   IsCognito: !Equals [!Ref IdPProvider, 'cognito']
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
+  UseExistingCertificate: !Not [!Equals [!Ref ExistingCertificateArn, '']]
+  CreateNewCertificate: !Equals [!Ref ExistingCertificateArn, '']
 
 Resources:
   # S3 Bucket for package distribution
@@ -142,6 +149,8 @@ Resources:
   # S3 Bucket for ALB access logs
   ALBLogsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub '${IdentityPoolName}-alb-logs-${AWS::AccountId}'
       BucketEncryption:
@@ -175,9 +184,12 @@ Resources:
           - Sid: AWSLogDeliveryWrite
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::127311923021:root'  # ELB service account for us-east-1
+              Service: logdelivery.elasticloadbalancing.amazonaws.com
             Action: s3:PutObject
             Resource: !Sub '${ALBLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': bucket-owner-full-control
           - Sid: AWSLogDeliveryAclCheck
             Effect: Allow
             Principal:
@@ -248,7 +260,14 @@ Resources:
           import boto3
           from datetime import datetime, timedelta
 
-          s3_client = boto3.client('s3')
+          from botocore.config import Config as BotoConfig
+          _region = os.environ.get('AWS_REGION', 'us-east-1')
+          s3_client = boto3.client(
+              's3',
+              region_name=_region,
+              endpoint_url=f'https://s3.{_region}.amazonaws.com',
+              config=BotoConfig(signature_version='s3v4'),
+          )
           BUCKET_NAME = os.environ['S3_BUCKET_NAME']
           PRESIGNED_URL_EXPIRY = 3600  # 1 hour
 
@@ -761,15 +780,21 @@ Resources:
       Principal: elasticloadbalancing.amazonaws.com
       SourceArn: !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
 
-  # ACM Certificate (required for HTTPS/OIDC)
+  # ACM Certificate — only created when no existing certificate ARN is provided
   Certificate:
     Type: AWS::CertificateManager::Certificate
+    Condition: CreateNewCertificate
     Properties:
       DomainName: !Ref CustomDomainName
       ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref CustomDomainName
-          HostedZoneId: !If [HasRoute53Zone, !Ref HostedZoneId, !Ref AWS::NoValue]
+      # DomainValidationOptions is only specified when a Route53 hosted zone is provided
+      # so that ACM can auto-create the DNS validation record. Without it, the record
+      # must be created manually in your DNS provider.
+      DomainValidationOptions: !If
+        - HasRoute53Zone
+        - - DomainName: !Ref CustomDomainName
+            HostedZoneId: !Ref HostedZoneId
+        - !Ref AWS::NoValue
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock
@@ -783,7 +808,10 @@ Resources:
       Protocol: HTTPS
       SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
       Certificates:
-        - CertificateArn: !Ref Certificate
+        - CertificateArn: !If
+            - UseExistingCertificate
+            - !Ref ExistingCertificateArn
+            - !Ref Certificate
       DefaultActions:
         # OIDC Authentication Action
         - Type: authenticate-oidc
