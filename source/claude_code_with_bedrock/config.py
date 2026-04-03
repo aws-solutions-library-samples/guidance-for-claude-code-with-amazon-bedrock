@@ -48,6 +48,7 @@ class Profile:
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+    distribution_certificate_arn: str | None = None  # Optional existing ACM certificate ARN (skips cert creation)
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring

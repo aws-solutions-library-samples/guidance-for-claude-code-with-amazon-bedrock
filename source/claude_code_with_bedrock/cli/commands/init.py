@@ -538,6 +538,8 @@ class InitCommand(Command):
                 "eu-west-2",
                 "eu-west-3",
                 "eu-central-1",
+                "eu-south-1",
+                "eu-north-1",
                 "ap-northeast-1",
                 "ap-northeast-2",
                 "ap-southeast-1",
@@ -611,8 +613,24 @@ class InitCommand(Command):
                 config["monitoring"] = {}
             config["monitoring"]["enabled"] = enable_monitoring
 
-            # If monitoring is enabled, configure VPC
+            # Ask whether to use Application Inference Profiles (server-side CloudWatch metrics)
+            # or the OTEL collector (client-side, requires ECS Fargate + VPC).
+            using_inference_profiles = False
             if enable_monitoring:
+                existing_ip_enabled = config.get("inference_profiles", {}).get("enabled", False)
+                console.print("\n[bold]Metrics Collection Method[/bold]")
+                console.print("  • [cyan]Application Inference Profiles[/cyan]: server-side CloudWatch metrics — no VPC or collector needed")
+                console.print("  • [dim]OpenTelemetry collector[/dim]: client-side metrics via ECS Fargate — requires VPC")
+                using_inference_profiles = questionary.confirm(
+                    "Use Application Inference Profiles for CloudWatch metrics (recommended)?",
+                    default=existing_ip_enabled if existing_ip_enabled else True,
+                ).ask()
+                if "inference_profiles" not in config:
+                    config["inference_profiles"] = {}
+                config["inference_profiles"]["enabled"] = using_inference_profiles
+
+            # Only configure VPC + OTEL collector when NOT using Application Inference Profiles
+            if enable_monitoring and not using_inference_profiles:
                 # Pass existing vpc_config if available
                 existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
                 vpc_config = self._configure_vpc(
@@ -693,12 +711,12 @@ class InitCommand(Command):
                 if enable_analytics:
                     console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
 
-                # Quota monitoring configuration (only if monitoring is enabled)
+            # Quota monitoring — available with both OTEL and Application Inference Profiles
+            if enable_monitoring:
                 console.print("\n[bold]Quota Monitoring[/bold]")
                 console.print("Track per-user token consumption, set limits, and receive alerts")
                 console.print("when users approach or exceed their quotas.")
                 console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
-                console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
                 enable_quota_monitoring = questionary.confirm(
                     "Enable quota monitoring?",
                     default=config.get("quota", {}).get("enabled", True),
@@ -894,6 +912,10 @@ class InitCommand(Command):
                 console.print("\n[bold]Cognito Configuration Detection[/bold]")
                 console.print("Searching for deployed Cognito User Pool stack...")
 
+                # region may not be set if we resumed from saved progress (the region
+                # selection step was skipped). Fall back to the saved config value.
+                region = locals().get("region") or config.get("aws", {}).get("region") or get_current_region()
+
                 # Try to auto-detect Cognito stack
                 cognito_stack_info = detect_cognito_stack(region)
 
@@ -1012,9 +1034,6 @@ class InitCommand(Command):
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
             console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
-            console.print("You will need:")
-            console.print("  • A custom domain (e.g., downloads.company.com)")
-            console.print("  • An ACM certificate for this domain in the same region")
 
             custom_domain = questionary.text(
                 "Custom domain (e.g., downloads.company.com):",
@@ -1022,6 +1041,27 @@ class InitCommand(Command):
                 validate=lambda text: len(text.strip()) > 0
                 or "Custom domain is required for authenticated landing page",
             ).ask()
+
+            # ACM Certificate
+            console.print("\n[bold]ACM Certificate[/bold]")
+            existing_cert_arn = config.get("distribution", {}).get("certificate_arn", "")
+            use_existing_cert = questionary.confirm(
+                "Do you have an existing ACM certificate for this domain?",
+                default=bool(existing_cert_arn),
+            ).ask()
+
+            certificate_arn = None
+            if use_existing_cert:
+                certificate_arn = questionary.text(
+                    "ACM certificate ARN (must be in the same region as this deployment):",
+                    default=existing_cert_arn,
+                    validate=lambda text: text.strip().startswith("arn:aws")
+                    or "Must be a valid ACM certificate ARN",
+                ).ask()
+                console.print(f"[green]✓[/green] Using existing certificate: {certificate_arn}")
+            else:
+                console.print("[dim]A new ACM certificate will be created via DNS validation.[/dim]")
+                console.print("[dim]You'll need to add a CNAME record to your DNS provider after deployment starts.[/dim]")
 
             # Check for Route53 hosted zones
             console.print("\n[bold]Route53 Configuration[/bold]")
@@ -1078,6 +1118,7 @@ class InitCommand(Command):
                     "idp_client_id": idp_client_id,
                     "idp_client_secret_arn": secret_arn,
                     "custom_domain": custom_domain,
+                    "certificate_arn": certificate_arn,
                     "hosted_zone_id": hosted_zone_id,
                 }
             )
@@ -1515,8 +1556,8 @@ class InitCommand(Command):
 
         profile = Profile(
             name=profile_name,
-            provider_domain=config_data["okta"]["domain"],
-            client_id=config_data["okta"]["client_id"],
+            provider_domain=config_data["okta"]["domain"].strip(),
+            client_id=config_data["okta"]["client_id"].strip(),
             credential_storage=config_data.get("credential_storage", "session"),
             aws_region=config_data["aws"]["region"],
             identity_pool_name=config_data["aws"]["identity_pool_name"],
@@ -1524,8 +1565,9 @@ class InitCommand(Command):
             monitoring_enabled=config_data["monitoring"]["enabled"],
             monitoring_config=monitoring_config,
             analytics_enabled=(
-                config_data.get("analytics", {}).get("enabled", True)
+                config_data.get("analytics", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
+                and not config_data.get("inference_profiles", {}).get("enabled", False)
                 else False
             ),
             allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
@@ -1548,6 +1590,8 @@ class InitCommand(Command):
             distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
             distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
             distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
+            distribution_certificate_arn=config_data.get("distribution", {}).get("certificate_arn"),
+            inference_profiles_enabled=config_data.get("inference_profiles", {}).get("enabled", False),
             quota_monitoring_enabled=(
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -1856,6 +1900,7 @@ class InitCommand(Command):
                     "idp_client_id": getattr(profile, "distribution_idp_client_id", None),
                     "idp_client_secret_arn": getattr(profile, "distribution_idp_client_secret_arn", None),
                     "custom_domain": getattr(profile, "distribution_custom_domain", None),
+                    "certificate_arn": getattr(profile, "distribution_certificate_arn", None),
                     "hosted_zone_id": getattr(profile, "distribution_hosted_zone_id", None),
                 }
 
