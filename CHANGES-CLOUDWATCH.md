@@ -253,3 +253,131 @@ the new structure.
 | AWS costs | Reduction (removal of always-on ECS Fargate OTEL collector) |
 | Historical metrics | Existing OTEL data remains in CloudWatch until TTL expiry |
 | IAM | Cognito role policy update requires a stack re-deploy |
+
+---
+
+## Security Enhancement: Lambda-based Inference Profile Provisioning
+
+### Motivation
+
+`bedrock:CreateInferenceProfile` and `bedrock:TagResource` were granted directly to the
+Cognito federated role. Every authenticated user could call the Bedrock management plane
+with their own credentials, which creates unnecessary attack surface:
+
+- A compromised token could create profiles with arbitrary names or tags, confusing
+  cost attribution or quota tracking.
+- `bedrock:TagResource` is broad — a misconfigured ABAC condition could allow re-tagging
+  profiles owned by other users.
+- Users calling `CreateInferenceProfile` directly bypass any server-side enforcement of
+  naming conventions or tag schema.
+
+### Implemented Architecture
+
+A dedicated Lambda function (`InferenceProfileProvisionerFunction`) is the **sole
+principal** with `bedrock:CreateInferenceProfile` and `bedrock:TagResource`. The Cognito
+role loses those permissions entirely and gains only `lambda:InvokeFunction` on that
+specific function ARN.
+
+```
+Before:
+  User credentials → bedrock:CreateInferenceProfile (direct)
+
+After:
+  User credentials → lambda:InvokeFunction → Lambda (elevated role) → bedrock:CreateInferenceProfile
+```
+
+The trust boundary is IAM: the Lambda is only reachable by callers whose SigV4-signed
+credentials include `lambda:InvokeFunction` on its ARN. Those credentials are issued only
+after the caller's OIDC token has been validated by the credential_provider. No API
+Gateway is involved — the Lambda is invoked directly via the AWS SDK.
+
+### Files Changed
+
+#### `deployment/infrastructure/lambda-functions/inference_profile_provisioner/index.py` (new)
+
+Synchronous Lambda handler invoked by the credential_provider at login time.
+
+**Input event**: `{ "email": "user@example.com", "claims": { ...jwt_claims... } }`
+
+The email is passed from the credential_provider (which already validated the JWT) and
+is basic-format validated by the Lambda. Claims are used only to build the profile tags.
+
+**Logic**:
+- For each enabled model in `INFERENCE_PROFILE_MODELS`:
+  - Derive profile name via `_get_profile_name(email, model_key)` (same algorithm as `models.py`)
+  - Build tags from email + JWT claims
+  - Call `bedrock:CreateInferenceProfile` (idempotent — catches `ConflictException`)
+  - On conflict, resolves existing ARN via paginated `bedrock:ListInferenceProfiles`
+- Returns `{ "profile_arns": { "opus-4-6": "arn:...", "sonnet-4-6": "arn:...", "haiku-4-5": "arn:..." } }`
+- Per-model failures are non-fatal; function returns whatever ARNs it created
+
+The handler code is also inlined in the CloudFormation `ZipFile` block so no separate
+deployment step is needed.
+
+#### `deployment/infrastructure/bedrock-auth-cognito-pool.yaml`
+
+Three changes:
+
+1. **Replaced** `AllowBedrockManageInferenceProfiles` IAM statement with
+   `AllowInvokeInferenceProfileProvisioner` (`lambda:InvokeFunction` on the provisioner
+   ARN, region-scoped). `bedrock:CreateInferenceProfile` and `bedrock:TagResource` are
+   gone from the user role.
+
+2. **Added** three new resources (all conditional on `UseInferenceProfiles`):
+   - `InferenceProfileProvisionerRole` — Lambda execution role with
+     `bedrock:CreateInferenceProfile`, `bedrock:TagResource` (scoped to
+     `application-inference-profile/*` in this account), `bedrock:ListInferenceProfiles`,
+     `bedrock:GetInferenceProfile`. No invoke permissions.
+   - `InferenceProfileProvisionerLogGroup` — CloudWatch log group, 30-day retention.
+   - `InferenceProfileProvisionerFunction` — Python 3.12 Lambda, 60s timeout, handler
+     code inlined via `ZipFile`.
+
+3. **Updated `ConfigurationJson` output** — expanded from 2 variants to 4
+   `(direct | cognito) × (inference profiles enabled | disabled)`. When
+   `InferenceProfilesEnabled=true`, CloudFormation automatically injects:
+   ```json
+   "inference_profiles_enabled": true,
+   "inference_profiles_provisioner_arn": "<resolved-lambda-arn>"
+   ```
+   Users copy this output into `config.json` as before — no manual ARN lookup needed.
+
+#### `source/credential_provider/__main__.py`
+
+`_ensure_user_inference_profiles()` now invokes the Lambda instead of calling Bedrock
+directly:
+
+```python
+lambda_client = boto3.client("lambda", region_name=region, **user_credentials)
+response = lambda_client.invoke(
+    FunctionName=provisioner_arn,       # from config: inference_profiles_provisioner_arn
+    InvocationType="RequestResponse",
+    Payload=json.dumps({"email": email, "claims": token_claims}),
+)
+```
+
+If `inference_profiles_provisioner_arn` is not set in the config, profile creation is
+skipped (the user role has no Bedrock management-plane permissions anyway).
+
+#### `source/claude_code_with_bedrock/config.py`
+
+Added `inference_profiles_provisioner_arn: str = ""` to the `Profile` dataclass.
+Populated automatically from the `ConfigurationJson` CloudFormation output.
+
+### Security Improvement Summary
+
+| Threat | Before | After |
+|---|---|---|
+| Arbitrary profile creation | User calls `CreateInferenceProfile` directly | Only Lambda can; user can only trigger it via IAM-authenticated invoke |
+| Tag manipulation | User has `TagResource` on profile ARNs | `TagResource` removed from user role entirely |
+| Naming convention bypass | Profile name built client-side | Lambda enforces canonical naming server-side |
+| Tag schema enforcement | Tags built client-side | Lambda builds tags from JWT claims centrally |
+| Blast radius of stolen token | Can create/tag profiles | Can only invoke provisioner (which enforces its own naming) |
+
+### Impact on Existing Deployments
+
+| Component | Impact |
+|---|---|
+| End users | None — flow is identical from the user's perspective |
+| Administrators | Redeploy `bedrock-auth-cognito-pool` with `InferenceProfilesEnabled=true`; copy the new `ConfigurationJson` output — provisioner ARN is included automatically |
+| AWS costs | Marginal Lambda invocation cost per first login per user (negligible at scale) |
+| IAM | Cognito role loses `bedrock:CreateInferenceProfile` and `bedrock:TagResource` |

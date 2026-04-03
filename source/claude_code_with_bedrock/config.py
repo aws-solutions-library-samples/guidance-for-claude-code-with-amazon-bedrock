@@ -86,6 +86,7 @@ class Profile:
     inference_profiles_enabled: bool = False  # Enable per-user Bedrock Application Inference Profiles
     inference_profiles_models: list[str] = field(default_factory=list)  # Model keys to create profiles for (empty = all enabled models)
     inference_profiles_default_model: str = "sonnet-4-6"  # Model key whose ARN is written to ~/.claude.json on first login
+    inference_profiles_provisioner_arn: str = ""  # ARN of the InferenceProfileProvisionerFunction Lambda; required when inference_profiles_enabled is True
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits

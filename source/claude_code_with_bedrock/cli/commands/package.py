@@ -2115,6 +2115,9 @@ RUN mkdir -p /output && shiv \\
             config[profile_name]["inference_profiles_default_model"] = getattr(
                 profile, "inference_profiles_default_model", "sonnet-4-6"
             )
+            provisioner_arn = getattr(profile, "inference_profiles_provisioner_arn", "")
+            if provisioner_arn:
+                config[profile_name]["inference_profiles_provisioner_arn"] = provisioner_arn
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
