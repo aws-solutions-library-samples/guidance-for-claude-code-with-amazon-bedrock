@@ -965,12 +965,14 @@ class MultiProviderAuth:
             # Sanitize to replace invalid characters with hyphens
             session_name = "claude-code"
             if "sub" in token_claims:
-                # Use first 32 chars of sub for uniqueness, sanitized for AWS
-                sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:32])
+                # Use first 52 chars of sub for uniqueness, sanitized for AWS
+                # AWS RoleSessionName limit is 64 chars; prefix "claude-code-" is 12 chars
+                # 52 chars accommodates standard UUIDs (36 chars) and longer identifiers
+                sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:52])
                 session_name = f"claude-code-{sub_sanitized}"
             elif "email" in token_claims:
                 # Use email username part, sanitized
-                email_part = token_claims["email"].split("@")[0][:32]
+                email_part = token_claims["email"].split("@")[0][:52]
                 email_sanitized = re.sub(r"[^\w+=,.@-]", "-", email_part)
                 session_name = f"claude-code-{email_sanitized}"
 
