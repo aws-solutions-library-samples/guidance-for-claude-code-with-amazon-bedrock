@@ -728,8 +728,12 @@ class DeployCommand(Command):
                         task, description="Dashboard Lambda functions packaged successfully", completed=True
                     )
 
-                    # Deploy the packaged template with MetricsRegion parameter
-                    params = [f"MetricsRegion={profile.aws_region}"]
+                    # Deploy the packaged template
+                    using_inference_profiles = getattr(profile, "inference_profiles_enabled", False)
+                    params = [
+                        f"MetricsRegion={profile.aws_region}",
+                        f"InferenceProfilesEnabled={'true' if using_inference_profiles else 'false'}",
+                    ]
                     return deploy_with_cf(
                         packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
                     )

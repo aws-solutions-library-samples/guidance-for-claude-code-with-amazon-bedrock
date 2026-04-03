@@ -17,6 +17,18 @@ Parameters:
     Default: us-east-1
     Description: Region where metrics log group exists
 
+  InferenceProfilesEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      When true, deploys the BedrockMetricsBridge Lambda that reads AWS/Bedrock
+      namespace metrics and writes them to the OTEL log group so all dashboard
+      widgets and quota checks work without modification.
+
+Conditions:
+  UseInferenceProfiles: !Equals [!Ref InferenceProfilesEnabled, 'true']
+
 Resources:
   # DynamoDB Table for Metrics Storage
   MetricsTable:
@@ -242,6 +254,100 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt MetricsAggregatorScheduleRule.Arn
+
+  # ---------------------------------------------------------------------------
+  # Bedrock Metrics Bridge (only when inference profiles are enabled)
+  # Reads AWS/Bedrock namespace metrics per InferenceProfileArn, maps ARN →
+  # user email via Bedrock tags, then writes structured JSON to the OTEL log
+  # group so all downstream consumers (aggregator, widgets, quota) work unchanged.
+  # ---------------------------------------------------------------------------
+  BedrockMetricsBridgeRole:
+    Type: AWS::IAM::Role
+    Condition: UseInferenceProfiles
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockMetricsRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:GetInferenceProfile
+                  - bedrock:ListTagsForResource
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                Resource: '*'
+        - PolicyName: MetricsLogGroupWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MetricsLogGroup}'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MetricsLogGroup}:*'
+
+  BedrockMetricsBridgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: UseInferenceProfiles
+    Properties:
+      LogGroupName: /aws/lambda/claude-code-bedrock-metrics-bridge
+      RetentionInDays: 7
+
+  BedrockMetricsBridgeFunction:
+    Type: AWS::Lambda::Function
+    Condition: UseInferenceProfiles
+    Properties:
+      FunctionName: ClaudeCode-BedrockMetricsBridge
+      Description: Bridges AWS/Bedrock inference profile metrics to OTEL log format
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt BedrockMetricsBridgeRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          METRICS_LOG_GROUP: !Ref MetricsLogGroup
+      Code: ./lambda-functions/bedrock_metrics_bridge/
+
+  BedrockMetricsBridgeScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: UseInferenceProfiles
+    Properties:
+      Name: ClaudeCode-BedrockMetricsBridge-Schedule
+      Description: Bridge Bedrock inference profile metrics to OTEL log group every 5 minutes
+      ScheduleExpression: 'rate(5 minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt BedrockMetricsBridgeFunction.Arn
+          Id: BedrockMetricsBridgeTarget
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+
+  BedrockMetricsBridgeSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Condition: UseInferenceProfiles
+    Properties:
+      FunctionName: !Ref BedrockMetricsBridgeFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BedrockMetricsBridgeScheduleRule.Arn
 
   TotalTokensWidget:
     Type: AWS::Lambda::Function
