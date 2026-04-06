@@ -1,12 +1,12 @@
 # Guidance for Claude Code with Amazon Bedrock
 
-This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools) for centralized access control, audit trails, and usage monitoring across your organization.
+This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools, Keycloak) for centralized access control, audit trails, and usage monitoring across your organization.
 
 ## Key Features
 
 ### For Organizations
 
-- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, etc.)
+- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, Keycloak, etc.)
 - **Centralized Access Control**: Manage Claude Code access through your identity provider
 - **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
 - **Usage Monitoring**: Optional CloudWatch dashboards for tracking usage and costs
@@ -34,7 +34,7 @@ This guidance provides enterprise deployment patterns for Claude Code with Amazo
 
 ## Quick Start
 
-This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, or Cognito User Pools) to provide federated access to Amazon Bedrock.
+This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, Cognito User Pools, or Keycloak) to provide federated access to Amazon Bedrock.
 
 ### What You Need
 
@@ -101,7 +101,7 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 
 **OIDC Provider Requirements:**
 
-- Existing OIDC identity provider (Okta, Azure AD, Auth0, etc.)
+- Existing OIDC identity provider (Okta, Azure AD, Auth0, Keycloak, etc.)
 - Ability to create OIDC applications
 - Redirect URI support for `http://localhost:8400/callback`
 
@@ -133,8 +133,8 @@ Both AWS Commercial and AWS GovCloud (US) partitions are supported. See [AWS Par
 
 Claude Code uses Amazon Bedrock's cross-region inference for optimal performance and availability. During setup, you can:
 
-- Select your preferred Claude model (Opus, Sonnet, Haiku)
-- Choose a cross-region profile (US, Europe, APAC) for optimal regional routing
+- Select your preferred Claude model (Opus, Sonnet, Haiku) or use auto-select
+- Choose a cross-region profile (US, Europe, Japan, Australia, APAC, Global) or use auto-select for automatic regional routing
 - Select a specific source region within your profile for model inference
 
 This automatically routes requests across multiple AWS regions to ensure the best response times and highest availability. Modern Claude models (3.7+) require cross-region inference for access.
@@ -253,7 +253,7 @@ After building packages, you can share them with users in three ways:
 | --------------------- | ---------------------- | ------------------------------ |
 | **Manual Sharing**    | Any size team          | None                           |
 | **Presigned S3 URLs** | Automated distribution | None                           |
-| **Landing Page**      | Self-service portal    | IdP (Okta/Azure/Auth0/Cognito) |
+| **Landing Page**      | Self-service portal    | IdP (Okta/Azure/Auth0/Cognito/Keycloak) |
 
 **Manual Sharing:** Zip the `dist/` folder and share via email or internal file sharing. No additional infrastructure required.
 
@@ -344,6 +344,8 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Okta](assets/docs/providers/okta-setup.md)
 - [Microsoft Entra ID (Azure AD)](assets/docs/providers/microsoft-entra-id-setup.md)
 - [Auth0](assets/docs/providers/auth0-setup.md)
+- [Keycloak](assets/docs/providers/keycloak-setup.md)
+- [AWS Cognito User Pool](assets/docs/providers/cognito-user-pool-setup.md)
 
 ## License
 

@@ -8,12 +8,16 @@ import pytest
 from claude_code_with_bedrock.models import (
     CLAUDE_MODELS,
     DEFAULT_REGIONS,
+    get_all_destination_regions_for_profile,
     get_all_model_display_names,
+    get_all_source_regions,
     get_available_profiles_for_model,
     get_default_region_for_profile,
     get_destination_regions_for_model_profile,
     get_model_id_for_profile,
+    get_models_for_tier,
     get_profile_description,
+    get_profiles_for_region,
     get_source_regions_for_model_profile,
 )
 
@@ -23,13 +27,17 @@ class TestModelConfiguration:
 
     def test_default_regions_structure(self):
         """Test that DEFAULT_REGIONS has the expected structure."""
-        expected_profiles = {"us", "europe", "apac", "us-gov"}
+        expected_profiles = {"us", "europe", "eu", "apac", "japan", "australia", "global", "us-gov"}
         assert set(DEFAULT_REGIONS.keys()) == expected_profiles
 
         # Verify regions are valid AWS regions
         assert DEFAULT_REGIONS["us"] == "us-east-1"
         assert DEFAULT_REGIONS["europe"] == "eu-west-3"
+        assert DEFAULT_REGIONS["eu"] == "eu-west-3"
         assert DEFAULT_REGIONS["apac"] == "ap-northeast-1"
+        assert DEFAULT_REGIONS["japan"] == "ap-northeast-1"
+        assert DEFAULT_REGIONS["australia"] == "ap-southeast-2"
+        assert DEFAULT_REGIONS["global"] == "us-east-1"
         assert DEFAULT_REGIONS["us-gov"] == "us-gov-west-1"
 
     def test_claude_models_structure(self):
@@ -38,9 +46,13 @@ class TestModelConfiguration:
             "opus-4-6",
             "opus-4-1",
             "opus-4",
+            "opus-4-5",
+            "opus-4-6",
             "sonnet-4",
             "sonnet-4-5",
             "sonnet-4-5-govcloud",
+            "sonnet-4-6",
+            "haiku-4-5",
             "sonnet-3-7",
             "sonnet-3-7-govcloud",
         }
@@ -103,7 +115,7 @@ class TestModelConfiguration:
         assert set(sonnet_4_profiles) == {"us", "europe", "apac", "global"}  # Sonnet 4 has global profile now
 
         sonnet_4_5_profiles = get_available_profiles_for_model("sonnet-4-5")
-        assert set(sonnet_4_5_profiles) == {"us", "eu", "japan", "global"}  # Sonnet 4.5 regional profiles
+        assert set(sonnet_4_5_profiles) == {"us", "eu", "japan", "australia", "global"}  # Sonnet 4.5 regional profiles
 
         sonnet_4_5_govcloud_profiles = get_available_profiles_for_model("sonnet-4-5-govcloud")
         assert sonnet_4_5_govcloud_profiles == ["us-gov"]  # Sonnet 4.5 GovCloud
@@ -271,12 +283,77 @@ class TestModelConfiguration:
                     expected = base_model_id.replace("anthropic.", "eu.anthropic.")
                     assert model_id == expected
 
+                elif profile_key == "eu":
+                    assert model_id.startswith("eu.anthropic.")
+                    expected = base_model_id.replace("anthropic.", "eu.anthropic.")
+                    assert model_id == expected
+
                 elif profile_key == "apac":
                     # APAC models should start with apac.anthropic
                     assert model_id.startswith("apac.anthropic.")
                     # Should match base model pattern but with apac. prefix
                     expected = base_model_id.replace("anthropic.", "apac.anthropic.")
                     assert model_id == expected
+
+                elif profile_key == "japan":
+                    assert model_id.startswith("jp.anthropic.")
+
+                elif profile_key == "australia":
+                    assert model_id.startswith("au.anthropic.")
+
+                elif profile_key == "global":
+                    assert model_id.startswith("global.anthropic.")
+                    expected = base_model_id.replace("anthropic.", "global.anthropic.")
+                    assert model_id == expected
+
+                elif profile_key == "us-gov":
+                    assert model_id.startswith("us-gov.anthropic.")
+                    expected = base_model_id.replace("anthropic.", "us-gov.anthropic.")
+                    assert model_id == expected
+
+    def test_get_all_source_regions(self):
+        """Test that get_all_source_regions returns a non-empty sorted list of known regions."""
+        regions = get_all_source_regions()
+
+        assert isinstance(regions, list)
+        assert len(regions) > 0
+        # Verify sorted order
+        assert regions == sorted(regions)
+        # Verify well-known regions are present
+        assert "us-east-1" in regions
+        assert "eu-central-1" in regions
+        assert "ap-northeast-1" in regions
+        # All entries should look like valid AWS region codes
+        for r in regions:
+            assert "-" in r, f"Expected region code with dash: {r}"
+
+    def test_get_profiles_for_region_eu(self):
+        """Test that eu-central-1 returns EU-related profiles including global."""
+        profiles = get_profiles_for_region("eu-central-1")
+
+        assert isinstance(profiles, list)
+        assert len(profiles) > 0
+        # eu-central-1 must appear in eu (or europe) and global profiles
+        assert "eu" in profiles or "europe" in profiles
+        assert "global" in profiles
+        # Should NOT contain us or japan profiles
+        assert "us" not in profiles
+        assert "japan" not in profiles
+        # eu and europe should not both appear (deduplication)
+        assert not ("eu" in profiles and "europe" in profiles)
+
+    def test_get_profiles_for_region_us(self):
+        """Test that us-east-1 returns US-related profiles including global."""
+        profiles = get_profiles_for_region("us-east-1")
+
+        assert isinstance(profiles, list)
+        assert len(profiles) > 0
+        assert "us" in profiles
+        assert "global" in profiles
+        # Should NOT contain eu or japan profiles
+        assert "eu" not in profiles
+        assert "europe" not in profiles
+        assert "japan" not in profiles
 
     def test_us_only_models_limitation(self):
         """Test that US-only models (Opus 4.1, Opus 4) are correctly limited."""
@@ -297,6 +374,52 @@ class TestModelConfiguration:
             with pytest.raises(ValueError, match="not available in profile"):
                 get_model_id_for_profile(model_key, "apac")
 
+    def test_get_models_for_tier(self):
+        """Test that get_models_for_tier returns correct models per tier and profile."""
+        # haiku/eu should return haiku-4-5 with the eu model id
+        haiku_eu = get_models_for_tier("haiku", "eu")
+        assert len(haiku_eu) > 0
+        model_keys = [mk for mk, _, _ in haiku_eu]
+        assert "haiku-4-5" in model_keys
+        model_ids = [mid for _, _, mid in haiku_eu]
+        assert "eu.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
+
+        # haiku/europe resolves via eu↔europe alias — same result as haiku/eu
+        haiku_europe = get_models_for_tier("haiku", "europe")
+        assert len(haiku_europe) > 0
+        assert [mid for _, _, mid in haiku_europe] == [mid for _, _, mid in haiku_eu]
+
+        # haiku/apac — haiku-4-5 has no apac profile and no alias → empty
+        assert get_models_for_tier("haiku", "apac") == []
+
+        # haiku/us-gov — no haiku model for GovCloud → empty
+        assert get_models_for_tier("haiku", "us-gov") == []
+
+        # sonnet/eu should return at least one model, all with eu. prefix
+        sonnet_eu = get_models_for_tier("sonnet", "eu")
+        assert len(sonnet_eu) > 0
+        for _mk, _name, mid in sonnet_eu:
+            assert mid.startswith("eu.anthropic.")
+
+        # opus/us-gov returns empty (no GovCloud opus model)
+        assert get_models_for_tier("opus", "us-gov") == []
+
+        # unknown tier returns empty
+        assert get_models_for_tier("unknown", "us") == []
+
+    def test_get_all_destination_regions_for_profile_eu(self):
+        """Test that EU profile returns only EU destination regions."""
+        regions = get_all_destination_regions_for_profile("eu")
+        assert isinstance(regions, list)
+        assert len(regions) > 0
+        assert regions == sorted(regions)
+        # All should be eu-* regions
+        for r in regions:
+            assert r.startswith("eu-"), f"Non-EU region in EU profile: {r}"
+        # Should NOT contain US or APAC regions
+        assert "us-east-1" not in regions
+        assert "ap-northeast-1" not in regions
+
     def test_global_models_availability(self):
         """Test that models with global profiles are correctly configured."""
         # Sonnet 4 has global profile
@@ -311,7 +434,7 @@ class TestModelConfiguration:
         # Sonnet 4.5 has global profile
         sonnet_4_5_profiles = get_available_profiles_for_model("sonnet-4-5")
         assert "global" in sonnet_4_5_profiles, "sonnet-4-5 should have a global profile"
-        assert set(sonnet_4_5_profiles) == {"us", "eu", "japan", "global"}
+        assert set(sonnet_4_5_profiles) == {"us", "eu", "japan", "australia", "global"}
 
         # Test global profile works for sonnet-4-5
         global_model_id = get_model_id_for_profile("sonnet-4-5", "global")

@@ -29,7 +29,7 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 
 ### OIDC Provider Requirements
 
-- Existing OIDC identity provider (Okta, Azure AD, Auth0, etc.)
+- Existing OIDC identity provider (Okta, Azure AD, Auth0, Keycloak, etc.)
 - Ability to create OIDC applications
 - Redirect URI support for `http://localhost:8400/callback`
 
@@ -47,11 +47,12 @@ The guidance can be deployed in any AWS region that supports:
 
 Claude Code uses Amazon Bedrock's cross-region inference for optimal performance and availability. During setup, you can:
 
-- Select your preferred Claude model (Opus, Sonnet, Haiku)
-- Choose a cross-region profile (US, Europe, APAC) for optimal regional routing
+- Select your preferred Claude model (Opus, Sonnet, Haiku) or use auto-select
+- Choose a cross-region profile (US, Europe, Japan, Australia, APAC, Global) or use auto-select for automatic regional routing
 - Select a specific source region within your profile for model inference
+- Configure per-tier model defaults (Opus, Sonnet, Haiku) for different usage tiers
 
-This automatically routes requests across multiple AWS regions to ensure the best response times and highest availability. Modern Claude models (3.7+) require cross-region inference for access.
+The "Auto-select" option enables all regions and lets Claude Code pick the optimal model for your region. This automatically routes requests across multiple AWS regions to ensure the best response times and highest availability. Modern Claude models (3.7+) require cross-region inference for access.
 
 ---
 
@@ -76,11 +77,13 @@ Run the interactive setup wizard:
 poetry run ccwb init
 ```
 
-The wizard will guide you through:
+The wizard will guide you through a region-first flow:
 
+- AWS source region selection for infrastructure
+- Cross-region inference profile (US, Europe, Japan, Australia, APAC, Global, or auto-select)
+- Claude model selection (Opus, Sonnet, Haiku, or auto-select)
+- Per-tier model defaults (default Opus, Sonnet, and Haiku models)
 - OIDC provider configuration (domain, client ID)
-- AWS region selection for infrastructure
-- Amazon Bedrock cross-region inference configuration
 - Credential storage method (keyring or session files)
 - Optional monitoring setup with VPC configuration
 

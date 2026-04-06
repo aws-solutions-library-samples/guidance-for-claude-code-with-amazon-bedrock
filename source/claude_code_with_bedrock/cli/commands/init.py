@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import boto3
 import questionary
@@ -267,7 +267,9 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None) -> dict[str, Any]:
+    def _gather_configuration(
+        self, progress: WizardProgress, existing_config: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
         """Gather configuration from user."""
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
@@ -304,7 +306,8 @@ class InitCommand(Command):
                     "(e.g., company.okta.com, company.auth0.com, "
                     "login.microsoftonline.com/{tenant-id}/v2.0, "
                     "my-app.auth.us-east-1.amazoncognito.com, or "
-                    "my-app.auth-fips.us-gov-west-1.amazoncognito.com for GovCloud)"
+                    "my-app.auth-fips.us-gov-west-1.amazoncognito.com for GovCloud, "
+                    "or keycloak.example.com/realms/my-realm for Keycloak)"
                 ),
                 default=config.get("okta", {}).get("domain", ""),
             ).ask()
@@ -349,6 +352,8 @@ class InitCommand(Command):
                     elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
                         # Handle cognito-idp.{region}.amazonaws.com format (commercial and GovCloud)
                         provider_type = "cognito"
+                    elif '/realms/' in provider_domain:
+                        provider_type = "keycloak"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
             except Exception:
@@ -388,6 +393,34 @@ class InitCommand(Command):
                 if not cognito_user_pool_id:
                     return None
 
+            # For Keycloak, ask for TLS thumbprint
+            keycloak_thumbprint = None
+            if provider_type == "keycloak":
+                console.print("\n[yellow]Keycloak TLS Certificate Thumbprint[/yellow]")
+                console.print("The IAM OIDC Provider requires a TLS certificate thumbprint.")
+                console.print("Get it with:")
+                kc_host = provider_domain.split('/realms/')[0] if '/realms/' in provider_domain else provider_domain
+                openssl_cmd = (
+                    f"openssl s_client -connect {kc_host}:443 2>/dev/null"
+                    " | openssl x509 -fingerprint -sha1 -noout"
+                    " | sed 's/://g' | cut -d= -f2 | tr '[:upper:]' '[:lower:]'"
+                )
+                console.print(f"  [cyan]{openssl_cmd}[/cyan]")
+                console.print("[dim]Leave empty to use default (all-zeros). Some regions reject all-zeros.[/dim]")
+
+                keycloak_thumbprint = questionary.text(
+                    "Keycloak TLS thumbprint (40 hex chars, or Enter to skip):",
+                    default=config.get("keycloak_thumbprint", ""),
+                    validate=lambda x: (
+                        x == ""
+                        or (len(x) == 40 and all(c in "0123456789abcdefABCDEF" for c in x))
+                        or "Must be 40 hex characters or empty"
+                    ),
+                ).ask()
+
+                if keycloak_thumbprint:
+                    keycloak_thumbprint = keycloak_thumbprint.lower()
+
             client_id = questionary.text(
                 "Enter your OIDC Client ID:",
                 validate=lambda x: bool(x and len(x) >= 10) or "Client ID must be at least 10 characters",
@@ -403,13 +436,15 @@ class InitCommand(Command):
             console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
             console.print("  • [cyan]Session Files[/cyan]: Temporary files (deleted on logout)\n")
 
+            _cs_choices = [
+                questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
+                questionary.Choice("Session Files (Temporary storage)", value="session"),
+            ]
+            _cs_saved = config.get("credential_storage", "session")
             credential_storage = questionary.select(
                 "Select credential storage method:",
-                choices=[
-                    questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
-                    questionary.Choice("Session Files (Temporary storage)", value="session"),
-                ],
-                default=config.get("credential_storage", "session"),
+                choices=_cs_choices,
+                default=next((c for c in _cs_choices if c.value == _cs_saved), _cs_choices[1]),
             ).ask()
 
             if not credential_storage:
@@ -424,6 +459,8 @@ class InitCommand(Command):
             config["provider_type"] = provider_type
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
+            if keycloak_thumbprint:
+                config["keycloak_thumbprint"] = keycloak_thumbprint
 
             # Ask about federation type
             console.print("\n[cyan]Federation Type Selection[/cyan]")
@@ -433,13 +470,14 @@ class InitCommand(Command):
             # Use existing federation type as default if available
             existing_federation_type = config.get("federation_type", "direct")
 
+            _fed_choices = [
+                questionary.Choice("Direct STS", value="direct"),
+                questionary.Choice("Cognito Identity Pool", value="cognito"),
+            ]
             federation_type = questionary.select(
                 "Choose federation type:",
-                choices=[
-                    questionary.Choice("Direct STS", value="direct"),
-                    questionary.Choice("Cognito Identity Pool", value="cognito"),
-                ],
-                default=existing_federation_type,
+                choices=_fed_choices,
+                default=next((c for c in _fed_choices if c.value == existing_federation_type), _fed_choices[0]),
             ).ask()
 
             if not federation_type:
@@ -474,6 +512,7 @@ class InitCommand(Command):
                 "ap-northeast-2",
                 "ap-southeast-1",
                 "ap-southeast-2",
+                "ap-southeast-7",
                 "ap-south-1",
                 "ca-central-1",
                 "sa-east-1",
@@ -560,7 +599,7 @@ class InitCommand(Command):
                 # Check if HTTPS is already configured
                 existing_custom_domain = config["monitoring"].get("custom_domain")
                 existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                already_configured = bool(existing_custom_domain and existing_zone_id)
+                already_configured = bool(existing_custom_domain)
 
                 if already_configured:
                     console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
@@ -580,6 +619,7 @@ class InitCommand(Command):
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
                         ]
+                        zone_choices.append("Skip (use external DNS provider)")
 
                         # Pre-select existing zone if available
                         default_zone = None
@@ -589,21 +629,38 @@ class InitCommand(Command):
                                     default_zone = choice
                                     break
 
+                        # If HTTPS was previously configured without Route53 (Skip), restore that choice
+                        if default_zone is None and existing_custom_domain and not existing_zone_id:
+                            default_zone = zone_choices[-1]  # "Skip (use external DNS provider)" is always last
+
                         selected_zone = questionary.select(
-                            "Select Route53 hosted zone for the domain:",
+                            "Select DNS management for the domain:",
                             choices=zone_choices,
                             default=default_zone if default_zone else zone_choices[0],
                         ).ask()
 
-                        # Extract zone ID
-                        zone_id = selected_zone.split("(")[-1].rstrip(")")
-
-                        config["monitoring"]["custom_domain"] = custom_domain
-                        config["monitoring"]["hosted_zone_id"] = zone_id
-                        console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                        if selected_zone == "Skip (use external DNS provider)":
+                            config["monitoring"]["custom_domain"] = custom_domain
+                            config["monitoring"]["hosted_zone_id"] = None
+                            console.print(
+                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
+                            )
+                            console.print(
+                                "[yellow]You will need to create DNS records manually during deployment.[/yellow]"
+                            )
+                        else:
+                            # Extract zone ID
+                            zone_id = selected_zone.split("(")[-1].rstrip(")")
+                            config["monitoring"]["custom_domain"] = custom_domain
+                            config["monitoring"]["hosted_zone_id"] = zone_id
+                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
-                        console.print("[yellow]No Route53 hosted zones found. HTTPS requires a hosted zone.[/yellow]")
-                        console.print("[dim]You can add these parameters manually during deployment.[/dim]")
+                        config["monitoring"]["custom_domain"] = custom_domain
+                        config["monitoring"]["hosted_zone_id"] = None
+                        console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                        console.print(
+                            "[yellow]No Route53 zones found. You will need to create DNS records manually.[/yellow]"
+                        )
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None
@@ -709,22 +766,28 @@ class InitCommand(Command):
                     console.print("  • [cyan]alert[/cyan]: Send notifications but allow continued use")
                     console.print("  • [yellow]block[/yellow]: Deny credential issuance when exceeded")
 
+                    _daily_enf_choices = [
+                        questionary.Choice("alert (warn only)", value="alert"),
+                        questionary.Choice("block (deny access)", value="block"),
+                    ]
+                    _daily_saved = config.get("quota", {}).get("daily_enforcement_mode", "alert")
                     daily_enforcement = questionary.select(
                         "Daily limit enforcement:",
-                        choices=[
-                            questionary.Choice("alert (warn only)", value="alert"),
-                            questionary.Choice("block (deny access)", value="block"),
-                        ],
-                        default=config.get("quota", {}).get("daily_enforcement_mode", "alert"),
+                        choices=_daily_enf_choices,
+                        default=next((c for c in _daily_enf_choices if c.value == _daily_saved), _daily_enf_choices[0]),
                     ).ask()
 
+                    _monthly_enf_choices = [
+                        questionary.Choice("alert (warn only)", value="alert"),
+                        questionary.Choice("block (deny access)", value="block"),
+                    ]
+                    _monthly_saved = config.get("quota", {}).get("monthly_enforcement_mode", "block")
                     monthly_enforcement = questionary.select(
                         "Monthly limit enforcement:",
-                        choices=[
-                            questionary.Choice("alert (warn only)", value="alert"),
-                            questionary.Choice("block (deny access)", value="block"),
-                        ],
-                        default=config.get("quota", {}).get("monthly_enforcement_mode", "block"),
+                        choices=_monthly_enf_choices,
+                        default=next(
+                            (c for c in _monthly_enf_choices if c.value == _monthly_saved), _monthly_enf_choices[1]
+                        ),
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
@@ -777,18 +840,20 @@ class InitCommand(Command):
         distribution_choices = [
             questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
             questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
-            questionary.Choice("Disabled", value=None),
+            questionary.Choice("Disabled", value="__disabled__"),
         ]
 
         # Get saved value or default to None
         saved_dist_type = config.get("distribution", {}).get("type")
-        default_choice = saved_dist_type if saved_dist_type else None
+        default_choice = next((c for c in distribution_choices if c.value == saved_dist_type), None)
 
         distribution_type = questionary.select(
             "Distribution method:",
             choices=distribution_choices,
             default=default_choice,
         ).ask()
+        if distribution_type == "__disabled__":
+            distribution_type = None
 
         # Preserve existing distribution settings, only update enabled/type
         if "distribution" not in config:
@@ -807,12 +872,14 @@ class InitCommand(Command):
                 questionary.Choice("Azure AD / Entra ID", value="azure"),
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                questionary.Choice("Keycloak", value="keycloak"),
             ]
 
+            _idp_saved = config.get("distribution", {}).get("idp_provider", "okta")
             idp_provider = questionary.select(
                 "Identity provider for web authentication:",
                 choices=idp_choices,
-                default=config.get("distribution", {}).get("idp_provider", "okta"),
+                default=next((c for c in idp_choices if c.value == _idp_saved), idp_choices[0]),
             ).ask()
 
             # Auto-detection for Cognito User Pool
@@ -903,43 +970,58 @@ class InitCommand(Command):
                 ).ask()
 
                 # Web app client secret
-                idp_client_secret = questionary.password(
-                    "Web application client secret:",
-                ).ask()
+                existing_secret_arn = config.get("distribution", {}).get("idp_client_secret_arn")
+                _secret_prompt = (
+                    "Web application client secret (leave blank to keep existing):"
+                    if existing_secret_arn
+                    else "Web application client secret:"
+                )
+                idp_client_secret = questionary.password(_secret_prompt).ask()
+
+                # First-time setup: a secret is required — re-prompt until provided
+                if not idp_client_secret and not existing_secret_arn:
+                    while not idp_client_secret:
+                        console.print("[red]Client secret is required for initial setup.[/red]")
+                        idp_client_secret = questionary.password("Web application client secret:").ask()
 
             # Store secret in AWS Secrets Manager (only if not auto-configured)
             import boto3
 
             if not cognito_auto_configured:
-                try:
-                    secrets_client = boto3.client("secretsmanager", region_name=region)
-                    account_id = boto3.client("sts").get_caller_identity()["Account"]
-
-                    secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
-
-                    # Try to create or update secret
+                if idp_client_secret:
                     try:
-                        secret_response = secrets_client.create_secret(
-                            Name=secret_name,
-                            SecretString=idp_client_secret,
-                            Description=f"IdP client secret for "
-                            f"{config['aws']['identity_pool_name']} distribution landing page",
-                        )
-                        secret_arn = secret_response["ARN"]
-                    except secrets_client.exceptions.ResourceExistsException:
-                        # Secret already exists, update it
-                        secret_response = secrets_client.update_secret(
-                            SecretId=secret_name,
-                            SecretString=idp_client_secret,
-                        )
+                        secrets_client = boto3.client("secretsmanager", region_name=region)
+                        account_id = boto3.client("sts").get_caller_identity()["Account"]
+
+                        secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
+
+                        # Try to create or update secret
+                        try:
+                            secret_response = secrets_client.create_secret(
+                                Name=secret_name,
+                                SecretString=idp_client_secret,
+                                Description=f"IdP client secret for "
+                                f"{config['aws']['identity_pool_name']} distribution landing page",
+                            )
+                            secret_arn = secret_response["ARN"]
+                        except secrets_client.exceptions.ResourceExistsException:
+                            # Secret already exists, update it
+                            secret_response = secrets_client.update_secret(
+                                SecretId=secret_name,
+                                SecretString=idp_client_secret,
+                            )
+                            secret_arn = secret_response["ARN"]
+
+                        console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
+
+                    except Exception as e:
+                        console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
+                        console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
                         secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
-
-                    console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
-
-                except Exception as e:
-                    console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
-                    console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
-                    secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                else:
+                    # Blank input — keep the existing secret unchanged
+                    secret_arn = existing_secret_arn
+                    console.print("[green]✓[/green] Keeping existing IdP client secret.")
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -978,7 +1060,7 @@ class InitCommand(Command):
                         )
                         for zone in hosted_zones
                     ]
-                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value="__skip__"))
 
                     # Find the default choice based on existing zone
                     default_choice = None
@@ -988,11 +1070,18 @@ class InitCommand(Command):
                                 default_choice = choice
                                 break
 
+                    # If user previously chose Skip (zone_id saved as None but custom_domain is set), restore Skip
+                    dist_has_domain = config.get("distribution", {}).get("custom_domain")
+                    if default_choice is None and dist_has_domain and not existing_zone_id:
+                        default_choice = zone_choices[-1]  # "Skip (no Route53 managed domain)" is always last
+
                     hosted_zone_id = questionary.select(
                         "Select Route53 hosted zone:",
                         choices=zone_choices,
                         default=default_choice if default_choice else zone_choices[0],
                     ).ask()
+                    if hosted_zone_id == "__skip__":
+                        hosted_zone_id = None
                 else:
                     console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
                     console.print("You can still use custom domain if it's managed externally")
@@ -1027,164 +1116,199 @@ class InitCommand(Command):
             # Import centralized model configuration
             from claude_code_with_bedrock.models import (
                 CLAUDE_MODELS,
-                get_available_profiles_for_model,
+                get_all_destination_regions_for_profile,
+                get_all_source_regions,
                 get_destination_regions_for_model_profile,
                 get_model_id_for_profile,
-                get_profile_description,
-                get_source_regions_for_model_profile,
+                get_models_for_tier,
+                get_profiles_for_region,
+                resolve_profile_key,
             )
 
-            # Check for saved model
-            saved_model = config.get("aws", {}).get("selected_model")
+            # Restore saved values — model fields stored as model IDs, need reverse-lookup for keys
+            saved_source_region = config.get("aws", {}).get("selected_source_region")
+            saved_profile = config.get("aws", {}).get("cross_region_profile")  # None = auto-select
+
+            _saved_model_id = config.get("aws", {}).get("selected_model")
             saved_model_key = None
-            if saved_model:
-                # Find the key for the saved model by checking all model IDs
-                for key, model_info in CLAUDE_MODELS.items():
-                    for _profile_key, profile_config in model_info["profiles"].items():
-                        if profile_config["model_id"] == saved_model:
-                            saved_model_key = key
+            if _saved_model_id:
+                for _mk, _mi in CLAUDE_MODELS.items():
+                    for _pc in cast(dict[str, Any], _mi)["profiles"].values():
+                        if cast(dict[str, Any], _pc)["model_id"] == _saved_model_id:
+                            saved_model_key = _mk
                             break
                     if saved_model_key:
                         break
 
-            # Step 1: Select Claude model
-            model_choices = []
-            default_model_key = saved_model_key or "sonnet-4-5"
-            for model_key, model_info in CLAUDE_MODELS.items():
-                # Build region list from available profiles
-                available_profiles = get_available_profiles_for_model(model_key)
-                regions = []
-                if "global" in available_profiles:
-                    regions.append("Global")
-                if "us" in available_profiles:
-                    regions.append("US")
-                if "europe" in available_profiles:
-                    regions.append("Europe")
-                if "apac" in available_profiles:
-                    regions.append("APAC")
-                regions_text = ", ".join(regions)
+            def _key_for_model_id(model_id: str) -> str | None:
+                for mk, mi in CLAUDE_MODELS.items():
+                    for pc in cast(dict[str, Any], mi)["profiles"].values():
+                        if cast(dict[str, Any], pc).get("model_id") == model_id:
+                            return mk
+                return None
 
-                choice_text = f"{model_info['name']} ({regions_text})"
-                model_choices.append(questionary.Choice(title=choice_text, value=model_key))
+            saved_tier_keys: dict[str, str | None] = {
+                "opus": _key_for_model_id(config.get("aws", {}).get("default_opus_model") or ""),
+                "sonnet": _key_for_model_id(config.get("aws", {}).get("default_sonnet_model") or ""),
+                "haiku": _key_for_model_id(config.get("aws", {}).get("default_haiku_model") or ""),
+            }
 
+            # Q1: Source region (always required)
+            all_regions = get_all_source_regions()
+            region_choices = [questionary.Choice(r, value=r) for r in all_regions]
+            _default_region = next(
+                (c for c in region_choices if c.value == saved_source_region), region_choices[0]
+            )
+            selected_source_region = questionary.select(
+                "Select source region for AWS configuration:",
+                choices=region_choices,
+                default=_default_region,
+                instruction="(Use arrow keys to select, Enter to confirm)",
+            ).ask()
+
+            if selected_source_region is None:  # User cancelled
+                return None
+
+            config["aws"]["selected_source_region"] = selected_source_region
+            console.print(f"[green]✓[/green] Source region: {selected_source_region}")
+
+            # Q2: Cross-region profile (filtered by region; Auto-select exits early)
+            available_profiles = get_profiles_for_region(selected_source_region)
+
+            _AUTO_PROFILE = "__auto__"
+            _PROFILE_LABELS = {
+                "us": "US Cross-Region — US regions",
+                "eu": "EU Cross-Region — European regions",
+                "europe": "EU Cross-Region — European regions",
+                "japan": "Japan Cross-Region — Japan regions",
+                "australia": "Australia Cross-Region — Australia regions",
+                "apac": "APAC Cross-Region — Asia-Pacific regions",
+                "global": "Global Cross-Region — All regions worldwide",
+                "us-gov": "US GovCloud Cross-Region — US GovCloud regions",
+            }
+            profile_choices = [
+                questionary.Choice(
+                    "Auto-select (recommended) — Claude Code picks model for your region",
+                    value=_AUTO_PROFILE,
+                )
+            ]
+            for pk in available_profiles:
+                label = _PROFILE_LABELS.get(pk, f"{pk.upper()} Cross-Region")
+                profile_choices.append(questionary.Choice(label, value=pk))
+
+            _default_profile = next(
+                (c for c in profile_choices if c.value == (saved_profile or _AUTO_PROFILE)),
+                profile_choices[0],
+            )
+            selected_profile = questionary.select(
+                "Select cross-region inference profile:",
+                choices=profile_choices,
+                default=_default_profile,
+                instruction="(Use arrow keys to select, Enter to confirm)",
+            ).ask()
+
+            if selected_profile is None:  # User cancelled
+                return None
+
+            if selected_profile == _AUTO_PROFILE:
+                config["aws"]["cross_region_profile"] = None
+                config["aws"]["selected_model"] = None
+                config["aws"]["allowed_bedrock_regions"] = ["*"]
+                config["aws"]["default_opus_model"] = None
+                config["aws"]["default_sonnet_model"] = None
+                config["aws"]["default_haiku_model"] = None
+                console.print("[green]✓[/green] Auto-select: Claude Code will select models for your region")
+                progress.save_step("bedrock_complete", config)
+                return config
+
+            config["aws"]["cross_region_profile"] = selected_profile
+            console.print(f"[green]✓[/green] Profile: {selected_profile}")
+
+            # Q3: Claude model (filtered by profile; Auto-select exits Q4-Q6)
+            _AUTO_MODEL = "__auto__"
+            model_choices: list[questionary.Choice] = [
+                questionary.Choice("Auto-select — don't set ANTHROPIC_MODEL", value=_AUTO_MODEL)
+            ]
+            for model_key, model_config in CLAUDE_MODELS.items():
+                if resolve_profile_key(model_key, selected_profile) is None:
+                    continue
+                model_choices.append(questionary.Choice(cast(str, model_config["name"]), value=model_key))
+
+            _default_model = next(
+                (c for c in model_choices if c.value == (saved_model_key or _AUTO_MODEL)),
+                model_choices[0],
+            )
             selected_model_key = questionary.select(
                 "Select Claude model:",
                 choices=model_choices,
-                default=default_model_key,
+                default=_default_model,
                 instruction="(Use arrow keys to select, Enter to confirm)",
             ).ask()
 
             if selected_model_key is None:  # User cancelled
                 return None
 
-            selected_model = CLAUDE_MODELS[selected_model_key]
-            # Don't set the model ID yet - we need to adjust it based on the region profile
-
-            # Step 2: Select cross-region profile based on model
-            console.print(f"\n[green]Selected:[/green] {selected_model['name']}")
-
-            available_profiles = get_available_profiles_for_model(selected_model_key)
-
-            # Check for saved profile
-            saved_profile = config.get("aws", {}).get("cross_region_profile")
-            if saved_profile not in available_profiles:
-                saved_profile = available_profiles[0]  # Default to first available
-
-            # Always show the selection, even if there's only one option
-            profile_choices = []
-            for profile_key in available_profiles:
-                # Get model-specific description
-                description = get_profile_description(selected_model_key, profile_key)
-                profile_name = profile_key.upper() if profile_key != "us" else "US"
-                choice_text = f"{profile_name} Cross-Region - {description}"
-                profile_choices.append(questionary.Choice(title=choice_text, value=profile_key))
-
-            # Adjust the prompt based on number of options
-            if len(available_profiles) == 1:
-                prompt_text = "Cross-region inference profile for this model:"
-                instruction_text = "(Press Enter to continue)"
+            if selected_model_key == _AUTO_MODEL:
+                config["aws"]["selected_model"] = None
+                # Profile is known; use its destination regions instead of wildcard
+                profile_dest_regions = get_all_destination_regions_for_profile(selected_profile)
+                config["aws"]["allowed_bedrock_regions"] = profile_dest_regions if profile_dest_regions else ["*"]
+                console.print("[green]✓[/green] Auto-select: Claude Code will choose the model automatically")
             else:
-                prompt_text = "Select cross-region inference profile:"
-                instruction_text = "(Use arrow keys to select, Enter to confirm)"
+                model_id = get_model_id_for_profile(selected_model_key, selected_profile)
+                config["aws"]["selected_model"] = model_id
+                console.print(f"[green]✓[/green] Model: {CLAUDE_MODELS[selected_model_key]['name']}")
 
-            selected_profile = questionary.select(
-                prompt_text, choices=profile_choices, default=saved_profile, instruction=instruction_text
-            ).ask()
+                destination_regions = get_destination_regions_for_model_profile(selected_model_key, selected_profile)
+                if not destination_regions:
+                    console.print(
+                        f"[red]Error:[/red] No destination regions configured for {selected_model_key} "
+                        f"with {selected_profile} profile"
+                    )
+                    raise ValueError("No destination regions configured for model/profile combination")
+                config["aws"]["allowed_bedrock_regions"] = destination_regions
 
-            if selected_profile is None:  # User cancelled
-                return None
+            # Q4-Q6: Default tier models (per-tier Auto-select = don't set that env var)
+            _AUTO_TIER = "__auto__"
+            tier_config_keys = {
+                "opus": "default_opus_model",
+                "sonnet": "default_sonnet_model",
+                "haiku": "default_haiku_model",
+            }
+            for tier in ["opus", "sonnet", "haiku"]:
+                tier_models = get_models_for_tier(tier, selected_profile)
+                if not tier_models:
+                    config["aws"][tier_config_keys[tier]] = None
+                    continue
 
-            # Get the correct model ID for the selected profile
-            model_id = get_model_id_for_profile(selected_model_key, selected_profile)
-            config["aws"]["selected_model"] = model_id
-            config["aws"]["cross_region_profile"] = selected_profile
+                tc: list[questionary.Choice] = [
+                    questionary.Choice(
+                        f"Auto-select — don't set ANTHROPIC_DEFAULT_{tier.upper()}_MODEL",
+                        value=_AUTO_TIER,
+                    )
+                ]
+                for mk, display_name, _mid in reversed(tier_models):
+                    tc.append(questionary.Choice(display_name, value=mk))
 
-            # Get destination regions for the model/profile combination
-            destination_regions = get_destination_regions_for_model_profile(selected_model_key, selected_profile)
-
-            # Use the destination regions from the model profile
-            if not destination_regions:
-                console.print(
-                    f"[red]Error:[/red] No destination regions configured for {selected_model_key} "
-                    f"with {selected_profile} profile"
-                )
-                raise ValueError("No destination regions configured for model/profile combination")
-
-            config["aws"]["allowed_bedrock_regions"] = destination_regions
-
-            # Step 3: Select source region for the selected model/profile combination
-            profile_name = selected_profile.upper() if selected_profile != "us" else "US"
-            console.print(f"\n[green]Selected:[/green] {profile_name} Cross-Region")
-
-            # Get available source regions for this model/profile combination
-            available_source_regions = get_source_regions_for_model_profile(selected_model_key, selected_profile)
-
-            # Check for saved source region
-            saved_source_region = config.get("aws", {}).get("selected_source_region")
-            if saved_source_region not in available_source_regions:
-                saved_source_region = available_source_regions[0] if available_source_regions else None
-
-            if available_source_regions:
-                # Present source region selection
-                source_region_choices = []
-                for region in available_source_regions:
-                    choice_text = f"{region}"
-                    source_region_choices.append(questionary.Choice(title=choice_text, value=region))
-
-                # Adjust prompt based on number of options
-                if len(available_source_regions) == 1:
-                    prompt_text = "Source region for this model:"
-                    instruction_text = "(Press Enter to continue)"
-                else:
-                    prompt_text = "Select source region for AWS configuration:"
-                    instruction_text = "(Use arrow keys to select, Enter to confirm)"
-
-                selected_source_region = questionary.select(
-                    prompt_text,
-                    choices=source_region_choices,
-                    default=saved_source_region,
-                    instruction=instruction_text,
+                _saved_key = saved_tier_keys[tier]
+                _default_t = next((c for c in tc if c.value == (_saved_key or _AUTO_TIER)), tc[0])
+                chosen = questionary.select(
+                    f"Select default {tier.capitalize()} model:",
+                    choices=tc,
+                    default=_default_t,
+                    instruction="(Use arrow keys to select, Enter to confirm)",
                 ).ask()
 
-                if selected_source_region is None:  # User cancelled
+                if chosen is None:  # User cancelled
                     return None
 
-                config["aws"]["selected_source_region"] = selected_source_region
-                console.print(f"[green]✓[/green] Source region: {selected_source_region}")
-            else:
-                # No source regions available - use default fallback
-                console.print(
-                    "[yellow]No source regions configured for this model. Using default region logic.[/yellow]"
-                )
-                config["aws"]["selected_source_region"] = None
-
-            # Get model-specific description for confirmation
-            profile_description = get_profile_description(selected_model_key, selected_profile)
-
-            console.print(
-                f"\n[green]✓[/green] Configured {selected_model['name']} with {profile_name} "
-                f"Cross-Region ({profile_description})"
-            )
+                if chosen == _AUTO_TIER:
+                    config["aws"][tier_config_keys[tier]] = None
+                    console.print(f"[green]✓[/green] Default {tier}: Auto-select")
+                else:
+                    tier_model_id = get_model_id_for_profile(chosen, selected_profile)
+                    config["aws"][tier_config_keys[tier]] = tier_model_id
+                    console.print(f"[green]✓[/green] Default {tier}: {CLAUDE_MODELS[chosen]['name']}")
 
             # Save progress
             progress.save_step("bedrock_complete", config)
@@ -1464,8 +1588,12 @@ class InitCommand(Command):
             cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
             selected_model=config_data["aws"].get("selected_model"),
             selected_source_region=config_data["aws"].get("selected_source_region"),
+            default_opus_model=config_data["aws"].get("default_opus_model"),
+            default_sonnet_model=config_data["aws"].get("default_sonnet_model"),
+            default_haiku_model=config_data["aws"].get("default_haiku_model"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+            keycloak_thumbprint=config_data.get("keycloak_thumbprint"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
@@ -1734,6 +1862,9 @@ class InitCommand(Command):
                     "identity_pool_name": profile.identity_pool_name,
                     "stacks": profile.stack_names,
                     "allowed_bedrock_regions": profile.allowed_bedrock_regions,
+                    "default_opus_model": getattr(profile, "default_opus_model", None),
+                    "default_sonnet_model": getattr(profile, "default_sonnet_model", None),
+                    "default_haiku_model": getattr(profile, "default_haiku_model", None),
                 },
                 "monitoring": {
                     "enabled": profile.monitoring_enabled,
@@ -1763,13 +1894,16 @@ class InitCommand(Command):
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:
                 existing_config["cognito_user_pool_id"] = profile.cognito_user_pool_id
 
+            # Add Keycloak thumbprint if present
+            if hasattr(profile, "keycloak_thumbprint") and profile.keycloak_thumbprint:
+                existing_config["keycloak_thumbprint"] = profile.keycloak_thumbprint
+
             # Add selected model if present
             if hasattr(profile, "selected_model") and profile.selected_model:
                 existing_config["aws"]["selected_model"] = profile.selected_model
 
-            # Add cross-region profile if present
-            if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
-                existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
+            # Add cross-region profile (None is valid and means auto-select)
+            existing_config["aws"]["cross_region_profile"] = getattr(profile, "cross_region_profile", None)
 
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
@@ -1790,11 +1924,18 @@ class InitCommand(Command):
 
             # Add quota monitoring configuration if present
             if hasattr(profile, "quota_monitoring_enabled"):
+                monthly_tokens = getattr(profile, "monthly_token_limit", 225000000)
                 existing_config["quota"] = {
                     "enabled": profile.quota_monitoring_enabled,
-                    "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
-                    "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
-                    "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                    "monthly_limit": monthly_tokens,
+                    "monthly_limit_millions": monthly_tokens // 1000000,
+                    "warning_threshold_80": getattr(profile, "warning_threshold_80", 0),
+                    "warning_threshold_90": getattr(profile, "warning_threshold_90", 0),
+                    "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
+                    "daily_limit": getattr(profile, "daily_token_limit", None),
+                    "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
+                    "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "check_interval": getattr(profile, "quota_check_interval", 30),
                 }
 
             # Add analytics configuration if present

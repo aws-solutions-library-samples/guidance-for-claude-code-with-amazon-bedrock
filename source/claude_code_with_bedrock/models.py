@@ -15,7 +15,16 @@ from enum import Enum
 from typing import Any
 
 # Default regions for AWS profile based on cross-region profile
-DEFAULT_REGIONS = {"us": "us-east-1", "europe": "eu-west-3", "apac": "ap-northeast-1", "us-gov": "us-gov-west-1"}
+DEFAULT_REGIONS = {
+    "us": "us-east-1",
+    "europe": "eu-west-3",
+    "eu": "eu-west-3",
+    "apac": "ap-northeast-1",
+    "japan": "ap-northeast-1",
+    "australia": "ap-southeast-2",
+    "global": "us-east-1",
+    "us-gov": "us-gov-west-1",
+}
 
 # Claude model configurations
 # Each model defines its availability across different cross-region profiles
@@ -109,11 +118,15 @@ CLAUDE_MODELS = {
                     "ap-southeast-2",
                     "ap-southeast-3",
                     "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
                     # Middle East & Africa
                     "me-south-1",
                     "me-central-1",
                     "af-south-1",
                     "il-central-1",
+                    # Latin America
+                    "mx-central-1",
                     # South America
                     "sa-east-1",
                 ],
@@ -145,11 +158,15 @@ CLAUDE_MODELS = {
                     "ap-southeast-2",
                     "ap-southeast-3",
                     "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
                     # Middle East & Africa
                     "me-south-1",
                     "me-central-1",
                     "af-south-1",
                     "il-central-1",
+                    # Latin America
+                    "mx-central-1",
                     # South America
                     "sa-east-1",
                 ],
@@ -352,6 +369,18 @@ CLAUDE_MODELS = {
                     "ap-northeast-3",
                 ],
             },
+            "australia": {
+                "model_id": "au.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "description": "Australia CRIS - Asia Pacific (Sydney, Melbourne)",
+                "source_regions": [
+                    "ap-southeast-2",  # Sydney
+                    "ap-southeast-4",  # Melbourne
+                ],
+                "destination_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+            },
             "global": {
                 "model_id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "description": "Global CRIS - All regions worldwide",
@@ -428,6 +457,396 @@ CLAUDE_MODELS = {
             },
         },
     },
+    "sonnet-4-6": {
+        "name": "Claude Sonnet 4.6",
+        "base_model_id": "anthropic.claude-sonnet-4-6",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-sonnet-4-6",
+                "description": "US regions",
+                "source_regions": [
+                    "ca-central-1",
+                    "ca-west-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "ca-central-1",
+                    "ca-west-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-sonnet-4-6",
+                "description": "European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+            },
+            "australia": {
+                "model_id": "au.anthropic.claude-sonnet-4-6",
+                "description": "Australia (Sydney, Melbourne)",
+                "source_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+                "destination_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+            },
+            "japan": {
+                "model_id": "jp.anthropic.claude-sonnet-4-6",
+                "description": "Japan (Tokyo, Osaka)",
+                "source_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+                "destination_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-sonnet-4-6",
+                "description": "Global routing across all AWS regions",
+                "source_regions": [
+                    "af-south-1",
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    "ca-central-1",
+                    "ca-west-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "mx-central-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "af-south-1",
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    "ca-central-1",
+                    "ca-west-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "mx-central-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+        },
+    },
+    "opus-4-5": {
+        "name": "Claude Opus 4.5",
+        "base_model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+                "description": "US regions",
+                "source_regions": [
+                    "ca-central-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "ca-central-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+                "description": "European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+                "description": "Global routing across all AWS regions",
+                "source_regions": [
+                    "af-south-1",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ca-central-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "af-south-1",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ca-central-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+        },
+    },
+    "haiku-4-5": {
+        "name": "Claude Haiku 4.5",
+        "base_model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "US regions",
+                "source_regions": [
+                    "ca-central-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "ca-central-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                ],
+            },
+            "australia": {
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Australia (Sydney, Melbourne)",
+                "source_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+                "destination_regions": [
+                    "ap-southeast-2",
+                    "ap-southeast-4",
+                ],
+            },
+            "japan": {
+                "model_id": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Japan (Tokyo, Osaka)",
+                "source_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+                "destination_regions": [
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "description": "Global routing across all AWS regions",
+                "source_regions": [
+                    "af-south-1",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ca-central-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+                "destination_regions": [
+                    "af-south-1",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ca-central-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                ],
+            },
+        },
+    },
     "sonnet-3-7": {
         "name": "Claude 3.7 Sonnet",
         "base_model_id": "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -501,6 +920,47 @@ CLAUDE_MODELS = {
 }
 
 
+# Recognized model tiers, derived from CLAUDE_MODELS key prefixes.
+_TIER_PREFIXES = ("opus", "sonnet", "haiku")
+
+
+def _get_tier(model_key: str) -> str | None:
+    """Derive tier from a CLAUDE_MODELS key (e.g., 'opus-4-6' -> 'opus').
+
+    Returns None for GovCloud-specific entries (handled separately).
+    """
+    if model_key.endswith("-govcloud"):
+        return None
+    for prefix in _TIER_PREFIXES:
+        if model_key.startswith(prefix):
+            return prefix
+    return None
+
+
+# Alias mapping for cross-region profile keys.
+# Existing models use "europe"/"apac", newer models use "eu"/"japan"/"australia".
+_PROFILE_KEY_ALIASES: dict[str, str] = {
+    "europe": "eu",
+    "eu": "europe",
+}
+
+
+def resolve_profile_key(model_key: str, profile_key: str) -> str | None:
+    """Resolve a cross-region profile key for a model, trying aliases if needed.
+
+    Returns the actual key present in the model's profiles dict, or None.
+    """
+    if model_key not in CLAUDE_MODELS:
+        return None
+    profiles = CLAUDE_MODELS[model_key].get("profiles", {})
+    if profile_key in profiles:
+        return profile_key
+    alias = _PROFILE_KEY_ALIASES.get(profile_key)
+    if alias and alias in profiles:
+        return alias
+    return None
+
+
 def get_available_profiles_for_model(model_key: str) -> list[str]:
     """Get list of available cross-region profiles for a given model."""
     if model_key not in CLAUDE_MODELS:
@@ -514,10 +974,11 @@ def get_model_id_for_profile(model_key: str, profile_key: str) -> str:
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["model_id"]
+    return model_config["profiles"][resolved_key]["model_id"]
 
 
 def get_default_region_for_profile(profile_key: str) -> str:
@@ -534,10 +995,11 @@ def get_source_regions_for_model_profile(model_key: str, profile_key: str) -> li
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["source_regions"]
+    return model_config["profiles"][resolved_key]["source_regions"]
 
 
 def get_destination_regions_for_model_profile(model_key: str, profile_key: str) -> list[str]:
@@ -546,10 +1008,11 @@ def get_destination_regions_for_model_profile(model_key: str, profile_key: str) 
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["destination_regions"]
+    return model_config["profiles"][resolved_key]["destination_regions"]
 
 
 def get_all_model_display_names() -> dict[str, str]:
@@ -570,16 +1033,77 @@ def get_all_model_display_names() -> dict[str, str]:
     return display_names
 
 
+def get_models_for_tier(tier: str, profile_key: str) -> list[tuple[str, str, str]]:
+    """Return models available for a tier and cross-region profile.
+
+    Args:
+        tier: Model tier ("opus", "sonnet", or "haiku").
+        profile_key: Cross-region profile key (e.g., "global", "us", "eu").
+
+    Returns:
+        List of (model_key, display_name, model_id) tuples, ordered by position
+        in CLAUDE_MODELS (latest entries last in the dict appear last).
+    """
+    results = []
+    for model_key, model_info in CLAUDE_MODELS.items():
+        if _get_tier(model_key) != tier:
+            continue
+        resolved = resolve_profile_key(model_key, profile_key)
+        if resolved is None:
+            continue
+        model_id = model_info["profiles"][resolved]["model_id"]
+        results.append((model_key, model_info["name"], model_id))
+    return results
+
+
 def get_profile_description(model_key: str, profile_key: str) -> str:
     """Get the description for a specific model profile combination."""
     if model_key not in CLAUDE_MODELS:
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["description"]
+    return model_config["profiles"][resolved_key]["description"]
+
+
+def get_all_source_regions() -> list[str]:
+    """Return all unique source regions across all models and profiles."""
+    regions: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile_config in model_config["profiles"].values():
+            regions.update(profile_config.get("source_regions", []))
+    return sorted(regions)
+
+
+def get_profiles_for_region(region: str) -> list[str]:
+    """Return profile keys that include the given region as a source region."""
+    found: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile_key, profile_config in model_config["profiles"].items():
+            if region in profile_config.get("source_regions", []):
+                found.add(profile_key)
+    # Deduplicate eu/europe aliases: prefer eu over europe
+    if "eu" in found and "europe" in found:
+        found.discard("europe")
+    # Return in stable, user-friendly order
+    order = ["us", "eu", "europe", "japan", "australia", "apac", "global", "us-gov"]
+    return [p for p in order if p in found]
+
+
+def get_all_destination_regions_for_profile(profile_key: str) -> list[str]:
+    """Return all unique destination regions across all models that support this profile."""
+    regions: set[str] = set()
+    for model_key, model_config in CLAUDE_MODELS.items():
+        resolved = resolve_profile_key(model_key, profile_key)
+        if resolved is None:
+            continue
+        regions.update(
+            model_config["profiles"][resolved].get("destination_regions", [])
+        )
+    return sorted(regions)
 
 
 def get_source_region_for_profile(profile, model_key: str = None, profile_key: str = None) -> str:

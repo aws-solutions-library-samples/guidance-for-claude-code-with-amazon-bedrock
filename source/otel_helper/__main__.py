@@ -139,6 +139,8 @@ def extract_user_info(payload):
                     org_id = "auth0"
                 elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
+                elif '/realms/' in issuer:
+                    org_id = "keycloak"
         except Exception:
             pass  # Keep default org_id if parsing fails
 
@@ -335,6 +337,10 @@ def main():
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
+        # Forward Bearer token for ALB OIDC JWT validation on the OTEL collector endpoint
+        headers_dict["authorization"] = f"Bearer {token}"
+
+
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")
