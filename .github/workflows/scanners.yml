@@ -1,0 +1,22 @@
+name: Scanners
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  secrets-scanner:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - name: Install detect-secrets
+        run: pip install detect-secrets
+      - name: detect-secrets
+        run: |
+          detect-secrets scan --baseline .secrets.baseline
+          cat .secrets.baseline | jq '[.results|to_entries|.[].value[]|{ "filename": .filename, "is_secret": .is_secret } | if .is_secret == null or .is_secret == true then .filename else empty end]|unique|if length>0 then error("potential secrets in: \(.)") else empty end'

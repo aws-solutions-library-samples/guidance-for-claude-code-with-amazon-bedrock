@@ -1,0 +1,121 @@
+---
+name: Release (publish)
+description: |
+  Auto-triggered when a v* tag is pushed (by release-merge-tag.yml).
+  Extracts the matching section from CHANGELOG.md and publishes a GitHub Release
+  at https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases
+  with those release notes.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+permissions: {}
+jobs:
+  validate-tag:
+    name: Validate Tag Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.parse.outputs.tag }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse and validate tag
+        id: parse
+        run: |
+          set -euo pipefail
+
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+
+          # Validate semver format: MAJOR.MINOR.PATCH
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format: $TAG — expected vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG  Version: $VERSION"
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    needs: [validate-tag]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Check release does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ needs.validate-tag.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists"
+            exit 1
+          fi
+          echo "Release $TAG does not yet exist — proceeding"
+
+      - name: Extract changelog section for this version
+        id: notes
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.validate-tag.outputs.version }}"
+
+          python3 - <<PYEOF
+          import re, sys
+
+          version = "$VERSION"
+
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+
+          # Match ## [VERSION] ... up to (but not including) the next ## [
+          pattern = rf'(## \[{re.escape(version)}\].*?)(?=\n## \[|\Z)'
+          match = re.search(pattern, content, re.DOTALL)
+
+          if match:
+              notes = match.group(1).strip()
+              print(f"Extracted {len(notes.splitlines())} lines for version {version}")
+              with open('/tmp/release_notes.txt', 'w') as f:
+                  f.write(notes)
+          else:
+              print(f"WARNING: No CHANGELOG section found for [{version}] — using placeholder", file=sys.stderr)
+              with open('/tmp/release_notes.txt', 'w') as f:
+                  f.write(f"## [{version}]\n\nSee CHANGELOG.md for details.")
+          PYEOF
+
+          echo "--- release notes preview ---"
+          cat /tmp/release_notes.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ needs.validate-tag.outputs.tag }}"
+          VERSION="${{ needs.validate-tag.outputs.version }}"
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Release $TAG" \
+            --notes-file /tmp/release_notes.txt \
+            --verify-tag
+
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/$TAG"
+
+          echo "::notice::GitHub Release published: $RELEASE_URL"
+          echo "### :rocket: Release Published" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                                >> "$GITHUB_STEP_SUMMARY"
+          echo "**[$TAG]($RELEASE_URL)** is now live on the [Releases page](https://github.com/${{ github.repository }}/releases)" >> "$GITHUB_STEP_SUMMARY"

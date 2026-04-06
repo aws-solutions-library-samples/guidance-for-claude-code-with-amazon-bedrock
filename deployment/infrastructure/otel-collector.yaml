@@ -40,6 +40,11 @@ Parameters:
     Default: ''
     Description: JWKS endpoint URL for ALB JWT signature validation
 
+  OidcClientId:
+    Type: String
+    Default: ''
+    Description: OIDC client ID for ALB JWT audience (aud) claim validation
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
@@ -47,6 +52,7 @@ Conditions:
     - !Condition HasCustomDomain
     - !Condition HasRoute53Zone
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
+  HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -238,6 +244,13 @@ Resources:
             JwtValidationConfig:
               Issuer: !Ref OidcIssuerUrl
               JwksEndpoint: !Ref OidcJwksEndpoint
+              AdditionalClaims: !If
+                - HasOidcClientId
+                - - Name: aud
+                    Format: string-array
+                    Values:
+                      - !Ref OidcClientId
+                - !Ref AWS::NoValue
           - Type: forward
             Order: 2
             TargetGroupArn: !Ref HTTPTargetGroup
@@ -444,8 +457,8 @@ Resources:
           extensions: [health_check]
           telemetry:
             logs:
-              level: debug
-              development: true
+              level: info
+              development: false
               encoding: json
               output_paths: [stdout]
           pipelines:

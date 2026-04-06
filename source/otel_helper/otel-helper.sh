@@ -6,15 +6,10 @@ CACHE_DIR="$HOME/.claude-code-session"
 CACHE_FILE="$CACHE_DIR/${PROFILE}-otel-headers.json"
 RAW_FILE="$CACHE_DIR/${PROFILE}-otel-headers.raw"
 
-if [ -f "$CACHE_FILE" ] && [ -f "$RAW_FILE" ]; then
-    # Extract token_exp from metadata cache (date +%s is GNU/BSD, works on macOS and Linux)
-    TOKEN_EXP=$(grep -o '"token_exp": *[0-9]*' "$CACHE_FILE" | grep -o '[0-9]*')
-    NOW=$(date +%s)
-    if [ -n "$TOKEN_EXP" ] && [ "$((TOKEN_EXP - NOW))" -gt 600 ]; then
-        # Serve raw headers directly — no JSON parsing needed
-        cat "$RAW_FILE"
-        exit 0
-    fi
+if [ -f "$RAW_FILE" ]; then
+    # Serve raw headers directly — no JSON parsing needed
+    cat "$RAW_FILE"
+    exit 0
 fi
 
 # Cache miss - fall back to full PyInstaller binary (which writes the cache)

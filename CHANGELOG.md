@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-03-20
+
+### Fixed
+
+- **Version sync**: Bumped `source/pyproject.toml` from 1.1.4 to 2.1.0 to match project release version
+  - The v2.0.0 release updated CHANGELOG but never bumped pyproject.toml
+  - Users installing the package saw version 1.1.4 instead of 2.0.x
+
+### Changed
+
+- **PR checklist**: Added version bump reminder to CONTRIBUTING.md to prevent future version drift
+
 ## [2.0.0] - 2025-11-17
 
 ### Added

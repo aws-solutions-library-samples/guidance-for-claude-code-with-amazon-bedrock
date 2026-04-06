@@ -204,20 +204,23 @@ def get_cache_path():
 
 
 def read_cached_headers():
-    """Read cached OTEL headers if they exist and the token hasn't expired."""
+    """Read cached OTEL headers if they exist.
+
+    User attributes (email, team, etc.) don't change between sessions,
+    so cached headers are served regardless of token expiry. Headers are
+    refreshed opportunistically when a valid token is available.
+    """
     try:
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
         with open(cache_path) as f:
             cached = json.load(f)
-        # Check if token expires in more than 10 minutes
-        now = int(time.time())
-        if cached.get("token_exp", 0) - now > 600:
-            logger.debug("Using cached OTEL headers (token still valid)")
-            return cached["headers"]
-        logger.debug("Cached OTEL headers expired or expiring soon")
-        return None
+        headers = cached.get("headers")
+        if not headers:
+            return None
+        logger.debug("Using cached OTEL headers")
+        return headers
     except Exception as e:
         logger.debug(f"Failed to read cached headers: {e}")
         return None
@@ -336,6 +339,7 @@ def main():
         headers_dict = format_as_headers_dict(user_info)
         # Forward Bearer token for ALB OIDC JWT validation on the OTEL collector endpoint
         headers_dict["authorization"] = f"Bearer {token}"
+
 
         # In test mode, print detailed output
         if TEST_MODE:
