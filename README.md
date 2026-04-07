@@ -99,6 +99,10 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
   - (Optional) AWS CodeBuild
 - Amazon Bedrock activated in target regions
 
+**Custom Domain (Optional):**
+
+- Route53 hosted zone must be in the **same AWS account** as the deployment (ACM certificate validation creates DNS records directly). If your zone is in a separate account (e.g., Control Tower shared networking), migrate or delegate it to the deployment account first.
+
 **OIDC Provider Requirements:**
 
 - Existing OIDC identity provider (Okta, Azure AD, Auth0, etc.)
