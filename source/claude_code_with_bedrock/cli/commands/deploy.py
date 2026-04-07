@@ -34,7 +34,7 @@ class DeployCommand(Command):
     arguments = [
         argument(
             "stack",
-            description="Specific stack to deploy (auth/networking/monitoring/dashboard/analytics/quota)",
+            description="Specific stack to deploy (auth/networking/monitoring/dashboard/analytics/quota/hub/spoke-stackset)",
             optional=True,
         )
     ]
@@ -145,10 +145,42 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "hub":
+                if profile.deployment_mode != "hub":
+                    console.print("[yellow]Profile is not configured for hub mode.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and select 'Hub' deployment mode.")
+                    return 1
+                # Hub deploys monitoring/dashboard/analytics/quota to the central account (skips auth)
+                if profile.monitoring_enabled:
+                    vpc_config = profile.monitoring_config or {}
+                    if vpc_config.get("create_vpc", True):
+                        stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+                    stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                    stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
+                    stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+                    if getattr(profile, "analytics_enabled", True):
+                        stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+                    if getattr(profile, "quota_monitoring_enabled", False):
+                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                else:
+                    console.print("[yellow]No monitoring stacks to deploy. Enable monitoring in your configuration.[/yellow]")
+                    return 1
+            elif stack_arg == "spoke-stackset":
+                if profile.deployment_mode != "hub":
+                    console.print("[yellow]Profile is not configured for hub mode.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and select 'Hub' deployment mode.")
+                    return 1
+                if not profile.spoke_ou_id and not profile.spoke_account_ids:
+                    console.print("[red]No spoke OU ID or account IDs configured.[/red]")
+                    console.print("Run 'poetry run ccwb init' to configure spoke targets.")
+                    return 1
+                # spoke-stackset is handled directly, not via the standard stack loop
+                return self._deploy_spoke_stackset(profile, console, config, dry_run)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, "
+                    "analytics, quota, codebuild, hub, spoke-stackset\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -1067,3 +1099,208 @@ class DeployCommand(Command):
             console.print(f"[yellow]Warning: Could not verify ECS service linked role: {str(e)}[/yellow]")
             console.print("[dim]If deployment fails, manually create the role with:[/dim]")
             console.print("[dim]aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com[/dim]")
+
+    def _deploy_spoke_stackset(self, profile, console: Console, config: Config, dry_run: bool) -> int:
+        """Deploy auth infrastructure to spoke accounts via CloudFormation StackSet."""
+        import boto3
+        import time
+
+        project_root = Path(__file__).parents[4]
+
+        # Select template based on provider type (same logic as auth deploy)
+        provider_type = profile.provider_type or "okta"
+        template_map = {
+            "okta": "bedrock-auth-okta.yaml",
+            "auth0": "bedrock-auth-auth0.yaml",
+            "azure": "bedrock-auth-azure.yaml",
+            "cognito": "bedrock-auth-cognito-pool.yaml",
+        }
+
+        template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
+        template_path = project_root / "deployment" / "infrastructure" / template_file
+
+        if not template_path.exists():
+            console.print(f"[red]Error: Template not found: {template_file}[/red]")
+            return 1
+
+        with open(template_path) as f:
+            template_body = f.read()
+
+        # Build parameters — force FederationType=direct for spoke accounts
+        params = [{"ParameterKey": "FederationType", "ParameterValue": "direct"}]
+
+        if provider_type == "okta":
+            params.extend([
+                {"ParameterKey": "OktaDomain", "ParameterValue": profile.provider_domain},
+                {"ParameterKey": "OktaClientId", "ParameterValue": profile.client_id},
+            ])
+        elif provider_type == "auth0":
+            params.extend([
+                {"ParameterKey": "Auth0Domain", "ParameterValue": profile.provider_domain},
+                {"ParameterKey": "Auth0ClientId", "ParameterValue": profile.client_id},
+            ])
+        elif provider_type == "azure":
+            guid_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+            match = re.search(guid_pattern, profile.provider_domain)
+            tenant_id = match.group(0) if match else profile.provider_domain
+            params.extend([
+                {"ParameterKey": "AzureTenantId", "ParameterValue": tenant_id},
+                {"ParameterKey": "AzureClientId", "ParameterValue": profile.client_id},
+            ])
+        elif provider_type == "cognito":
+            cognito_domain = (
+                profile.provider_domain.split(".")[0]
+                if "." in profile.provider_domain
+                else profile.provider_domain
+            )
+            params.extend([
+                {"ParameterKey": "CognitoUserPoolId", "ParameterValue": profile.cognito_user_pool_id or ""},
+                {"ParameterKey": "CognitoUserPoolClientId", "ParameterValue": profile.client_id},
+                {"ParameterKey": "CognitoUserPoolDomain", "ParameterValue": cognito_domain},
+            ])
+
+        params.extend([
+            {"ParameterKey": "IdentityPoolName", "ParameterValue": profile.identity_pool_name},
+            {"ParameterKey": "AllowedBedrockRegions", "ParameterValue": ",".join(profile.allowed_bedrock_regions)},
+            {"ParameterKey": "EnableMonitoring", "ParameterValue": "false"},
+        ])
+
+        stackset_name = profile.stackset_name or f"{profile.identity_pool_name}-spoke-auth"
+
+        console.print(f"\n[bold]Spoke StackSet Deployment[/bold]")
+        console.print(f"• StackSet Name: [cyan]{stackset_name}[/cyan]")
+        console.print(f"• Template: [cyan]{template_file}[/cyan]")
+        console.print(f"• Federation Type: [cyan]direct[/cyan]")
+        if profile.spoke_ou_id:
+            console.print(f"• Target OU: [cyan]{profile.spoke_ou_id}[/cyan]")
+        if profile.spoke_account_ids:
+            console.print(f"• Target Accounts: [cyan]{len(profile.spoke_account_ids)} accounts[/cyan]")
+
+        if dry_run:
+            console.print("\n[yellow]Dry run mode - no changes will be made[/yellow]")
+            return 0
+
+        cf_client = boto3.client("cloudformation", region_name=profile.aws_region)
+
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+        ) as progress:
+            task = progress.add_task("Creating/updating StackSet...", total=None)
+
+            try:
+                # Check if StackSet already exists
+                stackset_exists = False
+                try:
+                    cf_client.describe_stack_set(StackSetName=stackset_name, CallAs="SELF")
+                    stackset_exists = True
+                except cf_client.exceptions.StackSetNotFoundException:
+                    pass
+
+                if stackset_exists:
+                    progress.update(task, description="Updating existing StackSet...")
+                    cf_client.update_stack_set(
+                        StackSetName=stackset_name,
+                        TemplateBody=template_body,
+                        Parameters=params,
+                        Capabilities=["CAPABILITY_NAMED_IAM"],
+                    )
+                    console.print("[green]✓ StackSet updated[/green]")
+                else:
+                    progress.update(task, description="Creating new StackSet...")
+
+                    stackset_kwargs = {
+                        "StackSetName": stackset_name,
+                        "TemplateBody": template_body,
+                        "Parameters": params,
+                        "Capabilities": ["CAPABILITY_NAMED_IAM"],
+                    }
+
+                    if profile.spoke_ou_id:
+                        # Service-managed permissions for OU-based targeting
+                        stackset_kwargs["PermissionModel"] = "SERVICE_MANAGED"
+                        stackset_kwargs["AutoDeployment"] = {
+                            "Enabled": True,
+                            "RetainStacksOnAccountRemoval": False,
+                        }
+                    else:
+                        # Self-managed for explicit account list
+                        stackset_kwargs["PermissionModel"] = "SELF_MANAGED"
+
+                    cf_client.create_stack_set(**stackset_kwargs)
+                    console.print("[green]✓ StackSet created[/green]")
+
+                # Create stack instances
+                progress.update(task, description="Deploying stack instances to spoke accounts...")
+
+                instance_kwargs = {
+                    "StackSetName": stackset_name,
+                    "Regions": [profile.aws_region],
+                    "OperationPreferences": {
+                        "MaxConcurrentPercentage": 100,
+                        "FailureTolerancePercentage": 10,
+                    },
+                }
+
+                if profile.spoke_ou_id:
+                    instance_kwargs["DeploymentTargets"] = {
+                        "OrganizationalUnitIds": [profile.spoke_ou_id],
+                    }
+                    instance_kwargs["CallAs"] = "DELEGATED_ADMIN"
+                else:
+                    instance_kwargs["DeploymentTargets"] = {
+                        "Accounts": profile.spoke_account_ids,
+                    }
+
+                operation = cf_client.create_stack_instances(**instance_kwargs)
+                operation_id = operation["OperationId"]
+
+                # Poll for completion
+                progress.update(task, description=f"Deploying to spoke accounts (operation: {operation_id[:8]}...)...")
+
+                while True:
+                    op_result = cf_client.describe_stack_set_operation(
+                        StackSetName=stackset_name,
+                        OperationId=operation_id,
+                    )
+                    status = op_result["StackSetOperation"]["Status"]
+
+                    if status == "SUCCEEDED":
+                        progress.update(task, description="StackSet deployment succeeded", completed=True)
+                        break
+                    elif status in ("FAILED", "STOPPED"):
+                        progress.update(task, description=f"StackSet deployment {status}", completed=True)
+                        console.print(f"[red]StackSet operation {status}[/red]")
+
+                        # Show failure details
+                        try:
+                            results = cf_client.list_stack_set_operation_results(
+                                StackSetName=stackset_name,
+                                OperationId=operation_id,
+                            )
+                            for result in results.get("Summaries", [])[:5]:
+                                account = result.get("Account", "N/A")
+                                reason = result.get("StatusReason", "Unknown")
+                                console.print(f"  • Account {account}: {reason}")
+                        except Exception:
+                            pass
+
+                        return 1
+                    else:
+                        progress.update(task, description=f"Deploying to spoke accounts ({status})...")
+                        time.sleep(10)
+
+                # Save stackset name to profile
+                profile.stackset_name = stackset_name
+                config.save_profile(profile)
+
+                console.print(f"\n[bold green]Spoke StackSet deployment complete![/bold green]")
+                console.print(f"• StackSet: [cyan]{stackset_name}[/cyan]")
+                console.print("\nNext steps:")
+                console.print("• Check status: [cyan]ccwb status[/cyan]")
+                console.print("• Generate per-account configs: [cyan]ccwb package[/cyan]")
+                return 0
+
+            except Exception as e:
+                progress.update(task, completed=True)
+                console.print(f"[red]Error deploying spoke StackSet: {str(e)}[/red]")
+                return 1
