@@ -1559,7 +1559,7 @@ class InitCommand(Command):
         """Update the CloudFormation parameters file with our configuration."""
         # Load existing parameters
         if params_file.exists():
-            with open(params_file) as f:
+            with open(params_file, encoding="utf-8") as f:
                 params = json.load(f)
         else:
             params = []
@@ -1597,7 +1597,7 @@ class InitCommand(Command):
 
         # Save updated parameters
         params_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(params_file, "w") as f:
+        with open(params_file, "w", encoding="utf-8") as f:
             json.dump(params, f, indent=2)
 
     def _deploy_stack(self, stack_name: str, template_file: Path, params_file: Path, region: str) -> bool:

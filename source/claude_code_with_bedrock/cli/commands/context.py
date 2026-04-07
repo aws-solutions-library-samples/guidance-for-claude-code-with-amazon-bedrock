@@ -478,7 +478,7 @@ class ConfigImportCommand(Command):
                 console.print(f"\n[red]Error: File not found: {file_path}[/red]\n")
                 return 1
 
-            with open(file_path_obj) as f:
+            with open(file_path_obj, encoding="utf-8") as f:
                 profile_data = json.load(f)
 
             # Use provided name or name from file

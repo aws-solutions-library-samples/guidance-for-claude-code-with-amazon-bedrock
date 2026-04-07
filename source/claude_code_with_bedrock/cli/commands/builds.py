@@ -180,7 +180,7 @@ class BuildsCommand(Command):
                     console.print("[red]No recent builds found. Start a build with 'poetry run ccwb package'[/red]")
                     return 1
 
-                with open(build_info_file) as f:
+                with open(build_info_file, encoding="utf-8") as f:
                     build_info = json.load(f)
                     build_id = build_info["build_id"]
                     console.print(f"[dim]Checking latest build: {build_id}[/dim]")

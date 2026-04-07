@@ -63,7 +63,7 @@ class CleanupCommand(Command):
         aws_config = Path.home() / ".aws" / "config"
         has_profile = False
         if aws_config.exists():
-            with open(aws_config) as f:
+            with open(aws_config, encoding="utf-8") as f:
                 if f"[profile {profile_name}]" in f.read():
                     has_profile = True
                     items_to_remove.append(("AWS Profile", profile_name, f"In {aws_config}"))
@@ -104,7 +104,7 @@ class CleanupCommand(Command):
         if has_profile and aws_config.exists():
             try:
                 # Read the config file
-                with open(aws_config) as f:
+                with open(aws_config, encoding="utf-8") as f:
                     lines = f.readlines()
 
                 # Find and remove the profile section
@@ -129,7 +129,7 @@ class CleanupCommand(Command):
                         new_lines.append(line)
 
                 # Write back the cleaned config
-                with open(aws_config, "w") as f:
+                with open(aws_config, "w", encoding="utf-8") as f:
                     f.writelines(new_lines)
 
                 console.print(f"✓ Removed AWS profile '{profile_name}'")

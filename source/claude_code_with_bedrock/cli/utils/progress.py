@@ -28,7 +28,7 @@ class WizardProgress:
         """Load existing progress if available."""
         if self.progress_file.exists():
             try:
-                with open(self.progress_file) as f:
+                with open(self.progress_file, encoding="utf-8") as f:
                     data = json.load(f)
                     # Check if progress is recent (within 24 hours)
                     saved_time = datetime.fromisoformat(data.get("timestamp", ""))
@@ -44,7 +44,7 @@ class WizardProgress:
         self.data["data"].update(step_data)
         self.data["timestamp"] = datetime.now().isoformat()
 
-        with open(self.progress_file, "w") as f:
+        with open(self.progress_file, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2)
 
     def get_saved_data(self) -> dict[str, Any]:
