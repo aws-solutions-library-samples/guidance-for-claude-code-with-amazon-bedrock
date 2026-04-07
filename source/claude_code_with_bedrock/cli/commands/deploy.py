@@ -157,11 +157,11 @@ class DeployCommand(Command):
             # Deploy all configured stacks in dependency order
             stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
-            if profile.enable_distribution:
+            # Deploy presigned-s3 distribution early (no networking dependency)
+            if profile.enable_distribution and getattr(profile, "distribution_type", "") != "landing-page":
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
 
-            # Deploy remaining monitoring stacks
+            # Deploy monitoring stacks
             if profile.monitoring_enabled:
                 vpc_config = profile.monitoring_config or {}
                 if vpc_config.get("create_vpc", True):
@@ -175,6 +175,18 @@ class DeployCommand(Command):
                 # Check if quota monitoring is enabled
                 if getattr(profile, "quota_monitoring_enabled", False):
                     stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+
+            # Deploy landing-page distribution after networking (requires VPC outputs)
+            if profile.enable_distribution and getattr(profile, "distribution_type", "") == "landing-page":
+                if not profile.monitoring_enabled:
+                    console.print(
+                        "[red]Error: Landing-page distribution requires monitoring to be enabled "
+                        "(provides the VPC/networking stack).[/red]"
+                    )
+                    console.print("[dim]Run 'ccwb init' and enable monitoring, or use presigned-s3 distribution instead.[/dim]")
+                    return 1
+                stacks_to_deploy.append(("distribution", "Distribution infrastructure (Landing Page)"))
+
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
