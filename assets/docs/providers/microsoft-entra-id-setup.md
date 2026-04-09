@@ -8,10 +8,11 @@ This guide walks you through setting up Microsoft Entra ID from scratch to work 
 2. [Access Azure Portal](#2-access-azure-portal)
 3. [Create App Registration](#3-create-app-registration)
 4. [Configure Authentication](#4-configure-authentication)
-5. [Create Test Users](#5-create-test-users)
-6. [Assign Users to Application](#6-assign-users-to-application)
-7. [Collect Required Information](#7-collect-required-information)
-8. [Test the Setup](#8-test-the-setup)
+5. [Confidential Client Setup (Enterprise)](#5-confidential-client-setup-enterprise)
+6. [Create Test Users](#6-create-test-users)
+7. [Assign Users to Application](#7-assign-users-to-application)
+8. [Collect Required Information](#8-collect-required-information)
+9. [Test the Setup](#9-test-the-setup)
 
 ---
 
@@ -70,21 +71,42 @@ After registration, save these values:
 
 ### Step 4.1: Add Platform
 
+The platform type you select here controls whether Azure AD enforces confidential client authentication. **Choose based on your intended auth mode:**
+
+#### Public client (personal / dev tenant)
+
 1. In your app registration, click **Authentication**
 2. Click **+ Add a platform**
 3. Select **Mobile and desktop applications**
-4. Check **Add a custom redirect URI**
-5. Enter exactly:
+4. Check **Add a custom redirect URI** and enter exactly:
    ```
    http://localhost:8400/callback
    ```
-6. Click **Configure**
+5. Click **Configure**
 
-### Step 4.2: Enable Public Client Flows
+#### Confidential client (enterprise — secret or certificate)
 
-1. In Authentication, scroll to **Advanced settings**
-2. Toggle **Allow public client flows** to **Yes**
-3. Click **Save**
+1. In your app registration, click **Authentication**
+2. Click **+ Add a platform**
+3. Select **Web**
+4. Under **Redirect URIs**, enter exactly:
+   ```
+   http://localhost:8400/callback
+   ```
+5. Click **Configure**
+
+> **Important**: Using **Mobile and desktop applications** with a confidential client mode will cause Azure AD to silently skip client credential enforcement — the flow will appear to succeed even without a valid secret or certificate. Always use **Web** for confidential client setups.
+
+### Step 4.2: Public Client vs. Confidential Client
+
+In **Authentication** → **Advanced settings** you will find the **Allow public client flows** toggle.
+
+| Your situation | Setting | Next step |
+|---|---|---|
+| Personal or dev tenant, no restrictions | **Yes** (enabled) | Continue to [Section 6](#6-create-test-users) |
+| Enterprise tenant with security policy that disables public clients | **No** (leave disabled) | Follow [Section 5](#5-confidential-client-setup-enterprise) |
+
+> **Enterprise note**: Many organisations enforce `Allow public client flows = No` as a security baseline. If yours does, do not change this setting — configure a confidential client instead (Section 5).
 
 ### Step 4.3: Verify API Permissions
 
@@ -92,14 +114,128 @@ The default `User.Read` permission is sufficient. No changes needed.
 
 ---
 
-## 5. Create Test Users
+## 5. Confidential Client Setup (Enterprise)
 
-### Step 5.1: Navigate to Users
+Skip this section if you enabled public client flows in Step 4.2.
+
+Enterprise Entra ID tenants often prohibit public client flows. The credential provider supports two confidential client modes:
+
+| Mode | When to use |
+|---|---|
+| **Client secret** | Quick setup, lower security — suitable for dev/test |
+| **Certificate (recommended)** | No long-lived secret on disk, preferred for production |
+
+---
+
+### Option A: Client Secret
+
+1. In your app registration, go to **Certificates & secrets** → **Client secrets**
+2. Click **+ New client secret**
+3. Set a description (e.g. `ccwb-credential-provider`) and an expiry
+4. Click **Add** and **copy the secret value immediately** — it is not shown again
+
+When `ccwb init` asks for the Azure authentication mode, select **Confidential client — client secret** and paste the value. The secret is stored securely in the **OS secure storage** (keyring) on the admin machine.
+
+#### Distributing to end users
+
+The client secret is a **shared app secret** — every user of the app uses the same value. After installing the dist package, each user must run the following command once to store it on their machine:
+
+```bash
+# macOS / Linux
+~/claude-code-with-bedrock/credential-process --set-client-secret --profile ClaudeCode
+
+# Windows
+%USERPROFILE%\claude-code-with-bedrock\credential-process.exe --set-client-secret --profile ClaudeCode
+```
+
+The user is prompted to enter the secret interactively. For automated or MDM-based deployments, set the `CCWB_CLIENT_SECRET` environment variable before running the command — this avoids the secret appearing in shell history or process listings:
+
+```bash
+CCWB_CLIENT_SECRET=<your-client-secret> ~/claude-code-with-bedrock/credential-process --set-client-secret --profile ClaudeCode
+```
+
+#### Rotating the secret
+
+When you rotate the secret in Entra ID, re-run `ccwb init` on the admin machine and repeat the `--set-client-secret` command on each user machine (or push it via MDM).
+
+To clear a stored secret from a machine:
+
+```bash
+~/claude-code-with-bedrock/credential-process --set-client-secret --profile ClaudeCode
+# press Enter without typing a value
+```
+
+---
+
+### Option B: Certificate (Recommended)
+
+#### Step 5.1: Generate a self-signed certificate
+
+On any machine with OpenSSL:
+
+```bash
+openssl req -x509 -newkey rsa:2048 \
+  -keyout key.pem -out cert.pem \
+  -days 365 -nodes \
+  -subj "/CN=ccwb-credential-provider"
+```
+
+This produces two files:
+- `cert.pem` — the public certificate (upload to Entra ID)
+- `key.pem` — the private key (stays on the user's machine, never shared)
+
+#### Step 5.2: Upload the certificate to Entra ID
+
+1. In your app registration, go to **Certificates & secrets** → **Certificates**
+2. Click **Upload certificate**
+3. Select `cert.pem`
+4. Click **Add**
+
+#### Step 5.3: Distribute the key files to users
+
+Each user needs both `cert.pem` and `key.pem` on their machine. Common distribution methods:
+
+- **MDM (Intune / JAMF)**: Deploy the files to a fixed path on managed devices
+- **Bundle in the `dist/` package**: Include alongside `config.json` before packaging
+- **Manual**: Provide files via a secure channel and instruct users to save them locally
+
+#### Step 5.4: Note the file paths
+
+Decide on consistent paths for your deployment, for example:
+
+- macOS/Linux: `~/claude-code-with-bedrock/cert.pem` and `~/claude-code-with-bedrock/key.pem`
+- Windows: `%USERPROFILE%\claude-code-with-bedrock\cert.pem`
+
+You will enter these paths when running `ccwb init`.
+
+> **Note on absolute paths**: If you enter absolute paths during `ccwb init`, the `ccwb package` command will warn you that those paths are machine-specific and may not resolve on end-user machines with a different install layout. Prefer paths relative to the home directory (e.g. `~/claude-code-with-bedrock/cert.pem`) where possible.
+
+#### Step 5.5: Override certificate paths on end-user machines (if needed)
+
+If the paths recorded in `config.json` don't match the actual file locations on a user's machine, the user (or an MDM system) can override them at runtime without editing `config.json`:
+
+```bash
+# macOS / Linux — set in the shell or via a launch agent:
+export AZURE_CLIENT_CERTIFICATE_PATH=~/certs/cert.pem
+export AZURE_CLIENT_CERTIFICATE_KEY_PATH=~/certs/key.pem
+
+# Windows — set as user or system environment variables:
+# AZURE_CLIENT_CERTIFICATE_PATH = C:\Users\<name>\certs\cert.pem
+# AZURE_CLIENT_CERTIFICATE_KEY_PATH = C:\Users\<name>\certs\key.pem
+```
+
+These env vars take precedence over the paths in `config.json` and follow the same convention as the Azure SDK.
+
+---
+
+## 6. Create Test Users
+
+### Step 6.1: Navigate to Users
 
 1. Go to **Identity** → **Users** → **All users**
 2. Click **+ New user** → **Create new user**
 
-### Step 5.2: Create a Test User
+### Step 6.2: Create a Test User
 
 Fill in:
 
@@ -111,15 +247,15 @@ Fill in:
 
 Click **Create**
 
-### Step 5.3: Create Additional Users (Optional)
+### Step 6.3: Create Additional Users (Optional)
 
 Repeat for more test users if needed.
 
 ---
 
-## 6. Assign Users to Application
+## 7. Assign Users to Application
 
-### Step 6.1: From Enterprise Applications
+### Step 7.1: From Enterprise Applications
 
 1. Go to **Identity** → **Applications** → **Enterprise applications**
 2. Search for **Amazon Bedrock CLI Access**
@@ -131,59 +267,69 @@ Repeat for more test users if needed.
 
 ---
 
-## 7. Collect Required Information
+## 8. Collect Required Information
 
 You now have everything needed for deployment:
 
-| Parameter           | Your Value          | Example                                      |
-| ------------------- | ------------------- | -------------------------------------------- |
-| **Provider Domain** | Your tenant URL     | `login.microsoftonline.com/{tenant-id}/v2.0` |
-| **Client ID**       | Your Application ID | `12345678-1234-1234-1234-123456789012`       |
+| Parameter | Your Value | Example |
+|---|---|---|
+| **Provider Domain** | Your tenant URL | `login.microsoftonline.com/{tenant-id}/v2.0` |
+| **Client ID** | Your Application ID | `12345678-1234-1234-1234-123456789012` |
+| **Client secret** *(if using Option A)* | Secret value from Step 5A | *(entered interactively during `ccwb init`)* |
+| **Certificate path** *(if using Option B)* | Path to `cert.pem` on user machine | `~/claude-code-with-bedrock/cert.pem` |
+| **Key path** *(if using Option B)* | Path to `key.pem` on user machine | `~/claude-code-with-bedrock/key.pem` |
 
 ### Supported Provider Domain Formats
 
-The CLI accepts multiple formats for the Azure provider domain. Choose the format that's most convenient for you:
+The CLI accepts multiple formats for the Azure provider domain:
 
 | Format | Example | Notes |
-|--------|---------|-------|
-| **Full URL with /v2.0** | `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0` | **Recommended** - Standard Azure AD v2.0 endpoint |
-| **Full URL without /v2.0** | `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36` | Also supported |
+|---|---|---|
+| **Full URL with /v2.0** | `login.microsoftonline.com/c56f9106-.../v2.0` | **Recommended** |
+| **Full URL without /v2.0** | `login.microsoftonline.com/c56f9106-...` | Also supported |
 | **Just the tenant ID** | `c56f9106-1d27-456d-bd20-3de87e595a36` | Simplest format |
-| **With https:// prefix** | `https://login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0` | Protocol stripped automatically |
+| **With https:// prefix** | `https://login.microsoftonline.com/...` | Protocol stripped automatically |
 
-> **Note**: The CLI automatically extracts the tenant ID GUID from any of these formats, so you don't need to worry about formatting.
+> **Note**: The CLI automatically extracts the tenant ID GUID from any of these formats.
 
 ### Use the values with ccwb init
 
-When running `poetry run ccwb init`, you'll be prompted for these values:
+When running `ccwb init`, the wizard will ask:
 
-```bash
-poetry run ccwb init
+```
+Enter your OIDC provider domain:
+> login.microsoftonline.com/{your-tenant-id}/v2.0
 
-# The wizard will ask for:
-# - Provider Domain: login.microsoftonline.com/{your-tenant-id}/v2.0
-# - Client ID: 12345678-1234-1234-1234-123456789012
-# - AWS Region for infrastructure: us-east-1
-# - Bedrock regions: us-east-1,us-west-2
-# - Enable monitoring: Yes/No
+Enter your OIDC Client ID:
+> 12345678-1234-1234-1234-123456789012
+
+Select authentication mode:
+> Public client (default, no secret required)
+  Confidential client — client secret
+  Confidential client — certificate (recommended for enterprise)
 ```
 
-The CLI tool will handle all the CloudFormation configuration automatically.
+Select the mode matching your setup in Section 4–5. The wizard will prompt for the secret or certificate paths accordingly.
 
 ---
 
-## 8. Test the Setup
+## 9. Test the Setup
 
-### Step 8.1: Verify Application Settings
+### Step 9.1: Verify Application Settings
 
 1. Go back to your app registration
 2. Click **Authentication**
 3. Verify:
-   - Platform: Mobile and desktop applications
-   - Redirect URI: `http://localhost:8400/callback`
-   - Public client flows: Enabled
+   - Platform: **Mobile and desktop applications** (public client) or **Web** (confidential client)
+   - Redirect URI: `http://localhost:8400/callback` under the correct platform
+   - Public client flows: matches your chosen mode (enabled for public, disabled for confidential)
 
-### Step 8.2: Test OIDC Discovery
+For confidential client with certificate, also verify:
+
+4. Go to **Certificates & secrets** → **Certificates**
+5. Confirm your certificate is listed and not expired
+
+### Step 9.2: Test OIDC Discovery
 
 ```bash
 curl https://login.microsoftonline.com/{your-tenant-id}/v2.0/.well-known/openid-configuration
@@ -194,6 +340,16 @@ Should return a JSON response with OIDC configuration.
 ---
 
 ## Troubleshooting
+
+### Confidential client auth succeeds but secret or certificate is not actually validated
+
+**Symptom**: Authentication appears to succeed even when the client secret is wrong or the certificate is not registered in Entra ID. Claude Code then fails to obtain AWS credentials.
+
+**Cause**: The redirect URI is registered under the **Mobile and desktop applications** platform. This marks the app as a public client in Azure AD, which skips client credential enforcement entirely.
+
+**Fix**: In your app registration → **Authentication**, remove the redirect URI from the Mobile and desktop applications platform and re-add it under **Web** (see [Step 4.1](#step-41-add-platform)). Then ensure **Allow public client flows** is set to **No**.
+
+---
 
 ### "Reply URL does not match" Error
 
@@ -211,6 +367,13 @@ Should return a JSON response with OIDC configuration.
 2. Click on your application
 3. The Client ID is on the overview page
 
+### "AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'" Error
+
+Your tenant has `Allow public client flows = No`. You must configure a confidential client:
+
+- Follow [Section 5](#5-confidential-client-setup-enterprise) to set up a client secret or certificate
+- Re-run `ccwb init` and select the appropriate confidential client mode
+
 ### "Parameter AzureTenantId failed to satisfy constraint" Error
 
 This error occurs during deployment if the tenant ID format is incorrect. The fix:
@@ -219,7 +382,13 @@ This error occurs during deployment if the tenant ID format is incorrect. The fi
 - **Manual workaround**: When prompted for "Provider Domain", enter just your tenant ID GUID instead of the full URL:
   - ✅ Use: `c56f9106-1d27-456d-bd20-3de87e595a36`
   - ❌ Instead of: `login.microsoftonline.com/c56f9106-1d27-456d-bd20-3de87e595a36/v2.0`
-- **After upgrading**: The CLI now accepts all formats automatically (see [Supported Provider Domain Formats](#supported-provider-domain-formats))
+
+### "Certificate or key file not found" Error
+
+- Verify the paths in `config.json` match the actual file locations on this machine
+- On macOS/Linux, paths starting with `~/` are expanded automatically
+- If the paths differ from what was set during `ccwb init`, set `AZURE_CLIENT_CERTIFICATE_PATH` and `AZURE_CLIENT_CERTIFICATE_KEY_PATH` environment variables to override them without editing `config.json` (see [Step 5.5](#step-55-override-certificate-paths-on-end-user-machines-if-needed))
+- Check file permissions: the credential provider process must be able to read both files
 
 ---
 
@@ -233,26 +402,36 @@ Once you've completed this setup:
    cd claude-code-setup
    poetry install
    ```
-2. Run the setup wizard: `poetry run ccwb init`
-3. Create a distribution package: `poetry run ccwb package`
-4. Test the deployment: `poetry run ccwb test --api`
+2. Run the setup wizard: `ccwb init`
+3. Create a distribution package: `ccwb package`
+4. Test the deployment: `ccwb test --api`
 5. Distribute the `dist/` folder to your users
 
 ---
 
 ## Security Best Practices
 
-1. **Production Considerations**:
+1. **Authentication mode**:
+   - Use **certificate-based confidential client** for production — no long-lived secret is stored
+   - If using a client secret, rotate it in Entra ID and re-run `--set-client-secret` on each user machine
+   - Public client flows are acceptable for personal or dev tenants where enterprise policy allows it
 
+2. **Token Settings**:
+   - PKCE is always active regardless of authentication mode
+   - Certificate assertions are short-lived (5-minute lifetime) and include a unique `jti` to prevent replay
+
+3. **Certificate management**:
+   - Use a 2048-bit or 4096-bit RSA key
+   - Set a certificate expiry appropriate for your rotation policy (365 days is a reasonable default)
+   - Plan for certificate rotation before expiry: upload the new cert to Entra ID, redistribute `cert.pem` and `key.pem`, then remove the old cert
+
+4. **Production Considerations**:
    - Use your specific tenant ID (not "common")
    - Enable MFA for all users
    - Set appropriate session timeouts
    - Monitor sign-in logs regularly
 
-2. **Token Settings**:
-   - PKCE is enabled by default for native apps
-   - Public client flows must be enabled
-3. **User Management**:
+5. **User Management**:
    - Use groups to manage access at scale
    - Regular access reviews
    - Disable unused accounts promptly

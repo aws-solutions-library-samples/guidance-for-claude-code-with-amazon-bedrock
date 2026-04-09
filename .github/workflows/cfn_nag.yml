@@ -1,0 +1,27 @@
+name: cfn_nag
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: cfn_nag scan
+        uses: stelligent/cfn_nag@8b5f03da74202ba323a145e9d037ddce6cab9dec
+        with:
+          input_path: deployment/infrastructure
+          extra_args: -o sarif -g
+          output_path: cfn_nag.sarif
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@f94817b9f0deeb3871261446912ae8f854d1b675
+        if: success() || failure()
+        with:
+          sarif_file: cfn_nag.sarif

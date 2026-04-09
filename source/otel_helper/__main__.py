@@ -18,6 +18,8 @@ import logging
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 # Configure debug mode if requested
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ("true", "1", "yes", "y")
@@ -191,6 +193,69 @@ def format_as_headers_dict(attributes):
     return headers
 
 
+def get_cache_path():
+    """Get the path to the OTEL headers cache file."""
+    cache_dir = Path.home() / ".claude-code-session"
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+    return cache_dir / f"{profile}-otel-headers.json"
+
+
+def read_cached_headers():
+    """Read cached OTEL headers if they exist.
+
+    User attributes (email, team, etc.) don't change between sessions,
+    so cached headers are served regardless of token expiry. Headers are
+    refreshed opportunistically when a valid token is available.
+    """
+    try:
+        cache_path = get_cache_path()
+        if not cache_path.exists():
+            return None
+        with open(cache_path) as f:
+            cached = json.load(f)
+        headers = cached.get("headers")
+        if not headers:
+            return None
+        logger.debug("Using cached OTEL headers")
+        return headers
+    except Exception as e:
+        logger.debug(f"Failed to read cached headers: {e}")
+        return None
+
+
+def write_cached_headers(headers, token_exp):
+    """Write OTEL headers to cache file and a companion raw headers file."""
+    try:
+        cache_path = get_cache_path()
+        import tempfile
+
+        # Write main cache file atomically (prevents shell wrapper reading partial JSON)
+        fd, tmp_path = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"headers": headers, "token_exp": token_exp, "cached_at": int(time.time())}, f)
+            os.chmod(tmp_path, 0o600)
+            os.rename(tmp_path, str(cache_path))
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+
+        # Write companion file with just the raw headers JSON for the shell wrapper to cat
+        raw_path = cache_path.with_suffix(".raw")
+        fd, tmp_path = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(headers, f)
+            os.chmod(tmp_path, 0o600)
+            os.rename(tmp_path, str(raw_path))
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+    except Exception as e:
+        logger.debug(f"Failed to write cached headers: {e}")
+
+
 def get_token_via_credential_process():
     """Get monitoring token via credential-process to avoid direct keychain access"""
     logger.info("Getting token via credential-process...")
@@ -219,7 +284,7 @@ def get_token_via_credential_process():
             [credential_process, "--profile", profile, "--get-monitoring-token"],
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minute timeout for auth if needed
+            timeout=30,  # Reduced from 300s - fail open if auth can't complete quickly
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -240,6 +305,13 @@ def get_token_via_credential_process():
 def main():
     """Main function to generate OTEL headers"""
     parse_args()
+
+    # Layer 1: Check file cache first (avoids credential-process entirely)
+    if not TEST_MODE:
+        cached_headers = read_cached_headers()
+        if cached_headers:
+            print(json.dumps(cached_headers))
+            return 0
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
     token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
@@ -263,7 +335,6 @@ def main():
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
-
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")
@@ -299,6 +370,12 @@ def main():
             print("\n========================")
         else:
             # Normal mode: Output as JSON (flat object with string values)
+            # Cache headers for future calls (avoids credential-process on next invocation)
+            token_exp = payload.get("exp")
+            if token_exp:
+                write_cached_headers(headers_dict, token_exp)
+            else:
+                logger.debug("JWT has no exp claim, skipping cache write")
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

@@ -35,6 +35,7 @@ class TestModelConfiguration:
     def test_claude_models_structure(self):
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
+            "opus-4-6",
             "opus-4-1",
             "opus-4",
             "sonnet-4",
@@ -56,7 +57,7 @@ class TestModelConfiguration:
     def test_model_profiles_structure(self):
         """Test that each model profile has the expected structure."""
         # Valid profile keys that can appear in model configurations
-        valid_profile_keys = set(DEFAULT_REGIONS.keys()) | {"eu", "japan", "global"}
+        valid_profile_keys = set(DEFAULT_REGIONS.keys()) | {"eu", "japan", "global", "au"}
 
         for _model_key, model_config in CLAUDE_MODELS.items():
             for profile_key, profile_config in model_config["profiles"].items():
@@ -83,10 +84,15 @@ class TestModelConfiguration:
                     assert model_id.startswith("jp.anthropic.")
                 elif profile_key == "global":
                     assert model_id.startswith("global.anthropic.")
+                elif profile_key == "au":
+                    assert model_id.startswith("au.anthropic.")
 
     def test_get_available_profiles_for_model(self):
         """Test getting available profiles for each model."""
         # Test valid models
+        opus_4_6_profiles = get_available_profiles_for_model("opus-4-6")
+        assert set(opus_4_6_profiles) == {"us", "eu", "au", "global"}  # Opus 4.6 has global and regional profiles
+
         opus_4_1_profiles = get_available_profiles_for_model("opus-4-1")
         assert opus_4_1_profiles == ["us"]  # Opus 4.1 is US-only
 
@@ -114,12 +120,20 @@ class TestModelConfiguration:
     def test_get_model_id_for_profile(self):
         """Test getting model IDs for specific profiles."""
         # Test US profiles
+        assert get_model_id_for_profile("opus-4-6", "us") == "us.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("opus-4-1", "us") == "us.anthropic.claude-opus-4-1-20250805-v1:0"
         assert get_model_id_for_profile("sonnet-4", "us") == "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
+        # Test Global profiles
+        assert get_model_id_for_profile("opus-4-6", "global") == "global.anthropic.claude-opus-4-6-v1"
+
         # Test Europe profiles
+        assert get_model_id_for_profile("opus-4-6", "eu") == "eu.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("sonnet-4", "europe") == "eu.anthropic.claude-sonnet-4-20250514-v1:0"
         assert get_model_id_for_profile("sonnet-3-7", "europe") == "eu.anthropic.claude-3-7-sonnet-20250219-v1:0"
+
+        # Test AU profiles
+        assert get_model_id_for_profile("opus-4-6", "au") == "au.anthropic.claude-opus-4-6-v1"
 
         # Test APAC profiles
         assert get_model_id_for_profile("sonnet-4", "apac") == "apac.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -188,6 +202,8 @@ class TestModelConfiguration:
         assert set(display_names.keys()) == expected_entries
 
         # Test specific display names
+        assert display_names["global.anthropic.claude-opus-4-6-v1"] == "Claude Opus 4.6 (GLOBAL)"
+        assert display_names["us.anthropic.claude-opus-4-6-v1"] == "Claude Opus 4.6"
         assert display_names["us.anthropic.claude-opus-4-1-20250805-v1:0"] == "Claude Opus 4.1"
         assert display_names["eu.anthropic.claude-sonnet-4-20250514-v1:0"] == "Claude Sonnet 4 (EUROPE)"
         assert display_names["apac.anthropic.claude-3-7-sonnet-20250219-v1:0"] == "Claude 3.7 Sonnet (APAC)"

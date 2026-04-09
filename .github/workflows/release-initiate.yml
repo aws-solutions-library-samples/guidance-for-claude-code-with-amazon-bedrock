@@ -1,0 +1,242 @@
+---
+name: Release Initiate
+description: |
+  Manually triggered workflow that creates a release branch and PR.
+  Bumps the version in source/pyproject.toml, inserts a new section into
+  CHANGELOG.md populated from commits since the last release, and opens a
+  pull request for review.
+  Merging the PR automatically triggers release-merge-tag.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Semver component to bump'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+permissions: {}
+jobs:
+  initiate-release:
+    name: Create Release Branch and PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Compute next version
+        id: version
+        env:
+          RELEASE_TYPE: ${{ inputs.release_type }}
+        run: |
+          set -euo pipefail
+
+          CURRENT=$(python3 -c "
+          import re
+          content = open('source/pyproject.toml').read()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', content, re.MULTILINE)
+          if not m:
+              raise SystemExit('ERROR: version not found in source/pyproject.toml')
+          print(m.group(1))
+          ")
+
+          echo "Current version: $CURRENT"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "$RELEASE_TYPE" in
+            major) NEW_VERSION="$((MAJOR + 1)).0.0" ;;
+            minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+            patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+          esac
+
+          echo "Next version:    $NEW_VERSION"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEW_VERSION"    >> "$GITHUB_OUTPUT"
+
+      - name: Collect commits since last release
+        id: commits
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          LAST_TAG=$(gh release list \
+            --repo "$GH_REPO" \
+            --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName \
+            --jq '.[0].tagName // empty' 2>/dev/null || true)
+
+          if [[ -z "$LAST_TAG" ]]; then
+            echo "No previous release found — collecting last 60 commits"
+            RAW=$(git log --no-merges --format="%s" -n 60)
+          elif git rev-parse "$LAST_TAG" >/dev/null 2>&1; then
+            echo "Collecting commits since $LAST_TAG"
+            RAW=$(git log --no-merges --format="%s" "${LAST_TAG}..HEAD")
+          else
+            echo "Tag $LAST_TAG not found locally — collecting last 60 commits"
+            RAW=$(git log --no-merges --format="%s" -n 60)
+          fi
+
+          # Group by conventional-commit prefix
+          ADDED=$(echo "$RAW"   | grep -E '^feat(\(.*\))?!?:'     | sed 's/^feat[^:]*: /- /' || true)
+          FIXED=$(echo "$RAW"   | grep -E '^fix(\(.*\))?!?:'      | sed 's/^fix[^:]*: /- /'  || true)
+          CHANGED=$(echo "$RAW" | grep -E '^(refactor|perf)(\(.*\))?!?:' | sed 's/^[^:]*: /- /' || true)
+          CHORE=$(echo "$RAW"   | grep -E '^(chore|ci|build|docs)(\(.*\))?!?:' | sed 's/^[^:]*: /- /' || true)
+
+          TODAY=$(date '+%Y-%m-%d')
+
+          {
+            echo "## [$VERSION] - $TODAY"
+            if [[ -n "$ADDED" ]];   then printf '\n### Added\n\n%s\n'   "$ADDED";   fi
+            if [[ -n "$FIXED" ]];   then printf '\n### Fixed\n\n%s\n'   "$FIXED";   fi
+            if [[ -n "$CHANGED" ]]; then printf '\n### Changed\n\n%s\n' "$CHANGED"; fi
+            if [[ -n "$CHORE" ]];   then printf '\n### Other\n\n%s\n'   "$CHORE";   fi
+            if [[ -z "$ADDED$FIXED$CHANGED$CHORE" ]]; then
+              printf '\n_No categorised changes. Update this section before merging._\n'
+            fi
+          } > /tmp/changelog_entry.txt
+
+          echo "--- changelog entry preview ---"
+          cat /tmp/changelog_entry.txt
+
+      - name: Create release branch
+        id: branch
+        run: |
+          set -euo pipefail
+
+          TIMESTAMP=$(date +'%Y.%m.%Y%m%d%H%M%S')
+          RELEASE_BRANCH="release/${TIMESTAMP}"
+
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name  "github-actions[bot]"
+
+          git checkout -b "$RELEASE_BRANCH"
+          echo "release-branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in pyproject.toml
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEXT}\"/" source/pyproject.toml
+
+          # Verify the change landed
+          grep "^version" source/pyproject.toml
+
+      - name: Prepend new section to CHANGELOG.md
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PYEOF'
+          import re
+
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+
+          with open('/tmp/changelog_entry.txt', 'r') as f:
+              entry = f.read().strip()
+
+          # Insert before the first existing version section
+          match = re.search(r'^## \[', content, re.MULTILINE)
+          if match:
+              new_content = content[:match.start()] + entry + '\n\n' + content[match.start():]
+          else:
+              new_content = content.rstrip() + '\n\n' + entry + '\n'
+
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(new_content)
+
+          print('CHANGELOG.md updated successfully')
+          PYEOF
+
+      - name: Commit and push release branch
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          RELEASE_BRANCH: ${{ steps.branch.outputs.release-branch }}
+        run: |
+          set -euo pipefail
+
+          git add source/pyproject.toml CHANGELOG.md
+          git commit -m "chore: bump version to ${NEXT} and update changelog"
+          git push origin "$RELEASE_BRANCH"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.next }}
+          CURRENT: ${{ steps.version.outputs.current }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          BRANCH: ${{ steps.branch.outputs.release-branch }}
+          GH_REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          PR_URL=$(gh pr create \
+            --repo "$GH_REPO" \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: release v${VERSION} (${RELEASE_TYPE})" \
+            --body "## Release \`v${VERSION}\` — \`${RELEASE_TYPE}\` bump
+
+          Initiated by @${ACTOR}
+
+          ### What changed
+          - \`source/pyproject.toml\`: \`${CURRENT}\` → \`${VERSION}\`
+          - \`CHANGELOG.md\`: new \`[${VERSION}]\` section auto-populated from commits
+
+          ### Before merging
+          - [ ] Review and tidy the release notes in \`CHANGELOG.md\`
+          - [ ] Confirm the version bump is correct (\`${RELEASE_TYPE}\`)
+          - [ ] All required CI checks pass
+
+          > **Note**: Merging this PR will automatically:
+          > 1. Create git tag \`v${VERSION}\`
+          > 2. Publish a GitHub Release at [/releases](https://github.com/${GH_REPO}/releases)")
+
+          echo "### :shipit: Release PR Created" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                                 >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version**: \`${CURRENT}\` → \`${VERSION}\` (${RELEASE_TYPE})" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                                 >> "$GITHUB_STEP_SUMMARY"
+          echo "**PR**: ${PR_URL}"                >> "$GITHUB_STEP_SUMMARY"
+
+  close-stale-release-prs:
+    name: Close Stale Release PRs
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close any previously open release PRs
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          # Close any open release PRs that are now superseded by this new one
+          gh pr list \
+            --repo "$GH_REPO" \
+            --state open \
+            --author "github-actions[bot]" \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/")) | .number' \
+          | xargs -r -I{} \
+            gh pr close {} \
+              --repo "$GH_REPO" \
+              --comment "Superseded by a newer release initiated by @${ACTOR}." \
+          || true

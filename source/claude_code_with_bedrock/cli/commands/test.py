@@ -184,6 +184,18 @@ class TestCommand(Command):
             # Display configuration
             console.print("\n[bold]Configuration:[/bold]")
             console.print(f"[dim]  - Provider: {profile_config.get('provider_domain', 'unknown')}[/dim]")
+
+            # Display Azure AD authentication mode if applicable
+            if profile_config.get("provider_type") == "azure":
+                azure_auth_mode = profile_config.get("azure_auth_mode", "public")
+                if azure_auth_mode == "certificate":
+                    auth_mode_display = "Certificate (confidential client)"
+                elif azure_auth_mode == "secret":
+                    auth_mode_display = "Client Secret (confidential client — secret in OS keyring)"
+                else:
+                    auth_mode_display = "Public client"
+                console.print(f"[dim]  - Azure Auth Mode: {auth_mode_display}[/dim]")
+
             console.print(f"[dim]  - AWS Region: {profile_config.get('aws_region', 'unknown')}[/dim]")
 
             # Check credential storage
@@ -361,7 +373,7 @@ class TestCommand(Command):
                 # Test Bedrock access in configured region(s)
                 for region in regions_to_test:
                     task = progress.add_task(f"Testing Bedrock API in {region}...", total=None)
-                    result = self._test_bedrock_access(aws_profile, region, with_api)
+                    result = self._test_bedrock_access(aws_profile, region, with_api, profile.selected_model)
                     test_results.append((f"Bedrock - {region}", result["status"], result["details"]))
                     progress.update(task, completed=True)
 
@@ -571,7 +583,7 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)}
 
-    def _test_bedrock_access(self, profile_name: str, region: str, with_api: bool = False) -> dict:
+    def _test_bedrock_access(self, profile_name: str, region: str, with_api: bool = False, selected_model: str = None) -> dict:
         """Test Bedrock access in a specific region."""
         try:
             # Clear AWS credentials from environment
@@ -614,8 +626,8 @@ class TestCommand(Command):
                 models = json.loads(result.stdout)
                 if models:
                     if with_api:
-                        # Test actual model invocation with one of the available models
-                        test_result = self._test_model_invocation(profile_name, region, models)
+                        # Test model invocation using the configured inference profile
+                        test_result = self._test_model_invocation(profile_name, region, selected_model)
                         if test_result["success"]:
                             return {"status": "✓", "details": f"Found {len(models)} models, API test passed"}
                         else:
@@ -863,8 +875,8 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)[:50]}
 
-    def _test_model_invocation(self, profile_name: str, region: str, available_models: list = None) -> dict:
-        """Test actual model invocation with Claude 3."""
+    def _test_model_invocation(self, profile_name: str, region: str, selected_model: str = None) -> dict:
+        """Test actual model invocation using the configured inference profile."""
         try:
             # Clear AWS credentials from environment
             import os
@@ -873,44 +885,19 @@ class TestCommand(Command):
             test_env.pop("AWS_ACCESS_KEY_ID", None)
             test_env.pop("AWS_SECRET_ACCESS_KEY", None)
             test_env.pop("AWS_SESSION_TOKEN", None)
-            # Pick a model to test - prefer Claude 3 Sonnet, but use what's available
-            if available_models:
-                # Prefer these models in order
-                preferred_models = [
-                    "anthropic.claude-3-sonnet-20240229-v1:0",
-                    "anthropic.claude-3-haiku-20240307-v1:0",
-                    "anthropic.claude-instant-v1",
-                ]
 
-                model_id = None
-                for preferred in preferred_models:
-                    if preferred in available_models:
-                        model_id = preferred
-                        break
+            if not selected_model:
+                return {"success": False, "error": "No model configured - run 'ccwb init' to select a model"}
 
-                # If none of our preferred models are available, use the first available Claude model
-                if not model_id and available_models:
-                    model_id = available_models[0]
-            else:
-                # Fallback if no models list provided
-                model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+            model_id = selected_model
 
-            # Create a minimal test prompt
-            if model_id and "claude-instant" in model_id:
-                # Claude Instant v1 uses the older text completions API
-                body_dict = {
-                    "prompt": "\n\nHuman: Say 'test successful' in exactly 2 words\n\nAssistant:",
-                    "max_tokens_to_sample": 10,
-                    "temperature": 0,
-                }
-            else:
-                # Claude 2 and 3 use Messages API
-                body_dict = {
-                    "messages": [{"role": "user", "content": "Say 'test successful' in exactly 2 words"}],
-                    "max_tokens": 10,
-                    "temperature": 0,
-                    "anthropic_version": "bedrock-2023-05-31",
-                }
+            # Create a minimal test prompt using Messages API
+            body_dict = {
+                "messages": [{"role": "user", "content": "Say 'test successful' in exactly 2 words"}],
+                "max_tokens": 10,
+                "temperature": 0,
+                "anthropic_version": "bedrock-2023-05-31",
+            }
 
             # Write body to a temporary file
             import tempfile
@@ -944,14 +931,8 @@ class TestCommand(Command):
                 try:
                     with open("/tmp/bedrock-test-output.json") as f:
                         response = json.load(f)
-                        # Different response formats for different models
                         if "content" in response and len(response["content"]) > 0:
-                            # Messages API response (Claude 2/3)
                             text = response["content"][0].get("text", "").strip()
-                            return {"success": True, "response": text}
-                        elif "completion" in response:
-                            # Text completions API response (Claude Instant v1)
-                            text = response["completion"].strip()
                             return {"success": True, "response": text}
                         else:
                             return {"success": False, "error": "No content in response"}
@@ -1205,7 +1186,7 @@ class TestCommand(Command):
         except Exception as e:
             return {"name": "Aggregator Lambda", "status": "✗", "details": str(e)[:60]}
 
-    def _make_quota_test_bedrock_call(self, aws_profile: str, region: str) -> dict:
+    def _make_quota_test_bedrock_call(self, aws_profile: str, region: str, selected_model: str = None) -> dict:
         """Make a small Bedrock call for testing usage capture."""
         import os
         import tempfile
@@ -1237,7 +1218,7 @@ class TestCommand(Command):
                         "bedrock-runtime",
                         "invoke-model",
                         "--model-id",
-                        "anthropic.claude-3-haiku-20240307-v1:0",
+                        selected_model or "anthropic.claude-haiku-4-5-20251001-v1:0",
                         "--body",
                         f"fileb://{body_file}",
                         "--content-type",
@@ -1255,7 +1236,8 @@ class TestCommand(Command):
                 )
 
                 if result.returncode == 0:
-                    return {"name": "Test Bedrock Call", "status": "✓", "details": "Haiku responded"}
+                    model_short = (selected_model or "haiku-4.5").split(".")[-1][:30]
+                    return {"name": "Test Bedrock Call", "status": "✓", "details": f"{model_short} responded"}
                 else:
                     return {"name": "Test Bedrock Call", "status": "✗", "details": result.stderr[:80]}
             finally:
@@ -1290,7 +1272,7 @@ class TestCommand(Command):
             )
 
             # Step 2: Make a small Bedrock call
-            bedrock_result = self._make_quota_test_bedrock_call(aws_profile, profile.aws_region)
+            bedrock_result = self._make_quota_test_bedrock_call(aws_profile, profile.aws_region, profile.selected_model)
             if bedrock_result["status"] != "✓":
                 results.append(bedrock_result)
                 return results

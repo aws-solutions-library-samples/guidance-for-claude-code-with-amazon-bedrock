@@ -338,11 +338,22 @@ class PackageCommand(Command):
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
-        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
+        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
         self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+
+        # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
+        if built_otel_helpers:
+            import shutil as _shutil
+
+            shell_wrapper_src = Path(__file__).parent.parent.parent.parent / "otel_helper" / "otel-helper.sh"
+            if shell_wrapper_src.exists():
+                shell_wrapper_dst = output_dir / "otel-helper.sh"
+                _shutil.copy2(shell_wrapper_src, shell_wrapper_dst)
+                shell_wrapper_dst.chmod(0o755)
+                console.print("[green]✓ OTEL helper shell wrapper included[/green]")
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
@@ -1658,6 +1669,7 @@ RUN pyinstaller \
         federation_identifier: str,
         federation_type: str = "cognito",
         profile_name: str = "ClaudeCode",
+        console=None,
     ) -> Path:
         """Create the configuration file.
 
@@ -1695,6 +1707,29 @@ RUN pyinstaller \
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
+
+        # Add confidential client fields for Azure AD if present.
+        # client_secret is never written to config.json — it lives in the OS keyring.
+        # End users set it with: credential-process --set-client-secret --profile <profile>
+        if getattr(profile, "azure_auth_mode", None):
+            config[profile_name]["azure_auth_mode"] = profile.azure_auth_mode
+        if getattr(profile, "client_certificate_path", None):
+            config[profile_name]["client_certificate_path"] = profile.client_certificate_path
+            config[profile_name]["client_certificate_key_path"] = profile.client_certificate_key_path
+            # Warn if the paths are absolute — they are machine-specific and will not
+            # resolve on end-user machines with different install layouts.
+            cert_is_absolute = Path(profile.client_certificate_path).is_absolute()
+            key_is_absolute = Path(profile.client_certificate_key_path).is_absolute()
+            if (cert_is_absolute or key_is_absolute) and console:
+                console.print(
+                    "\n[yellow]Warning: certificate paths in config.json are absolute and will not "
+                    "resolve on machines where the files are stored elsewhere.[/yellow]"
+                )
+                console.print(
+                    "[yellow]Instruct end users to set the following environment variables:[/yellow]"
+                )
+                console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
+                console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -1869,12 +1904,22 @@ if [ -d "claude-settings" ]; then
     fi
 fi
 
-# Copy OTEL helper executable if present
+# Copy OTEL helper executable and shell wrapper if present
 if [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
-    chmod +x ~/claude-code-with-bedrock/otel-helper
+    # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
+    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
+    chmod +x ~/claude-code-with-bedrock/otel-helper-bin
+    # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
+    if [ -f "otel-helper.sh" ]; then
+        cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
+        chmod +x ~/claude-code-with-bedrock/otel-helper
+    else
+        # Fallback: if shell wrapper not in package, point directly to binary
+        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
+        chmod +x ~/claude-code-with-bedrock/otel-helper
+    fi
     echo "✓ OTEL helper installed"
 fi
 
@@ -1882,7 +1927,7 @@ fi
 if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
     echo "and include them in metrics. To test the helper, run:"
-    echo "  ~/claude-code-with-bedrock/otel-helper --test"
+    echo "  ~/claude-code-with-bedrock/otel-helper-bin --test"
 fi
 
 # Update AWS config
