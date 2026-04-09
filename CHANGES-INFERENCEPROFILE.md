@@ -381,3 +381,291 @@ Populated automatically from the `ConfigurationJson` CloudFormation output.
 | Administrators | Redeploy `bedrock-auth-cognito-pool` with `InferenceProfilesEnabled=true`; copy the new `ConfigurationJson` output — provisioner ARN is included automatically |
 | AWS costs | Marginal Lambda invocation cost per first login per user (negligible at scale) |
 | IAM | Cognito role loses `bedrock:CreateInferenceProfile` and `bedrock:TagResource` |
+
+---
+
+## Direct STS Federation: Session Tags via OIDC JWT Claims
+
+### Problem
+
+When `federation_type = direct` is used (`AssumeRoleWithWebIdentity` without Cognito
+Identity Pool), the IAM policy condition:
+
+```yaml
+'aws:ResourceTag/user.email': '${aws:PrincipalTag/UserEmail}'
+```
+
+requires the session principal tag `UserEmail` to be populated. Unlike Cognito Identity
+Pool (which uses `IdentityPoolPrincipalTag` to map OIDC claims to principal tags),
+`AssumeRoleWithWebIdentity` does **not** accept a `Tags` parameter in the API call.
+
+Session tags must instead be embedded in the JWT token issued by the Identity Provider
+under the reserved claim `https://aws.amazon.com/tags`.
+
+### JWT Claim Format
+
+AWS STS reads session tags from the following JWT claim structure:
+
+```json
+{
+  "https://aws.amazon.com/tags": {
+    "principal_tags": {
+      "UserEmail": ["user@example.com"],
+      "UserId": ["provider-user-id"],
+      "UserName": ["User Name"]
+    },
+    "transitive_tag_keys": ["UserEmail", "UserId", "UserName"]
+  }
+}
+```
+
+**Rules:**
+- Tag values must be **single-element arrays** (not plain strings)
+- `transitive_tag_keys` must be a JSON array of strings
+- Tag values allow letters, numbers, spaces and `_ . : / = + - @` — the `|` character
+  (used in Auth0 `sub` claims like `auth0|69d51f38...`) is **not allowed** and must be sanitized
+- The outer key is exactly `https://aws.amazon.com/tags` with no trailing characters
+
+### Code Changes
+
+#### `source/credential_provider/__main__.py`
+
+- Reverted incorrect `Tags` parameter on `assume_role_with_web_identity` call (`AssumeRoleWithWebIdentity` does not support the `Tags` API parameter — session tags must come from JWT claims)
+- Updated comment to document the JWT claim mechanism
+
+#### `source/claude_code_with_bedrock/cli/commands/deploy.py`
+
+- Fixed secret name extraction from ARN: removed regex `-[A-Za-z0-9]{6}$` that incorrectly
+  stripped meaningful name suffixes like `-secret` (6 alphanumeric chars matches the pattern)
+- Added `markup=False` to Rich debug print to prevent `:secret:` in ARNs rendering as `㊙`
+
+#### `source/claude_code_with_bedrock/cli/utils/aws.py`
+
+- `get_stack_outputs()` now silently returns `{}` on `ValidationError` (stack does not exist)
+  instead of printing an error — avoids noise when optional stacks (e.g. OTEL monitoring)
+  are not deployed
+
+---
+
+## Identity Provider Setup Guides
+
+### Auth0
+
+To enable session tags with direct STS federation, configure an Auth0 **Action** on the
+post-login flow that injects the `https://aws.amazon.com/tags` claim into the ID token.
+
+#### Step 1 — Create the Action
+
+1. In the Auth0 Dashboard, go to **Actions** → **Triggers** → **post-login**
+2. Click **+** → **Build Custom**
+3. Name it (e.g. `AWS Session Tags`) and paste the following code:
+
+```javascript
+exports.onExecutePostLogin = async (event, api) => {
+  if (event.user.email) {
+    // Sanitize UserId: AWS tag values do not allow '|' (used in Auth0 sub claims)
+    const sanitizedUserId = event.user.user_id.replace(/[^a-zA-Z0-9 _.:/=+\-@]/g, '-');
+
+    api.idToken.setCustomClaim('https://aws.amazon.com/tags', {
+      principal_tags: {
+        UserEmail: [event.user.email],
+        UserId: [sanitizedUserId],
+        UserName: [event.user.name || event.user.email]
+      },
+      transitive_tag_keys: ['UserEmail', 'UserId', 'UserName']
+    });
+  }
+};
+```
+
+4. Click **Deploy**
+
+#### Step 2 — Add the Action to the Flow
+
+1. In **Actions** → **Triggers** → **post-login**, drag your new action between **Start**
+   and **Complete**
+2. Click **Apply**
+
+#### Step 3 — Verify
+
+Clear the credential cache and re-authenticate:
+
+```bash
+COGNITO_AUTH_DEBUG=1 credential-process --profile <your-profile> --clear-cache
+COGNITO_AUTH_DEBUG=1 credential-process --profile <your-profile>
+```
+
+In the `=== ID Token Claims ===` debug output, confirm `https://aws.amazon.com/tags` is
+present with values wrapped in arrays and that `UserId` contains no `|` character.
+
+#### Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Unable to validate tags` | Tag values are plain strings, not arrays | Wrap each value in `[...]` |
+| `principal_tags passed in claim is not in correct format` | Invalid characters in tag value (e.g. `\|`) | Sanitize `UserId` with the regex above |
+| `https://aws.amazon.com/tags` missing from token | Action not deployed or not added to flow | Check Action status is **Deployed** and it appears in the post-login flow diagram |
+
+---
+
+### Microsoft Entra (Azure AD)
+
+Entra has a significant limitation for this use case: **JWT ID tokens cannot contain
+custom claims with URL-namespaced keys** (`https://aws.amazon.com/tags`). URL-namespaced
+claim names are only supported in SAML tokens, not JWTs. Additionally, claim values in
+Entra are always strings — nested JSON objects are not natively emitted.
+
+#### Recommended Approach: Cognito Identity Pool Federation
+
+Use Entra as the OIDC provider feeding into a **Cognito Identity Pool**, which natively
+maps OIDC claims to session principal tags via `IdentityPoolPrincipalTag`:
+
+```yaml
+IdentityPoolPrincipalTag:
+  Type: AWS::Cognito::IdentityPoolPrincipalTag
+  Properties:
+    IdentityPoolId: !Ref CognitoIdentityPool
+    IdentityProviderName: !Ref EntraDomain
+    UseDefaults: false
+    PrincipalTags:
+      UserEmail: email
+      UserId: sub
+      UserName: name
+```
+
+Set `federation_type: cognito` in the profile config. The Cognito path handles tag
+injection transparently — no changes to the Entra application are required.
+
+#### Entra Application Configuration (for Cognito path)
+
+In the Azure portal:
+
+1. **App registrations** → your app → **Token configuration**
+2. Add optional claims for the **ID** token: `email`, `preferred_username`, `given_name`, `family_name`
+3. Ensure the app has **User.Read** delegated permission granted
+
+The `email` claim maps to `UserEmail` via the `IdentityPoolPrincipalTag` configuration
+above — no additional Entra configuration is needed for the tag injection itself.
+
+---
+
+## Server-Side Quota Enforcement via Inference Profile Tagging
+
+### Problem
+
+The existing quota check is **client-side**: the credential provider calls a quota API before
+issuing credentials, but only if `quota_api_endpoint` is present in `config.json`. A user who
+removes that field (or installs the credential provider from scratch) bypasses enforcement
+entirely. The credential TTL cache also means a blocked user can continue working for up to
+30 minutes after exceeding quota.
+
+### Solution: IAM Tag Condition + QuotaEnforcer Lambda
+
+Every inference profile carries a `status` tag (`enabled` or `disabled`). The IAM policy on
+the federated role includes a condition that checks this tag on **every Bedrock API call**:
+
+```yaml
+Condition:
+  StringEquals:
+    'aws:ResourceTag/user.email': '${aws:PrincipalTag/UserEmail}'
+    'aws:ResourceTag/status': 'enabled'
+```
+
+Because IAM conditions are evaluated server-side by AWS at call time, this cannot be bypassed
+by any client-side configuration change. A profile tagged `status=disabled` causes every
+`InvokeModel` call to return `AccessDeniedException`, regardless of whether the client has
+quota checking configured.
+
+### Components
+
+#### `deployment/infrastructure/lambda-functions/quota_enforcer/index.py` (new)
+
+Runs every 5 minutes via EventBridge (same cadence as `MetricsAggregator`):
+
+1. Reads the default quota policy from `QuotaPolicies` DynamoDB table
+2. Lists all APPLICATION inference profiles and groups them by `user.email` tag
+3. For each user, reads `UserQuotaMetrics` to get current monthly and daily token usage
+4. Tags each profile `status=enabled` or `status=disabled` based on quota compliance
+5. Only acts when `enforcement_mode=block`; alert-only policies are left unchanged
+
+#### `deployment/infrastructure/quota-monitoring.yaml`
+
+Added:
+- `QuotaEnforcerRole` — IAM role with `bedrock:ListInferenceProfiles`, `bedrock:ListTagsForResource`,
+  `bedrock:TagResource`, and DynamoDB read access to `UserQuotaMetrics` and `QuotaPolicies`
+- `QuotaEnforcerFunction` — Lambda running `quota_enforcer/index.py`
+- `QuotaEnforcerScheduleRule` — EventBridge rule, `rate(5 minutes)`
+- `QuotaEnforcerFunctionArn` output
+
+#### `deployment/infrastructure/lambda-functions/inference_profile_provisioner/index.py`
+
+`_build_tags()` now adds `{"key": "status", "value": "enabled"}` to every newly created
+inference profile. New profiles are enabled by default; `QuotaEnforcer` disables them only
+if the user is already over quota at provisioning time (next enforcer run within 5 minutes).
+
+#### `deployment/infrastructure/bedrock-auth-auth0.yaml`
+#### `deployment/infrastructure/bedrock-auth-okta.yaml`
+#### `deployment/infrastructure/bedrock-auth-cognito-pool.yaml`
+
+`AllowBedrockInvokeOwnApplicationProfiles` IAM statement updated to add the `status` tag
+condition in all three stacks. The Okta stack also received the full
+`AllowBedrockInvokeOwnApplicationProfiles` statement which it previously lacked.
+
+### Enforcement Timeline
+
+```
+User makes Bedrock call (tokens consumed)
+  → AWS/Bedrock CloudWatch metric emitted
+  → up to 7 min: BedrockMetricsBridge writes to /aws/claude-code/metrics
+  → +5 min: MetricsAggregator updates UserQuotaMetrics
+  → up to 5 min: QuotaEnforcer reads UserQuotaMetrics and tags profiles
+  
+Worst-case enforcement lag: ~17 minutes after quota is exceeded
+Every subsequent Bedrock call returns AccessDeniedException immediately
+```
+
+### Deployment Steps
+
+1. Tag existing inference profiles `status=enabled` before deploying the IAM change
+   (otherwise they will be blocked until the first enforcer run):
+   ```bash
+   for arn in $(aws bedrock list-inference-profiles \
+       --type-equals APPLICATION --region eu-central-1 \
+       --query 'inferenceProfileSummaries[].inferenceProfileArn' --output text); do
+     aws bedrock tag-resource --resource-arn "$arn" \
+       --tags '[{"key":"status","value":"enabled"}]' --region eu-central-1
+   done
+   ```
+
+2. Deploy the quota stack to create the enforcer Lambda:
+   ```bash
+   ccwb deploy quota
+   ```
+
+3. Deploy the auth stack to activate the IAM condition:
+   ```bash
+   ccwb deploy auth
+   ```
+
+### Security Comparison
+
+| Threat | Client-side check only | Tag-based enforcement |
+|---|---|---|
+| User removes `quota_api_endpoint` from config | Bypasses quota entirely | No effect — IAM blocks at call time |
+| Stale cached credentials (up to 30 min) | User keeps working past quota | Blocked within ~17 min regardless |
+| User with stolen valid credentials | Quota check skipped if no config | Profile tagged disabled, all calls fail |
+| Admin error (enforcer not deployed) | Same as before | Falls back to client-side check |
+
+#### Alternative: Lambda Proxy (for direct federation)
+
+If Cognito Identity Pool is not an option and direct federation is required, add a Lambda
+that:
+
+1. Validates the Entra JWT
+2. Extracts `email` and `sub` claims
+3. Calls `AssumeRoleWithWebIdentity` server-side using a custom-built JWT that includes
+   the `https://aws.amazon.com/tags` claim
+4. Returns short-lived credentials to the client
+
+This adds operational complexity and is only recommended when the Cognito path is not
+available.

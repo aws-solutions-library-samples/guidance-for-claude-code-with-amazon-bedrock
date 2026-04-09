@@ -1079,9 +1079,10 @@ class MultiProviderAuth:
             self._debug_print(f"Session name: {session_name}")
             self._debug_print(f"Session tags: {session_tags}")
 
-            # Call AssumeRoleWithWebIdentity
-            # Note: AssumeRoleWithWebIdentity doesn't support Tags parameter directly
-            # Session tags must be passed via the token claims and configured in the trust policy
+            # Call AssumeRoleWithWebIdentity.
+            # Note: AssumeRoleWithWebIdentity does NOT support the Tags parameter.
+            # Session tags for OIDC federation must come from JWT claims mapped via
+            # the Cognito Identity Pool PrincipalTags config — not direct STS.
             assume_role_params = {
                 "RoleArn": federated_role_arn,
                 "RoleSessionName": session_name,

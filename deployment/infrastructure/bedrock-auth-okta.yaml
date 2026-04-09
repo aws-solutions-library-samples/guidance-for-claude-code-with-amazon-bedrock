@@ -49,10 +49,22 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
+  InferenceProfilesEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      When true, users can ONLY invoke Bedrock via their own Application Inference Profiles.
+      Direct access to foundation models and cross-region inference profiles is denied.
+
 Conditions:
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  UseInferenceProfiles: !Equals [!Ref InferenceProfilesEnabled, 'true']
+  UseDirectModels: !Not [!Equals [!Ref InferenceProfilesEnabled, 'true']]
   # Partition-aware conditions for Cognito Identity service principals
   IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
   IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
@@ -135,6 +147,26 @@ Resources:
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock:GetInferenceProfile'
             Resource: '*'
+          - !If
+            - UseInferenceProfiles
+            - Sid: AllowBedrockInvokeOwnApplicationProfiles
+              Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:ConverseStream'
+                - 'bedrock-runtime:Converse'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
+              Condition:
+                StringEquals:
+                  'aws:RequestedRegion': !Ref AllowedBedrockRegions
+                  'aws:ResourceTag/user.email': '${aws:PrincipalTag/UserEmail}'
+                  # Quota enforcement: only allow invocation when profile is tagged status=enabled
+                  'aws:ResourceTag/status': 'enabled'
+            - !Ref 'AWS::NoValue'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics

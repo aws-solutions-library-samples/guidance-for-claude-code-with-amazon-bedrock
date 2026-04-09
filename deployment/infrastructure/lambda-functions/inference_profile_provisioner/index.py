@@ -64,7 +64,11 @@ def _get_profile_name(email: str, model_key: str) -> str:
 
 
 def _build_tags(email: str, claims: dict) -> list[dict]:
-    tags = [{"key": "user.email", "value": email[:_MAX_TAG_VALUE]}]
+    tags = [
+        {"key": "user.email", "value": email[:_MAX_TAG_VALUE]},
+        # status=enabled by default; QuotaEnforcer Lambda sets to disabled when quota exceeded
+        {"key": "status", "value": "enabled"},
+    ]
     claim_map = {
         "custom:cost_center": "cost_center",
         "custom:department": "department",

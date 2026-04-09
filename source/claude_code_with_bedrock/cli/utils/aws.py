@@ -99,6 +99,12 @@ def get_stack_outputs(stack_name: str, region: str) -> dict[str, str]:
             outputs[output["OutputKey"]] = output["OutputValue"]
 
         return outputs
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ValidationError":
+            # Stack does not exist — not an error, just return empty
+            return {}
+        print(f"Error getting stack outputs: {e}")
+        return {}
     except Exception as e:
         print(f"Error getting stack outputs: {e}")
         return {}

@@ -350,6 +350,85 @@ Resources:
   # End Quota Check API
   # ============================================
 
+  # ============================================
+  # Quota Enforcer (server-side tag-based blocking)
+  # ============================================
+
+  # IAM Role for Quota Enforcer Lambda
+  QuotaEnforcerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QuotaEnforcerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt UserQuotaMetrics.Arn
+                  - !GetAtt QuotaPolicies.Arn
+                  - !Sub '${QuotaPolicies.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:ListTagsForResource
+                  - bedrock:TagResource
+                Resource: '*'
+
+  # Lambda function for quota enforcement via inference profile tagging
+  QuotaEnforcerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: claude-code-quota-enforcer
+      Description: Enforces quotas by tagging Bedrock inference profiles status=enabled/disabled
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt QuotaEnforcerRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          QUOTA_TABLE: !Ref UserQuotaMetrics
+          POLICIES_TABLE: !Ref QuotaPolicies
+      Code: ./lambda-functions/quota_enforcer/
+
+  # EventBridge Rule to run quota enforcer every 5 minutes (same cadence as aggregator)
+  QuotaEnforcerScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: claude-code-quota-enforcer-schedule
+      Description: Trigger quota enforcement every 5 minutes
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt QuotaEnforcerFunction.Arn
+          Id: QuotaEnforcerTarget
+
+  # Permission for EventBridge to invoke the Lambda
+  QuotaEnforcerSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QuotaEnforcerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt QuotaEnforcerScheduleRule.Arn
+
+  # ============================================
+  # End Quota Enforcer
+  # ============================================
+
   # Grant MetricsAggregator permissions to write to quota table and read policies
   MetricsAggregatorQuotaPolicy:
     Type: AWS::IAM::Policy
@@ -423,3 +502,9 @@ Outputs:
     Value: !GetAtt QuotaCheckFunction.Arn
     Export:
       Name: !Sub '${AWS::StackName}-QuotaCheckFunctionArn'
+
+  QuotaEnforcerFunctionArn:
+    Description: ARN of the quota enforcer Lambda (tags inference profiles enabled/disabled)
+    Value: !GetAtt QuotaEnforcerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaEnforcerFunctionArn'

@@ -160,6 +160,8 @@ Resources:
                   'aws:RequestedRegion': !Ref AllowedBedrockRegions
                   # ABAC: restrict invocation to profiles tagged with the caller's own email
                   'aws:ResourceTag/user.email': '${aws:PrincipalTag/UserEmail}'
+                  # Quota enforcement: only allow invocation when profile is tagged status=enabled
+                  'aws:ResourceTag/status': 'enabled'
             - !Ref 'AWS::NoValue'
           # Statement 2: allow invoke on underlying foundation/system models, but ONLY when the
           # call originates from an application inference profile in this account (cross-region routing).

@@ -39,16 +39,18 @@ def lambda_handler(event, context):
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(minutes=AGGREGATION_WINDOW)
 
-    # Convert to milliseconds for CloudWatch Logs
-    start_ms = int(start_time.timestamp() * 1000)
-    end_ms = int(end_time.timestamp() * 1000)
+    # CloudWatch Logs filter_log_events uses milliseconds; Logs Insights uses seconds
+    start_ms = int(start_time.timestamp() * 1000)   # for filter_log_events
+    end_ms = int(end_time.timestamp() * 1000)         # for filter_log_events
+    start_sec = int(start_time.timestamp())            # for Logs Insights start_query
+    end_sec = int(end_time.timestamp())                # for Logs Insights start_query
 
     try:
         # Collect all metrics
         metrics_to_publish = []
 
         # 1. Total Tokens
-        total_tokens = aggregate_total_tokens(start_ms, end_ms)
+        total_tokens = aggregate_total_tokens(start_sec, end_sec)
         if total_tokens is not None:
             metrics_to_publish.append(
                 {
@@ -60,7 +62,7 @@ def lambda_handler(event, context):
             )
 
         # 2. Active Users (now returns count and details)
-        active_users_count, user_details = aggregate_active_users(start_ms, end_ms)
+        active_users_count, user_details = aggregate_active_users(start_sec, end_sec)
         if active_users_count is not None:
             metrics_to_publish.append(
                 {
@@ -73,11 +75,11 @@ def lambda_handler(event, context):
 
         # 3. Lines of Code Added/Removed
         line_events, lines_added, lines_removed = aggregate_lines_of_code(
-            start_ms, end_ms
+            start_sec, end_sec
         )
 
         # 3b. Model Rate Metrics (per-minute TPM/RPM)
-        model_rate_metrics = aggregate_model_rate_metrics(start_ms, end_ms)
+        model_rate_metrics = aggregate_model_rate_metrics(start_sec, end_sec)
 
         # Write to DynamoDB
         write_to_dynamodb(
@@ -117,27 +119,27 @@ def lambda_handler(event, context):
         )
 
         # 4. Cache Metrics
-        cache_metrics = aggregate_cache_metrics(start_ms, end_ms)
+        cache_metrics = aggregate_cache_metrics(start_sec, end_sec)
         for metric in cache_metrics:
             metrics_to_publish.append(metric)
 
         # 5. Top Users
-        top_user_metrics = aggregate_top_users(start_ms, end_ms)
+        top_user_metrics = aggregate_top_users(start_sec, end_sec)
         for metric in top_user_metrics:
             metrics_to_publish.append(metric)
 
         # 6. Operations by Type
-        operation_metrics = aggregate_operations(start_ms, end_ms)
+        operation_metrics = aggregate_operations(start_sec, end_sec)
         for metric in operation_metrics:
             metrics_to_publish.append(metric)
 
         # 7. Code Generation by Language
-        language_metrics = aggregate_code_languages(start_ms, end_ms)
+        language_metrics = aggregate_code_languages(start_sec, end_sec)
         for metric in language_metrics:
             metrics_to_publish.append(metric)
 
         # 8. Commits
-        commit_count = aggregate_commits(start_ms, end_ms)
+        commit_count = aggregate_commits(start_sec, end_sec)
         if commit_count is not None:
             metrics_to_publish.append(
                 {
@@ -167,15 +169,17 @@ def lambda_handler(event, context):
         return {"statusCode": 500, "body": json.dumps(f"Error: {str(e)}")}
 
 
-def run_query(query, start_ms, end_ms):
+def run_query(query, start_sec, end_sec):
     """
     Run a CloudWatch Logs Insights query and wait for results.
+    start_sec / end_sec must be Unix timestamps in SECONDS (not milliseconds).
     """
     try:
+        print(f"run_query: startTime={start_sec} endTime={end_sec} ({datetime.fromtimestamp(start_sec, tz=timezone.utc).isoformat()} -> {datetime.fromtimestamp(end_sec, tz=timezone.utc).isoformat()})")
         response = logs_client.start_query(
             logGroupName=LOG_GROUP,
-            startTime=start_ms,
-            endTime=end_ms,
+            startTime=start_sec,
+            endTime=end_sec,
             queryString=query,
         )
 
@@ -187,7 +191,9 @@ def run_query(query, start_ms, end_ms):
             status = response["status"]
 
             if status == "Complete":
-                return response.get("results", [])
+                results = response.get("results", [])
+                print(f"run_query: complete, {len(results)} rows returned")
+                return results
             elif status in ["Failed", "Cancelled"]:
                 print(f"Query failed with status: {status}")
                 return []
@@ -309,8 +315,8 @@ def aggregate_active_users(start_ms, end_ms):
         fields @message
         | filter @message like /user.email/
         | parse @message /"user.email":"(?<user>[^"]*)"/
-        | parse @message /"groups":\[(?<groups>[^\]]*)\]/
-        | parse @message /"cognito:groups":\[(?<cognito_groups>[^\]]*)\]/
+        | parse @message /"groups":\\[(?<groups>[^\\]]*)\\]/
+        | parse @message /"cognito:groups":\\[(?<cognito_groups>[^\\]]*)\\]/
         | parse @message /"custom:department":"(?<department>[^"]*)"/
         | stats latest(groups) as groups, latest(cognito_groups) as cognito_groups, latest(department) as department by user
         """

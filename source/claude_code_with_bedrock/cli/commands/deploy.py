@@ -493,13 +493,37 @@ class DeployCommand(Command):
                         f"IdPProvider={profile.distribution_idp_provider}",
                     ]
 
-                    # Add IdP-specific parameters
+                    # Add IdP-specific parameters.
+                    # CloudFormation resolves {{resolve:secretsmanager:...}} for ALL branches of
+                    # !If at parse time, even inactive ones. Passing empty strings for unused
+                    # secret ARN parameters causes a ResourceNotFoundException. Instead, we pass
+                    # the active secret name for all unused secret params so CF can resolve them
+                    # (the values are never actually used at runtime).
+                    # We use the secret NAME (not full ARN) because {{resolve:secretsmanager:}}
+                    # requires the exact ARN including the 6-char suffix, but names work without it.
+                    secret_arn = profile.distribution_idp_client_secret_arn or ""
+                    # Extract name from ARN (arn:aws:secretsmanager:region:account:secret:name-suffix)
+                    # or use as-is if it's already a name
+                    if secret_arn.startswith("arn:"):
+                        secret_name_parts = secret_arn.split(":")
+                        # ARN format: arn:partition:secretsmanager:region:account:secret:name[-SUFFIX]
+                        # Use the name portion as-is. CloudFormation {{resolve:secretsmanager:name}}
+                        # works with the friendly name without the AWS-appended random suffix.
+                        # Do NOT strip the suffix here: the stored ARN may not have it, and the
+                        # suffix pattern (-XXXXXX) is indistinguishable from meaningful name parts.
+                        active_secret_ref = secret_name_parts[-1] if len(secret_name_parts) >= 7 else secret_arn
+                    else:
+                        active_secret_ref = secret_arn
+                    console.print(f"[dim]DEBUG: secret_arn={secret_arn!r} -> active_secret_ref={active_secret_ref!r}[/dim]", markup=False)
                     if profile.distribution_idp_provider == "okta":
                         params.extend(
                             [
                                 f"OktaDomain={profile.distribution_idp_domain}",
                                 f"OktaClientId={profile.distribution_idp_client_id}",
-                                f"OktaClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                                f"OktaClientSecretArn={active_secret_ref}",
+                                f"AzureClientSecretArn={active_secret_ref}",
+                                f"Auth0ClientSecretArn={active_secret_ref}",
+                                f"CognitoClientSecretArn={active_secret_ref}",
                             ]
                         )
                     elif profile.distribution_idp_provider == "azure":
@@ -508,7 +532,10 @@ class DeployCommand(Command):
                             [
                                 f"AzureTenantId={profile.distribution_idp_domain}",
                                 f"AzureClientId={profile.distribution_idp_client_id}",
-                                f"AzureClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                                f"AzureClientSecretArn={active_secret_ref}",
+                                f"OktaClientSecretArn={active_secret_ref}",
+                                f"Auth0ClientSecretArn={active_secret_ref}",
+                                f"CognitoClientSecretArn={active_secret_ref}",
                             ]
                         )
                     elif profile.distribution_idp_provider == "auth0":
@@ -516,7 +543,10 @@ class DeployCommand(Command):
                             [
                                 f"Auth0Domain={profile.distribution_idp_domain}",
                                 f"Auth0ClientId={profile.distribution_idp_client_id}",
-                                f"Auth0ClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                                f"Auth0ClientSecretArn={active_secret_ref}",
+                                f"OktaClientSecretArn={active_secret_ref}",
+                                f"AzureClientSecretArn={active_secret_ref}",
+                                f"CognitoClientSecretArn={active_secret_ref}",
                             ]
                         )
                     elif profile.distribution_idp_provider == "cognito":
@@ -526,7 +556,10 @@ class DeployCommand(Command):
                                 f"CognitoUserPoolId={profile.cognito_user_pool_id or ''}",
                                 f"CognitoUserPoolDomain={profile.distribution_idp_domain}",
                                 f"CognitoClientId={profile.distribution_idp_client_id}",
-                                f"CognitoClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                                f"CognitoClientSecretArn={active_secret_ref}",
+                                f"OktaClientSecretArn={active_secret_ref}",
+                                f"AzureClientSecretArn={active_secret_ref}",
+                                f"Auth0ClientSecretArn={active_secret_ref}",
                             ]
                         )
 
@@ -882,6 +915,12 @@ class DeployCommand(Command):
                     # Update metrics aggregator Lambda environment if successful
                     if result == 0:
                         self._update_metrics_aggregator_env(profile, stack_name, console)
+                        self._write_default_quota_policy(
+                            profile, stack_name, console,
+                            monthly_limit, daily_limit,
+                            monthly_enforcement, daily_enforcement,
+                            warning_80, warning_90,
+                        )
 
                     return result
 
@@ -1056,6 +1095,46 @@ class DeployCommand(Command):
 
         except Exception as e:
             console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
+
+    def _write_default_quota_policy(
+        self, profile, quota_stack_name: str, console: Console,
+        monthly_limit: int, daily_limit, monthly_enforcement: str,
+        daily_enforcement: str, warning_80: int, warning_90: int,
+    ) -> None:
+        """Write the default quota policy to DynamoDB after quota stack deployment."""
+        try:
+            import boto3
+            from decimal import Decimal
+
+            quota_outputs = get_stack_outputs(quota_stack_name, profile.aws_region)
+            policies_table_name = quota_outputs.get("PoliciesTableName", "QuotaPolicies") if quota_outputs else "QuotaPolicies"
+
+            dynamodb = boto3.resource("dynamodb", region_name=profile.aws_region)
+            table = dynamodb.Table(policies_table_name)
+
+            item = {
+                "pk": "POLICY#default#default",
+                "sk": "CURRENT",
+                "policy_type": "default",
+                "identifier": "default",
+                "monthly_token_limit": Decimal(str(monthly_limit)),
+                "warning_threshold_80": Decimal(str(warning_80)),
+                "warning_threshold_90": Decimal(str(warning_90)),
+                "enforcement_mode": monthly_enforcement,
+                "enabled": True,
+            }
+            if daily_limit:
+                item["daily_token_limit"] = Decimal(str(daily_limit))
+                item["daily_enforcement_mode"] = daily_enforcement
+
+            table.put_item(Item=item)
+            console.print(f"[green]✓ Default quota policy written: {monthly_limit:,} tokens/month ({monthly_enforcement})[/green]")
+            if daily_limit:
+                console.print(f"[green]  Daily limit: {daily_limit:,} tokens ({daily_enforcement})[/green]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not write default quota policy: {str(e)}[/yellow]")
+            console.print(f"[dim]You can add it manually via the AWS Console or CLI[/dim]")
 
     def _check_orphaned_stacks(self, stacks_to_deploy, profile, cf_manager, console: Console) -> list:
         """Check for stacks that exist but are disabled in config.
