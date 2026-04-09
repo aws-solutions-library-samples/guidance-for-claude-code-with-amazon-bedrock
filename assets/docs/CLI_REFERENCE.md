@@ -320,7 +320,8 @@ This ensures that packaging always works, even if some optional platforms are no
 - `otel-helper-<platform>` - OTEL helper (if monitoring enabled)
 - `config.json` - Configuration
 - `install.sh` - Unix installer script (auto-detects architecture)
-- `install.bat` - Windows installer script
+- `install.bat` - Windows installer launcher
+- `ccwb-install.ps1` - Windows PowerShell installer logic (called by install.bat)
 - `README.md` - Installation instructions
 - Includes Claude Code telemetry settings (if monitoring enabled)
 - Configures environment variables for model selection (ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL)
@@ -384,7 +385,8 @@ dist/
 ├── otel-helper-windows.exe           # Windows OTEL helper
 ├── config.json                       # Configuration
 ├── install.sh                        # Unix installer (auto-detects architecture)
-├── install.bat                       # Windows installer
+├── install.bat                       # Windows installer launcher
+├── ccwb-install.ps1                  # Windows PowerShell installer logic
 ├── README.md                         # User instructions
 └── .claude/
     └── settings.json                 # Telemetry settings (optional)
