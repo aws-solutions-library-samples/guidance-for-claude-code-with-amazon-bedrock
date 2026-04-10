@@ -2108,6 +2108,7 @@ RUN mkdir -p /output && shiv \\
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
+
         # Add inference profile configuration
         if getattr(profile, "inference_profiles_enabled", False):
             config[profile_name]["inference_profiles_enabled"] = True
