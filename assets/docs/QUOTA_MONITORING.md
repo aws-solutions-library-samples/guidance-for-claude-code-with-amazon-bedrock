@@ -402,7 +402,7 @@ See [CLI Reference](CLI_REFERENCE.md#quota-export---export-policies) for full do
 
 ```bash
 # View Lambda logs
-aws logs tail /aws/lambda/claude-code-quota-monitor --follow
+aws logs tail /aws/lambda/ClaudeCode-QuotaMonitor --follow
 
 # Query user quotas
 aws dynamodb scan --table-name UserQuotaMetrics \

@@ -184,7 +184,7 @@ Resources:
   QuotaMonitorFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: claude-code-quota-monitor
+      FunctionName: ClaudeCode-QuotaMonitor
       Description: Monitors user token usage and sends alerts when quotas are exceeded
       Runtime: python3.12
       Handler: index.lambda_handler
@@ -209,7 +209,7 @@ Resources:
   QuotaMonitorScheduleRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: claude-code-quota-monitor-schedule
+      Name: ClaudeCode-QuotaMonitor-schedule
       Description: Trigger quota monitoring every 15 minutes
       ScheduleExpression: rate(15 minutes)
       State: ENABLED
@@ -261,7 +261,7 @@ Resources:
   QuotaCheckFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: claude-code-quota-check
+      FunctionName: ClaudeCode-QuotaCheck
       Description: Real-time quota check for credential issuance - blocks access when quota exceeded
       Runtime: python3.12
       Handler: index.lambda_handler
@@ -391,7 +391,7 @@ Resources:
   QuotaEnforcerFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: claude-code-quota-enforcer
+      FunctionName: ClaudeCode-QuotaEnforcer
       Description: Enforces quotas by tagging Bedrock inference profiles status=enabled/disabled
       Runtime: python3.12
       Handler: index.lambda_handler
@@ -408,7 +408,7 @@ Resources:
   QuotaEnforcerScheduleRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: claude-code-quota-enforcer-schedule
+      Name: ClaudeCode-QuotaEnforcer-schedule
       Description: Trigger quota enforcement every 5 minutes
       ScheduleExpression: rate(5 minutes)
       State: ENABLED

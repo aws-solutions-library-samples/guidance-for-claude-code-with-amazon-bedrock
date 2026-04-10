@@ -485,7 +485,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: UseInferenceProfiles
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-inference-profile-provisioner'
+      LogGroupName: '/aws/lambda/ClaudeCode-InferenceProfileProvisioner'
       RetentionInDays: 30
 
   InferenceProfileProvisionerFunction:
@@ -493,7 +493,7 @@ Resources:
     Condition: UseInferenceProfiles
     DependsOn: InferenceProfileProvisionerLogGroup
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-inference-profile-provisioner'
+      FunctionName: 'ClaudeCode-InferenceProfileProvisioner'
       Description: >-
         Provisions Bedrock Application Inference Profiles for authenticated users.
         Sole principal with bedrock:CreateInferenceProfile — users invoke this instead
@@ -504,7 +504,7 @@ Resources:
       Timeout: 60
       MemorySize: 128
       LoggingConfig:
-        LogGroup: !Sub '/aws/lambda/${AWS::StackName}-inference-profile-provisioner'
+        LogGroup: '/aws/lambda/ClaudeCode-InferenceProfileProvisioner'
       Code:
         ZipFile: |
           import json, logging, re, hashlib, boto3
