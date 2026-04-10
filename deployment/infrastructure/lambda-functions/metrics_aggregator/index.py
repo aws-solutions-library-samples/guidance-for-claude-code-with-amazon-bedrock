@@ -29,15 +29,51 @@ quota_table = dynamodb.Table(QUOTA_TABLE) if QUOTA_TABLE else None
 policies_table = dynamodb.Table(POLICIES_TABLE) if POLICIES_TABLE else None
 
 
+CURSOR_SK = "CURSOR#AGGREGATOR"
+
+
+def _read_high_water_mark(default_end: datetime) -> datetime:
+    """Read the last-processed timestamp from DynamoDB.
+
+    Returns the stored timestamp, or *default_end* minus 10 minutes on first run.
+    """
+    try:
+        resp = table.get_item(Key={"pk": "METRICS", "sk": CURSOR_SK})
+        item = resp.get("Item")
+        if item and "last_processed" in item:
+            ts = item["last_processed"]
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception as e:
+        print(f"Warning: could not read high-water mark: {e}")
+    return default_end - timedelta(minutes=10)
+
+
+def _write_high_water_mark(ts: datetime) -> None:
+    """Persist the high-water mark so the next run starts here."""
+    try:
+        table.put_item(Item={
+            "pk": "METRICS",
+            "sk": CURSOR_SK,
+            "last_processed": ts.isoformat().replace("+00:00", "Z"),
+        })
+    except Exception as e:
+        print(f"Warning: could not write high-water mark: {e}")
+
+
 def lambda_handler(event, context):
     """
-    Aggregate logs from the last 5 minutes and publish to CloudWatch Metrics.
+    Aggregate logs incrementally using a high-water mark stored in DynamoDB.
+    
+    On each run the aggregator reads the last-processed timestamp from DynamoDB,
+    queries the log group from that point to now, writes results, then advances
+    the marker.  This eliminates timing races with the BedrockMetricsBridge and
+    guarantees exactly-once processing with no double-counting.
     """
     print(f"Starting metrics aggregation for log group: {LOG_GROUP}")
 
-    # Calculate time window
+    # Read high-water mark from DynamoDB (or default to 10 minutes ago on first run)
     end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(minutes=AGGREGATION_WINDOW)
+    start_time = _read_high_water_mark(end_time)
 
     # CloudWatch Logs filter_log_events uses milliseconds; Logs Insights uses seconds
     start_ms = int(start_time.timestamp() * 1000)   # for filter_log_events
@@ -159,6 +195,10 @@ def lambda_handler(event, context):
         print(
             f"Successfully aggregated and published {len(metrics_to_publish)} metrics"
         )
+
+        # Advance the high-water mark so the next run starts where we left off
+        _write_high_water_mark(end_time)
+
         return {
             "statusCode": 200,
             "body": json.dumps(f"Published {len(metrics_to_publish)} metrics"),
