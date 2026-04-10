@@ -287,7 +287,15 @@ See [QUICK_START.md](QUICK_START.md) for step-by-step deployment instructions.
 
 ## Monitoring and Operations
 
-Optional OpenTelemetry monitoring provides comprehensive usage visibility for cost attribution, capacity planning, and productivity insights.
+Three monitoring configurations are supported:
+
+| Configuration | Token Metrics | Session/Activity Metrics | Infrastructure Required |
+|---|---|---|---|
+| **OTEL only** | OTEL → CloudWatch EMF | OTEL → CloudWatch EMF | ECS Fargate + VPC |
+| **Inference Profiles only** | Bedrock CloudWatch (server-side) | — | None (no VPC) |
+| **Both (recommended)** | Bedrock CloudWatch (server-side) | OTEL → CloudWatch EMF | ECS Fargate + VPC |
+
+When both are enabled, the OTEL collector filters out token metrics to avoid double-counting.
 
 ### Available Metrics
 
@@ -480,11 +488,63 @@ To retire a model without deleting existing profiles, set `"enabled": False`. Th
 
 ### Compatibility with the OpenTelemetry Stack
 
-The two monitoring approaches can coexist during a transition period. You can enable Application Inference Profiles while keeping the OTEL stack running. Once all users have logged in and their profiles are confirmed via `ccwb profiles list`, you can decommission the OTEL collector stack to reduce costs:
+The two monitoring approaches can coexist. When both are enabled:
+
+- **Token metrics** (input/output/cache tokens, cost) come from Bedrock CloudWatch natively via inference profiles — server-side, cannot be bypassed
+- **Session/activity metrics** (active time, code edits, tool usage, language distribution) flow through the OTEL collector
+- The OTEL collector automatically filters out `claude_code.token.usage` and `claude_code.cost.usage` via a `filter/token_metrics` processor to avoid double-counting
+
+Enable both during `ccwb init` by answering "Yes" to both "Enable Application Inference Profiles?" and "Deploy OpenTelemetry collector for session/activity metrics?".
+
+To run inference profiles only (no OTEL infrastructure), answer "No" to the OTEL question. Token metrics will still be available in CloudWatch.
+
+To decommission the OTEL stack later:
 
 ```bash
 poetry run ccwb destroy monitoring --profile <your-profile>
 ```
+
+### Server-Side Quota Enforcement
+
+When inference profiles are enabled, quota enforcement is fully server-side using IAM tag conditions:
+
+- Each inference profile carries a `status` tag (`enabled` / `disabled`)
+- IAM policy requires `aws:ResourceTag/status = enabled` on every `InvokeModel` call
+- `ClaudeCode-QuotaEnforcer` Lambda runs every 5 minutes: reads usage from DynamoDB, compares against quota policies, and tags profiles `disabled` when limits are exceeded
+- Once disabled, every subsequent Bedrock call returns `AccessDeniedException` immediately — no client-side bypass possible
+- Worst-case enforcement lag: ~17 minutes after quota exceeded
+
+Related Lambdas (fixed names, not stack-dependent):
+- `ClaudeCode-QuotaCheck` — real-time quota check for credential issuance
+- `ClaudeCode-QuotaEnforcer` — tags profiles enabled/disabled based on usage
+- `ClaudeCode-QuotaMonitor` — monitors usage and sends SNS alerts
+- `ClaudeCode-InferenceProfileProvisioner` — creates per-user inference profiles on first login
+
+### Session Tags & ABAC Configuration
+
+ABAC requires `UserEmail`, `UserId`, and `UserName` principal tags on every STS session. Configuration depends on the federation path:
+
+**Auth0 (Direct Federation)** — requires a Post-Login Action:
+```javascript
+exports.onExecutePostLogin = async (event, api) => {
+  if (event.user.email) {
+    const sanitizedUserId = event.user.user_id
+      .replace(/[^a-zA-Z0-9 _.:/=+\-@]/g, '-');
+    api.idToken.setCustomClaim('https://aws.amazon.com/tags', {
+      principal_tags: {
+        UserEmail: [event.user.email],
+        UserId: [sanitizedUserId],
+        UserName: [event.user.name || event.user.email]
+      },
+      transitive_tag_keys: ['UserEmail', 'UserId', 'UserName']
+    });
+  }
+};
+```
+
+**Okta (Direct Federation)** — requires a Token Inline Hook with the same claim structure, or use Cognito Identity Pool fallback.
+
+**Azure AD / Cognito User Pool** — use Cognito Identity Pool. Tags are mapped automatically via `PrincipalTagMapping` in the CFN template (no IdP-side configuration needed).
 
 ## Additional Resources
 
