@@ -1919,10 +1919,12 @@ if [ -f "$OTEL_BINARY" ]; then
     if [ -f "otel-helper.sh" ]; then
         cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
         chmod +x ~/claude-code-with-bedrock/otel-helper
+        xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
     else
         # Fallback: if shell wrapper not in package, point directly to binary
         cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
         chmod +x ~/claude-code-with-bedrock/otel-helper
+        xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
     fi
     echo "✓ OTEL helper installed"
 fi
