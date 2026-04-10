@@ -246,6 +246,24 @@ def _build_log_events(arn_to_profile: dict, bedrock_metrics: dict, timestamp: da
                 continue
 
             record = {
+                "_aws": {
+                    "CloudWatchMetrics": [
+                        {
+                            "Namespace": "ClaudeCode",
+                            "Dimensions": [
+                                ["type"],
+                                ["model"],
+                                ["user.email"],
+                                ["type", "model"],
+                                ["type", "user.email"],
+                            ],
+                            "Metrics": [
+                                {"Name": "claude_code.token.usage", "Unit": "Count"},
+                            ],
+                        }
+                    ],
+                    "Timestamp": ts_ms,
+                },
                 "user.email": email,
                 "claude_code.token.usage": count,
                 "type": otel_type,

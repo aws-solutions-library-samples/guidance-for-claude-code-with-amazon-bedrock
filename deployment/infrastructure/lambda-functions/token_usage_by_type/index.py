@@ -24,41 +24,39 @@ def lambda_handler(event, context):
     cloudwatch_client = boto3.client("cloudwatch", region_name=region)
 
     try:
-        # Get time range 
         start_time, end_time = get_time_range(time_range, default_hours=7*24)
-        
-        # Convert to datetime for CloudWatch API
+
         start_dt = datetime.fromtimestamp(start_time / 1000)
         end_dt = datetime.fromtimestamp(end_time / 1000)
 
-        # Define the metrics to query
-        token_metrics = [
-            ('InputTokens', 'Input Tokens'),
-            ('OutputTokens', 'Output Tokens'),
-            ('CacheCreationTokens', 'Cache Creation'),
-            ('CacheReadTokens', 'Cache Read')
+        # Query claude_code.token.usage metric by type dimension
+        # These are published as EMF by the BedrockMetricsBridge Lambda
+        token_type_map = [
+            ('input', 'Input Tokens'),
+            ('output', 'Output Tokens'),
+            ('cacheCreation', 'Cache Creation'),
+            ('cacheRead', 'Cache Read'),
         ]
-        
+
         token_types = []
-        
-        # Query each metric type
-        for metric_name, display_name in token_metrics:
+
+        for type_value, display_name in token_type_map:
             response = cloudwatch_client.get_metric_statistics(
                 Namespace='ClaudeCode',
-                MetricName=metric_name,
+                MetricName='claude_code.token.usage',
+                Dimensions=[{'Name': 'type', 'Value': type_value}],
                 StartTime=start_dt,
                 EndTime=end_dt,
-                Period=300,  # 5-minute periods
-                Statistics=['Sum']
+                Period=300,
+                Statistics=['Sum'],
             )
-            
-            # Sum all data points
+
             total_tokens = sum(point.get('Sum', 0) for point in response.get('Datapoints', []))
-            
+
             if total_tokens > 0:
                 token_types.append({
                     "type": display_name,
-                    "tokens": total_tokens
+                    "tokens": total_tokens,
                 })
 
         if not token_types:
@@ -67,29 +65,24 @@ def lambda_handler(event, context):
                 "No token usage data available for this period"
             )
 
-        # Calculate total and percentages
         total_tokens = sum(t["tokens"] for t in token_types)
-        
-        # Colors for segments
+
         colors = {
             "Input Tokens": "#3b82f6",
-            "Output Tokens": "#ef4444", 
+            "Output Tokens": "#ef4444",
             "Cache Creation": "#10b981",
-            "Cache Read": "#8b5cf6"
+            "Cache Read": "#8b5cf6",
         }
-        
-        # Sort by size for better visualization
+
         token_types.sort(key=lambda x: x["tokens"], reverse=True)
-        
-        # Build ultra compact bars with text on bars
+
         legend_html = ""
         max_tokens = max(t["tokens"] for t in token_types) if token_types else 1
-        
+
         for item in token_types:
-            percentage = (item["tokens"] / total_tokens * 100) if total_tokens > 0 else 0
             bar_width = (item["tokens"] / max_tokens * 100) if max_tokens > 0 else 0
             color = colors.get(item["type"], "#667eea")
-            
+
             legend_html += f"""
             <div style="
                 display: flex;
@@ -134,22 +127,6 @@ def lambda_handler(event, context):
                 ">{format_percentage(item['tokens'], total_tokens)} • {format_number(item['tokens'])}</div>
             </div>
             """
-
-        # Create SVG pie chart with percentages
-        svg_segments = ""
-        cumulative_percent = 0
-        
-        for i, item in enumerate(token_types):
-            percentage = (item["tokens"] / total_tokens * 100) if total_tokens > 0 else 0
-            color = colors.get(item["type"], "#667eea")
-            
-            # Calculate arc path for pie segment
-            start_angle = cumulative_percent * 3.6  # Convert percentage to degrees
-            end_angle = (cumulative_percent + percentage) * 3.6
-            
-            # For simplicity, using a colored rectangle to represent percentage
-            # In production, you'd use proper SVG arc paths
-            cumulative_percent += percentage
 
         return f"""
         <div style="
