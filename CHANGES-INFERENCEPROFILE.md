@@ -669,3 +669,93 @@ that:
 
 This adds operational complexity and is only recommended when the Cognito path is not
 available.
+
+---
+
+## Code Changes Summary
+
+### New Files
+
+| File | Type | Purpose |
+|------|------|---------|
+| `deployment/infrastructure/lambda-functions/inference_profile_provisioner/index.py` | Lambda | Sole principal with Bedrock management permissions. Creates per-user Application Inference Profiles idempotently on login. Enforces canonical naming and tag schema server-side. |
+| `deployment/infrastructure/lambda-functions/quota_enforcer/index.py` | Lambda | Runs every 5 min. Reads DynamoDB quotas, checks per-user usage, tags profiles `status=enabled` or `status=disabled`. Provides server-side enforcement that cannot be bypassed client-side. |
+| `deployment/infrastructure/lambda-functions/bedrock_metrics_bridge/index.py` | Lambda | Bridges Bedrock CloudWatch metrics (InputTokenCount, OutputTokenCount, CacheRead, CacheWrite) into the OTEL-compatible log group (`/aws/claude-code/metrics`) every 5 min with a 2-min lookback. |
+| `source/claude_code_with_bedrock/cli/commands/profiles.py` | CLI command | New `ccwb profiles list` and `ccwb profiles set-default <model>` commands. Lists profile ARNs from local cache or AWS, updates `~/.claude.json` with chosen ARN. |
+| `source/tests/cli/commands/test_profiles.py` | Tests | 35 unit tests covering profile cache path, load/save, `~/.claude.json` read/write helpers. |
+| `source/tests/test_inference_profile_models.py` | Tests | 59 tests for `INFERENCE_PROFILE_MODELS` config constants, ARN generation, profile naming, and tag building. |
+| `source/tests/test_inference_profiles.py` | Tests | 54 integration tests with parametrized scenarios for profile name collision resistance, email sanitization, and region substitution. |
+| `.kiro/steering/product.md` | Docs | Product overview for IT admins — architecture, monitoring configurations, ABAC isolation. |
+| `.kiro/steering/structure.md` | Docs | Directory layout reference including Lambda naming conventions and inference profile provisioner role. |
+| `.kiro/steering/tech.md` | Docs | Tech stack, build system, code style, and complete CLI command reference. |
+| `CHANGES-CLOUDWATCH.md` | Docs | CloudWatch integration change log. |
+| `CHANGES-INFERENCEPROFILE.md` | Docs | This file — authoritative migration design document. |
+| `source/uv.lock` | Config | UV package manager stub (`requires-python = ">=3.14"`). |
+
+---
+
+### Modified Files
+
+#### Lambda Functions
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `deployment/infrastructure/lambda-functions/metrics_aggregator/index.py` | Bug fix | Time unit fix: CloudWatch Logs Insights requires seconds, not milliseconds. Fixed regex escaping for `"groups":\[`. Added ISO timestamp debug logging. |
+
+#### CloudFormation Infrastructure
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `deployment/infrastructure/bedrock-auth-auth0.yaml` | Major addition | New `InferenceProfilesEnabled` parameter. When true: switches IAM from direct model invocation to ABAC-gated inference profile invocation (`user.email` tag + `status=enabled` required). Inlines provisioner Lambda. Expands `ConfigurationJson` output to 4 variants. |
+| `deployment/infrastructure/bedrock-auth-cognito-pool.yaml` | Major addition | Same as auth0.yaml but for Cognito User Pool federation path. |
+| `deployment/infrastructure/bedrock-auth-okta.yaml` | Minor addition | Adds inference profile ABAC IAM conditions for Okta. Adds previously missing `AllowBedrockInvokeOwnApplicationProfiles` statement. |
+| `deployment/infrastructure/cognito-identity-pool.yaml` | Moderate addition | Splits Bedrock invoke policy into shared vs user-specific. Adds `AllowCreateOwnApplicationProfiles` + `AllowTagOwnApplicationProfiles`. Updates `PrincipalTags` mapping (`email: email`, `sub: sub`). |
+| `deployment/infrastructure/otel-collector.yaml` | Major addition | New `FilterTokenMetrics` parameter. When true, OTEL drops `claude_code.token.usage` and `claude_code.cost.usage` to prevent double-counting when inference profiles are also deployed. |
+| `deployment/infrastructure/claude-code-dashboard.yaml` | Moderate addition | Adds `BedrockMetricsBridge` Lambda + EventBridge schedule (5-min cadence). Reads `AWS/Bedrock` namespace metrics and writes to OTEL log group for unified dashboard. |
+| `deployment/infrastructure/quota-monitoring.yaml` | Moderate addition | Adds `QuotaEnforcer` Lambda, `QuotaEnforcerRole`, and `QuotaEnforcerScheduleRule` (5-min cadence). Standardizes all Lambda names to `ClaudeCode-*` prefix. |
+| `deployment/infrastructure/landing-page-distribution.yaml` | Bug fix + feature | Fixes ALB log bucket policy (correct service principal). Adds `ExistingCertificateArn` parameter to skip ACM creation. Adds `DeletionPolicy: Retain` to ALB logs bucket. Fixes S3 client region configuration in Lambda. |
+
+#### CLI Commands
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `source/claude_code_with_bedrock/cli/__init__.py` | Minor addition | Registers `ProfilesListCommand` and `ProfilesSetDefaultCommand`. |
+| `source/claude_code_with_bedrock/cli/commands/deploy.py` | Major refactor | Decouples `otel_enabled` from `monitoring_enabled`. Inference-profiles-only mode skips VPC/OTEL, deploys dashboard + quota + S3 bucket. Captures provisioner Lambda ARN from stack outputs. Writes default quota policy to DynamoDB on deploy. |
+| `source/claude_code_with_bedrock/cli/commands/init.py` | Major addition | Setup wizard now treats inference profiles and OTEL as independent choices. New questions: inference profile model selection, existing ACM cert ARN. VPC question only shown when OTEL enabled. |
+| `source/claude_code_with_bedrock/cli/commands/package.py` | Major addition | Adds shiv `.pyz` bundle support alongside PyInstaller. Docker-based cross-platform shiv builds. Install script detects `.pyz`, generates wrapper shell scripts, runs `--setup-profiles` on install when inference profiles enabled. |
+| `source/claude_code_with_bedrock/cli/commands/destroy.py` | Minor addition | Skips OTEL stacks when `otel_enabled=false`. Falls back to `monitoring_enabled` for backward compatibility. |
+| `source/claude_code_with_bedrock/cli/commands/distribute.py` | Bug fix | Fixed binary detection to handle both PyInstaller and shiv `.pyz` variants. |
+| `source/claude_code_with_bedrock/cli/utils/aws.py` | Minor fix | `get_stack_outputs()` silently returns `{}` on `ValidationError` (stack doesn't exist) instead of printing noise. |
+| `source/claude_code_with_bedrock/cli/commands/builds.py` | Formatting | Line wrapping only (ruff). |
+| `source/claude_code_with_bedrock/cli/commands/test.py` | Formatting | Line wrapping only (ruff). |
+
+#### Core Logic
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `source/claude_code_with_bedrock/models.py` | Major addition | New `INFERENCE_PROFILE_MODELS` dict (opus-4-6, sonnet-4-6, haiku-4-5 with cross-region ARN templates). New helpers: `get_enabled_inference_profile_models()`, `get_inference_profile_source_arn()`, `get_application_profile_name()`, `get_application_profile_tags()`. |
+| `source/claude_code_with_bedrock/config.py` | Minor addition | New `Profile` fields: `inference_profiles_enabled`, `inference_profiles_models`, `inference_profiles_default_model`, `inference_profiles_provisioner_arn`, `distribution_certificate_arn`. |
+| `source/claude_code_with_bedrock/quota_policies.py` | Formatting | Ruff auto-formatting only — no logic changes. |
+
+#### Credential Provider
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `source/credential_provider/__main__.py` | Major addition | After credential exchange, invokes provisioner Lambda to create profiles and caches ARNs locally. Patches `~/.claude.json` (default model ARN) and `~/.claude/settings.json` (all model env vars). New `--setup-profiles` CLI flag for manual setup during installation. |
+
+#### Tests
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `source/tests/test_confidential_client.py` | Formatting | Import ordering and context manager reformatting (ruff/black). |
+| `source/tests/test_silent_refresh.py` | Formatting | Import ordering and context manager reformatting (ruff/black). |
+
+#### Dependencies & Documentation
+
+| File | Change type | What changed & why |
+|------|-------------|---------------------|
+| `source/pyproject.toml` | Version bump + dependency | `2.3.0` → `2.4.0`. Added `shiv = "^1.0.0"` for `.pyz` bundle support. |
+| `source/poetry.lock` | Dependency update | Poetry `2.2.1` → `2.3.3`. Removed transitive packages (`backports.tarfile`, `jaraco-context`, `jaraco-functools`) cleaned up by Poetry 2.3. |
+| `README.md` | Major addition | New section on per-user CloudWatch monitoring with inference profiles (~230 lines). Covers ABAC config per IdP, coexistence guidance, cost alarm examples. |
+| `CHANGELOG.md` | Release notes | v2.4.0 release notes documenting all new features. |
+| `.gitignore` | Minor addition | Added `.kiro/` and `source/credential_provider/config.json` exclusions. Fixed test file pattern to root-level only. |
