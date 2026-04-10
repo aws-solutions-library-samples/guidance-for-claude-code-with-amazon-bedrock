@@ -24,21 +24,8 @@ policies_table = dynamodb.Table(POLICIES_TABLE)
 def lambda_handler(event, context):
     print("Starting quota enforcement via inference profile tagging")
 
-    # 1. Load the default policy (monthly + daily limits)
-    policy = _get_default_policy()
-    if policy is None:
-        print("No default quota policy found — nothing to enforce")
-        return {"statusCode": 200, "body": "No policy configured"}
-
-    monthly_limit = policy.get("monthly_token_limit", 0)
-    daily_limit = policy.get("daily_token_limit")
-    enforcement_mode = policy.get("enforcement_mode", "alert")
-
-    if enforcement_mode != "block" or monthly_limit <= 0:
-        print(f"Enforcement mode is '{enforcement_mode}' — skipping tag updates")
-        return {"statusCode": 200, "body": "Enforcement mode is not block"}
-
-    print(f"Policy: monthly_limit={monthly_limit:,}  daily_limit={daily_limit}  mode={enforcement_mode}")
+    # 1. Load the default policy (fallback for users without a specific policy)
+    default_policy = _get_default_policy()
 
     # 2. Build all APPLICATION inference profiles grouped by email
     email_to_arns = _build_email_to_arns_map()
@@ -56,6 +43,28 @@ def lambda_handler(event, context):
     disabled_count = 0
 
     for email, arns in email_to_arns.items():
+        # Per-user policy takes precedence over default
+        policy = _get_user_policy(email) or default_policy
+        if policy is None:
+            # No policy at all — allow by default
+            for arn in arns:
+                _set_status_tag(arn, "enabled")
+            enabled_count += len(arns)
+            print(f"  ALLOWED {email}: no policy configured → {len(arns)} profile(s) tagged status=enabled")
+            continue
+
+        monthly_limit = policy.get("monthly_token_limit", 0)
+        daily_limit = policy.get("daily_token_limit")
+        enforcement_mode = policy.get("enforcement_mode", "alert")
+
+        if enforcement_mode != "block" or monthly_limit <= 0:
+            # Policy exists but enforcement is alert-only — ensure profiles are enabled
+            for arn in arns:
+                _set_status_tag(arn, "enabled")
+            enabled_count += len(arns)
+            print(f"  ALLOWED {email}: enforcement_mode={enforcement_mode} → {len(arns)} profile(s) tagged status=enabled")
+            continue
+
         usage = _get_user_usage(email, current_month, current_date)
         should_block = _is_over_quota(usage, monthly_limit, daily_limit)
 
@@ -95,6 +104,44 @@ def _get_default_policy() -> dict | None:
         }
     except Exception as e:
         print(f"Error loading default policy: {e}")
+        return None
+
+
+def _get_user_policy(email: str) -> dict | None:
+    """Fetch a per-user quota policy from DynamoDB. Returns None if not found."""
+    try:
+        response = policies_table.get_item(
+            Key={"pk": f"POLICY#user#{email}", "sk": "CURRENT"}
+        )
+        item = response.get("Item")
+        if not item or not item.get("enabled", True):
+            return None
+        return {
+            "monthly_token_limit": int(item.get("monthly_token_limit", 0)),
+            "daily_token_limit": int(item.get("daily_token_limit", 0)) if item.get("daily_token_limit") else None,
+            "enforcement_mode": item.get("enforcement_mode", "alert"),
+        }
+    except Exception as e:
+        print(f"Error loading user policy for {email}: {e}")
+        return None
+
+
+def _get_user_policy(email: str) -> dict | None:
+    """Fetch a per-user quota policy. Returns None if no user-specific policy exists."""
+    try:
+        response = policies_table.get_item(
+            Key={"pk": f"POLICY#user#{email}", "sk": "CURRENT"}
+        )
+        item = response.get("Item")
+        if not item or not item.get("enabled", True):
+            return None
+        return {
+            "monthly_token_limit": int(item.get("monthly_token_limit", 0)),
+            "daily_token_limit": int(item.get("daily_token_limit", 0)) if item.get("daily_token_limit") else None,
+            "enforcement_mode": item.get("enforcement_mode", "alert"),
+        }
+    except Exception as e:
+        print(f"Error loading user policy for {email}: {e}")
         return None
 
 
