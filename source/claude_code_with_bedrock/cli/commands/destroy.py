@@ -116,6 +116,13 @@ class DestroyCommand(Command):
                 continue
             if stack == "s3bucket" and not profile.monitoring_enabled:
                 continue
+            # Skip OTEL-specific stacks when OTEL is not enabled
+            otel_enabled = (profile.monitoring_config or {}).get("otel_enabled", False)
+            if not otel_enabled and not getattr(profile, "inference_profiles_enabled", False):
+                # Legacy: if neither flag is set, fall back to monitoring_enabled for OTEL stacks
+                otel_enabled = profile.monitoring_enabled
+            if stack in ("monitoring", "networking", "analytics") and not otel_enabled:
+                continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
             console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")

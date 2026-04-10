@@ -167,12 +167,14 @@ class DeployCommand(Command):
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
 
             # Deploy remaining monitoring stacks.
-            # When inference_profiles_enabled is True, metrics flow directly from Bedrock
-            # to CloudWatch — no OTEL collector, no VPC, no S3 bucket, no analytics pipeline.
-            # Only the dashboard and quota stacks are still relevant.
+            # When both inference_profiles and OTEL are enabled, deploy the full OTEL
+            # stack with token metric filtering, plus inference profile infrastructure.
+            # When only inference_profiles is enabled, skip OTEL/VPC/analytics.
+            # When only OTEL is enabled, deploy the full OTEL stack without filtering.
             if profile.monitoring_enabled:
                 using_inference_profiles = getattr(profile, "inference_profiles_enabled", False)
-                if not using_inference_profiles:
+                otel_enabled = (profile.monitoring_config or {}).get("otel_enabled", not using_inference_profiles)
+                if otel_enabled:
                     vpc_config = profile.monitoring_config or {}
                     already_has_networking = any(s[0] == "networking" for s in stacks_to_deploy)
                     if not already_has_networking and vpc_config.get("create_vpc", True):
@@ -183,8 +185,7 @@ class DeployCommand(Command):
                     if getattr(profile, "analytics_enabled", True):
                         stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
                 else:
-                    # inference_profiles mode skips OTEL/monitoring but dashboard still needs
-                    # an S3 bucket to package its Lambda functions
+                    # inference_profiles only — dashboard still needs an S3 bucket for Lambda packaging
                     stacks_to_deploy.append(("s3bucket", "S3 Bucket (for dashboard packaging)"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 # Check if quota monitoring is enabled
@@ -648,6 +649,10 @@ class DeployCommand(Command):
                 stack_name = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
                 params = []
                 vpc_config = profile.monitoring_config or {}
+
+                # Filter token metrics from OTEL when inference profiles handle them server-side
+                if getattr(profile, "inference_profiles_enabled", False):
+                    params.append("FilterTokenMetrics=true")
 
                 if not vpc_config.get("create_vpc", True):
                     params.append(f"VpcId={vpc_config.get('vpc_id', '')}")

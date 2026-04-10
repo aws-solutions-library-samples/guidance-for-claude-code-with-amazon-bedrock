@@ -334,8 +334,10 @@ class PackageCommand(Command):
             except Exception as e:
                 console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
 
-            # Build OTEL helper if monitoring is enabled
-            if profile.monitoring_enabled:
+            # Build OTEL helper if OTEL collector is deployed
+            # When only inference profiles are enabled (no OTEL), skip the helper
+            otel_enabled = (profile.monitoring_config or {}).get("otel_enabled", False)
+            if profile.monitoring_enabled and otel_enabled:
                 # Skip OTEL helper for Windows if being built in CodeBuild
                 if platform_name == "windows" and executable_path is None:
                     console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
@@ -400,7 +402,7 @@ class PackageCommand(Command):
         if (output_dir / "install.bat").exists():
             console.print("  • install.bat - Installation script for Windows")
         console.print("  • README.md - Installation instructions")
-        if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
+        if built_otel_helpers and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
@@ -2900,8 +2902,9 @@ Available metrics include:
                     settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model_id
                     settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model_id
 
-            # If monitoring is enabled, add telemetry configuration
-            if profile.monitoring_enabled:
+            # If OTEL collector is deployed, add telemetry configuration
+            otel_enabled = (profile.monitoring_config or {}).get("otel_enabled", False)
+            if profile.monitoring_enabled and otel_enabled:
                 # Get monitoring stack outputs
                 monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
                 cmd = [

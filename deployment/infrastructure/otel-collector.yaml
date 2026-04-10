@@ -45,10 +45,21 @@ Parameters:
     Default: ''
     Description: OIDC client ID for ALB JWT audience (aud) claim validation
 
+  FilterTokenMetrics:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      When true, drops token-related metrics (claude_code.token.usage,
+      claude_code.cost.usage) from the OTEL pipeline. Enable this when
+      Application Inference Profiles provide server-side token metrics
+      via CloudWatch to avoid double-counting.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
+  ShouldFilterTokenMetrics: !Equals [!Ref FilterTokenMetrics, 'true']
 
 # Rules section removed - validation handled by deployment script
 
@@ -324,6 +335,10 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
   # SSM Parameter for Configuration
+  # Two variants: one with token metric filtering, one without.
+  # The filter/token_metrics processor drops claude_code.token.usage and
+  # claude_code.cost.usage when Application Inference Profiles already
+  # provide those metrics server-side via CloudWatch.
   OTelConfig:
     Type: AWS::SSM::Parameter
     Properties:
@@ -331,129 +346,223 @@ Resources:
       Type: String
       Tier: Advanced
       Description: Custom OpenTelemetry configuration for Claude Code
-      Value: !Sub |
-        extensions:
-          health_check:
-            endpoint: 0.0.0.0:13133
-            path: /
+      Value: !If
+        - ShouldFilterTokenMetrics
+        - !Sub |
+            extensions:
+              health_check:
+                endpoint: 0.0.0.0:13133
+                path: /
 
-        receivers:
-          otlp:
-            protocols:
-              grpc:
-                endpoint: 0.0.0.0:4317
-                include_metadata: true
-              http:
-                endpoint: 0.0.0.0:4318
-                include_metadata: true
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                    include_metadata: true
+                  http:
+                    endpoint: 0.0.0.0:4318
+                    include_metadata: true
 
-        processors:
-          batch/metrics:
-            timeout: 60s
-          # Extract HTTP headers to resource attributes
-          # Note: Headers are normalized to lowercase in metadata
-          attributes:
-            actions:
-              # Extract user information from headers
-              - key: user.email
-                from_context: metadata.x-user-email
-                action: upsert
-              - key: user.id
-                from_context: metadata.x-user-id
-                action: upsert
-              - key: user.name
-                from_context: metadata.x-user-name
-                action: upsert
-              # Extract team/organization information
-              - key: department
-                from_context: metadata.x-department
-                action: upsert
-              - key: team.id
-                from_context: metadata.x-team-id
-                action: upsert
-              - key: cost_center
-                from_context: metadata.x-cost-center
-                action: upsert
-              - key: organization
-                from_context: metadata.x-organization
-                action: upsert
-              - key: location
-                from_context: metadata.x-location
-                action: upsert
-              - key: role
-                from_context: metadata.x-role
-                action: upsert
-              - key: manager
-                from_context: metadata.x-manager
-                action: upsert
-          # Add AWS account ID to all metrics
-          resource:
-            attributes:
-              - key: aws.account_id
-                value: "${AWS::AccountId}"
-                action: insert
-              - key: deployment.environment
-                value: "production"
-                action: insert
+            processors:
+              batch/metrics:
+                timeout: 60s
+              attributes:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: location
+                    from_context: metadata.x-location
+                    action: upsert
+                  - key: role
+                    from_context: metadata.x-role
+                    action: upsert
+                  - key: manager
+                    from_context: metadata.x-manager
+                    action: upsert
+              resource:
+                attributes:
+                  - key: aws.account_id
+                    value: "${AWS::AccountId}"
+                    action: insert
+                  - key: deployment.environment
+                    value: "production"
+                    action: insert
+              filter/token_metrics:
+                metrics:
+                  metric:
+                    - 'name == "claude_code.token.usage"'
+                    - 'name == "claude_code.cost.usage"'
 
-        exporters:
-          awsemf:
-            namespace: ${MetricsNamespace}
-            log_group_name: /aws/claude-code/metrics
-            dimension_rollup_option: "ZeroAndSingleDimensionRollup"
-            region: ${AWS::Region}
-            output_destination: cloudwatch
-            log_retention: 7
-            resource_to_telemetry_conversion:
-              enabled: true
-            metric_declarations:
-              # Overall metrics
-              - dimensions: [[OTelLib]]
-                metric_name_selectors: [".*"]
+            exporters:
+              awsemf:
+                namespace: ${MetricsNamespace}
+                log_group_name: /aws/claude-code/metrics
+                dimension_rollup_option: "ZeroAndSingleDimensionRollup"
+                region: ${AWS::Region}
+                output_destination: cloudwatch
+                log_retention: 7
+                resource_to_telemetry_conversion:
+                  enabled: true
+                metric_declarations:
+                  - dimensions: [[OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[department, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[team.id, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[organization, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[model, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[cost_center, OTelLib]]
+                    metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+                  - dimensions: [[type, OTelLib]]
+                    metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+                  - dimensions: [[tool_name, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[language, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[decision, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
-              # Department and team aggregates
-              - dimensions: [[department, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[organization, OTelLib]]
-                metric_name_selectors: [".*"]
+            service:
+              extensions: [health_check]
+              telemetry:
+                logs:
+                  level: info
+                  development: false
+                  encoding: json
+                  output_paths: [stdout]
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [attributes, resource, filter/token_metrics, batch/metrics]
+                  exporters: [awsemf]
+        - !Sub |
+            extensions:
+              health_check:
+                endpoint: 0.0.0.0:13133
+                path: /
 
-              # Model usage tracking
-              - dimensions: [[model, OTelLib]]
-                metric_name_selectors: [".*"]
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                    include_metadata: true
+                  http:
+                    endpoint: 0.0.0.0:4318
+                    include_metadata: true
 
-              # Cost center tracking
-              - dimensions: [[cost_center, OTelLib]]
-                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+            processors:
+              batch/metrics:
+                timeout: 60s
+              attributes:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: location
+                    from_context: metadata.x-location
+                    action: upsert
+                  - key: role
+                    from_context: metadata.x-role
+                    action: upsert
+                  - key: manager
+                    from_context: metadata.x-manager
+                    action: upsert
+              resource:
+                attributes:
+                  - key: aws.account_id
+                    value: "${AWS::AccountId}"
+                    action: insert
+                  - key: deployment.environment
+                    value: "production"
+                    action: insert
 
-              # Token and line types
-              - dimensions: [[type, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+            exporters:
+              awsemf:
+                namespace: ${MetricsNamespace}
+                log_group_name: /aws/claude-code/metrics
+                dimension_rollup_option: "ZeroAndSingleDimensionRollup"
+                region: ${AWS::Region}
+                output_destination: cloudwatch
+                log_retention: 7
+                resource_to_telemetry_conversion:
+                  enabled: true
+                metric_declarations:
+                  - dimensions: [[OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[department, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[team.id, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[organization, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[model, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[cost_center, OTelLib]]
+                    metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+                  - dimensions: [[type, OTelLib]]
+                    metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+                  - dimensions: [[tool_name, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[language, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[decision, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
-              # Tool and language usage
-              - dimensions: [[tool_name, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-              - dimensions: [[language, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-
-              # Code decision tracking
-              - dimensions: [[decision, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
-
-        service:
-          extensions: [health_check]
-          telemetry:
-            logs:
-              level: info
-              development: false
-              encoding: json
-              output_paths: [stdout]
-          pipelines:
-            metrics:
-              receivers: [otlp]
-              processors: [attributes, resource, batch/metrics]
-              exporters: [awsemf]
+            service:
+              extensions: [health_check]
+              telemetry:
+                logs:
+                  level: info
+                  development: false
+                  encoding: json
+                  output_paths: [stdout]
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [attributes, resource, batch/metrics]
+                  exporters: [awsemf]
 
   # ECS Task Definition
   TaskDefinition:

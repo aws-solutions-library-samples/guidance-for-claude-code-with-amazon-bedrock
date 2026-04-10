@@ -617,27 +617,52 @@ class InitCommand(Command):
             config["monitoring"]["enabled"] = enable_monitoring
 
             # Ask whether to use Application Inference Profiles (server-side CloudWatch metrics)
-            # or the OTEL collector (client-side, requires ECS Fargate + VPC).
+            # for token tracking. This can coexist with OTEL — when both are enabled,
+            # OTEL handles session/activity metrics while inference profiles handle token metrics.
             using_inference_profiles = False
             if enable_monitoring:
                 existing_ip_enabled = config.get("inference_profiles", {}).get("enabled", False)
-                console.print("\n[bold]Metrics Collection Method[/bold]")
+                console.print("\n[bold]Application Inference Profiles[/bold]")
                 console.print(
-                    "  • [cyan]Application Inference Profiles[/cyan]: server-side CloudWatch metrics — no VPC or collector needed"
+                    "  Server-side token tracking via CloudWatch — no VPC or collector needed for token metrics."
                 )
                 console.print(
-                    "  • [dim]OpenTelemetry collector[/dim]: client-side metrics via ECS Fargate — requires VPC"
+                    "  Can be combined with OpenTelemetry for session/activity metrics."
                 )
                 using_inference_profiles = questionary.confirm(
-                    "Use Application Inference Profiles for CloudWatch metrics (recommended)?",
+                    "Enable Application Inference Profiles for server-side token metrics (recommended)?",
                     default=existing_ip_enabled if existing_ip_enabled else True,
                 ).ask()
                 if "inference_profiles" not in config:
                     config["inference_profiles"] = {}
                 config["inference_profiles"]["enabled"] = using_inference_profiles
 
-            # Only configure VPC + OTEL collector when NOT using Application Inference Profiles
-            if enable_monitoring and not using_inference_profiles:
+            # Ask whether to deploy the OTEL collector for session/activity metrics.
+            # When inference profiles are also enabled, token metrics are filtered out
+            # from the OTEL pipeline to avoid double-counting.
+            enable_otel = False
+            if enable_monitoring:
+                if using_inference_profiles:
+                    console.print("\n[bold]OpenTelemetry Collector (session & activity metrics)[/bold]")
+                    console.print(
+                        "  Token metrics are already covered by inference profiles."
+                    )
+                    console.print(
+                        "  OTEL adds session-level metrics (active time, code edits, tool usage)."
+                    )
+                    console.print("  Requires ECS Fargate + VPC.")
+                    enable_otel = questionary.confirm(
+                        "Also deploy OpenTelemetry collector for session/activity metrics?",
+                        default=config.get("monitoring", {}).get("otel_enabled", False),
+                    ).ask()
+                else:
+                    # No inference profiles — OTEL is the only metrics source
+                    enable_otel = True
+
+                config["monitoring"]["otel_enabled"] = enable_otel
+
+            # Configure VPC + OTEL collector when OTEL is enabled
+            if enable_monitoring and enable_otel:
                 # Pass existing vpc_config if available
                 existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
                 vpc_config = self._configure_vpc(
@@ -1561,6 +1586,8 @@ class InitCommand(Command):
             monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
+        if "otel_enabled" in monitoring_dict:
+            monitoring_config["otel_enabled"] = monitoring_dict["otel_enabled"]
 
         profile = Profile(
             name=profile_name,
@@ -1867,6 +1894,9 @@ class InitCommand(Command):
                     "hosted_zone_id": profile.monitoring_config.get("hosted_zone_id")
                     if profile.monitoring_config
                     else None,
+                    "otel_enabled": profile.monitoring_config.get("otel_enabled", False)
+                    if profile.monitoring_config
+                    else False,
                 },
             }
 
