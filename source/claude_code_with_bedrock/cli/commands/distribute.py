@@ -68,6 +68,7 @@ class DistributeCommand(Command):
         option("build-profile", description="Select build by profile name", flag=False),
         option("timestamp", description="Select build by timestamp (YYYY-MM-DD-HHMMSS)", flag=False),
         option("latest", description="Auto-select latest build without wizard", flag=True),
+        option("skip-prompt", description="Skip interactive prompts (auto-selects latest build, skips confirmations)", flag=True),
     ]
 
     def _check_old_flat_structure(self, dist_dir: Path) -> bool:
@@ -262,8 +263,8 @@ class DistributeCommand(Command):
                 console.print(f"[red]Build not found: {build_profile}/{timestamp}[/red]")
                 return 1
 
-        # Option 2: Latest flag (auto-select most recent)
-        elif self.option("latest"):
+        # Option 2: Latest flag or skip-prompt (auto-select most recent)
+        elif self.option("latest") or self.option("skip-prompt"):
             # Find most recent build across all profiles
             latest_build = None
             latest_timestamp = None
@@ -834,12 +835,13 @@ class DistributeCommand(Command):
 
         if "windows" not in found_platforms:
             console.print("\n[yellow]Warning: Windows support not included in this distribution[/yellow]")
-            from questionary import confirm
+            if not self.option("skip-prompt"):
+                from questionary import confirm
 
-            proceed = confirm("Continue without Windows support?", default=False).ask()
-            if not proceed:
-                console.print("Distribution cancelled.")
-                return 0
+                proceed = confirm("Continue without Windows support?", default=False).ask()
+                if not proceed:
+                    console.print("Distribution cancelled.")
+                    return 0
 
         console.print(f"\n[green]Ready to distribute for: {', '.join(found_platforms)}[/green]")
 
