@@ -624,9 +624,14 @@ INFERENCE_PROFILE_MODELS: dict[str, dict] = {
 # Regions that map to the 'eu' cross-region inference profile geo prefix.
 # All other regions fall back to 'us'.
 _EU_REGIONS = {
-    "eu-west-1", "eu-west-2", "eu-west-3",
-    "eu-central-1", "eu-central-2",
-    "eu-north-1", "eu-south-1", "eu-south-2",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-central-1",
+    "eu-central-2",
+    "eu-north-1",
+    "eu-south-1",
+    "eu-south-2",
 }
 
 # Default model used when patching ~/.claude.json after first login.
@@ -709,9 +714,9 @@ def get_application_profile_tags(email: str, claims: dict) -> list[dict]:
 
     claim_map = {
         "custom:cost_center": "cost_center",
-        "custom:department":  "department",
+        "custom:department": "department",
         "custom:organization": "organization",
-        "custom:team":        "team",
+        "custom:team": "team",
     }
     for claim_key, tag_key in claim_map.items():
         value = claims.get(claim_key)

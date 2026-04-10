@@ -47,7 +47,7 @@ def _make_config():
 
 def _make_aws_credentials(exp_offset=900):
     """Return fake AWS credentials dict."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     exp = datetime.now(timezone.utc) + timedelta(seconds=exp_offset)
     return {
@@ -77,8 +77,9 @@ def auth_instance(tmp_path):
         mock_path_cls.return_value = mock_file_parent
 
         # Simpler approach: just patch _load_config and _init_credential_storage
-        with patch("credential_provider.__main__.MultiProviderAuth._load_config") as mock_load, \
-             patch("credential_provider.__main__.MultiProviderAuth._init_credential_storage"):
+        with patch("credential_provider.__main__.MultiProviderAuth._load_config") as mock_load, patch(
+            "credential_provider.__main__.MultiProviderAuth._init_credential_storage"
+        ):
             mock_load.return_value = {
                 "provider_domain": "test.okta.com",
                 "client_id": "test-client-id",
@@ -91,6 +92,7 @@ def auth_instance(tmp_path):
             }
 
             from credential_provider.__main__ import MultiProviderAuth
+
             instance = MultiProviderAuth(profile="TestProfile")
             instance.cache_dir = tmp_path / "cache"
             instance.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -105,11 +107,11 @@ class TestSilentRefresh:
         id_token, claims = _make_id_token(exp_offset=3600)
         aws_creds = _make_aws_credentials()
 
-        with patch.object(auth_instance, "get_monitoring_token", return_value=id_token), \
-             patch.object(auth_instance, "get_aws_credentials", return_value=aws_creds) as mock_get_creds, \
-             patch.object(auth_instance, "save_credentials") as mock_save, \
-             patch.object(auth_instance, "save_monitoring_token") as mock_save_token:
-
+        with patch.object(auth_instance, "get_monitoring_token", return_value=id_token), patch.object(
+            auth_instance, "get_aws_credentials", return_value=aws_creds
+        ) as mock_get_creds, patch.object(auth_instance, "save_credentials") as mock_save, patch.object(
+            auth_instance, "save_monitoring_token"
+        ) as mock_save_token:
             creds, returned_token, returned_claims = auth_instance._try_silent_refresh()
 
             assert creds is not None
@@ -124,9 +126,9 @@ class TestSilentRefresh:
     def test_silent_refresh_returns_none_when_id_token_expired(self, auth_instance):
         """When cached id_token is within the 60-second expiry buffer, get_monitoring_token
         returns None and silent refresh must not attempt an STS exchange."""
-        with patch.object(auth_instance, "get_monitoring_token", return_value=None) as mock_get_token, \
-             patch.object(auth_instance, "get_aws_credentials") as mock_get_creds:
-
+        with patch.object(auth_instance, "get_monitoring_token", return_value=None) as mock_get_token, patch.object(
+            auth_instance, "get_aws_credentials"
+        ) as mock_get_creds:
             creds, id_token, token_claims = auth_instance._try_silent_refresh()
 
             assert creds is None
@@ -148,9 +150,9 @@ class TestSilentRefresh:
         """When id_token is valid but STS exchange fails, should return None (fallback to browser)."""
         id_token, _ = _make_id_token(exp_offset=3600)
 
-        with patch.object(auth_instance, "get_monitoring_token", return_value=id_token), \
-             patch.object(auth_instance, "get_aws_credentials", side_effect=Exception("STS error")):
-
+        with patch.object(auth_instance, "get_monitoring_token", return_value=id_token), patch.object(
+            auth_instance, "get_aws_credentials", side_effect=Exception("STS error")
+        ):
             creds, returned_token, returned_claims = auth_instance._try_silent_refresh()
             assert creds is None
             assert returned_token is None
@@ -160,10 +162,9 @@ class TestSilentRefresh:
         """When AWS credentials are still valid, silent refresh should not be attempted."""
         aws_creds = _make_aws_credentials(exp_offset=3600)
 
-        with patch.object(auth_instance, "get_cached_credentials", return_value=aws_creds), \
-             patch.object(auth_instance, "_try_silent_refresh") as mock_silent, \
-             patch.object(auth_instance, "_should_recheck_quota", return_value=False):
-
+        with patch.object(auth_instance, "get_cached_credentials", return_value=aws_creds), patch.object(
+            auth_instance, "_try_silent_refresh"
+        ) as mock_silent, patch.object(auth_instance, "_should_recheck_quota", return_value=False):
             # Capture stdout
             with patch("builtins.print"):
                 auth_instance.run()
@@ -174,13 +175,13 @@ class TestSilentRefresh:
         """When AWS creds expired but id_token valid, run() should use silent refresh."""
         aws_creds = _make_aws_credentials(exp_offset=3600)
 
-        with patch.object(auth_instance, "get_cached_credentials", return_value=None), \
-             patch("socket.socket") as mock_socket_cls, \
-             patch.object(auth_instance, "_try_silent_refresh", return_value=(aws_creds, None, None)), \
-             patch.object(auth_instance, "_should_check_quota", return_value=False), \
-             patch.object(auth_instance, "authenticate_oidc") as mock_browser, \
-             patch("builtins.print"):
-
+        with patch.object(auth_instance, "get_cached_credentials", return_value=None), patch(
+            "socket.socket"
+        ) as mock_socket_cls, patch.object(
+            auth_instance, "_try_silent_refresh", return_value=(aws_creds, None, None)
+        ), patch.object(auth_instance, "_should_check_quota", return_value=False), patch.object(
+            auth_instance, "authenticate_oidc"
+        ) as mock_browser, patch("builtins.print"):
             # Mock socket to simulate port available
             mock_socket = MagicMock()
             mock_socket_cls.return_value = mock_socket
@@ -195,16 +196,17 @@ class TestSilentRefresh:
         id_token, claims = _make_id_token(exp_offset=3600)
         aws_creds = _make_aws_credentials(exp_offset=3600)
 
-        with patch.object(auth_instance, "get_cached_credentials", return_value=None), \
-             patch("socket.socket") as mock_socket_cls, \
-             patch.object(auth_instance, "_try_silent_refresh", return_value=(None, None, None)), \
-             patch.object(auth_instance, "authenticate_oidc", return_value=(id_token, claims)) as mock_browser, \
-             patch.object(auth_instance, "_should_check_quota", return_value=False), \
-             patch.object(auth_instance, "get_aws_credentials", return_value=aws_creds), \
-             patch.object(auth_instance, "save_credentials"), \
-             patch.object(auth_instance, "save_monitoring_token"), \
-             patch("builtins.print"):
-
+        with patch.object(auth_instance, "get_cached_credentials", return_value=None), patch(
+            "socket.socket"
+        ) as mock_socket_cls, patch.object(
+            auth_instance, "_try_silent_refresh", return_value=(None, None, None)
+        ), patch.object(
+            auth_instance, "authenticate_oidc", return_value=(id_token, claims)
+        ) as mock_browser, patch.object(auth_instance, "_should_check_quota", return_value=False), patch.object(
+            auth_instance, "get_aws_credentials", return_value=aws_creds
+        ), patch.object(auth_instance, "save_credentials"), patch.object(auth_instance, "save_monitoring_token"), patch(
+            "builtins.print"
+        ):
             mock_socket = MagicMock()
             mock_socket_cls.return_value = mock_socket
 
@@ -212,4 +214,3 @@ class TestSilentRefresh:
 
             assert result == 0
             mock_browser.assert_called_once()
-

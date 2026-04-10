@@ -8,7 +8,6 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -134,8 +133,8 @@ class TestLoadProfilesCache:
         cache_file = cache_dir / "multi-inference-profiles.json"
         expected = {
             "sonnet-4-6": "arn:aws:bedrock:us-east-1:123:inference-profile/s46",
-            "opus-4-6":   "arn:aws:bedrock:us-east-1:123:inference-profile/o46",
-            "haiku-4-5":  "arn:aws:bedrock:us-east-1:123:inference-profile/h45",
+            "opus-4-6": "arn:aws:bedrock:us-east-1:123:inference-profile/o46",
+            "haiku-4-5": "arn:aws:bedrock:us-east-1:123:inference-profile/h45",
         }
         cache_file.write_text(json.dumps(expected))
 
@@ -222,7 +221,7 @@ class TestSaveProfilesCache:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         arns = {
             "sonnet-4-6": "arn:aws:bedrock:eu-west-1:123:inference-profile/s",
-            "haiku-4-5":  "arn:aws:bedrock:eu-west-1:123:inference-profile/h",
+            "haiku-4-5": "arn:aws:bedrock:eu-west-1:123:inference-profile/h",
         }
 
         # Act

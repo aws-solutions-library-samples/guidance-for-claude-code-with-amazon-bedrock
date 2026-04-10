@@ -514,7 +514,10 @@ class DeployCommand(Command):
                         active_secret_ref = secret_name_parts[-1] if len(secret_name_parts) >= 7 else secret_arn
                     else:
                         active_secret_ref = secret_arn
-                    console.print(f"[dim]DEBUG: secret_arn={secret_arn!r} -> active_secret_ref={active_secret_ref!r}[/dim]", markup=False)
+                    console.print(
+                        f"[dim]DEBUG: secret_arn={secret_arn!r} -> active_secret_ref={active_secret_ref!r}[/dim]",
+                        markup=False,
+                    )
                     if profile.distribution_idp_provider == "okta":
                         params.extend(
                             [
@@ -572,7 +575,11 @@ class DeployCommand(Command):
                         params.append(f"ExistingCertificateArn={existing_cert_arn}")
                     # Only pass HostedZoneId if it is an actual Route53 zone ID (starts with Z or is numeric)
                     hosted_zone_id = profile.distribution_hosted_zone_id
-                    if hosted_zone_id and str(hosted_zone_id).strip().startswith(("Z", "z")) and " " not in str(hosted_zone_id):
+                    if (
+                        hosted_zone_id
+                        and str(hosted_zone_id).strip().startswith(("Z", "z"))
+                        and " " not in str(hosted_zone_id)
+                    ):
                         params.append(f"HostedZoneId={hosted_zone_id}")
 
                     # Add deployment timestamp to force custom resource re-execution
@@ -916,10 +923,15 @@ class DeployCommand(Command):
                     if result == 0:
                         self._update_metrics_aggregator_env(profile, stack_name, console)
                         self._write_default_quota_policy(
-                            profile, stack_name, console,
-                            monthly_limit, daily_limit,
-                            monthly_enforcement, daily_enforcement,
-                            warning_80, warning_90,
+                            profile,
+                            stack_name,
+                            console,
+                            monthly_limit,
+                            daily_limit,
+                            monthly_enforcement,
+                            daily_enforcement,
+                            warning_80,
+                            warning_90,
                         )
 
                     return result
@@ -1097,17 +1109,27 @@ class DeployCommand(Command):
             console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
 
     def _write_default_quota_policy(
-        self, profile, quota_stack_name: str, console: Console,
-        monthly_limit: int, daily_limit, monthly_enforcement: str,
-        daily_enforcement: str, warning_80: int, warning_90: int,
+        self,
+        profile,
+        quota_stack_name: str,
+        console: Console,
+        monthly_limit: int,
+        daily_limit,
+        monthly_enforcement: str,
+        daily_enforcement: str,
+        warning_80: int,
+        warning_90: int,
     ) -> None:
         """Write the default quota policy to DynamoDB after quota stack deployment."""
         try:
-            import boto3
             from decimal import Decimal
 
+            import boto3
+
             quota_outputs = get_stack_outputs(quota_stack_name, profile.aws_region)
-            policies_table_name = quota_outputs.get("PoliciesTableName", "QuotaPolicies") if quota_outputs else "QuotaPolicies"
+            policies_table_name = (
+                quota_outputs.get("PoliciesTableName", "QuotaPolicies") if quota_outputs else "QuotaPolicies"
+            )
 
             dynamodb = boto3.resource("dynamodb", region_name=profile.aws_region)
             table = dynamodb.Table(policies_table_name)
@@ -1128,13 +1150,15 @@ class DeployCommand(Command):
                 item["daily_enforcement_mode"] = daily_enforcement
 
             table.put_item(Item=item)
-            console.print(f"[green]✓ Default quota policy written: {monthly_limit:,} tokens/month ({monthly_enforcement})[/green]")
+            console.print(
+                f"[green]✓ Default quota policy written: {monthly_limit:,} tokens/month ({monthly_enforcement})[/green]"
+            )
             if daily_limit:
                 console.print(f"[green]  Daily limit: {daily_limit:,} tokens ({daily_enforcement})[/green]")
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not write default quota policy: {str(e)}[/yellow]")
-            console.print(f"[dim]You can add it manually via the AWS Console or CLI[/dim]")
+            console.print("[dim]You can add it manually via the AWS Console or CLI[/dim]")
 
     def _check_orphaned_stacks(self, stacks_to_deploy, profile, cf_manager, console: Console) -> list:
         """Check for stacks that exist but are disabled in config.

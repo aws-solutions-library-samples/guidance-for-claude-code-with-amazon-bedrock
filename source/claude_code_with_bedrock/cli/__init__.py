@@ -21,6 +21,7 @@ from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
+from .commands.profiles import ProfilesListCommand, ProfilesSetDefaultCommand
 from .commands.quota import (
     QuotaDeleteCommand,
     QuotaExportCommand,
@@ -33,7 +34,6 @@ from .commands.quota import (
     QuotaUnblockCommand,
     QuotaUsageCommand,
 )
-from .commands.profiles import ProfilesListCommand, ProfilesSetDefaultCommand
 from .commands.status import StatusCommand
 from .commands.test import TestCommand
 

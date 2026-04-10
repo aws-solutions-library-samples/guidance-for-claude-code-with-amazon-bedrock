@@ -23,10 +23,10 @@ from claude_code_with_bedrock.models import (
     get_inference_profile_source_arn,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _sha256_hex8(value: str) -> str:
     """Return the first 8 hex characters of the SHA-256 digest of *value*."""
@@ -234,17 +234,18 @@ class TestGetApplicationProfileName:
 
     # -- email sanitization ---------------------------------------------------
 
-    @pytest.mark.parametrize("email,expected_fragment", [
-        ("mario.rossi@example.com", "mario-rossi-example-com"),
-        ("user+tag@domain.org",     "user-tag-domain-org"),
-        ("User.Name@Company.COM",   "user-name-company-com"),
-        ("first_last@host.io",      "first-last-host-io"),
-    ])
+    @pytest.mark.parametrize(
+        "email,expected_fragment",
+        [
+            ("mario.rossi@example.com", "mario-rossi-example-com"),
+            ("user+tag@domain.org", "user-tag-domain-org"),
+            ("User.Name@Company.COM", "user-name-company-com"),
+            ("first_last@host.io", "first-last-host-io"),
+        ],
+    )
     def test_sanitized_email_appears_in_name(self, email, expected_fragment):
         name = get_application_profile_name(email, "sonnet-4-6")
-        assert expected_fragment in name, (
-            f"Expected '{expected_fragment}' to appear in '{name}' for email '{email}'"
-        )
+        assert expected_fragment in name, f"Expected '{expected_fragment}' to appear in '{name}' for email '{email}'"
 
     def test_at_sign_replaced(self):
         name = get_application_profile_name("user@example.com", "sonnet-4-6")
@@ -286,9 +287,9 @@ class TestGetApplicationProfileName:
         # Sanity: they do normalize to the same slug
         sanitized_a = re.sub(r"[^a-z0-9-]", "-", email_a.lower())
         sanitized_b = re.sub(r"[^a-z0-9-]", "-", email_b.lower())
-        assert re.sub(r"-{2,}", "-", sanitized_a).strip("-") == re.sub(r"-{2,}", "-", sanitized_b).strip("-"), (
-            "Precondition: the two emails must sanitize to the same slug for this test to be meaningful"
-        )
+        assert re.sub(r"-{2,}", "-", sanitized_a).strip("-") == re.sub(r"-{2,}", "-", sanitized_b).strip(
+            "-"
+        ), "Precondition: the two emails must sanitize to the same slug for this test to be meaningful"
 
         # Their profile names must be different because the hashes differ
         assert name_a != name_b
@@ -369,24 +370,30 @@ class TestGetApplicationProfileTags:
 
     # -- optional claims included when present --------------------------------
 
-    @pytest.mark.parametrize("claim_key,tag_key", [
-        ("custom:cost_center", "cost_center"),
-        ("custom:department",  "department"),
-        ("custom:organization", "organization"),
-        ("custom:team",        "team"),
-    ])
+    @pytest.mark.parametrize(
+        "claim_key,tag_key",
+        [
+            ("custom:cost_center", "cost_center"),
+            ("custom:department", "department"),
+            ("custom:organization", "organization"),
+            ("custom:team", "team"),
+        ],
+    )
     def test_optional_claim_included_when_present(self, claim_key, tag_key):
         claims = {claim_key: "engineering"}
         result = get_application_profile_tags("user@example.com", claims)
         tag_keys = [t["Key"] for t in result]
         assert tag_key in tag_keys
 
-    @pytest.mark.parametrize("claim_key,tag_key,value", [
-        ("custom:cost_center", "cost_center",   "CC-1234"),
-        ("custom:department",  "department",    "Platform Engineering"),
-        ("custom:organization","organization",  "ACME Corp"),
-        ("custom:team",        "team",          "backend"),
-    ])
+    @pytest.mark.parametrize(
+        "claim_key,tag_key,value",
+        [
+            ("custom:cost_center", "cost_center", "CC-1234"),
+            ("custom:department", "department", "Platform Engineering"),
+            ("custom:organization", "organization", "ACME Corp"),
+            ("custom:team", "team", "backend"),
+        ],
+    )
     def test_optional_claim_value_is_correct(self, claim_key, tag_key, value):
         claims = {claim_key: value}
         result = get_application_profile_tags("user@example.com", claims)
@@ -397,9 +404,9 @@ class TestGetApplicationProfileTags:
     def test_all_claims_present(self):
         claims = {
             "custom:cost_center": "CC-999",
-            "custom:department":  "Finance",
+            "custom:department": "Finance",
             "custom:organization": "GlobalCorp",
-            "custom:team":        "data",
+            "custom:team": "data",
         }
         result = get_application_profile_tags("user@example.com", claims)
         tag_keys = {t["Key"] for t in result}
@@ -407,19 +414,22 @@ class TestGetApplicationProfileTags:
 
     # -- absent claims not included -------------------------------------------
 
-    @pytest.mark.parametrize("claim_key,tag_key", [
-        ("custom:cost_center", "cost_center"),
-        ("custom:department",  "department"),
-        ("custom:organization", "organization"),
-        ("custom:team",        "team"),
-    ])
+    @pytest.mark.parametrize(
+        "claim_key,tag_key",
+        [
+            ("custom:cost_center", "cost_center"),
+            ("custom:department", "department"),
+            ("custom:organization", "organization"),
+            ("custom:team", "team"),
+        ],
+    )
     def test_absent_claim_not_included(self, claim_key, tag_key):
         # Provide all claims except this one
         all_claims = {
             "custom:cost_center": "CC",
-            "custom:department":  "Dept",
+            "custom:department": "Dept",
             "custom:organization": "Org",
-            "custom:team":        "Team",
+            "custom:team": "Team",
         }
         del all_claims[claim_key]
         result = get_application_profile_tags("user@example.com", all_claims)
@@ -448,12 +458,15 @@ class TestGetApplicationProfileTags:
         email_tag = next(t for t in result if t["Key"] == "user.email")
         assert len(email_tag["Value"]) <= 256
 
-    @pytest.mark.parametrize("claim_key,tag_key", [
-        ("custom:cost_center", "cost_center"),
-        ("custom:department",  "department"),
-        ("custom:organization","organization"),
-        ("custom:team",        "team"),
-    ])
+    @pytest.mark.parametrize(
+        "claim_key,tag_key",
+        [
+            ("custom:cost_center", "cost_center"),
+            ("custom:department", "department"),
+            ("custom:organization", "organization"),
+            ("custom:team", "team"),
+        ],
+    )
     def test_claim_value_truncated_at_256_chars(self, claim_key, tag_key):
         long_value = "x" * 300
         claims = {claim_key: long_value}
@@ -465,7 +478,7 @@ class TestGetApplicationProfileTags:
     def test_short_values_not_truncated(self):
         claims = {
             "custom:cost_center": "CC-1",
-            "custom:department":  "Eng",
+            "custom:department": "Eng",
         }
         result = get_application_profile_tags("user@example.com", claims)
         for tag in result:

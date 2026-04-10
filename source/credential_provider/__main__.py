@@ -765,7 +765,6 @@ class MultiProviderAuth:
         """
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
 
         # Env vars take precedence over config.json so paths stay portable across
         # machines (self-install and admin-push scenarios).  This follows the
@@ -1510,9 +1509,7 @@ class MultiProviderAuth:
             # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
             # The API extracts email/groups from validated JWT claims, not query params
             response = requests.get(
-                f"{quota_api_endpoint}/check",
-                headers={"Authorization": f"Bearer {id_token}"},
-                timeout=timeout
+                f"{quota_api_endpoint}/check", headers={"Authorization": f"Bearer {id_token}"}, timeout=timeout
             )
 
             if response.status_code == 200:
@@ -1526,7 +1523,7 @@ class MultiProviderAuth:
                     return {
                         "allowed": False,
                         "reason": "jwt_invalid",
-                        "message": "Quota check authentication failed - invalid or expired token"
+                        "message": "Quota check authentication failed - invalid or expired token",
                     }
                 return {"allowed": True, "reason": "jwt_invalid"}
             else:
@@ -1536,18 +1533,14 @@ class MultiProviderAuth:
                     return {
                         "allowed": False,
                         "reason": "api_error",
-                        "message": f"Quota check failed with status {response.status_code}"
+                        "message": f"Quota check failed with status {response.status_code}",
                     }
                 return {"allowed": True, "reason": "api_error"}
 
         except requests.exceptions.Timeout:
             self._debug_print("Quota check timed out")
             if fail_mode == "closed":
-                return {
-                    "allowed": False,
-                    "reason": "timeout",
-                    "message": "Quota check timed out. Please try again."
-                }
+                return {"allowed": False, "reason": "timeout", "message": "Quota check timed out. Please try again."}
             return {"allowed": True, "reason": "timeout"}
 
         except requests.exceptions.RequestException as e:
@@ -1556,18 +1549,14 @@ class MultiProviderAuth:
                 return {
                     "allowed": False,
                     "reason": "connection_error",
-                    "message": f"Could not connect to quota service: {e}"
+                    "message": f"Could not connect to quota service: {e}",
                 }
             return {"allowed": True, "reason": "connection_error"}
 
         except Exception as e:
             self._debug_print(f"Quota check error: {e}")
             if fail_mode == "closed":
-                return {
-                    "allowed": False,
-                    "reason": "error",
-                    "message": f"Quota check failed: {e}"
-                }
+                return {"allowed": False, "reason": "error", "message": f"Quota check failed: {e}"}
             return {"allowed": True, "reason": "error"}
 
     def _handle_quota_blocked(self, quota_result: dict) -> int:
@@ -1593,9 +1582,15 @@ class MultiProviderAuth:
         if usage:
             print("Current Usage:", file=sys.stderr)
             if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+                print(
+                    f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)",
+                    file=sys.stderr,
+                )
             if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+                print(
+                    f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)",
+                    file=sys.stderr,
+                )
 
         if policy:
             print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)
@@ -1848,9 +1843,15 @@ class MultiProviderAuth:
 
         if usage:
             if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
+                print(
+                    f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)",
+                    file=sys.stderr,
+                )
             if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
+                print(
+                    f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)",
+                    file=sys.stderr,
+                )
 
         print("=" * 60 + "\n", file=sys.stderr)
 
@@ -1959,9 +1960,7 @@ class MultiProviderAuth:
 
         provisioner_arn = self.config.get("inference_profiles_provisioner_arn", "")
         if not provisioner_arn:
-            self._debug_print(
-                "inference_profiles_provisioner_arn not configured — skipping profile creation"
-            )
+            self._debug_print("inference_profiles_provisioner_arn not configured — skipping profile creation")
             return cached_arns
 
         region = self.config.get("aws_region", "us-east-1")
@@ -2047,9 +2046,8 @@ class MultiProviderAuth:
         try:
             # Atomic write: write to a temp file then rename to avoid partial writes
             import tempfile
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=claude_json_path.parent, prefix=".claude.json.tmp"
-            )
+
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=claude_json_path.parent, prefix=".claude.json.tmp")
             try:
                 with os.fdopen(tmp_fd, "w") as f:
                     json.dump(data, f, indent=2)
@@ -2111,9 +2109,8 @@ class MultiProviderAuth:
 
         try:
             import tempfile
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=settings_path.parent, prefix=".settings.json.tmp"
-            )
+
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings.json.tmp")
             try:
                 with os.fdopen(tmp_fd, "w") as f:
                     json.dump(settings, f, indent=2)
@@ -2351,9 +2348,7 @@ def main():
                 sys.exit(1)
             secret = env_secret
         else:
-            secret = getpass.getpass(
-                f"Enter client secret for profile '{args.profile}' (press Enter to clear): "
-            )
+            secret = getpass.getpass(f"Enter client secret for profile '{args.profile}' (press Enter to clear): ")
 
         try:
             if not secret:

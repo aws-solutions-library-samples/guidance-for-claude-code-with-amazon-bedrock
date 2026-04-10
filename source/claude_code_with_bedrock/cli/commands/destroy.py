@@ -127,9 +127,7 @@ class DestroyCommand(Command):
                 if failed:
                     all_failed_resources.extend(failed)
                     stacks_with_failures.append(stack_name)
-                console.print(
-                    f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n"
-                )
+                console.print(f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n")
             else:
                 console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 

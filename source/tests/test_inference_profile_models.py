@@ -55,33 +55,31 @@ class TestInferenceProfileModelsStructure:
     def test_source_model_arn_contains_region_placeholder(self):
         """source_model_arn for every model must contain the {region} placeholder."""
         for model_key, config in INFERENCE_PROFILE_MODELS.items():
-            assert "{region}" in config["source_model_arn"], (
-                f"Model '{model_key}' source_model_arn missing {{region}} placeholder"
-            )
+            assert (
+                "{region}" in config["source_model_arn"]
+            ), f"Model '{model_key}' source_model_arn missing {{region}} placeholder"
 
     def test_source_model_arn_is_bedrock_arn_template(self):
         """source_model_arn must look like a valid Bedrock foundation-model ARN template."""
-        pattern = re.compile(
-            r"^arn:aws:bedrock:\{region\}::foundation-model/anthropic\..+$"
-        )
+        pattern = re.compile(r"^arn:aws:bedrock:\{region\}::foundation-model/anthropic\..+$")
         for model_key, config in INFERENCE_PROFILE_MODELS.items():
-            assert pattern.match(config["source_model_arn"]), (
-                f"Model '{model_key}' has unexpected ARN format: {config['source_model_arn']}"
-            )
+            assert pattern.match(
+                config["source_model_arn"]
+            ), f"Model '{model_key}' has unexpected ARN format: {config['source_model_arn']}"
 
     def test_display_names_are_non_empty_strings(self):
         """display_name must be a non-empty string for every model."""
         for model_key, config in INFERENCE_PROFILE_MODELS.items():
-            assert isinstance(config["display_name"], str) and config["display_name"], (
-                f"Model '{model_key}' has empty or invalid display_name"
-            )
+            assert (
+                isinstance(config["display_name"], str) and config["display_name"]
+            ), f"Model '{model_key}' has empty or invalid display_name"
 
     def test_descriptions_are_non_empty_strings(self):
         """description must be a non-empty string for every model."""
         for model_key, config in INFERENCE_PROFILE_MODELS.items():
-            assert isinstance(config["description"], str) and config["description"], (
-                f"Model '{model_key}' has empty or invalid description"
-            )
+            assert (
+                isinstance(config["description"], str) and config["description"]
+            ), f"Model '{model_key}' has empty or invalid description"
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +125,9 @@ class TestGetEnabledInferenceProfileModels:
         """When one model is disabled it must be excluded from the result."""
         # Arrange
         patched = {
-            "opus-4-6":   {"source_model_arn": "arn:...", "display_name": "A", "description": "d", "enabled": True},
+            "opus-4-6": {"source_model_arn": "arn:...", "display_name": "A", "description": "d", "enabled": True},
             "sonnet-4-6": {"source_model_arn": "arn:...", "display_name": "B", "description": "d", "enabled": False},
-            "haiku-4-5":  {"source_model_arn": "arn:...", "display_name": "C", "description": "d", "enabled": True},
+            "haiku-4-5": {"source_model_arn": "arn:...", "display_name": "C", "description": "d", "enabled": True},
         }
 
         with patch("claude_code_with_bedrock.models.INFERENCE_PROFILE_MODELS", patched):
@@ -155,7 +153,7 @@ class TestGetEnabledInferenceProfileModels:
     def test_returns_empty_dict_when_all_disabled(self):
         """Returns an empty dict when every model is disabled."""
         patched = {
-            "opus-4-6":   {"enabled": False},
+            "opus-4-6": {"enabled": False},
             "sonnet-4-6": {"enabled": False},
         }
 
@@ -199,26 +197,17 @@ class TestGetInferenceProfileSourceArn:
     def test_correct_arn_for_sonnet_4_6_us_east_1(self):
         """Spot-check the full ARN value for sonnet-4-6 in us-east-1."""
         arn = get_inference_profile_source_arn("sonnet-4-6", "us-east-1")
-        assert arn == (
-            "arn:aws:bedrock:us-east-1::foundation-model/"
-            "anthropic.claude-sonnet-4-6-20251120-v1:0"
-        )
+        assert arn == ("arn:aws:bedrock:us-east-1::foundation-model/" "anthropic.claude-sonnet-4-6-20251120-v1:0")
 
     def test_correct_arn_for_opus_4_6_eu_west_1(self):
         """Spot-check the full ARN value for opus-4-6 in eu-west-1."""
         arn = get_inference_profile_source_arn("opus-4-6", "eu-west-1")
-        assert arn == (
-            "arn:aws:bedrock:eu-west-1::foundation-model/"
-            "anthropic.claude-opus-4-6-v1"
-        )
+        assert arn == ("arn:aws:bedrock:eu-west-1::foundation-model/" "anthropic.claude-opus-4-6-v1")
 
     def test_correct_arn_for_haiku_4_5(self):
         """Spot-check the full ARN value for haiku-4-5."""
         arn = get_inference_profile_source_arn("haiku-4-5", "ap-northeast-1")
-        assert arn == (
-            "arn:aws:bedrock:ap-northeast-1::foundation-model/"
-            "anthropic.claude-haiku-4-5-20251001-v1:0"
-        )
+        assert arn == ("arn:aws:bedrock:ap-northeast-1::foundation-model/" "anthropic.claude-haiku-4-5-20251001-v1:0")
 
     def test_different_regions_produce_different_arns(self):
         """The same model key with two distinct regions must produce distinct ARNs."""
@@ -340,9 +329,7 @@ class TestGetApplicationProfileName:
         allowed = re.compile(r"^[a-z0-9-]+$")
         for email in emails:
             name = get_application_profile_name(email, "sonnet-4-6")
-            assert allowed.match(name), (
-                f"Profile name '{name}' for email '{email}' contains disallowed characters"
-            )
+            assert allowed.match(name), f"Profile name '{name}' for email '{email}' contains disallowed characters"
 
     def test_result_starts_with_claude_code(self):
         """The profile name must always begin with 'claude-code-'."""
@@ -353,9 +340,7 @@ class TestGetApplicationProfileName:
         """The model key must be embedded at the end of the profile name."""
         for model_key in ("opus-4-6", "sonnet-4-6", "haiku-4-5"):
             name = get_application_profile_name("test@example.com", model_key)
-            assert name.endswith(f"-{model_key}"), (
-                f"Expected name to end with '-{model_key}', got: {name}"
-            )
+            assert name.endswith(f"-{model_key}"), f"Expected name to end with '-{model_key}', got: {name}"
 
     def test_uppercase_email_lowercased_in_name(self):
         """Upper-case characters in the email must be lower-cased in the name."""
@@ -367,7 +352,7 @@ class TestGetApplicationProfileName:
         name = get_application_profile_name("alice@example.com", "sonnet-4-6")
         # Format: claude-code-<sanitized>-<8hex>-<model_key>
         # Strip prefix and suffix, extract the 8-char hex segment
-        without_prefix = name[len("claude-code-"):]
+        without_prefix = name[len("claude-code-") :]
         without_suffix = without_prefix[: -len("-sonnet-4-6")]
         hash_part = without_suffix.rsplit("-", 1)[-1]
         assert len(hash_part) == 8
@@ -388,9 +373,9 @@ class TestGetApplicationProfileTags:
         email = "alice@example.com"
         claims = {
             "custom:cost_center": "CC-001",
-            "custom:department":  "Engineering",
+            "custom:department": "Engineering",
             "custom:organization": "ACME",
-            "custom:team":        "Platform",
+            "custom:team": "Platform",
         }
 
         # Act
@@ -428,7 +413,7 @@ class TestGetApplicationProfileTags:
         """user.email must always be the first tag in the list."""
         claims = {
             "custom:cost_center": "CC-003",
-            "custom:team":        "DevOps",
+            "custom:team": "DevOps",
         }
         tags = get_application_profile_tags("dave@example.com", claims)
 
@@ -450,9 +435,7 @@ class TestGetApplicationProfileTags:
         tags = get_application_profile_tags(long_email, claims)
 
         for tag in tags:
-            assert len(tag["Value"]) <= 256, (
-                f"Tag '{tag['Key']}' value exceeds 256 chars: {len(tag['Value'])}"
-            )
+            assert len(tag["Value"]) <= 256, f"Tag '{tag['Key']}' value exceeds 256 chars: {len(tag['Value'])}"
 
     def test_email_exactly_256_chars_not_truncated(self):
         """An email of exactly 256 characters must not be trimmed further."""
@@ -467,9 +450,7 @@ class TestGetApplicationProfileTags:
         tags = get_application_profile_tags("test@example.com", {"custom:team": "Ops"})
 
         for tag in tags:
-            assert set(tag.keys()) == {"Key", "Value"}, (
-                f"Unexpected tag structure: {tag}"
-            )
+            assert set(tag.keys()) == {"Key", "Value"}, f"Unexpected tag structure: {tag}"
 
     def test_returns_list(self):
         """get_application_profile_tags must always return a list."""

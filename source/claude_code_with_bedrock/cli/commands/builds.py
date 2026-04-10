@@ -23,7 +23,9 @@ class BuildsCommand(Command):
     description = "List and manage CodeBuild builds"
 
     options = [
-        option("profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None),
+        option(
+            "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
+        ),
         option("limit", description="Number of builds to show", flag=False, default="10"),
         option("project", description="CodeBuild project name (default: auto-detect)", flag=False),
         option("status", description="Check status of a specific build by ID", flag=False),
@@ -193,9 +195,7 @@ class BuildsCommand(Command):
                     if len(build_id) == 8:
                         # List recent builds to find the matching one
                         codebuild = boto3.client("codebuild", region_name=profile.aws_region)
-                        response = codebuild.list_builds_for_project(
-                            projectName=project_name, sortOrder="DESCENDING"
-                        )
+                        response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
 
                         # Find the build that starts with this short ID
                         for full_build_id in response.get("ids", []):

@@ -15,7 +15,6 @@ from rich.table import Table
 
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
-    DEFAULT_INFERENCE_PROFILE_MODEL,
     get_application_profile_name,
     get_enabled_inference_profile_models,
 )
@@ -111,8 +110,7 @@ class ProfilesListCommand(Command):
 
         if not arns:
             console.print(
-                "[yellow]No inference profiles found. "
-                "They are created automatically on your next login.[/yellow]"
+                "[yellow]No inference profiles found. " "They are created automatically on your next login.[/yellow]"
             )
             return 0
 
@@ -177,6 +175,7 @@ class ProfilesListCommand(Command):
             return {}
 
         import jwt as pyjwt
+
         try:
             claims = pyjwt.decode(id_token_raw, options={"verify_signature": False})
             email = claims.get("email", "")
@@ -188,10 +187,7 @@ class ProfilesListCommand(Command):
             return {}
 
         enabled_models = get_enabled_inference_profile_models()
-        expected_names = {
-            get_application_profile_name(email, model_key): model_key
-            for model_key in enabled_models
-        }
+        expected_names = {get_application_profile_name(email, model_key): model_key for model_key in enabled_models}
 
         try:
             bedrock = boto3.client("bedrock", region_name=profile.aws_region)
@@ -233,9 +229,7 @@ class ProfilesSetDefaultCommand(Command):
             return 1
 
         if not profile.inference_profiles_enabled:
-            console.print(
-                "[yellow]Application Inference Profiles are not enabled for this deployment.[/yellow]"
-            )
+            console.print("[yellow]Application Inference Profiles are not enabled for this deployment.[/yellow]")
             return 1
 
         # Read model_key from the first positional argument
@@ -272,4 +266,5 @@ class ProfilesSetDefaultCommand(Command):
     @property
     def arguments(self):
         from cleo.helpers import argument
+
         return [argument("model_key", description="Model key to set as default (e.g. sonnet-4-6)")]

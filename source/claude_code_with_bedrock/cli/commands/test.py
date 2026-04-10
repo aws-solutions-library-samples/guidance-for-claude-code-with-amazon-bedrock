@@ -583,7 +583,9 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)}
 
-    def _test_bedrock_access(self, profile_name: str, region: str, with_api: bool = False, selected_model: str = None) -> dict:
+    def _test_bedrock_access(
+        self, profile_name: str, region: str, with_api: bool = False, selected_model: str = None
+    ) -> dict:
         """Test Bedrock access in a specific region."""
         try:
             # Clear AWS credentials from environment
@@ -1072,7 +1074,9 @@ class TestCommand(Command):
             try:
                 resolved = manager.resolve_quota_for_user(test_email, groups=None)
                 if resolved and resolved.identifier == test_email:
-                    results.append({"name": "Resolve Quota", "status": "✓", "details": "User policy correctly resolved"})
+                    results.append(
+                        {"name": "Resolve Quota", "status": "✓", "details": "User policy correctly resolved"}
+                    )
                 else:
                     results.append(
                         {"name": "Resolve Quota", "status": "!", "details": "Policy resolved but not user-specific"}
@@ -1331,8 +1335,7 @@ class TestCommand(Command):
 
         console.print(
             Panel.fit(
-                "[bold cyan]Quota Monitoring Tests[/bold cyan]\n\n"
-                f"Testing profile: [bold]{profile_name}[/bold]",
+                "[bold cyan]Quota Monitoring Tests[/bold cyan]\n\n" f"Testing profile: [bold]{profile_name}[/bold]",
                 border_style="cyan",
                 padding=(1, 2),
             )
@@ -1355,7 +1358,9 @@ class TestCommand(Command):
             if endpoint:
                 task = progress.add_task("Testing quota API...", total=None)
                 api_result = self._test_quota_api(credential_binary, endpoint, package_dir, profile_name)
-                test_results.append({"name": "Quota API", "status": api_result["status"], "details": api_result["details"]})
+                test_results.append(
+                    {"name": "Quota API", "status": api_result["status"], "details": api_result["details"]}
+                )
                 progress.update(task, completed=True)
             else:
                 test_results.append({"name": "Quota API", "status": "!", "details": "No endpoint configured"})

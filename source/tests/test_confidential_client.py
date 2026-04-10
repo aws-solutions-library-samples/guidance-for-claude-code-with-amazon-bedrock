@@ -2,8 +2,8 @@
 # ABOUTME: Covers client_secret and certificate-based client_assertion flows for Azure AD / Entra ID
 """Tests for confidential client authentication modes."""
 
+import datetime
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import jwt as pyjwt
@@ -12,12 +12,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-import datetime
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _generate_rsa_keypair():
     """Generate a throwaway RSA-2048 key pair for testing."""
@@ -27,9 +26,11 @@ def _generate_rsa_keypair():
 
 def _generate_self_signed_cert(private_key):
     """Generate a minimal self-signed certificate for testing."""
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "test"),
-    ])
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "test"),
+        ]
+    )
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -76,8 +77,9 @@ def _make_auth_instance(extra_config=None):
     if extra_config:
         base_config.update(extra_config)
 
-    with patch("credential_provider.__main__.MultiProviderAuth._load_config") as mock_load, \
-         patch("credential_provider.__main__.MultiProviderAuth._init_credential_storage"):
+    with patch("credential_provider.__main__.MultiProviderAuth._load_config") as mock_load, patch(
+        "credential_provider.__main__.MultiProviderAuth._init_credential_storage"
+    ):
         mock_load.return_value = base_config
         instance = MultiProviderAuth.__new__(MultiProviderAuth)
         instance.debug = False
@@ -102,16 +104,19 @@ def _make_auth_instance(extra_config=None):
 # _build_client_assertion tests
 # ---------------------------------------------------------------------------
 
+
 class TestBuildClientAssertion:
     def test_returns_valid_jwt(self, tmp_path):
         private_key = _generate_rsa_keypair()
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         token_url = "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token"
         assertion = auth._build_client_assertion(token_url)
@@ -133,10 +138,12 @@ class TestBuildClientAssertion:
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         now = int(time.time())
         assertion = auth._build_client_assertion("https://example.com/token")
@@ -150,10 +157,12 @@ class TestBuildClientAssertion:
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         token_url = "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token"
         assertion = auth._build_client_assertion(token_url)
@@ -169,16 +178,19 @@ class TestBuildClientAssertion:
 
     def test_x5t_matches_certificate_thumbprint(self, tmp_path):
         import base64
+
         from cryptography.hazmat.primitives import hashes as crypto_hashes
 
         private_key = _generate_rsa_keypair()
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         assertion = auth._build_client_assertion("https://example.com/token")
         header = pyjwt.get_unverified_header(assertion)
@@ -193,10 +205,12 @@ class TestBuildClientAssertion:
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         url = "https://example.com/token"
         claims_a = pyjwt.decode(auth._build_client_assertion(url), options={"verify_signature": False})
@@ -208,10 +222,12 @@ class TestBuildClientAssertion:
         cert = _generate_self_signed_cert(private_key)
         cert_path, _ = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(tmp_path / "nonexistent_key.pem"),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(tmp_path / "nonexistent_key.pem"),
+            }
+        )
 
         with pytest.raises(Exception):
             auth._build_client_assertion("https://example.com/token")
@@ -221,12 +237,12 @@ class TestBuildClientAssertion:
 # Token exchange injection tests
 # ---------------------------------------------------------------------------
 
+
 class TestTokenExchangeConfidentialClient:
     """Verify the right fields are injected into the token POST for each auth mode."""
 
     def _captured_token_data(self, auth_instance, mock_response):
         """Run authenticate_oidc and return the data dict passed to requests.post."""
-        import json
 
         fake_id_token = pyjwt.encode(
             {"sub": "u1", "email": "u@example.com", "nonce": "NONCE", "exp": int(time.time()) + 3600},
@@ -236,17 +252,19 @@ class TestTokenExchangeConfidentialClient:
         mock_response.json.return_value = {"id_token": fake_id_token, "access_token": "at"}
         mock_response.ok = True
 
-        with patch("credential_provider.__main__.secrets.token_urlsafe", side_effect=["STATE", "NONCE", "JTI"]), \
-             patch("credential_provider.__main__.hashlib.sha256") as mock_sha, \
-             patch("credential_provider.__main__.webbrowser.open"), \
-             patch("credential_provider.__main__.HTTPServer"), \
-             patch("credential_provider.__main__.threading.Thread") as mock_thread, \
-             patch("credential_provider.__main__.requests.post", return_value=mock_response) as mock_post:
-
+        with patch("credential_provider.__main__.secrets.token_urlsafe", side_effect=["STATE", "NONCE", "JTI"]), patch(
+            "credential_provider.__main__.hashlib.sha256"
+        ) as mock_sha, patch("credential_provider.__main__.webbrowser.open"), patch(
+            "credential_provider.__main__.HTTPServer"
+        ), patch("credential_provider.__main__.threading.Thread") as mock_thread, patch(
+            "credential_provider.__main__.requests.post", return_value=mock_response
+        ) as mock_post:
             mock_sha.return_value.digest.return_value = b"challenge"
+
             # Simulate callback arriving immediately
             def fake_start():
                 auth_instance._auth_result_container = {"code": "AUTH_CODE", "error": None}
+
             thread_instance = MagicMock()
             mock_thread.return_value = thread_instance
 
@@ -272,12 +290,14 @@ class TestTokenExchangeConfidentialClient:
 
                         def inject_code_thread(target=None, **kw):
                             t = MagicMock()
+
                             def fake_join(timeout=None):
                                 # Inject auth code directly into the result dict
                                 # Find the auth_result dict — it's the local in authenticate_oidc
                                 # We do this by calling target() which runs handle_request
                                 # and then setting code directly
                                 pass
+
                             t.join = fake_join
                             return t
 
@@ -306,11 +326,13 @@ class TestTokenExchangeConfidentialClient:
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_secret": "should-be-ignored",
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_secret": "should-be-ignored",
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         # When both are present, the certificate branch runs first
         assert auth.config.get("client_certificate_path")
@@ -324,11 +346,13 @@ class TestTokenExchangeConfidentialClient:
         cert = _generate_self_signed_cert(private_key)
         cert_path, key_path = _write_pem_files(tmp_path, private_key, cert)
 
-        auth = _make_auth_instance({
-            "client_secret": "should-not-appear",
-            "client_certificate_path": str(cert_path),
-            "client_certificate_key_path": str(key_path),
-        })
+        auth = _make_auth_instance(
+            {
+                "client_secret": "should-not-appear",
+                "client_certificate_path": str(cert_path),
+                "client_certificate_key_path": str(key_path),
+            }
+        )
 
         # The branching logic: cert path wins, so client_secret must NOT appear in token_data
         # Simulate what authenticate_oidc does when building token_data
@@ -349,6 +373,7 @@ class TestTokenExchangeConfidentialClient:
 # ---------------------------------------------------------------------------
 # Config dataclass tests
 # ---------------------------------------------------------------------------
+
 
 class TestProfileConfidentialClientFields:
     def test_new_fields_default_to_none(self):

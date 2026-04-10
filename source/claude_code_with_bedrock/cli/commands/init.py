@@ -414,7 +414,9 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice("Public client (default, no secret required)", value="public"),
                         questionary.Choice("Confidential client — client secret", value="secret"),
-                        questionary.Choice("Confidential client — certificate (recommended for enterprise)", value="certificate"),
+                        questionary.Choice(
+                            "Confidential client — certificate (recommended for enterprise)", value="certificate"
+                        ),
                     ],
                     default=config.get("azure_auth_mode", "public"),
                 ).ask()
@@ -430,6 +432,7 @@ class InitCommand(Command):
                     if not client_secret:
                         return None
                     import keyring as _keyring
+
                     _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
                     console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
                     console.print(
@@ -619,8 +622,12 @@ class InitCommand(Command):
             if enable_monitoring:
                 existing_ip_enabled = config.get("inference_profiles", {}).get("enabled", False)
                 console.print("\n[bold]Metrics Collection Method[/bold]")
-                console.print("  • [cyan]Application Inference Profiles[/cyan]: server-side CloudWatch metrics — no VPC or collector needed")
-                console.print("  • [dim]OpenTelemetry collector[/dim]: client-side metrics via ECS Fargate — requires VPC")
+                console.print(
+                    "  • [cyan]Application Inference Profiles[/cyan]: server-side CloudWatch metrics — no VPC or collector needed"
+                )
+                console.print(
+                    "  • [dim]OpenTelemetry collector[/dim]: client-side metrics via ECS Fargate — requires VPC"
+                )
                 using_inference_profiles = questionary.confirm(
                     "Use Application Inference Profiles for CloudWatch metrics (recommended)?",
                     default=existing_ip_enabled if existing_ip_enabled else True,
@@ -1055,13 +1062,14 @@ class InitCommand(Command):
                 certificate_arn = questionary.text(
                     "ACM certificate ARN (must be in the same region as this deployment):",
                     default=existing_cert_arn,
-                    validate=lambda text: text.strip().startswith("arn:aws")
-                    or "Must be a valid ACM certificate ARN",
+                    validate=lambda text: text.strip().startswith("arn:aws") or "Must be a valid ACM certificate ARN",
                 ).ask()
                 console.print(f"[green]✓[/green] Using existing certificate: {certificate_arn}")
             else:
                 console.print("[dim]A new ACM certificate will be created via DNS validation.[/dim]")
-                console.print("[dim]You'll need to add a CNAME record to your DNS provider after deployment starts.[/dim]")
+                console.print(
+                    "[dim]You'll need to add a CNAME record to your DNS provider after deployment starts.[/dim]"
+                )
 
             # Check for Route53 hosted zones
             console.print("\n[bold]Route53 Configuration[/bold]")
