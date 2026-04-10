@@ -32,9 +32,15 @@ Thumbs.db
 .aws/credentials
 .aws/config
 
+# Dev/test config that must not be bundled into shiv .pyz builds
+source/credential_provider/config.json
+
 # Local environment files
 .env
 .env.local
+
+# Kiro settings
+.kiro/
 
 # Claude Code settings
 .claude/
