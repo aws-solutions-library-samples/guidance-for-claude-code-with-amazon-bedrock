@@ -2450,6 +2450,9 @@ def main():
             # Cache credentials for subsequent use
             auth.save_credentials(credentials)
 
+            # Save monitoring token so OTEL helper can retrieve user attributes
+            auth.save_monitoring_token(id_token, token_claims)
+
             print("\nInference profiles configured:", file=sys.stderr)
             for model_key, arn in sorted(profile_arns.items()):
                 print(f"  {model_key}: {arn}", file=sys.stderr)
