@@ -1,5 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'OpenTelemetry Collector on ECS Fargate for Claude Code metrics - supports both VPC creation and existing VPC'
+Description: >-
+  OpenTelemetry Collector on ECS Fargate for Claude Code metrics - supports both VPC creation and existing VPC.
+  Prerequisites: The AWSServiceRoleForECS service-linked role must exist in the account.
+  Run 'aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com' if deploying
+  this template directly (ccwb deploy handles this automatically).
 
 Parameters:
   VpcId:
@@ -487,11 +491,67 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
+  # Ensure ECS service-linked role exists (required for Fargate + ALB).
+  # This is an account-level singleton that AWS::IAM::ServiceLinkedRole
+  # cannot create idempotently, so we use a custom resource.
+  ECSServiceLinkedRoleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ecs-slr'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt ECSServiceLinkedRoleFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  boto3.client('iam').create_service_linked_role(
+                      AWSServiceName='ecs.amazonaws.com'
+                  )
+              except Exception as e:
+                  if 'has been taken' not in str(e) and 'already exists' not in str(e).lower():
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+                      return
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  ECSServiceLinkedRoleFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CreateServiceLinkedRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/*'
+
+  ECSServiceLinkedRole:
+    Type: Custom::ECSServiceLinkedRole
+    Properties:
+      ServiceToken: !GetAtt ECSServiceLinkedRoleFunction.Arn
+
   # ECS Service
   ECSService:
     Type: AWS::ECS::Service
     DependsOn:
       - HTTPListener
+      - ECSServiceLinkedRole
     Properties:
       ServiceName: otel-collector-service
       Cluster: !Ref ECSCluster
