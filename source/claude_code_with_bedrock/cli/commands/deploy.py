@@ -419,10 +419,16 @@ class DeployCommand(Command):
                         ]
                     )
 
+                # Use profile regions, or fall back to all known Bedrock regions
+                bedrock_regions = profile.allowed_bedrock_regions
+                if not bedrock_regions:
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
                 params.extend(
                     [
                         f"IdentityPoolName={profile.identity_pool_name}",
-                        f"AllowedBedrockRegions={','.join(profile.allowed_bedrock_regions)}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
                     ]
                 )
