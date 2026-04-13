@@ -1013,7 +1013,7 @@ poetry run ccwb config export [profile-name] [options]
 
 **Options:**
 
-- `--output <file>` - Output file path (default: `<profile-name>.json`)
+- `--output, -o <file>` - Write output to a file instead of stdout (uses UTF-8 encoding)
 - `--include-secrets` - Include sensitive values (not recommended)
 
 **What it does:**
@@ -1025,10 +1025,13 @@ poetry run ccwb config export [profile-name] [options]
 **Examples:**
 
 ```bash
-# Export active profile (secrets removed)
+# Export active profile to stdout (secrets removed)
 poetry run ccwb config export
 
-# Export specific profile to custom path
+# Export active profile to a file (cross-platform, UTF-8 safe)
+poetry run ccwb config export --output prod-config.json
+
+# Export specific profile to a file
 poetry run ccwb config export production --output prod-config.json
 
 # Export with secrets (use caution)
