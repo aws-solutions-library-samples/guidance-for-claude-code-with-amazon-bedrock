@@ -4,7 +4,7 @@
 """Context command - Manage deployment profile contexts."""
 
 from cleo.commands.command import Command
-from cleo.helpers import argument
+from cleo.helpers import argument, option
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -356,14 +356,21 @@ class ConfigExportCommand(Command):
             optional=True,
         )
     ]
+    options = [
+        option("output", "o", description="Write output to a file instead of stdout", flag=False, default=None),
+        option("include-secrets", description="Include sensitive values (not recommended)", flag=True),
+    ]
 
     def handle(self) -> int:
         """Execute the config export command."""
+        import json
         import sys
 
         Console()
         console_err = Console(file=sys.stderr)
         profile_name = self.argument("profile")
+        output_path = self.option("output")
+        include_secrets = self.option("include-secrets")
 
         try:
             config = Config.load()
@@ -384,18 +391,21 @@ class ConfigExportCommand(Command):
                 console_err.print("\nUse [cyan]ccwb context list[/cyan] to see all profiles.\n")
                 return 1
 
-            # Sanitize profile (remove secrets)
+            # Sanitize profile (remove secrets) unless --include-secrets is set
             profile_dict = profile.to_dict()
-            sanitized = self._sanitize_profile(profile_dict)
+            exported = profile_dict if include_secrets else self._sanitize_profile(profile_dict)
+            json_output = json.dumps(exported, indent=2)
 
-            # Output JSON to stdout
-            import json
+            if output_path:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(json_output + "\n")
+                console_err.print(f"\n[green]✓ Exported profile:[/green] {profile_name} → {output_path}")
+            else:
+                print(json_output)
+                console_err.print(f"\n[green]✓ Exported profile:[/green] {profile_name} (sanitized)")
 
-            print(json.dumps(sanitized, indent=2))
-
-            # Log to stderr
-            console_err.print(f"\n[green]✓ Exported profile:[/green] {profile_name} (sanitized)")
-            console_err.print("[dim]Secrets have been removed for safe sharing.[/dim]\n")
+            if not include_secrets:
+                console_err.print("[dim]Secrets have been removed for safe sharing.[/dim]\n")
 
             return 0
 
