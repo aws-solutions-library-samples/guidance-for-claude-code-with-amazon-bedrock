@@ -104,7 +104,7 @@ class InitCommand(Command):
 
         # If user explicitly chose "Update existing profile", skip the second prompt
         if existing_config and user_action == "update":
-            config = self._gather_configuration(progress, existing_config)
+            config = self._gather_configuration(progress, existing_config, profile_name)
             if not config:
                 return 1
             if not self._review_configuration(config):
@@ -145,7 +145,7 @@ class InitCommand(Command):
                 self._review_configuration(existing_config)
                 return 0
             elif action == "Update configuration":
-                config = self._gather_configuration(progress, existing_config)
+                config = self._gather_configuration(progress, existing_config, profile_name)
                 if not config:
                     return 1
                 if not self._review_configuration(config):
@@ -196,7 +196,7 @@ class InitCommand(Command):
             return 1
 
         # Gather configuration
-        config = self._gather_configuration(progress)
+        config = self._gather_configuration(progress, profile_name=profile_name)
         if not config:
             return 1
         # Review and confirm
@@ -267,7 +267,7 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None) -> dict[str, Any]:
+    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None) -> dict[str, Any]:
         """Gather configuration from user."""
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
@@ -429,6 +429,8 @@ class InitCommand(Command):
                     ).ask()
                     if not client_secret:
                         return None
+                    if not profile_name:
+                        raise ValueError("profile_name is required to store client secret in keyring")
                     import keyring as _keyring
                     _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
                     console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
@@ -1163,8 +1165,8 @@ class InitCommand(Command):
             for profile_key in available_profiles:
                 # Get model-specific description
                 description = get_profile_description(selected_model_key, profile_key)
-                profile_name = profile_key.upper() if profile_key != "us" else "US"
-                choice_text = f"{profile_name} Cross-Region - {description}"
+                region_profile_label = profile_key.upper() if profile_key != "us" else "US"
+                choice_text = f"{region_profile_label} Cross-Region - {description}"
                 profile_choices.append(questionary.Choice(title=choice_text, value=profile_key))
 
             # Adjust the prompt based on number of options
@@ -1201,8 +1203,8 @@ class InitCommand(Command):
             config["aws"]["allowed_bedrock_regions"] = destination_regions
 
             # Step 3: Select source region for the selected model/profile combination
-            profile_name = selected_profile.upper() if selected_profile != "us" else "US"
-            console.print(f"\n[green]Selected:[/green] {profile_name} Cross-Region")
+            region_profile_label = selected_profile.upper() if selected_profile != "us" else "US"
+            console.print(f"\n[green]Selected:[/green] {region_profile_label} Cross-Region")
 
             # Get available source regions for this model/profile combination
             available_source_regions = get_source_regions_for_model_profile(selected_model_key, selected_profile)
@@ -1250,7 +1252,7 @@ class InitCommand(Command):
             profile_description = get_profile_description(selected_model_key, selected_profile)
 
             console.print(
-                f"\n[green]✓[/green] Configured {selected_model['name']} with {profile_name} "
+                f"\n[green]✓[/green] Configured {selected_model['name']} with {region_profile_label} "
                 f"Cross-Region ({profile_description})"
             )
 
