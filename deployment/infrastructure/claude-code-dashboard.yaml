@@ -869,6 +869,36 @@ Resources:
           ]
         }
 
+  # IAM Managed Policy for dashboard viewers to invoke custom widget Lambdas
+  DashboardViewerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::StackName}-DashboardViewerPolicy'
+      Description: >-
+        Grants lambda:InvokeFunction on CloudWatch dashboard custom widget
+        Lambda functions. Attach this policy to read-only IAM roles that
+        need to view the dashboard.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt TotalTokensWidget.Arn
+              - !GetAtt OperationsCountWidget.Arn
+              - !GetAtt ActiveUsersWidget.Arn
+              - !GetAtt TokenByModelWidget.Arn
+              - !GetAtt CacheEfficiencyWidget.Arn
+              - !GetAtt TopUsersWidget.Arn
+              - !GetAtt OperationsByTypeWidget.Arn
+              - !GetAtt TokenUsageByTypeWidget.Arn
+              - !GetAtt CodeGenerationByLanguageWidget.Arn
+              - !GetAtt LinesOfCodeWidget.Arn
+              - !GetAtt CommitsWidget.Arn
+              - !GetAtt CodeAcceptanceWidget.Arn
+              - !GetAtt ActiveHoursWidget.Arn
+
 Outputs:
   DashboardURL:
     Description: Direct URL to the CloudWatch dashboard
@@ -889,3 +919,11 @@ Outputs:
     Value: !Ref MetricsAggregatorRole
     Export:
       Name: !Sub '${AWS::StackName}-MetricsAggregatorRoleName'
+
+  DashboardViewerPolicyArn:
+    Description: >-
+      ARN of the IAM managed policy that grants lambda:InvokeFunction on
+      dashboard widget Lambdas. Attach to read-only roles for dashboard access.
+    Value: !Ref DashboardViewerPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-DashboardViewerPolicyArn'
