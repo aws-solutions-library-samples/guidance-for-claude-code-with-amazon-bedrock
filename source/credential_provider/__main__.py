@@ -1043,45 +1043,31 @@ class MultiProviderAuth:
             # Create STS client
             sts_client = boto3.client("sts", region_name=self.config["aws_region"])
 
-            # Prepare session tags from token claims
-            session_tags = []
-
-            # Map common claims to session tags
-            tag_mappings = {
-                "email": "UserEmail",
-                "sub": "UserId",
-                "preferred_username": "UserName",
-                "name": "UserName",  # Fallback for providers that use 'name' instead
-            }
-
-            for claim_key, tag_key in tag_mappings.items():
-                if claim_key in token_claims:
-                    # Session tag values have a 256 character limit
-                    tag_value = str(token_claims[claim_key])[:256]
-                    session_tags.append({"Key": tag_key, "Value": tag_value})
-
             # Generate session name from user identifier
-            # AWS RoleSessionName regex: [\w+=,.@-]*
+            # AWS RoleSessionName regex: [\w+=,.@-]*, max 64 chars
             # Auth0 often uses pipe-delimited format in sub claims (e.g., auth0|12345)
             # Sanitize to replace invalid characters with hyphens
             session_name = "claude-code"
-            if "sub" in token_claims:
-                # Use first 32 chars of sub for uniqueness, sanitized for AWS
+            if "email" in token_claims:
+                # Use full email for human-readable CUR cost attribution.
+                # The principal ARN (assumed-role/RoleName/alice@acme.com) appears
+                # in CUR line_item_iam_principal, enabling per-user cost visibility
+                # without requiring session tags.
+                session_name = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["email"]))[:64]
+            elif "sub" in token_claims:
+                # Fallback to sub when email is not available (e.g. some Entra ID configs)
                 sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:32])
                 session_name = f"claude-code-{sub_sanitized}"
-            elif "email" in token_claims:
-                # Use email username part, sanitized
-                email_part = token_claims["email"].split("@")[0][:32]
-                email_sanitized = re.sub(r"[^\w+=,.@-]", "-", email_part)
-                session_name = f"claude-code-{email_sanitized}"
 
             self._debug_print(f"Assuming role: {federated_role_arn}")
             self._debug_print(f"Session name: {session_name}")
-            self._debug_print(f"Session tags: {session_tags}")
 
             # Call AssumeRoleWithWebIdentity
-            # Note: AssumeRoleWithWebIdentity doesn't support Tags parameter directly
-            # Session tags must be passed via the token claims and configured in the trust policy
+            # Note: AssumeRoleWithWebIdentity does not support a Tags parameter.
+            # Session tags must be embedded in the JWT by the IdP as the
+            # https://aws.amazon.com/tags claim. Use the Cognito Identity Pool
+            # path (FederationType=cognito) for automatic tag mapping via
+            # PrincipalTags without IdP-side configuration.
             assume_role_params = {
                 "RoleArn": federated_role_arn,
                 "RoleSessionName": session_name,

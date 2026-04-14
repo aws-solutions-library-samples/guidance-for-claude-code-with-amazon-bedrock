@@ -392,6 +392,12 @@ This error occurs during deployment if the tenant ID format is incorrect. The fi
 
 ---
 
+## Cost Attribution (Optional)
+
+Per-user Bedrock costs are tracked automatically via the session name — no IdP changes needed. For additional tag-based attribution, you can inject AWS session tags into the JWT via a custom claims provider. See [Cost Attribution](../COST_ATTRIBUTION.md#microsoft-entra-id) for details.
+
+---
+
 ## Next Steps
 
 Once you've completed this setup:

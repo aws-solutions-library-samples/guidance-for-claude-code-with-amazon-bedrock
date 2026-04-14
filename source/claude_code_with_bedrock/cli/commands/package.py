@@ -1862,8 +1862,11 @@ cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
 cp config.json ~/claude-code-with-bedrock/
 chmod +x ~/claude-code-with-bedrock/credential-process
 
-# macOS Keychain Notice
+# macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
+    # Remove quarantine flag added by macOS when downloading unsigned binaries.
+    # Without this, Gatekeeper blocks execution with "Apple could not verify..." dialog.
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process 2>/dev/null || true
     echo
     echo "⚠️  macOS Keychain Access:"
     echo "   On first use, macOS will ask for permission to access the keychain."
@@ -1911,6 +1914,7 @@ if [ -f "$OTEL_BINARY" ]; then
     # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
     cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
     chmod +x ~/claude-code-with-bedrock/otel-helper-bin
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper-bin 2>/dev/null || true
     # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
     if [ -f "otel-helper.sh" ]; then
         cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
