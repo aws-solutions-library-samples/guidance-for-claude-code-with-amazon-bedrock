@@ -709,7 +709,9 @@ class DeployCommand(Command):
                     # Deploy the packaged template with MetricsRegion parameter
                     params = [f"MetricsRegion={profile.aws_region}"]
                     return deploy_with_cf(
-                        packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
+                        packaged_template_path, stack_name, params,
+                        capabilities=["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying monitoring dashboard...",
                     )
 
                 finally:
