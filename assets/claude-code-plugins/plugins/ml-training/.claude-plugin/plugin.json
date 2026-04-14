@@ -1,9 +1,0 @@
-{
-  "name": "ml-training",
-  "version": "1.0.0",
-  "description": "Machine learning training skills for GRPO fine-tuning and vision-language models",
-  "author": {
-    "name": "Michael Walker",
-    "email": "michael@example.com"
-  }
-}

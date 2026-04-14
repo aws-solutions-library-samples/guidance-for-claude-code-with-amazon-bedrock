@@ -1,1 +1,0 @@
-../../architecture/agents/code-archaeologist.md

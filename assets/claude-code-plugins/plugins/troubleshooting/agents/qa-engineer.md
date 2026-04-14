@@ -1,1 +1,0 @@
-../../architecture/agents/qa-engineer.md

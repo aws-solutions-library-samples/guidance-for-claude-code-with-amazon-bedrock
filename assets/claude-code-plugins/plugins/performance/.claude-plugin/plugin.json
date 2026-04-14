@@ -1,8 +1,0 @@
-{
-  "name": "performance",
-  "version": "1.0.0",
-  "description": "Performance profiling, optimization, and monitoring with 5 specialized agents for comprehensive performance analysis",
-  "author": {
-    "name": "AWS Solutions Library"
-  }
-}

@@ -1,8 +1,0 @@
-{
-  "name": "security",
-  "version": "1.0.0",
-  "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
-  "author": {
-    "name": "AWS Solutions Library"
-  }
-}

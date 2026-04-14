@@ -1,8 +1,0 @@
-{
-  "name": "testing",
-  "version": "1.0.0",
-  "description": "Testing, QA, and quality gates with 3 specialized agents for automated validation and code quality checks",
-  "author": {
-    "name": "AWS Solutions Library"
-  }
-}

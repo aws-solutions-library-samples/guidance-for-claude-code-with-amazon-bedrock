@@ -1,1 +1,0 @@
-../../agile-tools/agents/business-analyst.md
