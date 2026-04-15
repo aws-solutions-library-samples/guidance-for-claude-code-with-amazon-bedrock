@@ -208,6 +208,16 @@ class MultiProviderAuth:
             "max_session_duration", 43200 if profile_config.get("federation_type") == "direct" else 28800
         )
 
+        # Load client secret from OS keyring if configured for secret-based confidential client.
+        # The secret is never written to config.json; it lives only in the keyring.
+        if profile_config.get("azure_auth_mode") == "secret":
+            try:
+                secret = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-client-secret")
+                if secret:
+                    profile_config["client_secret"] = secret
+            except Exception as e:
+                self._debug_print(f"Warning: could not read client secret from keyring: {e}")
+
         return profile_config
 
     def _detect_federation_type(self, config):
@@ -740,6 +750,77 @@ class MultiProviderAuth:
             self._debug_print(f"Error parsing expiration: {e}")
             return True  # Assume expired on parse error
 
+    def _build_client_assertion(self, token_url: str) -> str:
+        """Build a signed JWT client assertion for certificate-based confidential client auth.
+
+        Used by Azure AD / Entra ID when 'Allow public client flows' is disabled.
+        Follows the Microsoft identity platform certificate credentials specification:
+        https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+
+        Args:
+            token_url: The token endpoint URL, used as the JWT audience.
+
+        Returns:
+            A signed JWT string to be sent as client_assertion.
+        """
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        # Env vars take precedence over config.json so paths stay portable across
+        # machines (self-install and admin-push scenarios).  This follows the
+        # Azure SDK convention for AZURE_CLIENT_CERTIFICATE_PATH.
+        cert_path = Path(
+            os.environ.get("AZURE_CLIENT_CERTIFICATE_PATH") or self.config["client_certificate_path"]
+        ).expanduser()
+        key_path = Path(
+            os.environ.get("AZURE_CLIENT_CERTIFICATE_KEY_PATH") or self.config["client_certificate_key_path"]
+        ).expanduser()
+
+        if not cert_path.exists():
+            raise FileNotFoundError(
+                f"Certificate file not found: {cert_path}\n"
+                "Set the AZURE_CLIENT_CERTIFICATE_PATH environment variable to the correct path, "
+                "or update 'client_certificate_path' in config.json."
+            )
+        if not key_path.exists():
+            raise FileNotFoundError(
+                f"Private key file not found: {key_path}\n"
+                "Set the AZURE_CLIENT_CERTIFICATE_KEY_PATH environment variable to the correct path, "
+                "or update 'client_certificate_key_path' in config.json."
+            )
+
+        cert_pem = cert_path.read_bytes()
+        key_pem = key_path.read_bytes()
+
+        cert = x509.load_pem_x509_certificate(cert_pem)
+        private_key = serialization.load_pem_private_key(key_pem, password=None)
+
+        # SHA-256 thumbprint of the DER-encoded certificate (x5t#S256 header)
+        # Per Microsoft Entra ID recommendation: https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+        thumbprint = cert.fingerprint(hashes.SHA256())
+        x5t_s256 = base64.urlsafe_b64encode(thumbprint).rstrip(b"=").decode()
+
+        now = int(time.time())
+        payload = {
+            "aud": token_url,
+            "iss": self.config["client_id"],
+            "sub": self.config["client_id"],
+            "jti": secrets.token_urlsafe(16),
+            "nbf": now,
+            "iat": now,
+            "exp": now + 300,  # 5-minute lifetime
+        }
+
+        # PyJWT encodes using the private key; headers must include x5t#S256
+        token = jwt.encode(
+            payload,
+            private_key,
+            algorithm="PS256",
+            headers={"x5t#S256": x5t_s256},
+        )
+        return token
+
     def authenticate_oidc(self):
         """Perform OIDC authentication with PKCE"""
         state = secrets.token_urlsafe(16)
@@ -828,6 +909,26 @@ class MultiProviderAuth:
 
         # Build token endpoint URL
         token_url = f"{base_url}{self.provider_config['token_endpoint']}"
+
+        # Confidential client: inject client_secret or certificate assertion
+        if self.config.get("client_certificate_path") and self.config.get("client_certificate_key_path"):
+            token_data["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            token_data["client_assertion"] = self._build_client_assertion(token_url)
+        elif self.config.get("client_secret"):
+            token_data["client_secret"] = self.config["client_secret"]
+        else:
+            azure_auth_mode = self.config.get("azure_auth_mode")
+            if azure_auth_mode == "certificate":
+                raise ValueError(
+                    "azure_auth_mode is 'certificate' but no certificate paths are configured. "
+                    "Set AZURE_CLIENT_CERTIFICATE_PATH and AZURE_CLIENT_CERTIFICATE_KEY_PATH, "
+                    "or update 'client_certificate_path' and 'client_certificate_key_path' in config.json."
+                )
+            if azure_auth_mode == "secret":
+                raise ValueError(
+                    "azure_auth_mode is 'secret' but no client secret is stored. "
+                    f"Run: credential-process --set-client-secret --profile {self.profile}"
+                )
 
         token_response = requests.post(
             token_url,
@@ -942,45 +1043,31 @@ class MultiProviderAuth:
             # Create STS client
             sts_client = boto3.client("sts", region_name=self.config["aws_region"])
 
-            # Prepare session tags from token claims
-            session_tags = []
-
-            # Map common claims to session tags
-            tag_mappings = {
-                "email": "UserEmail",
-                "sub": "UserId",
-                "preferred_username": "UserName",
-                "name": "UserName",  # Fallback for providers that use 'name' instead
-            }
-
-            for claim_key, tag_key in tag_mappings.items():
-                if claim_key in token_claims:
-                    # Session tag values have a 256 character limit
-                    tag_value = str(token_claims[claim_key])[:256]
-                    session_tags.append({"Key": tag_key, "Value": tag_value})
-
             # Generate session name from user identifier
-            # AWS RoleSessionName regex: [\w+=,.@-]*
+            # AWS RoleSessionName regex: [\w+=,.@-]*, max 64 chars
             # Auth0 often uses pipe-delimited format in sub claims (e.g., auth0|12345)
             # Sanitize to replace invalid characters with hyphens
             session_name = "claude-code"
-            if "sub" in token_claims:
-                # Use first 32 chars of sub for uniqueness, sanitized for AWS
+            if "email" in token_claims:
+                # Use full email for human-readable CUR cost attribution.
+                # The principal ARN (assumed-role/RoleName/alice@acme.com) appears
+                # in CUR line_item_iam_principal, enabling per-user cost visibility
+                # without requiring session tags.
+                session_name = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["email"]))[:64]
+            elif "sub" in token_claims:
+                # Fallback to sub when email is not available (e.g. some Entra ID configs)
                 sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:32])
                 session_name = f"claude-code-{sub_sanitized}"
-            elif "email" in token_claims:
-                # Use email username part, sanitized
-                email_part = token_claims["email"].split("@")[0][:32]
-                email_sanitized = re.sub(r"[^\w+=,.@-]", "-", email_part)
-                session_name = f"claude-code-{email_sanitized}"
 
             self._debug_print(f"Assuming role: {federated_role_arn}")
             self._debug_print(f"Session name: {session_name}")
-            self._debug_print(f"Session tags: {session_tags}")
 
             # Call AssumeRoleWithWebIdentity
-            # Note: AssumeRoleWithWebIdentity doesn't support Tags parameter directly
-            # Session tags must be passed via the token claims and configured in the trust policy
+            # Note: AssumeRoleWithWebIdentity does not support a Tags parameter.
+            # Session tags must be embedded in the JWT by the IdP as the
+            # https://aws.amazon.com/tags claim. Use the Cognito Identity Pool
+            # path (FederationType=cognito) for automatic tag mapping via
+            # PrincipalTags without IdP-side configuration.
             assume_role_params = {
                 "RoleArn": federated_role_arn,
                 "RoleSessionName": session_name,
@@ -1943,8 +2030,51 @@ def main():
         action="store_true",
         help="Refresh credentials if expired (for cron jobs with session storage)",
     )
+    parser.add_argument(
+        "--set-client-secret",
+        action="store_true",
+        default=False,
+        help=(
+            "Store Azure AD client secret in OS secure storage. "
+            "For non-interactive use set CCWB_CLIENT_SECRET env var before running; "
+            "otherwise an interactive prompt is shown. Blank input clears the stored secret."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # Handle --set-client-secret before loading full auth config.
+    # Secrets must never be passed as CLI arguments — they appear in shell history
+    # and process listings.  Use CCWB_CLIENT_SECRET env var for automation, or
+    # the interactive getpass prompt for manual setup.
+    if args.set_client_secret:
+        import getpass
+
+        env_secret = os.environ.get("CCWB_CLIENT_SECRET")
+        if env_secret is not None:
+            if not env_secret:
+                print("Error: CCWB_CLIENT_SECRET is set but empty.", file=sys.stderr)
+                sys.exit(1)
+            secret = env_secret
+        else:
+            secret = getpass.getpass(
+                f"Enter client secret for profile '{args.profile}' (press Enter to clear): "
+            )
+
+        try:
+            if not secret:
+                try:
+                    keyring.delete_password("claude-code-with-bedrock", f"{args.profile}-client-secret")
+                except keyring.errors.PasswordDeleteError:
+                    pass  # Secret already absent, nothing to clear
+                print(f"✓ Client secret cleared for profile '{args.profile}'", file=sys.stderr)
+            else:
+                keyring.set_password("claude-code-with-bedrock", f"{args.profile}-client-secret", secret)
+                print(f"✓ Client secret stored in OS secure storage for profile '{args.profile}'", file=sys.stderr)
+        except Exception as e:
+            print(f"Error managing client secret in keyring: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
 
     auth = MultiProviderAuth(profile=args.profile)
 

@@ -104,7 +104,7 @@ class InitCommand(Command):
 
         # If user explicitly chose "Update existing profile", skip the second prompt
         if existing_config and user_action == "update":
-            config = self._gather_configuration(progress, existing_config)
+            config = self._gather_configuration(progress, existing_config, profile_name)
             if not config:
                 return 1
             if not self._review_configuration(config):
@@ -145,7 +145,7 @@ class InitCommand(Command):
                 self._review_configuration(existing_config)
                 return 0
             elif action == "Update configuration":
-                config = self._gather_configuration(progress, existing_config)
+                config = self._gather_configuration(progress, existing_config, profile_name)
                 if not config:
                     return 1
                 if not self._review_configuration(config):
@@ -196,7 +196,7 @@ class InitCommand(Command):
             return 1
 
         # Gather configuration
-        config = self._gather_configuration(progress)
+        config = self._gather_configuration(progress, profile_name=profile_name)
         if not config:
             return 1
         # Review and confirm
@@ -267,7 +267,7 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None) -> dict[str, Any]:
+    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None) -> dict[str, Any]:
         """Gather configuration from user."""
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
@@ -419,6 +419,76 @@ class InitCommand(Command):
 
             if not client_id:
                 return None
+
+            # Confidential client configuration (Azure AD / Entra ID only)
+            client_secret = None
+            client_certificate_path = None
+            client_certificate_key_path = None
+
+            if provider_type == "azure":
+                console.print("\n[bold]Azure AD Authentication Mode[/bold]")
+                console.print(
+                    "Some enterprise Entra ID tenants disable public client flows.\n"
+                    "If yours does, configure a confidential client here.\n"
+                )
+
+                auth_mode = questionary.select(
+                    "Select authentication mode:",
+                    choices=[
+                        questionary.Choice("Public client (default, no secret required)", value="public"),
+                        questionary.Choice("Confidential client — client secret", value="secret"),
+                        questionary.Choice("Confidential client — certificate (recommended for enterprise)", value="certificate"),
+                    ],
+                    default=config.get("azure_auth_mode", "public"),
+                ).ask()
+
+                if not auth_mode:
+                    return None
+
+                if auth_mode == "secret":
+                    client_secret = questionary.password(
+                        "Enter your client secret:",
+                        validate=lambda x: bool(x) or "Client secret cannot be empty",
+                    ).ask()
+                    if not client_secret:
+                        return None
+                    if not profile_name:
+                        raise ValueError("profile_name is required to store client secret in keyring")
+                    import keyring as _keyring
+                    _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
+                    console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
+                    console.print(
+                        "[dim]  Distribute to end users: they must run[/dim]\n"
+                        "[dim]    credential-process --set-client-secret --profile <profile>[/dim]\n"
+                        "[dim]  to store the secret on their machine.[/dim]"
+                    )
+
+                elif auth_mode == "certificate":
+                    console.print(
+                        "\n[dim]Generate a self-signed cert with:[/dim]\n"
+                        "[dim]  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes[/dim]\n"
+                        "[dim]Then upload cert.pem to your app registration → Certificates & secrets.[/dim]\n"
+                    )
+                    client_certificate_path = questionary.text(
+                        "Path to certificate PEM file:",
+                        validate=lambda x: bool(x) or "Certificate path cannot be empty",
+                        default=config.get("client_certificate_path", ""),
+                    ).ask()
+                    if not client_certificate_path:
+                        return None
+
+                    client_certificate_key_path = questionary.text(
+                        "Path to private key PEM file:",
+                        validate=lambda x: bool(x) or "Key path cannot be empty",
+                        default=config.get("client_certificate_key_path", ""),
+                    ).ask()
+                    if not client_certificate_key_path:
+                        return None
+
+                config["azure_auth_mode"] = auth_mode
+                # client_secret is never written to config — it lives in the OS keyring
+                config["client_certificate_path"] = client_certificate_path
+                config["client_certificate_key_path"] = client_certificate_key_path
 
             # Credential Storage Method
             console.print("\n[bold]Credential Storage Method[/bold]")
@@ -1118,8 +1188,8 @@ class InitCommand(Command):
             for profile_key in available_profiles:
                 # Get model-specific description
                 description = get_profile_description(selected_model_key, profile_key)
-                profile_name = profile_key.upper() if profile_key != "us" else "US"
-                choice_text = f"{profile_name} Cross-Region - {description}"
+                region_profile_label = profile_key.upper() if profile_key != "us" else "US"
+                choice_text = f"{region_profile_label} Cross-Region - {description}"
                 profile_choices.append(questionary.Choice(title=choice_text, value=profile_key))
 
             # Adjust the prompt based on number of options
@@ -1156,8 +1226,8 @@ class InitCommand(Command):
             config["aws"]["allowed_bedrock_regions"] = destination_regions
 
             # Step 3: Select source region for the selected model/profile combination
-            profile_name = selected_profile.upper() if selected_profile != "us" else "US"
-            console.print(f"\n[green]Selected:[/green] {profile_name} Cross-Region")
+            region_profile_label = selected_profile.upper() if selected_profile != "us" else "US"
+            console.print(f"\n[green]Selected:[/green] {region_profile_label} Cross-Region")
 
             # Get available source regions for this model/profile combination
             available_source_regions = get_source_regions_for_model_profile(selected_model_key, selected_profile)
@@ -1205,7 +1275,7 @@ class InitCommand(Command):
             profile_description = get_profile_description(selected_model_key, selected_profile)
 
             console.print(
-                f"\n[green]✓[/green] Configured {selected_model['name']} with {profile_name} "
+                f"\n[green]✓[/green] Configured {selected_model['name']} with {region_profile_label} "
                 f"Cross-Region ({profile_description})"
             )
 
@@ -1497,6 +1567,9 @@ class InitCommand(Command):
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             sso_enabled=config_data.get("sso_enabled", True),
+            azure_auth_mode=config_data.get("azure_auth_mode"),
+            client_certificate_path=config_data.get("client_certificate_path"),
+            client_certificate_key_path=config_data.get("client_certificate_key_path"),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
             enable_distribution=config_data.get("distribution", {}).get("enabled", False),
             distribution_type=config_data.get("distribution", {}).get("type"),
@@ -1829,6 +1902,14 @@ class InitCommand(Command):
             # Add analytics configuration if present
             if hasattr(profile, "analytics_enabled"):
                 existing_config["analytics"] = {"enabled": profile.analytics_enabled}
+
+            # Preserve confidential client configuration if present
+            # client_secret is never written to config — it lives in the OS keyring
+            if getattr(profile, "azure_auth_mode", None):
+                existing_config["azure_auth_mode"] = profile.azure_auth_mode
+            if getattr(profile, "client_certificate_path", None):
+                existing_config["client_certificate_path"] = profile.client_certificate_path
+                existing_config["client_certificate_key_path"] = profile.client_certificate_key_path
 
             # Add selected source region if present
             if hasattr(profile, "selected_source_region") and profile.selected_source_region:

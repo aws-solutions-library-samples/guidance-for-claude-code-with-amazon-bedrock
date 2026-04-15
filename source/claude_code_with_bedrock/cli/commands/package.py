@@ -338,7 +338,7 @@ class PackageCommand(Command):
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
-        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
+        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -1669,6 +1669,7 @@ RUN pyinstaller \
         federation_identifier: str,
         federation_type: str = "cognito",
         profile_name: str = "ClaudeCode",
+        console=None,
     ) -> Path:
         """Create the configuration file.
 
@@ -1706,6 +1707,29 @@ RUN pyinstaller \
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
+
+        # Add confidential client fields for Azure AD if present.
+        # client_secret is never written to config.json — it lives in the OS keyring.
+        # End users set it with: credential-process --set-client-secret --profile <profile>
+        if getattr(profile, "azure_auth_mode", None):
+            config[profile_name]["azure_auth_mode"] = profile.azure_auth_mode
+        if getattr(profile, "client_certificate_path", None):
+            config[profile_name]["client_certificate_path"] = profile.client_certificate_path
+            config[profile_name]["client_certificate_key_path"] = profile.client_certificate_key_path
+            # Warn if the paths are absolute — they are machine-specific and will not
+            # resolve on end-user machines with different install layouts.
+            cert_is_absolute = Path(profile.client_certificate_path).is_absolute()
+            key_is_absolute = Path(profile.client_certificate_key_path).is_absolute()
+            if (cert_is_absolute or key_is_absolute) and console:
+                console.print(
+                    "\n[yellow]Warning: certificate paths in config.json are absolute and will not "
+                    "resolve on machines where the files are stored elsewhere.[/yellow]"
+                )
+                console.print(
+                    "[yellow]Instruct end users to set the following environment variables:[/yellow]"
+                )
+                console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
+                console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -1838,8 +1862,11 @@ cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
 cp config.json ~/claude-code-with-bedrock/
 chmod +x ~/claude-code-with-bedrock/credential-process
 
-# macOS Keychain Notice
+# macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
+    # Remove quarantine flag added by macOS when downloading unsigned binaries.
+    # Without this, Gatekeeper blocks execution with "Apple could not verify..." dialog.
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process 2>/dev/null || true
     echo
     echo "⚠️  macOS Keychain Access:"
     echo "   On first use, macOS will ask for permission to access the keychain."
@@ -1887,6 +1914,7 @@ if [ -f "$OTEL_BINARY" ]; then
     # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
     cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
     chmod +x ~/claude-code-with-bedrock/otel-helper-bin
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper-bin 2>/dev/null || true
     # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
     if [ -f "otel-helper.sh" ]; then
         cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper

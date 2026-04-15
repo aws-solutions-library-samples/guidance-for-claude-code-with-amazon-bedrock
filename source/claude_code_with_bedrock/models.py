@@ -326,8 +326,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-3",  # Spain
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Spain
                 ],
                 "destination_regions": [
                     "eu-central-1",
@@ -336,8 +336,8 @@ CLAUDE_MODELS = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
+                    "eu-south-1",
                     "eu-south-2",
-                    "eu-south-3",
                 ],
             },
             "japan": {
@@ -369,15 +369,15 @@ CLAUDE_MODELS = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-3",  # Spain
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Spain
                     # Asia Pacific
                     "ap-southeast-3",  # Jakarta
                     "ap-northeast-1",  # Tokyo
                     "ap-northeast-2",  # Seoul
                     "ap-northeast-3",  # Osaka
                     "ap-south-1",  # Mumbai
-                    "ap-south-5",  # Hyderabad
+                    "ap-south-2",  # Hyderabad
                     "ap-southeast-1",  # Singapore
                     "ap-southeast-4",  # Melbourne
                     "ap-southeast-2",  # Sydney
@@ -398,15 +398,15 @@ CLAUDE_MODELS = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
+                    "eu-south-1",
                     "eu-south-2",
-                    "eu-south-3",
                     # Asia Pacific
                     "ap-southeast-3",
                     "ap-northeast-1",
                     "ap-northeast-2",
                     "ap-northeast-3",
                     "ap-south-1",
-                    "ap-south-5",
+                    "ap-south-2",
                     "ap-southeast-1",
                     "ap-southeast-4",
                     "ap-southeast-2",
