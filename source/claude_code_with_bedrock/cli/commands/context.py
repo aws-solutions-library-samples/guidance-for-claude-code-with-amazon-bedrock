@@ -14,6 +14,28 @@ from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.validators import ProfileValidator
 
 
+class ContextCommand(Command):
+    """Manage deployment profile contexts."""
+
+    name = "context"
+    description = "Manage deployment profile contexts (run 'ccwb context --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available context subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  context <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>context list</comment>     List all available deployment profiles")
+        self.line("  <comment>context current</comment>  Show the currently active deployment profile")
+        self.line("  <comment>context use</comment>      Switch to a different deployment profile")
+        self.line("  <comment>context show</comment>     Show detailed information about a deployment profile")
+        self.line("")
+        self.line("Run <comment>ccwb context <subcommand> --help</comment> for details on a subcommand.")
+        return 0
+
+
 class ContextListCommand(Command):
     """List all available profiles."""
 
@@ -237,6 +259,27 @@ class ContextShowCommand(Command):
         except Exception as e:
             console.print(f"\n[red]Error: {e}[/red]\n")
             return 1
+
+
+class ConfigCommand(Command):
+    """Manage profile configuration."""
+
+    name = "config"
+    description = "Manage profile configuration (run 'ccwb config --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available config subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  config <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>config validate</comment>  Validate profile configuration for errors")
+        self.line("  <comment>config export</comment>    Export profile configuration (sanitized for sharing)")
+        self.line("  <comment>config import</comment>    Import profile configuration from file")
+        self.line("")
+        self.line("Run <comment>ccwb config <subcommand> --help</comment> for details on a subcommand.")
+        return 0
 
 
 class ConfigValidateCommand(Command):

@@ -8,9 +8,11 @@ from cleo.application import Application
 from .commands.builds import BuildsCommand
 from .commands.cleanup import CleanupCommand
 from .commands.context import (
+    ConfigCommand,
     ConfigExportCommand,
     ConfigImportCommand,
     ConfigValidateCommand,
+    ContextCommand,
     ContextCurrentCommand,
     ContextListCommand,
     ContextShowCommand,
@@ -22,6 +24,7 @@ from .commands.distribute import DistributeCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
 from .commands.quota import (
+    QuotaCommand,
     QuotaDeleteCommand,
     QuotaExportCommand,
     QuotaImportCommand,
@@ -56,17 +59,20 @@ def create_application() -> Application:
     # application.add(TokenCommand())  # Temporarily disabled
 
     # Context management commands
+    application.add(ContextCommand())
     application.add(ContextListCommand())
     application.add(ContextCurrentCommand())
     application.add(ContextUseCommand())
     application.add(ContextShowCommand())
 
     # Config management commands
+    application.add(ConfigCommand())
     application.add(ConfigValidateCommand())
     application.add(ConfigExportCommand())
     application.add(ConfigImportCommand())
 
     # Quota management commands
+    application.add(QuotaCommand())
     application.add(QuotaSetUserCommand())
     application.add(QuotaSetGroupCommand())
     application.add(QuotaSetDefaultCommand())
