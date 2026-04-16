@@ -991,7 +991,7 @@ class MultiProviderAuth:
 
             def _send_response(self, code, message):
                 self.send_response(code)
-                self.send_header("Content-type", "text/html")
+                self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
                 html = f"""
                 <html>
@@ -1783,7 +1783,7 @@ class MultiProviderAuth:
             class QuotaPageHandler(BaseHTTPRequestHandler):
                 def do_GET(self):
                     self.send_response(200)
-                    self.send_header("Content-type", "text/html")
+                    self.send_header("Content-type", "text/html; charset=utf-8")
                     self.end_headers()
                     self.wfile.write(html.encode())
                     page_served["done"] = True

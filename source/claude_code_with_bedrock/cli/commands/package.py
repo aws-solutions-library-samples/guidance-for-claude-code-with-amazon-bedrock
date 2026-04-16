@@ -1731,6 +1731,12 @@ RUN pyinstaller \
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
+        # Add quota settings so the credential provider can enforce limits
+        if getattr(profile, "quota_api_endpoint", None):
+            config[profile_name]["quota_api_endpoint"] = profile.quota_api_endpoint
+            config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
+            config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
+
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
