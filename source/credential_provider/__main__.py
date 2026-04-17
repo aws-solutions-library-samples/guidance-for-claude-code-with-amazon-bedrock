@@ -1842,6 +1842,73 @@ class MultiProviderAuth:
         # Show browser notification
         self._show_quota_browser_notification(quota_result, is_blocked=False)
 
+    def _display_quota_status(self, quota_result: dict, email: str):
+        """Print a human-readable quota status report to stdout.
+
+        Args:
+            quota_result: Result dict from _check_quota()
+            email: Authenticated user's email address
+        """
+        allowed = quota_result.get("allowed", True)
+        reason = quota_result.get("reason", "unknown")
+        message = quota_result.get("message", "")
+        usage = quota_result.get("usage") or {}
+        enforcement_mode = quota_result.get("enforcement_mode")
+        unblock_status = quota_result.get("unblock_status") or {}
+
+        separator = "=" * 60
+
+        print(separator)
+        print(f"Quota Status — {email}")
+        print(separator)
+
+        # Overall status
+        if reason in ("no_policy", "no_email"):
+            status_str = "UNLIMITED (no quota policy configured)"
+        elif not allowed:
+            status_str = "BLOCKED"
+        elif unblock_status.get("is_unblocked"):
+            status_str = "ALLOWED (admin unblock active)"
+        else:
+            status_str = "ALLOWED"
+        print(f"Status:  {status_str}")
+
+        if enforcement_mode:
+            print(f"Mode:    {enforcement_mode}")
+
+        # Usage details
+        if usage:
+            print()
+            print("Usage:")
+
+            def _bar(pct, width=20):
+                filled = int(min(pct, 100) / 100 * width)
+                return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+            if "monthly_tokens" in usage and "monthly_limit" in usage:
+                mt = usage["monthly_tokens"]
+                ml = usage["monthly_limit"]
+                mp = usage.get("monthly_percent", 0)
+                print(f"  Monthly: {mt:>15,} / {ml:>15,} tokens  ({mp:5.1f}%)  {_bar(mp)}")
+
+            if "daily_tokens" in usage and "daily_limit" in usage:
+                dt = usage["daily_tokens"]
+                dl = usage["daily_limit"]
+                dp = usage.get("daily_percent", 0)
+                print(f"  Daily:   {dt:>15,} / {dl:>15,} tokens  ({dp:5.1f}%)  {_bar(dp)}")
+
+        # Unblock info
+        if unblock_status.get("is_unblocked"):
+            expires = unblock_status.get("expires_at", "unknown")
+            print(f"Unblock: active until {expires}")
+
+        # Human-readable message (for blocked/warning cases)
+        if message and not allowed:
+            print()
+            print(f"Note:    {message}")
+
+        print(separator)
+
     # ===========================================
     # End Quota Check Methods
     # ===========================================
@@ -2040,6 +2107,11 @@ def main():
             "otherwise an interactive prompt is shown. Blank input clears the stored secret."
         ),
     )
+    parser.add_argument(
+        "--quota-status",
+        action="store_true",
+        help="Display current quota usage and remaining allowance for the authenticated user",
+    )
 
     args = parser.parse_args()
 
@@ -2132,6 +2204,29 @@ def main():
             auth._debug_print(f"Credentials still valid for profile '{args.profile}', no refresh needed")
             sys.exit(0)
         # Credentials expired, fall through to normal auth flow
+
+    # Handle quota status request
+    if args.quota_status:
+        if not auth._should_check_quota():
+            print("Quota monitoring is not configured for this profile.", file=sys.stderr)
+            print("Set 'quota_api_endpoint' in config.json to enable quota tracking.", file=sys.stderr)
+            sys.exit(0)
+
+        # Obtain id_token — use cached one first, fall back to interactive auth
+        id_token = auth.get_monitoring_token()
+        if not id_token:
+            auth._debug_print("No cached token, authenticating for quota status check...")
+            id_token = auth.authenticate_for_monitoring()
+
+        if not id_token:
+            print("Authentication failed: cannot retrieve quota status.", file=sys.stderr)
+            sys.exit(1)
+
+        token_claims = jwt.decode(id_token, options={"verify_signature": False})
+        email = token_claims.get("email", "unknown")
+
+        quota_result = auth._check_quota(token_claims, id_token)
+        auth._display_quota_status(quota_result, email)
 
     # Normal AWS credential flow (credential_process mode)
     # For session storage, this automatically uses ~/.aws/credentials
