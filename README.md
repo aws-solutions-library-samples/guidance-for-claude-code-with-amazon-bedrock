@@ -94,7 +94,7 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
   - CloudFormation stacks
   - IAM OIDC Providers or Cognito Identity Pools
   - IAM roles and policies
-  - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
+  - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards — requires the `AWSServiceRoleForECS` service-linked role (`ccwb deploy` creates this automatically; for standalone CFN deploys, run `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`)
   - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
   - (Optional) AWS CodeBuild
 - Amazon Bedrock activated in target regions
