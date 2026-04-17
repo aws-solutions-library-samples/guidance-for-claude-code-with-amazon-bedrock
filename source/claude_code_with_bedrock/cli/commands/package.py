@@ -2366,17 +2366,34 @@ Available metrics include:
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:
-                settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
+                # Extract region prefix from the selected CRIS model ID (e.g. "us" from "us.anthropic.claude-opus-4-6-v1")
+                model_id = profile.selected_model
+                prefix = model_id.split(".anthropic")[0]  # Get us/eu/apac/global prefix
 
-                # Determine and set small/fast model based on selected model family
-                if "opus" in profile.selected_model:
-                    # For Opus, use Haiku as small/fast model
-                    model_id = profile.selected_model
-                    prefix = model_id.split(".anthropic")[0]  # Get us/eu/apac prefix
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = f"{prefix}.anthropic.claude-3-5-haiku-20241022-v1:0"
+                # Determine which tier the user selected and derive all three tiers
+                # Use inference profile ARNs when configured, otherwise use CRIS IDs
+                opus_arn = getattr(profile, "inference_profile_opus_arn", None)
+                sonnet_arn = getattr(profile, "inference_profile_sonnet_arn", None)
+                haiku_arn = getattr(profile, "inference_profile_haiku_arn", None)
+
+                if "opus" in model_id:
+                    # User selected Opus — pin all three tiers
+                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_arn or model_id
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_arn or f"{prefix}.anthropic.claude-sonnet-4-6"
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_arn or f"{prefix}.anthropic.claude-haiku-4-5-20251001-v1:0"
+                elif "sonnet" in model_id:
+                    # User selected Sonnet — pin sonnet + haiku tiers
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_arn or model_id
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_arn or f"{prefix}.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    if opus_arn:
+                        settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_arn
                 else:
-                    # For other models, use same model as small/fast (or could use Haiku)
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = profile.selected_model
+                    # User selected Haiku or other — pin haiku tier
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_arn or model_id
+                    if sonnet_arn:
+                        settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_arn
+                    if opus_arn:
+                        settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_arn
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
