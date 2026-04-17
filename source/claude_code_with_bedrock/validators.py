@@ -159,6 +159,16 @@ class ProfileValidator:
 
             # Landing page requires additional fields
             if distribution_type == "landing-page":
+                # Landing-page distribution depends on VPC outputs from the networking stack,
+                # which is only deployed when monitoring is enabled (see deploy.py)
+                monitoring_enabled = profile_data.get("monitoring_enabled", True)
+                if not monitoring_enabled:
+                    errors.append(
+                        "landing-page distribution requires monitoring to be enabled "
+                        "(provides the VPC/networking stack). Enable monitoring or use "
+                        "presigned-s3 distribution instead."
+                    )
+
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
