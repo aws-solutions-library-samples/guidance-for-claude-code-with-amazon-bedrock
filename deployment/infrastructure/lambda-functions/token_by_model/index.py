@@ -23,7 +23,9 @@ def get_model_display_name(model_id):
     # Detect model family and version
     model_lower = model_display.lower()
     
-    if "opus-4-6" in model_lower or "opus-4.6" in model_lower:
+    if "opus-4-7" in model_lower or "opus-4.7" in model_lower:
+        return "Opus 4.7"
+    elif "opus-4-6" in model_lower or "opus-4.6" in model_lower:
         return "Opus 4.6"
     elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
         return "Opus 4.1"
@@ -55,6 +57,7 @@ def get_model_display_name(model_id):
 def get_model_color(model_name):
     """Get color for model based on family."""
     colors = {
+        "Opus 4.7": "#0ea5e9",  # Sky blue
         "Opus 4.6": "#14b8a6",  # Teal
         "Opus 4.1": "#3b82f6",  # Blue
         "Opus 4": "#f97316",    # Orange
