@@ -102,6 +102,12 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "s3bucket":
+                if profile.monitoring_enabled:
+                    stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                else:
+                    console.print("[yellow]S3 bucket requires monitoring to be enabled in your configuration.[/yellow]")
+                    return 1
             elif stack_arg == "monitoring":
                 if profile.monitoring_enabled:
                     stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
@@ -148,7 +154,7 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, networking, s3bucket, monitoring, dashboard, analytics, quota, distribution, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
