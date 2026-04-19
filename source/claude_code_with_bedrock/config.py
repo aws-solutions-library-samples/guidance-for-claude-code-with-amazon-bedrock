@@ -32,6 +32,7 @@ class Profile:
     allowed_bedrock_regions: list[str] = field(default_factory=list)
     cross_region_profile: str | None = None  # Cross-region profile: "us", "europe", "apac"
     selected_model: str | None = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
+    model_alias: str | None = None  # Claude Code alias for ANTHROPIC_MODEL: "sonnet", "opus", "opusplan", "haiku"
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
