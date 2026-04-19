@@ -153,6 +153,108 @@ _CLAUDE_MODELS_RAW = {
             },
         },
     },
+    "opus-4-7": {
+        "name": "Claude Opus 4.7",
+        "base_model_id": "anthropic.claude-opus-4-7",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-opus-4-7",
+                "description": "US CRIS - US and Canada regions",
+                "source_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+                "destination_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-opus-4-7",
+                "description": "Global CRIS - All commercial AWS regions worldwide",
+                "source_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # Middle East & Africa
+                    "me-south-1",
+                    "me-central-1",
+                    "af-south-1",
+                    "il-central-1",
+                    # South America
+                    "sa-east-1",
+                ],
+                "destination_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # Middle East & Africa
+                    "me-south-1",
+                    "me-central-1",
+                    "af-south-1",
+                    "il-central-1",
+                    # South America
+                    "sa-east-1",
+                ],
+            },
+        },
+    },
     "opus-4-6": {
         "name": "Claude Opus 4.6",
         "base_model_id": "anthropic.claude-opus-4-6-v1",
@@ -1089,7 +1191,7 @@ def get_throttle_metrics() -> list[dict]:
 MODEL_TIER_PREFERENCES = {
     "haiku": ["haiku-4-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
     "sonnet": ["sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
-    "opus": ["opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
+    "opus": ["opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
 }
 
 
