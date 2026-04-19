@@ -156,16 +156,20 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Error querying model data: {str(e)}")
         
-        # Convert to list and sort by usage
-        model_data = []
+        # Aggregate by display name so variant IDs for the same model family collapse into one bar.
+        display_totals = defaultdict(float)
         for model_id, total_tokens in model_totals.items():
             if total_tokens > 0:
-                display_name = get_model_display_name(model_id)
-                model_data.append({
-                    'name': display_name,
-                    'tokens': total_tokens,
-                    'color': get_model_color(display_name)
-                })
+                display_totals[get_model_display_name(model_id)] += total_tokens
+
+        model_data = [
+            {
+                'name': display_name,
+                'tokens': total_tokens,
+                'color': get_model_color(display_name),
+            }
+            for display_name, total_tokens in display_totals.items()
+        ]
         
         # Sort by tokens descending
         model_data.sort(key=lambda x: x['tokens'], reverse=True)
