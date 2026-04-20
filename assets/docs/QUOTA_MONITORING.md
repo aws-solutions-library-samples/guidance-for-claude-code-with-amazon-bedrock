@@ -50,7 +50,7 @@ Deploy using `poetry run ccwb deploy` (deploys all enabled stacks) or `poetry ru
 | Critical Threshold      | 90% (202.5M)| Second alert level                             |
 | Check Frequency         | 15 minutes  | Lambda execution interval                      |
 | Alert Retention         | 60 days     | DynamoDB TTL for deduplication                 |
-| EnableFinegrainedQuotas | true        | Enable fine-grained policy support             |
+| EnableFinegrainedQuotas | false       | Enable fine-grained policy support             |
 
 To update limits: Re-run `ccwb init` and redeploy with `ccwb deploy quota`.
 

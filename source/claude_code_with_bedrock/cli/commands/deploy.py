@@ -793,6 +793,10 @@ class DeployCommand(Command):
                     oidc_issuer_url = f"{oidc_issuer_url}/"
                 oidc_client_id = profile.client_id
 
+                # Pass explicitly so the profile is the source of truth; the CF template
+                # default is 'false' to match the opt-in intent of this field.
+                enable_finegrained_quotas = profile.enable_finegrained_quotas
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
@@ -804,6 +808,7 @@ class DeployCommand(Command):
                     f"MonthlyEnforcementMode={monthly_enforcement}",
                     f"OidcIssuerUrl={oidc_issuer_url}",
                     f"OidcClientId={oidc_client_id}",
+                    f"EnableFinegrainedQuotas={str(enable_finegrained_quotas).lower()}",
                 ]
 
                 # Package the template using AWS CLI
