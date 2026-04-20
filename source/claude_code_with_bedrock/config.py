@@ -69,6 +69,7 @@ class Profile:
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+    sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
     # Confidential client authentication (Azure AD / Entra ID)
     # If neither is set, public client flow is used (current default).

@@ -1,12 +1,13 @@
 # Guidance for Claude Code with Amazon Bedrock
 
-This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools) for centralized access control, audit trails, and usage monitoring across your organization.
+This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools) or AWS IAM Identity Center (SSO) for centralized access control, audit trails, and usage monitoring across your organization.
 
 ## Key Features
 
 ### For Organizations
 
 - **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, etc.)
+- **AWS SSO / IAM Identity Center**: Native AWS identity path for teams already using IAM Identity Center — no external IdP required
 - **Centralized Access Control**: Manage Claude Code access through your identity provider
 - **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
 - **Usage Monitoring**: Optional CloudWatch dashboards for tracking usage and costs
@@ -76,6 +77,50 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 4. **IAM returns credentials**: AWS IAM validates and returns temporary AWS credentials
 5. **Access Amazon Bedrock**: Application uses the temporary credentials to call Amazon Bedrock
 6. **Bedrock response**: Amazon Bedrock processes the request and returns the response
+
+### Optional: Deploy Without SSO Authentication
+
+**New in v2.1+:** You can now deploy the observability and analytics solution without SSO authentication. This is ideal for:
+
+- **Internal tools and development environments** where user authentication isn't required
+- **Analytics-only deployments** where you want usage tracking without managing IdP integrations
+- **Simplified deployments** using AWS IAM roles for access control
+
+When SSO authentication is disabled:
+
+- **Access Control**: Uses AWS IAM roles and policies directly (no OIDC provider required)
+- **Identity Detection**: Automatically detects how users authenticate to AWS:
+  - **AWS IAM Identity Center (SSO) users**: Real username/email is extracted from the assumed-role ARN — no configuration needed. Each SSO user gets full identity attribution (name, email, permission set) in the observability dashboard.
+  - **IAM users**: Username is extracted from the IAM user ARN.
+  - **Non-SSO assumed roles**: Usage is tracked using a hashed anonymous identifier (consistent per IAM principal, but individual identity cannot be determined).
+- **No IdP Configuration**: Skip OIDC provider setup entirely — if your organization uses AWS IAM Identity Center for Bedrock access, identity "just works"
+
+**When to use this:**
+- You're deploying only the observability/analytics infrastructure
+- Your users already have AWS IAM access to Bedrock
+- You want simplified deployment without IdP integration
+- You need usage monitoring but don't require individual user authentication
+
+**When to use SSO authentication:**
+- You need centralized access control through your identity provider
+- You require user-level attribution with real identities (email, department, etc.)
+- You want to enforce organization-wide access policies
+- You need detailed audit trails with user information
+
+To deploy without SSO authentication, simply answer "No" when prompted "Enable SSO authentication?" during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
+
+## Authentication Modes
+
+This guidance supports two identity paths — both deliver the same core value: per-user identity resolution, centralized access control, audit trails, and usage monitoring.
+
+| Mode | Identity Source | Best For |
+|------|----------------|----------|
+| **External IdP (OIDC)** | Okta, Azure AD, Auth0, Cognito User Pools | Orgs with an existing enterprise IdP |
+| **AWS SSO (IAM Identity Center)** | `AWSReservedSSO_*` IAM role names | Orgs using native AWS identity, or teams wanting a faster path to deployment |
+
+Both modes are production-ready. The OIDC path is recommended for organizations with an existing IdP. The AWS SSO path is recommended for smaller teams or those already standardized on IAM Identity Center.
+
+For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
 
 ## Prerequisites
 
@@ -326,6 +371,7 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+- [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) - Blog post covering deployment patterns and best practices
 
 ### Architecture & Deployment
 
