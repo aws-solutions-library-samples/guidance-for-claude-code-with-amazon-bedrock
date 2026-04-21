@@ -16,6 +16,36 @@ from html_utils import generate_error_html, get_status_color
 
 # Quota code mappings for each model
 QUOTA_MAPPINGS = {
+    "global.anthropic.claude-opus-4-7": {
+        "name": "Opus 4.7 (Global)",
+        "tpm_quota_code": "L-3DCCFAA4",
+        "rpm_quota_code": "L-3DD46812",
+        "regions": ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
+    },
+    "us.anthropic.claude-opus-4-7": {
+        "name": "Opus 4.7",
+        "tpm_quota_code": "L-0AD9BBE8",
+        "rpm_quota_code": "L-11DFF789",
+        "regions": ["us-east-1", "us-west-2", "us-east-2"]
+    },
+    "eu.anthropic.claude-opus-4-7": {
+        "name": "Opus 4.7 (EU)",
+        "tpm_quota_code": "L-0AD9BBE8",
+        "rpm_quota_code": "L-11DFF789",
+        "regions": ["eu-central-1", "eu-west-1", "eu-west-3"]
+    },
+    "au.anthropic.claude-opus-4-7": {
+        "name": "Opus 4.7 (AU)",
+        "tpm_quota_code": "L-0AD9BBE8",
+        "rpm_quota_code": "L-11DFF789",
+        "regions": ["ap-southeast-2", "ap-southeast-4"]
+    },
+    "jp.anthropic.claude-opus-4-7": {
+        "name": "Opus 4.7 (JP)",
+        "tpm_quota_code": "L-0AD9BBE8",
+        "rpm_quota_code": "L-11DFF789",
+        "regions": ["ap-northeast-1", "ap-northeast-3"]
+    },
     "global.anthropic.claude-opus-4-6-v1": {
         "name": "Opus 4.6 (Global)",
         "tpm_quota_code": "L-3DCCFAA4",
