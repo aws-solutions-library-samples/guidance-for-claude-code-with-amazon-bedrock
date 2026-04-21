@@ -85,6 +85,9 @@ class Profile:
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
+    # Claude Cowork 3P MDM configuration
+    cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:

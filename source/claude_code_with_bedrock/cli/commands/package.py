@@ -363,6 +363,11 @@ class PackageCommand(Command):
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name)
 
+        # Generate CoWork 3P MDM configuration if enabled
+        if profile.cowork_3p_enabled:
+            console.print("\n[cyan]Generating CoWork 3P MDM configuration...[/cyan]")
+            self._generate_cowork_3p_mdm_config(output_dir, profile, profile_name)
+
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
@@ -383,6 +388,13 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+        if profile.cowork_3p_enabled:
+            if (output_dir / "cowork-3p-config.json").exists():
+                console.print("  • cowork-3p-config.json - CoWork 3P MDM configuration (JSON)")
+            if (output_dir / "cowork-3p.mobileconfig").exists():
+                console.print("  • cowork-3p.mobileconfig - CoWork 3P MDM profile (macOS)")
+            if (output_dir / "cowork-3p.reg").exists():
+                console.print("  • cowork-3p.reg - CoWork 3P registry file (Windows)")
 
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
@@ -2455,3 +2467,40 @@ Available metrics include:
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")
+
+
+    def _generate_cowork_3p_mdm_config(
+        self,
+        output_dir: Path,
+        profile,
+        profile_name: str = "ClaudeCode",
+    ) -> None:
+        """Generate Claude Cowork 3P MDM configuration files.
+
+        Delegates to shared utilities in cli/utils/cowork_3p.py to ensure
+        consistency with the standalone 'ccwb cowork generate' command.
+        """
+        from claude_code_with_bedrock.cli.utils.cowork_3p import (
+            add_monitoring_config,
+            build_mdm_config,
+            derive_model_aliases,
+            generate_all,
+        )
+
+        console = Console()
+
+        try:
+            bedrock_region = self._get_bedrock_region_for_profile(profile)
+            model_aliases = derive_model_aliases(profile)
+
+            mdm_config = build_mdm_config(
+                bedrock_region=bedrock_region,
+                model_aliases=model_aliases,
+                profile_name=profile_name,
+            )
+
+            add_monitoring_config(mdm_config, profile, console)
+            generate_all(output_dir, mdm_config, console)
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not generate CoWork 3P config: {e}[/yellow]")
