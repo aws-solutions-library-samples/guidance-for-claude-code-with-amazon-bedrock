@@ -13,6 +13,7 @@ This guidance provides enterprise deployment patterns for Claude Code with Amazo
 - **Multi-Region Support**: Configure which AWS regions users can access Bedrock in
 - **Multi-Partition Support**: Deploy to AWS Commercial or AWS GovCloud (US) regions
 - **Multi-Platform Support**: Windows, macOS (ARM & Intel), and Linux distributions
+- **Claude Cowork 3P Compatible**: Same credential helper works with Claude Desktop in third-party platform mode — one deployment covers both Claude Code CLI and Claude Cowork
 
 ### For End Users
 
@@ -338,6 +339,10 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 
 - [Monitoring Guide](assets/docs/MONITORING.md) - OpenTelemetry setup and dashboards
 - [Analytics Guide](assets/docs/ANALYTICS.md) - S3 data lake and Athena SQL queries
+
+### Claude Cowork (Desktop)
+
+- [Claude Cowork 3P Guide](assets/docs/COWORK_3P.md) - Use this solution's credential helper with Claude Desktop in third-party platform mode
 
 ### Identity Provider Setup
 
