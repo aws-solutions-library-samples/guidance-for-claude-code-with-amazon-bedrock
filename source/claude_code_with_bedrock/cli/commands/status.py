@@ -177,6 +177,13 @@ class StatusCommand(Command):
             dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             stacks["dashboard"] = self._check_stack(dashboard_stack, profile.aws_region)
 
+        if getattr(profile, "invocation_logging_enabled", False):
+            logging_stack = profile.stack_names.get(
+                "logging", f"{profile.identity_pool_name}-bedrock-invocation-logging"
+            )
+            logging_region = getattr(profile, "invocation_logging_region", "us-west-2")
+            stacks["logging"] = self._check_stack(logging_stack, logging_region)
+
         return stacks
 
     def _check_stack(self, stack_name: str, region: str) -> dict[str, Any]:

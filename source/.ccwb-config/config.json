@@ -13,7 +13,8 @@
         "auth": "claude-code-auth-stack",
         "monitoring": "claude-code-auth-monitoring",
         "dashboard": "claude-code-auth-dashboard",
-        "analytics": "claude-code-auth-analytics"
+        "analytics": "claude-code-auth-analytics",
+        "logging": "claude-code-bedrock-invocation-logging"
       },
       "monitoring_enabled": false,
       "monitoring_config": {},
@@ -63,7 +64,15 @@
       "federation_type": "direct",
       "federated_role_arn": null,
       "max_session_duration": 43200,
-      "include_coauthored_by": true
+      "include_coauthored_by": true,
+      "invocation_logging_enabled": true,
+      "invocation_logging_region": "us-west-2",
+      "invocation_logging_cw_retention_days": 7,
+      "invocation_logging_s3_standard_days": 30,
+      "invocation_logging_s3_expiration_days": 90,
+      "invocation_logging_log_text": true,
+      "invocation_logging_log_image": true,
+      "invocation_logging_log_embedding": true
     }
   }
 }
