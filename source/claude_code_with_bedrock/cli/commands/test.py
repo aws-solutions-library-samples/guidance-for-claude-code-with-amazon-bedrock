@@ -875,6 +875,12 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)[:50]}
 
+    @staticmethod
+    def _get_fallback_test_model() -> str:
+        """Get a fallback test model using the cheapest available model."""
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+        return resolve_model_for_tier("haiku", "us") or "anthropic.claude-haiku-4-5-20251001-v1:0"
+
     def _test_model_invocation(self, profile_name: str, region: str, selected_model: str = None) -> dict:
         """Test actual model invocation using the configured inference profile."""
         try:
@@ -1218,7 +1224,7 @@ class TestCommand(Command):
                         "bedrock-runtime",
                         "invoke-model",
                         "--model-id",
-                        selected_model or "anthropic.claude-haiku-4-5-20251001-v1:0",
+                        selected_model or self._get_fallback_test_model(),
                         "--body",
                         f"fileb://{body_file}",
                         "--content-type",
