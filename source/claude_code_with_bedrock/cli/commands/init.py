@@ -1762,17 +1762,16 @@ class InitCommand(Command):
                     else (okta_client_id or "—")
                 ),
             )
-
-            table.add_row(
-                "Credential Storage",
-                (
-                    "Keyring (OS secure storage)"
-                    if config.get("credential_storage") == "keyring"
-                    else "Session Files (temporary)"
-                ),
-            )
         else:
-            table.add_row("SSO Authentication", "Disabled (IAM credentials used)")
+            table.add_row("Authentication", "AWS SSO / IAM Identity Center (no OIDC)")
+        table.add_row(
+            "Credential Storage",
+            (
+                "Keyring (OS secure storage)"
+                if config.get("credential_storage") == "keyring"
+                else "Session Files (temporary)"
+            ),
+        )
         table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
@@ -2481,7 +2480,7 @@ class InitCommand(Command):
         if config.get("sso_enabled", True) and "okta" in config and "domain" in config["okta"]:
             console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
         else:
-            console.print("• SSO Authentication: [cyan]Disabled (IAM credentials used)[/cyan]")
+            console.print("• Authentication: [cyan]AWS SSO / IAM Identity Center (no OIDC)[/cyan]")
 
         # Show Cognito-specific fields if using Cognito User Pool
         if "cognito_user_pool_id" in config:
