@@ -127,6 +127,34 @@ def _parse_tokens(value: str) -> int:
     return int(value)
 
 
+class QuotaCommand(Command):
+    """Manage quota policies."""
+
+    name = "quota"
+    description = "Manage quota policies (run 'ccwb quota --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available quota subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  quota <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>quota set-user</comment>     Set quota policy for a specific user")
+        self.line("  <comment>quota set-group</comment>    Set quota policy for a group")
+        self.line("  <comment>quota set-default</comment>  Set the default quota policy")
+        self.line("  <comment>quota list</comment>         List all quota policies")
+        self.line("  <comment>quota show</comment>         Show quota for a specific user or group")
+        self.line("  <comment>quota usage</comment>        Show quota usage and consumption")
+        self.line("  <comment>quota delete</comment>       Delete a quota policy")
+        self.line("  <comment>quota unblock</comment>      Temporarily unblock a quota-exceeded user")
+        self.line("  <comment>quota export</comment>       Export quota policies to a file")
+        self.line("  <comment>quota import</comment>       Import quota policies from a file")
+        self.line("")
+        self.line("Run <comment>ccwb quota <subcommand> --help</comment> for details on a subcommand.")
+        return 0
+
+
 class QuotaSetUserCommand(Command):
     """Set quota policy for a specific user."""
 
