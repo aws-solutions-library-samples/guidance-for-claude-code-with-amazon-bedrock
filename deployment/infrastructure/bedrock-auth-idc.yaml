@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code with Bedrock - AWS IAM Identity Center Authentication Stack'
+
+# NOTE: This template provisions the IAM resources needed for an IAM Identity Center (IDC)
+# deployment. It does NOT require management-account access. It creates:
+#   1. A customer-managed policy with Bedrock permissions
+#   2. An IAM role that IDC-authenticated users can assume (role chaining)
+#
+# To enable direct IDC login (recommended), attach the BedrockAccessPolicy to your
+# IAM Identity Center Permission Set. This can be done:
+#   a. Via the IAM Identity Center console → Permission sets → [your set] → Policies
+#   b. Via CloudFormation AWS::SSO::PermissionSet in the management account
+#
+# For role chaining: configure your ~/.aws/config profile to use sso_role_name pointing
+# at your IDC permission set, plus role_arn pointing at the BedrockIDCRole output.
+
+Parameters:
+  FederatedRoleName:
+    Type: String
+    Default: BedrockIDCFederatedRole
+    Description: >
+      Name for the IAM role that IDC-authenticated users can assume.
+      This role is used for role-chaining from an IDC permission set.
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-_]*$'
+    MaxLength: 64
+
+  IdentityPoolName:
+    Type: String
+    Default: claude-code-idc
+    Description: Logical name/tag prefix for stack resources
+    AllowedPattern: '^[\w\s+=,.@-]+$'
+    MaxLength: 128
+
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'af-south-1,ap-east-2,ap-northeast-1,ap-northeast-2,ap-northeast-3,ap-south-1,ap-south-2,ap-south-5,ap-southeast-1,ap-southeast-2,ap-southeast-3,ap-southeast-4,ca-central-1,ca-west-1,eu-central-1,eu-central-2,eu-north-1,eu-south-1,eu-south-2,eu-south-3,eu-west-1,eu-west-2,eu-west-3,il-central-1,me-central-1,me-south-1,sa-east-1,us-east-1,us-east-2,us-west-1,us-west-2'
+    Description: AWS regions allowed for Bedrock access (auto-generated from supported model regions)
+
+  EnableMonitoring:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable CloudWatch monitoring for Bedrock usage
+
+Conditions:
+  MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+
+Resources:
+  # ===============================================
+  # Bedrock Access Policy (identical to other auth stacks)
+  # ===============================================
+  # Attach this policy to your IAM Identity Center Permission Set to grant
+  # Bedrock access without deploying any additional OIDC infrastructure.
+
+  BedrockAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${FederatedRoleName}-BedrockPolicy'
+      Description: >
+        Policy for accessing Bedrock services via IAM Identity Center.
+        Attach this to your IDC Permission Set or use with the BedrockIDCRole.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBedrockInvokeRegional
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock-runtime:InvokeModel'
+              - 'bedrock-runtime:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:ConverseStream'
+              - 'bedrock-runtime:Converse'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockInvokeGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock-runtime:InvokeModel'
+              - 'bedrock-runtime:InvokeModelWithResponseStream'
+              - 'bedrock-runtime:ConverseStream'
+              - 'bedrock-runtime:Converse'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
+          - Sid: AllowBedrockListRegional
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockListGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
+            Resource: '*'
+          - !If
+            - MonitoringEnabled
+            - Sid: AllowCloudWatchMetrics
+              Effect: Allow
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace':
+                    - 'ClaudeCode/Bedrock/Usage'
+                    - 'AWS/Bedrock'
+            - !Ref 'AWS::NoValue'
+
+  # ===============================================
+  # IAM Role for IDC Users (role-chaining pattern)
+  # ===============================================
+  # Users whose IDC permission set has basic permissions can assume this role
+  # to get Bedrock-specific access. The trust policy allows any principal in
+  # this account that is an IAM Identity Center assumed-role (AWSReservedSSO_*).
+  #
+  # To use role chaining, add to your ~/.aws/config profile:
+  #   role_arn = <BedrockIDCRole ARN from Outputs>
+  #   role_session_name = ClaudeCode
+  #
+  # Alternatively, attach BedrockAccessPolicy directly to your IDC Permission Set
+  # for simpler direct access (no role chaining needed in that case).
+
+  BedrockIDCRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref FederatedRoleName
+      Description: IAM role for IAM Identity Center users accessing Amazon Bedrock
+      MaxSessionDuration: 43200  # 12 hours
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowIDCServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: sso.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+          - Sid: AllowIDCRoleChaining
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn': !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:assumed-role/AWSReservedSSO_*/*'
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code IAM Identity Center Authentication
+        - Key: AuthType
+          Value: idc
+
+  # ===============================================
+  # Optional Monitoring Resources
+  # ===============================================
+
+  BedrockAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: MonitoringEnabled
+    Properties:
+      LogGroupName: !Sub '/aws/bedrock/claude-code-${AWS::StackName}'
+      RetentionInDays: 30
+
+Outputs:
+  FederationType:
+    Description: Authentication type for this stack
+    Value: 'idc'
+    Export:
+      Name: !Sub '${AWS::StackName}-FederationType'
+
+  FederatedRoleArn:
+    Description: ARN of the IAM role for IDC role-chaining
+    Value: !GetAtt BedrockIDCRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FederatedRoleArn'
+
+  BedrockRoleArn:
+    Description: IAM Role ARN for Bedrock access (for backward compatibility)
+    Value: !GetAtt BedrockIDCRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockRoleArn'
+
+  BedrockPolicyArn:
+    Description: >
+      ARN of the Bedrock access managed policy.
+      Attach this to your IAM Identity Center Permission Set for direct Bedrock access
+      without role chaining.
+    Value: !Ref BedrockAccessPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockPolicyArn'
+
+  ConfigurationJson:
+    Description: Configuration JSON for CLI tool
+    Value: !Sub |
+      {
+        "federation_type": "idc",
+        "auth_type": "idc",
+        "federated_role_arn": "${BedrockIDCRole.Arn}",
+        "bedrock_policy_arn": "${BedrockAccessPolicy}",
+        "aws_region": "${AWS::Region}"
+      }
