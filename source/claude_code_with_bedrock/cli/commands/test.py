@@ -974,6 +974,10 @@ class TestCommand(Command):
     def _get_expected_account(self, config_profile) -> str:
         """Get the expected AWS account ID from the deployed stack."""
         try:
+            # Skip auth stack lookup when SSO is disabled
+            if not getattr(config_profile, "sso_enabled", True):
+                return None
+
             # Try to get account ID from the auth stack
             stack_name = config_profile.stack_names.get("auth", f"{config_profile.identity_pool_name}-stack")
 

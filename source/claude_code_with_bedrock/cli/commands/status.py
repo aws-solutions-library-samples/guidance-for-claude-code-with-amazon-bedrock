@@ -174,10 +174,11 @@ class StatusCommand(Command):
         """Get status of all stacks."""
         stacks = {}
 
-        # Check auth stack
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        auth_status = self._check_stack(auth_stack, profile.aws_region)
-        stacks["auth"] = auth_status
+        # Check auth stack (only when SSO is enabled)
+        if getattr(profile, "sso_enabled", True):
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            auth_status = self._check_stack(auth_stack, profile.aws_region)
+            stacks["auth"] = auth_status
 
         if profile.monitoring_enabled:
             # Check monitoring stack
@@ -218,15 +219,15 @@ class StatusCommand(Command):
         """Get all relevant endpoints."""
         endpoints = {}
 
-        # Get auth stack outputs
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        auth_outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        # Get auth stack outputs (only when SSO is enabled)
+        if getattr(profile, "sso_enabled", True):
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            auth_outputs = get_stack_outputs(auth_stack, profile.aws_region)
 
-        if auth_outputs:
-            endpoints["identity_pool_id"] = auth_outputs.get("IdentityPoolId")
-            # Try FederatedRoleArn first (new templates), fallback to BedrockRoleArn (old template)
-            endpoints["role_arn"] = auth_outputs.get("FederatedRoleArn") or auth_outputs.get("BedrockRoleArn")
-            endpoints["oidc_provider"] = auth_outputs.get("OIDCProviderArn")
+            if auth_outputs:
+                endpoints["identity_pool_id"] = auth_outputs.get("IdentityPoolId")
+                endpoints["role_arn"] = auth_outputs.get("FederatedRoleArn") or auth_outputs.get("BedrockRoleArn")
+                endpoints["oidc_provider"] = auth_outputs.get("OIDCProviderArn")
 
         if profile.monitoring_enabled:
             # Get monitoring endpoint
