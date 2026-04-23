@@ -278,7 +278,10 @@ class PackageCommand(Command):
         identity_pool_id = None
         federated_role_arn = None
 
-        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+        if not getattr(profile, "sso_enabled", True):
+            # SSO disabled — no auth stack to query, no federation needed
+            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
+        elif federation_type == "direct" and getattr(profile, "federated_role_arn", None):
             federated_role_arn = profile.federated_role_arn
             console.print(f"[dim]Using role ARN from profile: {federated_role_arn}[/dim]")
         elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
@@ -2097,6 +2100,7 @@ RUN pyinstaller \
             federation_type: "cognito" or "direct"
             profile_name: Name to use as key in config.json (defaults to "ClaudeCode" for backward compatibility)
         """
+        sso_enabled = getattr(profile, "sso_enabled", True)
         config = {
             profile_name: {
                 "provider_domain": profile.provider_domain,
@@ -2105,11 +2109,14 @@ RUN pyinstaller \
                 "provider_type": profile.provider_type or self._detect_provider_type(profile.provider_domain),
                 "credential_storage": profile.credential_storage,
                 "cross_region_profile": profile.cross_region_profile or "us",
+                "sso_enabled": sso_enabled,
             }
         }
 
         # Add the appropriate federation field based on type
-        if federation_type == "direct":
+        if not sso_enabled:
+            pass  # No OIDC/Cognito fields needed — credential-process uses ambient chain
+        elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
             config[profile_name]["federation_type"] = "direct"
             config[profile_name]["max_session_duration"] = profile.max_session_duration
