@@ -2485,6 +2485,7 @@ Available metrics include:
             build_mdm_config,
             derive_model_aliases,
             generate_all,
+            generate_credential_helper_wrapper,
         )
 
         console = Console()
@@ -2499,6 +2500,7 @@ Available metrics include:
                 profile_name=profile_name,
             )
 
+            generate_credential_helper_wrapper(profile_name, bedrock_region)
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 

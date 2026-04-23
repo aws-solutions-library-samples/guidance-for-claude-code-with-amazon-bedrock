@@ -14,6 +14,7 @@ from claude_code_with_bedrock.cli.utils.cowork_3p import (
     add_monitoring_config,
     build_mdm_config,
     derive_model_aliases,
+    generate_credential_helper_wrapper,
     generate_json,
     generate_mobileconfig,
     generate_reg_file,
@@ -127,6 +128,10 @@ class CoworkGenerateCommand(Command):
             profile_name=profile_name,
             credential_helper_ttl=credential_helper_ttl,
         )
+
+        # Generate the credential helper script CoWork will call
+        wrapper_path = generate_credential_helper_wrapper(profile_name, bedrock_region)
+        console.print(f"[dim]Credential helper: {wrapper_path}[/dim]")
 
         # Add monitoring OTLP endpoint if available
         add_monitoring_config(mdm_config, profile, console)
