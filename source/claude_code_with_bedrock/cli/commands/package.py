@@ -129,33 +129,37 @@ class PackageCommand(Command):
 
         # Get actual Identity Pool ID or Role ARN from stack outputs
         console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
-
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
-
-        # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        stack_outputs = None
+        federation_type = profile.federation_type
         identity_pool_id = None
         federated_role_arn = None
 
-        if federation_type == "direct":
-            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
-            # Then fallback to FederatedRoleArn (new templates)
-            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                federated_role_arn = stack_outputs.get("FederatedRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+        if getattr(profile, "sso_enabled", True):
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the auth stack deployed?[/red]")
                 return 1
+
+            # Check federation type and get appropriate identifier
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+            if federation_type == "direct":
+                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                    return 1
+            else:
+                identity_pool_id = stack_outputs.get("IdentityPoolId")
+                if not identity_pool_id:
+                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                    return 1
         else:
-            identity_pool_id = stack_outputs.get("IdentityPoolId")
-            if not identity_pool_id:
-                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
-                return 1
+            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
 
         # Welcome
         console.print(
@@ -1692,6 +1696,7 @@ RUN pyinstaller \
             federation_type: "cognito" or "direct"
             profile_name: Name to use as key in config.json (defaults to "ClaudeCode" for backward compatibility)
         """
+        sso_enabled = getattr(profile, "sso_enabled", True)
         config = {
             profile_name: {
                 "provider_domain": profile.provider_domain,
@@ -1700,11 +1705,14 @@ RUN pyinstaller \
                 "provider_type": profile.provider_type or self._detect_provider_type(profile.provider_domain),
                 "credential_storage": profile.credential_storage,
                 "cross_region_profile": profile.cross_region_profile or "us",
+                "sso_enabled": sso_enabled,
             }
         }
 
         # Add the appropriate federation field based on type
-        if federation_type == "direct":
+        if not sso_enabled:
+            pass  # No OIDC/Cognito fields needed — credential-process uses ambient chain
+        elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
             config[profile_name]["federation_type"] = "direct"
             config[profile_name]["max_session_duration"] = profile.max_session_duration
