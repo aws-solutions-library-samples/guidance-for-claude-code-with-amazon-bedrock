@@ -1825,7 +1825,7 @@ else
     echo "ℹ  AWS CLI not found — not required. The credential process binary handles authentication directly."
 fi
 
-echo "✓ Prerequisites found"
+echo "✓ Prerequisites check complete"
 
 # Detect platform and architecture
 echo
@@ -1952,68 +1952,75 @@ if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "  ~/claude-code-with-bedrock/otel-helper-bin --test"
 fi
 
-# Update AWS config
-echo
-echo "Configuring AWS profiles..."
-mkdir -p ~/.aws
+# Configure AWS named profiles (optional - only when AWS CLI is available)
+# Claude Code itself uses AWS_CREDENTIAL_PROCESS set in ~/.claude/settings.json and
+# does not require the AWS CLI.  Named profiles are useful for other AWS tools.
+if command -v aws &> /dev/null; then
+    echo
+    echo "Configuring AWS named profiles (for use with the AWS CLI and other AWS tools)..."
+    mkdir -p ~/.aws
 
-# Read all profiles from config.json
-PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
+    # Read all profiles from config.json
+    PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
 
-if [ -z "$PROFILES" ]; then
-    echo "❌ No profiles found in config.json"
-    exit 1
-fi
+    if [ -z "$PROFILES" ]; then
+        echo "⚠️  No profiles found in config.json — skipping AWS named-profile setup"
+    else
+        echo "Found profiles: $PROFILES"
+        echo
 
-echo "Found profiles: $PROFILES"
-echo
+        # Get region from package settings (for Bedrock calls, not infrastructure)
+        if [ -f "claude-settings/settings.json" ]; then
+            DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
+            'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+        else
+            DEFAULT_REGION="{profile.aws_region}"
+        fi
 
-# Get region from package settings (for Bedrock calls, not infrastructure)
-if [ -f "claude-settings/settings.json" ]; then
-    DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
-    'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
-else
-    DEFAULT_REGION="{profile.aws_region}"
-fi
+        # Configure each profile
+        for PROFILE_NAME in $PROFILES; do
+            echo "Configuring AWS profile: $PROFILE_NAME"
 
-# Configure each profile
-for PROFILE_NAME in $PROFILES; do
-    echo "Configuring AWS profile: $PROFILE_NAME"
+            # Remove old profile if exists
+            sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
 
-    # Remove old profile if exists
-    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+            # Get profile-specific region from config.json
+            PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
+            {{}}).get('aws_region', '$DEFAULT_REGION'))")
 
-    # Get profile-specific region from config.json
-    PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
-    {{}}).get('aws_region', '$DEFAULT_REGION'))")
-
-    # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+            # Add new profile with --profile flag (cross-platform, no shell required)
+            cat >> ~/.aws/config << EOF
 [profile $PROFILE_NAME]
 credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
-    echo "  ✓ Created AWS profile '$PROFILE_NAME'"
-done
+            echo "  ✓ Created AWS named profile '$PROFILE_NAME'"
+        done
+    fi
+else
+    echo
+    echo "ℹ️  Skipping AWS named-profile setup (AWS CLI not installed)."
+    echo "   Claude Code uses AWS_CREDENTIAL_PROCESS in ~/.claude/settings.json directly."
+fi
 
 echo
 echo "======================================"
 echo "✓ Installation complete!"
 echo "======================================"
 echo
-echo "Available profiles:"
-for PROFILE_NAME in $PROFILES; do
-    echo "  - $PROFILE_NAME"
-done
+echo "Claude Code is now configured to authenticate via the credential-process binary."
 echo
-echo "To use Claude Code authentication:"
-echo "  export AWS_PROFILE=<profile-name>"
-echo "  aws sts get-caller-identity"
-echo
-echo "Example:"
-FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
-echo "  export AWS_PROFILE=$FIRST_PROFILE"
-echo "  aws sts get-caller-identity"
+echo "If you also have the AWS CLI installed, the following profiles are available:"
+if command -v aws &> /dev/null && [ -n "$PROFILES" ]; then
+    for PROFILE_NAME in $PROFILES; do
+        echo "  - $PROFILE_NAME"
+    done
+    echo
+    echo "  Example (AWS CLI):"
+    FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
+    echo "    export AWS_PROFILE=$FIRST_PROFILE"
+    echo "    aws sts get-caller-identity"
+fi
 echo
 echo "Note: Authentication will automatically open your browser when needed."
 echo
@@ -2055,7 +2062,7 @@ if %errorlevel% neq 0 (
     echo OK AWS CLI found [optional]
 )
 
-echo OK Prerequisites found
+echo OK Prerequisites check complete
 echo.
 
 REM Create directory
@@ -2114,33 +2121,42 @@ if exist "claude-settings" (
     )
 )
 
-REM Configure AWS profiles
-echo.
-echo Configuring AWS profiles...
+REM Configure AWS named profiles (optional - only when AWS CLI is available)
+REM Claude Code itself uses AWS_CREDENTIAL_PROCESS set in %USERPROFILE%\\.claude\\settings.json
+REM and does not require the AWS CLI.  Named profiles are useful for other AWS tools.
+where aws >nul 2>&1
+if %errorlevel% equ 0 (
+    echo.
+    echo Configuring AWS named profiles (for use with the AWS CLI and other AWS tools^)...
 
-REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -Command ^
-"& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
-    echo Configuring AWS profile: %%p
+    setlocal enabledelayedexpansion
+    REM Read profiles from config.json using PowerShell
+    for /f %%p in ('powershell -Command ^
+    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name}}"') do (
+        echo Configuring AWS profile: %%p
 
-    REM Get profile-specific region
-    for /f %%r in ('powershell -Command ^
-    "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
+        REM Get profile-specific region
+        for /f %%r in ('powershell -Command ^
+        "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
 
+        REM Set credential process with --profile flag (cross-platform, no wrapper needed^)
+        aws configure set credential_process ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
 
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+        REM Set region
+        if defined PROFILE_REGION (
+            aws configure set region !PROFILE_REGION! --profile %%p
+        ) else (
+            aws configure set region {profile.aws_region} --profile %%p
+        )
 
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
+        echo   OK Created AWS named profile '%%p'
     )
-
-    echo   OK Created AWS profile '%%p'
+    endlocal
+) else (
+    echo.
+    echo INFO: Skipping AWS named-profile setup (AWS CLI not installed^).
+    echo       Claude Code uses AWS_CREDENTIAL_PROCESS in %%USERPROFILE%%\\.claude\\settings.json directly.
 )
 
 echo.
@@ -2148,21 +2164,22 @@ echo ======================================
 echo Installation complete!
 echo ======================================
 echo.
-echo Available profiles:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
-    echo   - %%p
-)
+echo Claude Code is now configured to authenticate via the credential-process binary.
 echo.
-echo To use Claude Code authentication:
-echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
-echo.
-echo Example:
-for /f %%p in ('powershell -Command ^
-"$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
+where aws >nul 2>&1
+if %errorlevel% equ 0 (
+    echo If you also use the AWS CLI, the following named profiles are available:
+    for /f %%p in ('powershell -Command ^
+    "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name"') do (
+        echo   - %%p
+    )
+    echo.
+    echo   Example (AWS CLI^):
+    for /f %%p in ('powershell -Command ^
+    "$config = Get-Content config.json | ConvertFrom-Json; $config.PSObject.Properties.Name | Select-Object -First 1"') do (
+        echo     set AWS_PROFILE=%%p
+        echo     aws sts get-caller-identity
+    )
 )
 echo.
 echo Note: Authentication will automatically open your browser when needed.
@@ -2244,20 +2261,21 @@ install.bat
 ```
 
 The installer will:
-- Check for AWS CLI installation
 - Copy authentication tools to `%USERPROFILE%\\claude-code-with-bedrock`
-- Configure the AWS profile "ClaudeCode"
-- Test the authentication
+- Configure `AWS_CREDENTIAL_PROCESS` in `%USERPROFILE%\\.claude\\settings.json` so that
+  Claude Code can obtain credentials without the AWS CLI
+- If the AWS CLI is present, also configure the named AWS profile "ClaudeCode" for
+  use by other AWS tools
 
 #### Step 4: Use Claude Code
+
+Claude Code will authenticate automatically using the credential-process binary.
+No AWS CLI is required.
+
+If you have the AWS CLI installed and want to verify credentials manually:
 ```cmd
-# Set the AWS profile
 set AWS_PROFILE=ClaudeCode
-
-# Verify authentication works
 aws sts get-caller-identity
-
-# Your browser will open automatically for authentication if needed
 ```
 
 For PowerShell users:
@@ -2268,15 +2286,17 @@ aws sts get-caller-identity
 
 ## What This Does
 
-- Installs the Claude Code authentication tools
-- Configures your AWS CLI to use {profile.provider_domain} for authentication
+- Installs the Claude Code credential-process binary
+- Configures `AWS_CREDENTIAL_PROCESS` in `~/.claude/settings.json` so Claude Code
+  obtains credentials directly — no AWS CLI required
 - Sets up automatic credential refresh via your browser
+- Optionally configures AWS named profiles if the AWS CLI is present
 
 ## Requirements
 
-- Python 3.8 or later
-- AWS CLI v2
-- pip3
+- Python 3.8 or later (for the installer script only)
+- AWS CLI v2 is **optional** — only needed for CloudFormation infrastructure deployment
+  or for using AWS named profiles with other tools
 
 ## Troubleshooting
 
