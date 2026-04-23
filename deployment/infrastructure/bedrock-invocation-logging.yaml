@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code with Bedrock - Model Invocation Logging (CloudWatch + S3)'
+
+# Bedrock model invocation logging is account- and region-scoped (singleton config
+# per region). This stack MUST be deployed to the region where Bedrock invocations
+# are made (us-west-2 for SmartNews, because Claude Code sets AWS_REGION=us-west-2).
+#
+# There is no native CloudFormation resource for
+# bedrock:PutModelInvocationLoggingConfiguration, so we drive it with a small
+# Lambda-backed custom resource.
+
+Parameters:
+  LogGroupName:
+    Type: String
+    Default: /aws/bedrock/claude-code-invocations
+    Description: CloudWatch Log Group name for Bedrock invocation logs
+    AllowedPattern: '^[\.\-_/#A-Za-z0-9]+$'
+    MaxLength: 512
+
+  BucketNamePrefix:
+    Type: String
+    Default: sn-cce-bedrock-invocation-logs
+    Description: Prefix for the S3 bucket name (account id + region are appended)
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,40}$'
+
+  CloudWatchRetentionDays:
+    Type: Number
+    Default: 7
+    Description: Days to retain invocation logs in CloudWatch before automatic deletion
+    AllowedValues:
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
+  S3StandardDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: Days an S3 object stays in STANDARD before transitioning to Glacier
+
+  S3ExpirationDays:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    Description: Days after which S3 objects expire (total lifespan — Standard + Glacier)
+
+  LogTextData:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Include text payloads in invocation logs
+
+  LogImageData:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Include image payloads (screenshots) in invocation logs
+
+  LogEmbeddingData:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Include embedding payloads in invocation logs
+
+  PermissionsBoundaryArn:
+    Type: String
+    Default: 'arn:aws:iam::136113531821:policy/aft/aft-boundary'
+    Description: >-
+      Permissions boundary to attach to all IAM roles created by this stack.
+      Required in AFT-governed accounts (like genai-studio-dev), which
+      explicitly deny iam:CreateRole unless the new role self-attaches the
+      aft-boundary policy as its PermissionsBoundary. Set to empty string
+      to disable.
+    AllowedPattern: '^(arn:aws:iam::[0-9]{12}:policy/.+)?$'
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+
+Resources:
+  # ===============================================
+  # S3 bucket — long-term retention with Glacier tier
+  # ===============================================
+
+  InvocationLogsBucket:
+    Type: AWS::S3::Bucket
+    # Retain on stack delete so that logs are not accidentally purged when
+    # re-deploying. Operators can empty and delete manually if needed.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced  # Disables ACLs
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToGlacierThenExpire
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref S3StandardDays
+                StorageClass: GLACIER
+            ExpirationInDays: !Ref S3ExpirationDays
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Bedrock invocation audit logs
+        - Key: Stack
+          Value: !Ref AWS::StackName
+        - Key: DataClass
+          Value: audit
+
+  # Bucket policy: only Bedrock in this account can write; deny plaintext.
+  InvocationLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InvocationLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt InvocationLogsBucket.Arn
+              - !Sub '${InvocationLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          - Sid: AllowBedrockWrite
+            Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub '${InvocationLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+                's3:x-amz-acl': 'bucket-owner-full-control'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:*'
+
+  # ===============================================
+  # CloudWatch log group — short retention for triage
+  # ===============================================
+
+  InvocationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref LogGroupName
+      RetentionInDays: !Ref CloudWatchRetentionDays
+
+  # ===============================================
+  # IAM role assumed by Bedrock to write logs
+  # ===============================================
+
+  BedrockLoggingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role assumed by Bedrock to deliver invocation logs to CW + S3
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:*'
+      Policies:
+        - PolicyName: CloudWatchWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt InvocationLogGroup.Arn
+        - PolicyName: S3Write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 's3:PutObject'
+                Resource: !Sub '${InvocationLogsBucket.Arn}/*'
+                Condition:
+                  StringEquals:
+                    's3:x-amz-acl': 'bucket-owner-full-control'
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Bedrock invocation logging
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
+  # ===============================================
+  # Custom resource: enable Bedrock invocation logging
+  # (No native CFN resource exists for this API.)
+  # ===============================================
+
+  LoggingConfigFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role for the Lambda that toggles Bedrock invocation logging
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockLoggingConfig
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'bedrock:PutModelInvocationLoggingConfiguration'
+                  - 'bedrock:GetModelInvocationLoggingConfiguration'
+                  - 'bedrock:DeleteModelInvocationLoggingConfiguration'
+                Resource: '*'
+              - Effect: Allow
+                Action: 'iam:PassRole'
+                Resource: !GetAtt BedrockLoggingRole.Arn
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': 'bedrock.amazonaws.com'
+
+  LoggingConfigFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Enables or disables Bedrock model invocation logging
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt LoggingConfigFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import urllib.request
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+
+          bedrock = boto3.client("bedrock")
+
+          def respond(event, status, reason="", data=None):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CW logs: {event.get('LogicalResourceId')}",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or "bedrock-invocation-logging",
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data or {},
+              }).encode()
+              req = urllib.request.Request(
+                  event["ResponseURL"], data=body, method="PUT",
+                  headers={"content-type": "", "content-length": str(len(body))},
+              )
+              urllib.request.urlopen(req, timeout=30)
+
+          def build_config(props):
+              def flag(k, default="true"):
+                  return str(props.get(k, default)).lower() == "true"
+              return {
+                  "cloudWatchConfig": {
+                      "logGroupName": props["LogGroupName"],
+                      "roleArn": props["RoleArn"],
+                  },
+                  "s3Config": {
+                      "bucketName": props["BucketName"],
+                      "keyPrefix": props.get("KeyPrefix", "claude-code/"),
+                  },
+                  "textDataDeliveryEnabled": flag("LogTextData"),
+                  "imageDataDeliveryEnabled": flag("LogImageData"),
+                  "embeddingDataDeliveryEnabled": flag("LogEmbeddingData"),
+              }
+
+          def handler(event, context):
+              log.info("event=%s", json.dumps(event))
+              try:
+                  req_type = event["RequestType"]
+                  props = event.get("ResourceProperties", {})
+
+                  if req_type in ("Create", "Update"):
+                      cfg = build_config(props)
+                      log.info("PutModelInvocationLoggingConfiguration cfg=%s", cfg)
+                      bedrock.put_model_invocation_logging_configuration(
+                          loggingConfig=cfg,
+                      )
+                  elif req_type == "Delete":
+                      try:
+                          bedrock.delete_model_invocation_logging_configuration()
+                      except ClientError as e:
+                          # If it's already gone, don't fail the stack delete.
+                          code = e.response.get("Error", {}).get("Code", "")
+                          if code not in ("ResourceNotFoundException", "ValidationException"):
+                              raise
+                          log.warning("delete ignored: %s", code)
+
+                  respond(event, "SUCCESS")
+              except Exception as e:
+                  log.exception("custom resource failed")
+                  respond(event, "FAILED", reason=str(e)[:1024])
+
+  BedrockLoggingConfig:
+    Type: AWS::CloudFormation::CustomResource
+    # Bucket policy must be in place before Bedrock writes the first object.
+    # Log group and role dependencies are already implied via Ref/GetAtt.
+    DependsOn:
+      - InvocationLogsBucketPolicy
+    Properties:
+      ServiceToken: !GetAtt LoggingConfigFunction.Arn
+      LogGroupName: !Ref InvocationLogGroup
+      RoleArn: !GetAtt BedrockLoggingRole.Arn
+      BucketName: !Ref InvocationLogsBucket
+      KeyPrefix: claude-code/
+      LogTextData: !Ref LogTextData
+      LogImageData: !Ref LogImageData
+      LogEmbeddingData: !Ref LogEmbeddingData
+
+Outputs:
+  LogGroupName:
+    Description: CloudWatch log group receiving Bedrock invocation logs
+    Value: !Ref InvocationLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'
+
+  LogGroupArn:
+    Description: ARN of the CloudWatch log group
+    Value: !GetAtt InvocationLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupArn'
+
+  BucketName:
+    Description: S3 bucket storing invocation logs
+    Value: !Ref InvocationLogsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  BucketArn:
+    Description: ARN of the S3 bucket storing invocation logs
+    Value: !GetAtt InvocationLogsBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+
+  LoggingRoleArn:
+    Description: IAM role assumed by Bedrock for log delivery
+    Value: !GetAtt BedrockLoggingRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LoggingRoleArn'

@@ -50,15 +50,15 @@ class DestroyCommand(Command):
 
         stacks_to_destroy = []
         if stack_arg:
-            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics"]:
+            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics", "logging"]:
                 stacks_to_destroy.append(stack_arg)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics")
+                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, logging")
                 return 1
         else:
             # Destroy all stacks in reverse order
-            stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "auth"]
+            stacks_to_destroy = ["logging", "analytics", "dashboard", "monitoring", "networking", "auth"]
 
         # Show what will be destroyed
         console.print(
@@ -98,11 +98,21 @@ class DestroyCommand(Command):
                 continue
             if stack == "analytics" and not profile.monitoring_enabled:
                 continue
+            if stack == "logging" and not getattr(profile, "invocation_logging_enabled", False):
+                continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
-            console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")
 
-            result = self._delete_stack(stack_name, profile.aws_region, console)
+            # The logging stack lives in the Bedrock invocation region (us-west-2),
+            # not profile.aws_region (Tokyo). All other stacks are in aws_region.
+            if stack == "logging":
+                stack_region = getattr(profile, "invocation_logging_region", "us-west-2")
+            else:
+                stack_region = profile.aws_region
+
+            console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan] (region: {stack_region})")
+
+            result = self._delete_stack(stack_name, stack_region, console)
             if result != 0:
                 failed = True
                 console.print(f"[red]Failed to destroy {stack} stack[/red]")
@@ -124,6 +134,12 @@ class DestroyCommand(Command):
             f"   [cyan]aws logs delete-log-group --log-group-name /aws/claude-code/metrics --region {profile.aws_region}[/cyan]"
         )
         console.print("\n2. Check CloudFormation console for any DELETE_FAILED resources")
+        if getattr(profile, "invocation_logging_enabled", False):
+            logging_region = getattr(profile, "invocation_logging_region", "us-west-2")
+            console.print(
+                "\n3. Bedrock invocation-logs S3 bucket is retained by design. "
+                f"If you want it gone:\n   [cyan]aws s3 rb s3://<bucket-name> --force --region {logging_region}[/cyan]"
+            )
         console.print("\nFor more information, see: assets/docs/TROUBLESHOOTING.md")
 
         return 0

@@ -131,10 +131,18 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "logging":
+                if getattr(profile, "invocation_logging_enabled", False):
+                    region = getattr(profile, "invocation_logging_region", "us-west-2")
+                    stacks_to_deploy.append(("logging", f"Bedrock Invocation Logging (CW + S3 in {region})"))
+                else:
+                    console.print("[yellow]Bedrock invocation logging is not enabled in your configuration.[/yellow]")
+                    return 1
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild"
+                    "Valid stacks: auth, distribution, networking, monitoring, "
+                    "dashboard, analytics, quota, codebuild, logging"
                 )
                 return 1
         else:
@@ -155,9 +163,24 @@ class DeployCommand(Command):
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+            # Bedrock invocation logging (audit) — deploys to us-west-2
+            if getattr(profile, "invocation_logging_enabled", False):
+                region = getattr(profile, "invocation_logging_region", "us-west-2")
+                stacks_to_deploy.append(("logging", f"Bedrock Invocation Logging (CW + S3 in {region})"))
 
-        # Initialize CloudFormation manager
+        # Initialize CloudFormation manager (most stacks deploy to profile.aws_region).
+        # The "logging" stack is special — it must be deployed to the Bedrock invocation
+        # region (us-west-2 for SmartNews), so we build a second manager for it.
         cf_manager = CloudFormationManager(region=profile.aws_region)
+        logging_region = getattr(profile, "invocation_logging_region", "us-west-2")
+        cf_manager_logging = (
+            CloudFormationManager(region=logging_region)
+            if logging_region != profile.aws_region
+            else cf_manager
+        )
+
+        def _cf_manager_for(stack_type: str) -> CloudFormationManager:
+            return cf_manager_logging if stack_type == "logging" else cf_manager
 
         # Show deployment plan
         console.print("\n[bold]Deployment Plan:[/bold]")
@@ -168,7 +191,7 @@ class DeployCommand(Command):
 
         for stack_type, description in stacks_to_deploy:
             stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-            status = cf_manager.get_stack_status(stack_name)
+            status = _cf_manager_for(stack_type).get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
             else:
@@ -193,7 +216,7 @@ class DeployCommand(Command):
         for stack_type, description in stacks_to_deploy:
             console.print(f"[bold]{description}[/bold]")
 
-            result = self._deploy_stack(stack_type, profile, console, cf_manager)
+            result = self._deploy_stack(stack_type, profile, console, _cf_manager_for(stack_type))
             if result != 0:
                 failed = True
                 console.print(f"[red]Failed to deploy {stack_type} stack[/red]")
@@ -621,6 +644,26 @@ class DeployCommand(Command):
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
                 return deploy_with_cf(
                     template, stack_name, params, task_description="Deploying CodeBuild for Windows builds..."
+                )
+
+            elif stack_type == "logging":
+                template = project_root / "deployment" / "infrastructure" / "bedrock-invocation-logging.yaml"
+                stack_name = profile.stack_names.get(
+                    "logging", f"{profile.identity_pool_name}-bedrock-invocation-logging"
+                )
+                params = [
+                    f"CloudWatchRetentionDays={profile.invocation_logging_cw_retention_days}",
+                    f"S3StandardDays={profile.invocation_logging_s3_standard_days}",
+                    f"S3ExpirationDays={profile.invocation_logging_s3_expiration_days}",
+                    f"LogTextData={str(profile.invocation_logging_log_text).lower()}",
+                    f"LogImageData={str(profile.invocation_logging_log_image).lower()}",
+                    f"LogEmbeddingData={str(profile.invocation_logging_log_embedding).lower()}",
+                ]
+                return deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    task_description="Deploying Bedrock invocation logging (us-west-2)...",
                 )
 
             else:

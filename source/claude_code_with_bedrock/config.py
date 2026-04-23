@@ -53,6 +53,16 @@ class Profile:
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
+    # Bedrock invocation logging (audit logs — separate stack in Bedrock region)
+    invocation_logging_enabled: bool = False
+    invocation_logging_region: str = "us-west-2"  # Must match region where Bedrock is invoked
+    invocation_logging_cw_retention_days: int = 7
+    invocation_logging_s3_standard_days: int = 30
+    invocation_logging_s3_expiration_days: int = 90
+    invocation_logging_log_text: bool = True
+    invocation_logging_log_image: bool = True
+    invocation_logging_log_embedding: bool = True
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
