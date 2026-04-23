@@ -60,6 +60,20 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Include embedding payloads in invocation logs
 
+  PermissionsBoundaryArn:
+    Type: String
+    Default: 'arn:aws:iam::136113531821:policy/aft/aft-boundary'
+    Description: >-
+      Permissions boundary to attach to all IAM roles created by this stack.
+      Required in AFT-governed accounts (like genai-studio-dev), which
+      explicitly deny iam:CreateRole unless the new role self-attaches the
+      aft-boundary policy as its PermissionsBoundary. Set to empty string
+      to disable.
+    AllowedPattern: '^(arn:aws:iam::[0-9]{12}:policy/.+)?$'
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+
 Resources:
   # ===============================================
   # S3 bucket — long-term retention with Glacier tier
@@ -152,6 +166,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       Description: Role assumed by Bedrock to deliver invocation logs to CW + S3
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -199,6 +214,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       Description: Role for the Lambda that toggles Bedrock invocation logging
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
