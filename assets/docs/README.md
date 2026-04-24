@@ -42,6 +42,14 @@ This folder contains documentation for users implementing and operating Claude C
 - **Purpose**: Setup and usage of the analytics pipeline for tracking Claude Code metrics
 - **Audience**: IT administrators managing usage analytics
 
+## Claude Cowork (Desktop)
+
+### CoWork 3P Guide
+
+- **File**: [COWORK_3P.md](./COWORK_3P.md)
+- **Purpose**: Using this solution's credential helper with Claude Desktop in third-party platform mode
+- **Audience**: IT administrators deploying Claude Cowork with Amazon Bedrock
+
 ## Provider Configuration
 
 ### OIDC Provider Setup Guides

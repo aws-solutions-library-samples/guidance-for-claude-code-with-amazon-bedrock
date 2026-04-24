@@ -69,6 +69,18 @@ def parse_args():
         action="store_true",
         help="Force anonymous mode using AWS caller identity instead of JWT auth",
     )
+    parser.add_argument(
+        "--proxy",
+        metavar="TARGET_URL",
+        help="Run as a local OTLP proxy on port 4318, forwarding to TARGET_URL with user headers injected",
+    )
+    parser.add_argument(
+        "--proxy-port",
+        type=int,
+        default=4318,
+        metavar="PORT",
+        help="Port for the local OTLP proxy (default: 4318)",
+    )
     args = parser.parse_args()
 
     global TEST_MODE, ANONYMOUS_MODE
@@ -581,9 +593,129 @@ def create_anonymous_user_info(caller_identity=None):
         }
 
 
+def run_proxy(target_url: str, port: int = 4318):
+    """Run a local OTLP proxy that injects user identity headers before forwarding.
+
+    CoWork sends OTLP directly to the collector without user headers. This proxy
+    sits at localhost:PORT, reads the cached user email from the monitoring token,
+    adds x-user-email (and related) headers to every request, then forwards to the
+    real ECS collector endpoint. The metrics_aggregator can then correlate CoWork
+    token events to user emails just like it does for Claude Code CLI sessions.
+    """
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    target_url = target_url.rstrip("/")
+    logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
+
+    def get_user_headers():
+        """Return enrichment headers derived from the cached monitoring token."""
+        token = None
+        if not ANONYMOUS_MODE:
+            token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+
+        if token:
+            payload = decode_jwt_payload(token)
+            user_info = extract_user_info(payload)
+        else:
+            caller_identity = get_aws_caller_identity()
+            user_info = create_anonymous_user_info(caller_identity)
+
+        return format_as_headers_dict(user_info)
+
+    # Pre-fetch headers once at startup; refresh on each request so token
+    # rotations are picked up without restarting the proxy.
+    _header_cache = {"headers": {}, "fetched_at": 0}
+    _HEADER_REFRESH_SECONDS = 300
+
+    def fresh_user_headers():
+        now = time.time()
+        if now - _header_cache["fetched_at"] > _HEADER_REFRESH_SECONDS:
+            try:
+                _header_cache["headers"] = get_user_headers()
+                _header_cache["fetched_at"] = now
+            except Exception as e:
+                logger.warning(f"Could not refresh user headers: {e}")
+        return _header_cache["headers"]
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self._proxy()
+
+        def do_GET(self):
+            # Health-check endpoint — CoWork polls / before starting telemetry
+            if self.path in ("/", "/health"):
+                self.send_response(200)
+                self.end_headers()
+            else:
+                self._proxy()
+
+        def _proxy(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+
+            forward_url = f"{target_url}{self.path}"
+
+            # Validate URL scheme to prevent file:// or other dangerous schemes
+            if not forward_url.startswith(("http://", "https://")):
+                logger.warning(f"Rejected proxy request with invalid scheme: {forward_url}")
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            req = urllib.request.Request(forward_url, data=body, method=self.command)
+
+            # Copy original headers
+            for key, value in self.headers.items():
+                lower = key.lower()
+                if lower in ("host", "content-length", "transfer-encoding"):
+                    continue
+                req.add_header(key, value)
+
+            # Inject user identity headers (override any client-supplied values)
+            for header_name, header_value in fresh_user_headers().items():
+                req.add_header(header_name, header_value)
+
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    self.send_response(resp.status)
+                    for key, value in resp.getheaders():
+                        if key.lower() != "transfer-encoding":
+                            self.send_header(key, value)
+                    self.end_headers()
+                    self.wfile.write(resp.read())
+            except Exception as e:
+                logger.warning(f"Proxy forward error: {e}")
+                self.send_response(502)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            logger.debug(f"proxy: {fmt % args}")
+
+    server = HTTPServer(("127.0.0.1", port), ProxyHandler)
+    print(f"OTLP proxy listening on 127.0.0.1:{port} → {target_url}", flush=True)
+
+    def shutdown_on_signal(signum, frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    import signal
+    import threading as _threading
+    if _threading.current_thread() is _threading.main_thread():
+        signal.signal(signal.SIGTERM, shutdown_on_signal)
+        signal.signal(signal.SIGINT, shutdown_on_signal)
+
+    server.serve_forever()
+
+
 def main():
     """Main function to generate OTEL headers"""
-    parse_args()
+    args = parse_args()
+
+    # Proxy mode: long-running local OTLP forwarder with user header injection
+    if args.proxy:
+        run_proxy(args.proxy, port=args.proxy_port)
+        return 0
 
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:
