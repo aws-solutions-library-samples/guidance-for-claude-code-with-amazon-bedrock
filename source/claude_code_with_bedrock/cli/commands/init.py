@@ -653,7 +653,10 @@ class InitCommand(Command):
                 # Check if HTTPS is already configured
                 existing_custom_domain = config["monitoring"].get("custom_domain")
                 existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                already_configured = bool(existing_custom_domain and existing_zone_id)
+                existing_cert_arn = config["monitoring"].get("certificate_arn")
+                already_configured = bool(
+                    existing_custom_domain and (existing_zone_id or existing_cert_arn)
+                )
 
                 if already_configured:
                     console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
@@ -693,14 +696,47 @@ class InitCommand(Command):
 
                         config["monitoring"]["custom_domain"] = custom_domain
                         config["monitoring"]["hosted_zone_id"] = zone_id
+                        config["monitoring"]["certificate_arn"] = None
                         console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
-                        console.print("[yellow]No Route53 hosted zones found. HTTPS requires a hosted zone.[/yellow]")
-                        console.print("[dim]You can add these parameters manually during deployment.[/dim]")
+                        console.print(
+                            "[yellow]No Route53 hosted zones found.[/yellow]"
+                        )
+                        console.print(
+                            "[dim]You can provide an existing ACM certificate ARN instead "
+                            "(e.g., for domains managed by Cloudflare, GoDaddy, etc.).[/dim]"
+                        )
+                        use_external_cert = questionary.confirm(
+                            "Do you have an existing ACM certificate for this domain?",
+                            default=bool(existing_cert_arn),
+                        ).ask()
+
+                        if use_external_cert:
+                            cert_arn = questionary.text(
+                                "Enter ACM certificate ARN:",
+                                validate=lambda x: x.startswith("arn:aws:acm:"),
+                                default=existing_cert_arn if existing_cert_arn else "",
+                            ).ask()
+                            config["monitoring"]["custom_domain"] = custom_domain
+                            config["monitoring"]["hosted_zone_id"] = None
+                            config["monitoring"]["certificate_arn"] = cert_arn
+                            console.print(
+                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain} "
+                                f"using external certificate"
+                            )
+                        else:
+                            console.print(
+                                "[dim]HTTPS not configured. You can create an ACM certificate later "
+                                "and re-run init.[/dim]"
+                            )
+                            config["monitoring"]["custom_domain"] = None
+                            config["monitoring"]["hosted_zone_id"] = None
+                            config["monitoring"]["certificate_arn"] = None
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
+                    config["monitoring"]["certificate_arn"] = None
 
                 # Analytics configuration (only if monitoring is enabled)
                 console.print("\n[bold]Analytics Pipeline[/bold]")
@@ -1853,6 +1889,9 @@ class InitCommand(Command):
                     if profile.monitoring_config
                     else None,
                     "hosted_zone_id": profile.monitoring_config.get("hosted_zone_id")
+                    if profile.monitoring_config
+                    else None,
+                    "certificate_arn": profile.monitoring_config.get("certificate_arn")
                     if profile.monitoring_config
                     else None,
                 },
