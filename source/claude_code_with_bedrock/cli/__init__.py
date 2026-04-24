@@ -7,7 +7,6 @@ from cleo.application import Application
 
 from .commands.builds import BuildsCommand
 from .commands.cleanup import CleanupCommand
-from .commands.cowork import CoworkGenerateCommand
 from .commands.context import (
     ConfigExportCommand,
     ConfigImportCommand,
@@ -54,7 +53,6 @@ def create_application() -> Application:
     application.add(DistributeCommand())
     application.add(DestroyCommand())
     application.add(CleanupCommand())
-    application.add(CoworkGenerateCommand())
     # application.add(TokenCommand())  # Temporarily disabled
 
     # Context management commands
