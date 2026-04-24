@@ -118,6 +118,12 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "cowork-dashboard":
+                if profile.monitoring_enabled:
+                    stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
+                else:
+                    console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
+                    return 1
             elif stack_arg == "analytics":
                 if profile.monitoring_enabled:
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
@@ -152,7 +158,7 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -175,6 +181,7 @@ class DeployCommand(Command):
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
@@ -731,6 +738,19 @@ class DeployCommand(Command):
                             os.unlink(packaged_template_path)
                         except Exception:
                             pass
+
+            elif stack_type == "cowork-dashboard":
+                template = project_root / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
+                stack_name = profile.stack_names.get(
+                    "cowork-dashboard", f"{profile.identity_pool_name}-cowork-dashboard"
+                )
+                params = [
+                    f"MetricsLogGroup={profile.metrics_log_group}",
+                    f"MetricsRegion={profile.aws_region}",
+                ]
+                return deploy_with_cf(
+                    template, stack_name, params, task_description="Deploying CoWork dashboard..."
+                )
 
             elif stack_type == "analytics":
                 template = project_root / "deployment" / "infrastructure" / "analytics-pipeline.yaml"
