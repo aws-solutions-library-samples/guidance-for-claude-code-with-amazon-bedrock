@@ -861,6 +861,22 @@ class InitCommand(Command):
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
 
+        # Claude Cowork 3P MDM configuration
+        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
+        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
+        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
+        enable_cowork = questionary.confirm(
+            "Generate CoWork 3P MDM configuration during packaging?",
+            default=config.get("cowork_3p", {}).get("enabled", True),
+        ).ask()
+
+        if "cowork_3p" not in config:
+            config["cowork_3p"] = {}
+        config["cowork_3p"]["enabled"] = enable_cowork
+
+        if enable_cowork:
+            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
+
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
@@ -1584,6 +1600,7 @@ class InitCommand(Command):
             daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
+            cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
         )
 
         config.add_profile(profile)
@@ -1868,6 +1885,9 @@ class InitCommand(Command):
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
+
+            # Add CoWork 3P configuration
+            existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):

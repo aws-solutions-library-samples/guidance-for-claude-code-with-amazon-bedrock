@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch dashboard for Claude CoWork usage metrics'
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCoWorkDashboard
+    Description: Name for the CloudWatch dashboard
+
+  MetricsLogGroup:
+    Type: String
+    Default: /aws/claude-code/metrics
+    Description: CloudWatch Log Group containing CoWork metrics
+
+  MetricsRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where metrics log group exists
+
+Resources:
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": {
+                "markdown": "# 📊 Claude CoWork Dashboard\n\nAggregate usage and cost metrics for Claude CoWork (Claude Desktop) sessions via Amazon Bedrock.",
+                "background": "transparent"
+              }
+            },
+
+            {
+              "type": "log",
+              "x": 0, "y": 2, "width": 6, "height": 4,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.token.usage` > 0 | stats round(sum(`claude_code.token.usage`) / 1000000, 2) as Tokens_M",
+                "region": "${MetricsRegion}",
+                "title": "Total Tokens Used",
+                "queryLanguage": "cwli",
+                "view": "singleValue"
+              }
+            },
+            {
+              "type": "log",
+              "x": 6, "y": 2, "width": 6, "height": 4,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats count_distinct(`user.id`) as Users",
+                "region": "${MetricsRegion}",
+                "title": "Active Users",
+                "queryLanguage": "cwli",
+                "view": "singleValue"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12, "y": 2, "width": 6, "height": 4,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats sum(`claude_code.session.count`) as Sessions",
+                "region": "${MetricsRegion}",
+                "title": "Total Sessions",
+                "queryLanguage": "cwli",
+                "view": "singleValue"
+              }
+            },
+            {
+              "type": "log",
+              "x": 18, "y": 2, "width": 6, "height": 4,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.cost.usage` > 0 | stats round(sum(`claude_code.cost.usage`), 2) as Cost",
+                "region": "${MetricsRegion}",
+                "title": "Total Cost (USD)",
+                "queryLanguage": "cwli",
+                "view": "singleValue"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.token.usage` > 0 | stats sum(`claude_code.token.usage`) / 1000 as Tokens_K by bin(5m)",
+                "region": "${MetricsRegion}",
+                "title": "Token Usage Over Time (thousands)",
+                "queryLanguage": "cwli",
+                "view": "timeSeries",
+                "stacked": false,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "log",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.cost.usage` > 0 | stats sum(`claude_code.cost.usage`) as Cost by bin(5m)",
+                "region": "${MetricsRegion}",
+                "title": "Cost Over Time (USD)",
+                "queryLanguage": "cwli",
+                "view": "timeSeries",
+                "stacked": false,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+
+            {
+              "type": "log",
+              "x": 0, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.token.usage` > 0 | parse @message /\"model\":\"(?<model>[^\"]+)\"/ | fields bin(5m) as time, if(model like /sonnet-4-5/, `claude_code.token.usage`, 0) as sonnet_4_5, if(model like /opus-4-6/, `claude_code.token.usage`, 0) as opus_4_6, if(model like /opus-4-7/, `claude_code.token.usage`, 0) as opus_4_7, if(model like /sonnet-4-20250514/, `claude_code.token.usage`, 0) as sonnet_4, if(model like /haiku-4-5/, `claude_code.token.usage`, 0) as haiku_4_5 | stats sum(opus_4_7) / 1000 as Opus_4_7, sum(opus_4_6) / 1000 as Opus_4_6, sum(sonnet_4_5) / 1000 as Sonnet_4_5, sum(sonnet_4) / 1000 as Sonnet_4, sum(haiku_4_5) / 1000 as Haiku_4_5 by time",
+                "region": "${MetricsRegion}",
+                "title": "Token Usage by Model Over Time (thousands)",
+                "queryLanguage": "cwli",
+                "view": "timeSeries",
+                "stacked": false,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "log",
+              "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats sum(`claude_code.session.count`) as Sessions by bin(5m)",
+                "region": "${MetricsRegion}",
+                "title": "Active Sessions Over Time",
+                "queryLanguage": "cwli",
+                "view": "timeSeries",
+                "stacked": false,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+
+            {
+              "type": "text",
+              "x": 0, "y": 18, "width": 24, "height": 2,
+              "properties": {
+                "markdown": "## 📈 Model & Token Breakdown",
+                "background": "transparent"
+              }
+            },
+
+            {
+              "type": "log",
+              "x": 0, "y": 20, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.token.usage` > 0 | parse @message /\"model\":\"(?<model>[^\"]+)\"/ | stats round(sum(`claude_code.token.usage`) / 1000, 0) as Tokens_K by model | sort Tokens_K desc | limit 10",
+                "region": "${MetricsRegion}",
+                "title": "Token Usage by Model",
+                "queryLanguage": "cwli",
+                "view": "pie"
+              }
+            },
+            {
+              "type": "log",
+              "x": 8, "y": 20, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.cost.usage` > 0 | parse @message /\"model\":\"(?<model>[^\"]+)\"/ | stats round(sum(`claude_code.cost.usage`), 2) as Cost by model | sort Cost desc | limit 10",
+                "region": "${MetricsRegion}",
+                "title": "Cost by Model (USD)",
+                "queryLanguage": "cwli",
+                "view": "pie"
+              }
+            },
+            {
+              "type": "log",
+              "x": 16, "y": 20, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.token.usage` > 0 | stats round(sum(`claude_code.token.usage`) / 1000, 0) as Tokens_K by `type` | sort Tokens_K desc",
+                "region": "${MetricsRegion}",
+                "title": "Token Usage by Type",
+                "queryLanguage": "cwli",
+                "view": "pie"
+              }
+            },
+
+            {
+              "type": "text",
+              "x": 0, "y": 26, "width": 24, "height": 2,
+              "properties": {
+                "markdown": "## 💻 Platform & Environment",
+                "background": "transparent"
+              }
+            },
+
+            {
+              "type": "log",
+              "x": 0, "y": 28, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats sum(`claude_code.session.count`) as Sessions by `os.type` | sort Sessions desc",
+                "region": "${MetricsRegion}",
+                "title": "Sessions by Operating System",
+                "queryLanguage": "cwli",
+                "view": "pie"
+              }
+            },
+            {
+              "type": "log",
+              "x": 8, "y": 28, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats sum(`claude_code.session.count`) as Sessions by `service.version` | sort Sessions desc | limit 10",
+                "region": "${MetricsRegion}",
+                "title": "CoWork Versions in Use",
+                "queryLanguage": "cwli",
+                "view": "table"
+              }
+            },
+            {
+              "type": "log",
+              "x": 16, "y": 28, "width": 8, "height": 6,
+              "properties": {
+                "query": "SOURCE '${MetricsLogGroup}' | filter `service.name` = \"cowork\" and `claude_code.session.count` > 0 | stats sum(`claude_code.session.count`) as Sessions by `host.arch` | sort Sessions desc",
+                "region": "${MetricsRegion}",
+                "title": "Sessions by Architecture",
+                "queryLanguage": "cwli",
+                "view": "pie"
+              }
+            }
+
+          ]
+        }
+
+Outputs:
+  DashboardURL:
+    Description: Direct URL to the CoWork CloudWatch dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+
+  LogsInsightsURL:
+    Description: URL to CloudWatch Logs Insights
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'

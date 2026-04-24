@@ -28,6 +28,8 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`quota unblock` - Unblock User](#quota-unblock---unblock-user)
     - [`quota export` - Export Policies](#quota-export---export-policies)
     - [`quota import` - Import Policies](#quota-import---import-policies)
+  - [Claude Cowork 3P](#claude-cowork-3p)
+    - [`cowork generate` - Generate MDM Configuration](#cowork-generate---generate-mdm-configuration)
   - [Profile Management](#profile-management)
     - [`context list` - List All Profiles](#context-list---list-all-profiles)
     - [`context current` - Show Active Profile](#context-current---show-active-profile)
@@ -584,6 +586,60 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+## Claude Cowork 3P
+
+### `cowork generate` - Generate MDM Configuration
+
+Generate Claude Cowork 3P MDM configuration files for deploying Claude Desktop with Amazon Bedrock as the inference backend.
+
+This command reads your existing deployment profile (region, model, monitoring stack) and generates ready-to-deploy MDM configuration files.
+
+```bash
+# Generate all formats (JSON, macOS .mobileconfig, Windows .reg)
+poetry run ccwb cowork generate
+
+# Generate specific format
+poetry run ccwb cowork generate --format mobileconfig
+poetry run ccwb cowork generate --format reg
+poetry run ccwb cowork generate --format json
+
+# Custom model aliases
+poetry run ccwb cowork generate --models opus,sonnet,haiku
+
+# Custom output directory
+poetry run ccwb cowork generate -o ./my-mdm-configs/
+
+# Specific profile
+poetry run ccwb cowork generate --profile Production
+
+# Custom credential helper TTL
+poetry run ccwb cowork generate --credential-helper-ttl 7200
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--profile` | Configuration profile to use | Active profile |
+| `--output`, `-o` | Output directory | `dist/cowork-3p/` |
+| `--format`, `-f` | Output format: `all`, `json`, `mobileconfig`, `reg` | `all` |
+| `--models`, `-m` | Comma-separated model aliases | Auto-detected from profile |
+| `--credential-helper-ttl` | Credential helper cache TTL (seconds) | `3600` |
+
+**Generated files:**
+
+| File | Platform | Description |
+|------|----------|-------------|
+| `cowork-3p-config.json` | All | Raw MDM configuration JSON (for Claude Desktop Setup UI import) |
+| `cowork-3p.mobileconfig` | macOS | MDM configuration profile (deploy via Jamf, Kandji, Mosyle) |
+| `cowork-3p.reg` | Windows | Registry file (deploy via Group Policy, Intune, SCCM) |
+
+**Automatic integration with `ccwb package`:**
+
+CoWork 3P configs are also auto-generated during `ccwb package` when enabled via `ccwb init`. Both paths use the same shared configuration logic to ensure identical output.
+
+See [CoWork 3P Guide](COWORK_3P.md) for detailed setup and deployment instructions.
 
 ## Quota Management
 
