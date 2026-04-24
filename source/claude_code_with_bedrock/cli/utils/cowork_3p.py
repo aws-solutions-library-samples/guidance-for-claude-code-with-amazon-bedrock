@@ -6,7 +6,7 @@
 import json
 import uuid
 from pathlib import Path
-from xml.sax.saxutils import escape as xml_escape
+from html import escape as xml_escape
 
 from rich.console import Console
 
@@ -18,7 +18,7 @@ from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 COWORK_DEFAULT_ALIASES = ["opus", "sonnet", "haiku", "opusplan"]
 
 
-def derive_model_aliases(profile) -> list[str]:
+def derive_model_aliases() -> list[str]:
     """Return the default CoWork 3P model aliases.
 
     Returns the standard alias list. Admins can override via the --models CLI flag.

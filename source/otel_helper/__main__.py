@@ -657,6 +657,13 @@ def run_proxy(target_url: str, port: int = 4318):
 
             forward_url = f"{target_url}{self.path}"
 
+            # Validate URL scheme to prevent file:// or other dangerous schemes
+            if not forward_url.startswith(("http://", "https://")):
+                logger.warning(f"Rejected proxy request with invalid scheme: {forward_url}")
+                self.send_response(400)
+                self.end_headers()
+                return
+
             req = urllib.request.Request(forward_url, data=body, method=self.command)
 
             # Copy original headers

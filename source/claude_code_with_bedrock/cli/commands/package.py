@@ -2492,7 +2492,7 @@ Available metrics include:
 
         try:
             bedrock_region = self._get_bedrock_region_for_profile(profile)
-            model_aliases = derive_model_aliases(profile)
+            model_aliases = derive_model_aliases()
 
             mdm_config = build_mdm_config(
                 bedrock_region=bedrock_region,

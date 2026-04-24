@@ -112,7 +112,7 @@ class CoworkGenerateCommand(Command):
         if models_option:
             model_aliases = [m.strip() for m in models_option.split(",")]
         else:
-            model_aliases = derive_model_aliases(profile)
+            model_aliases = derive_model_aliases()
 
         credential_helper_ttl = int(self.option("credential-helper-ttl"))
 
