@@ -20,7 +20,11 @@ Parameters:
   BucketNamePrefix:
     Type: String
     Default: sn-cce-bedrock-invocation-logs
-    Description: Prefix for the S3 bucket name (account id + region are appended)
+    Description: >-
+      Prefix for the S3 bucket name (account id is appended). The bucket is
+      intentionally NOT region-suffixed — logs from all Bedrock regions land
+      in the same bucket under a region-scoped key prefix (see KeyPrefix
+      inside the custom resource). See plan.md for rationale.
     AllowedPattern: '^[a-z0-9][a-z0-9-]{1,40}$'
 
   CloudWatchRetentionDays:
@@ -86,7 +90,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub '${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub '${BucketNamePrefix}-${AWS::AccountId}'
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced  # Disables ACLs
@@ -335,7 +339,7 @@ Resources:
       LogGroupName: !Ref InvocationLogGroup
       RoleArn: !GetAtt BedrockLoggingRole.Arn
       BucketName: !Ref InvocationLogsBucket
-      KeyPrefix: claude-code/
+      KeyPrefix: !Sub '${AWS::Region}/claude-code/'
       LogTextData: !Ref LogTextData
       LogImageData: !Ref LogImageData
       LogEmbeddingData: !Ref LogEmbeddingData
