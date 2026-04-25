@@ -524,6 +524,16 @@ Resources:
                   </div>
                   ''')
 
+              # Build conditional installation instructions based on available platforms
+              install_instructions = ['<li>Make sure you have <strong>Claude Code</strong> installed for your platform. This package doesn\'t provide the Claude Code binary.</li>']
+              if 'windows' in download_urls:
+                  install_instructions.append('<li><strong>Windows:</strong> Extract the ZIP file and run <code>install.bat</code></li>')
+              if 'mac' in download_urls or 'linux' in download_urls or 'all-platforms' in download_urls:
+                  install_instructions.append('<li><strong>Linux/Mac:</strong> Extract the ZIP file and run <code>./install.sh</code></li>')
+              install_instructions.append(f'<li>After installation, run Claude Code with: <code>AWS_PROFILE={profile} claude</code></li>')
+              install_instructions.append(f'<li>💡 <strong>Tip:</strong> Add an alias to your shell profile for convenience:<br><code>alias claude=&quot;AWS_PROFILE={profile} claude&quot;</code></li>')
+              install_instructions_html = '\n                          '.join(install_instructions)
+
               return f'''
               <!DOCTYPE html>
               <html lang="en">
@@ -684,9 +694,7 @@ Resources:
                       <div class="instructions">
                           <h4>📋 Installation Instructions</h4>
                           <ul>
-                              <li><strong>Windows:</strong> Extract the ZIP file and run <code>install.bat</code></li>
-                              <li><strong>Linux/Mac:</strong> Extract the ZIP file and run <code>./install.sh</code></li>
-                              <li>After installation, you can use the <code>claude</code> command from your terminal</li>
+                              {install_instructions_html}
                           </ul>
                       </div>
                   </div>

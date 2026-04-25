@@ -357,7 +357,7 @@ class PackageCommand(Command):
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
-        self._create_documentation(output_dir, profile, timestamp)
+        self._create_documentation(output_dir, profile, timestamp, profile_name, built_executables)
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
@@ -2178,13 +2178,33 @@ pause
         # Note: chmod not needed on Windows batch files
         return installer_path
 
-    def _create_documentation(self, output_dir: Path, profile, timestamp: str):
+    def _create_documentation(
+        self, output_dir: Path, profile, timestamp: str, profile_name: str = "ClaudeCode", built_executables=None
+    ):
         """Create user documentation."""
+        # Determine which platform families were built
+        built_platforms = {p for p, _ in (built_executables or [])}
+        has_macos = any(p.startswith("macos") for p in built_platforms)
+        has_linux = any(p.startswith("linux") for p in built_platforms)
+        has_windows = any(p.startswith("windows") for p in built_platforms)
+        has_unix = has_macos or has_linux
+
         readme_content = f"""# Claude Code Authentication Setup
 
 ## Quick Start
+"""
 
-### macOS/Linux
+        if has_unix:
+            # Build a contextual header based on which unix platforms are included
+            if has_macos and has_linux:
+                unix_header = "macOS/Linux"
+            elif has_macos:
+                unix_header = "macOS"
+            else:
+                unix_header = "Linux"
+
+            readme_content += f"""
+### {unix_header}
 
 1. Extract the package:
    ```bash
@@ -2197,12 +2217,19 @@ pause
    ./install.sh
    ```
 
-3. Use the AWS profile:
+3. Run Claude Code:
    ```bash
-   export AWS_PROFILE=ClaudeCode
-   aws sts get-caller-identity
+   AWS_PROFILE={profile_name} claude
    ```
 
+   **Tip:** Add an alias to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) for convenience:
+   ```bash
+   alias claude="AWS_PROFILE={profile_name} claude"
+   ```
+"""
+
+        if has_windows:
+            readme_content += f"""
 ### Windows
 
 #### Step 1: Download the Package
@@ -2247,44 +2274,53 @@ install.bat
 The installer will:
 - Check for AWS CLI installation
 - Copy authentication tools to `%USERPROFILE%\\claude-code-with-bedrock`
-- Configure the AWS profile "ClaudeCode"
+- Configure the AWS profile "{profile_name}"
 - Test the authentication
 
-#### Step 4: Use Claude Code
+#### Step 4: Run Claude Code
 ```cmd
-# Set the AWS profile
-set AWS_PROFILE=ClaudeCode
-
-# Verify authentication works
-aws sts get-caller-identity
-
-# Your browser will open automatically for authentication if needed
+set AWS_PROFILE={profile_name}
+claude
 ```
 
 For PowerShell users:
 ```powershell
-$env:AWS_PROFILE = "ClaudeCode"
-aws sts get-caller-identity
+$env:AWS_PROFILE = "{profile_name}"
+claude
 ```
 
+**Tip:** Create a shortcut by adding a doskey macro or PowerShell alias:
+```powershell
+# PowerShell profile (~\Documents\PowerShell\Microsoft.PowerShell_profile.ps1)
+function claude {{ $env:AWS_PROFILE = "{profile_name}"; claude.exe @args }}
+```
+"""
+
+        readme_content += f"""
 ## What This Does
 
 - Installs the Claude Code authentication tools
 - Configures your AWS CLI to use {profile.provider_domain} for authentication
 - Sets up automatic credential refresh via your browser
 
-## Requirements
+## Prerequisites
 
+- **Claude Code** installed for your platform (this package doesn't provide the Claude Code binary)
 - Python 3.8 or later
 - AWS CLI v2
 - pip3
 
 ## Troubleshooting
+"""
 
+        if has_macos and profile.credential_storage != "session":
+            readme_content += """
 ### macOS Keychain Access Popup
 On first use, macOS will ask for permission to access the keychain. This is normal and required for \
 secure credential storage. Click "Always Allow" to avoid repeated prompts.
+"""
 
+        readme_content += f"""
 ### Authentication Issues
 If you encounter issues with authentication:
 - Ensure you're assigned to the Claude Code application in your identity provider
