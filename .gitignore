@@ -37,7 +37,7 @@ Thumbs.db
 .env.local
 
 # Claude Code settings
-.claude/
+.claude/settings.local.json
 
 #Claude Code plugin settings
 .claude-plugin
@@ -52,8 +52,6 @@ FEEDBACK.md
 output.json
 *.bak
 test_*.py
-
-CLAUDE.md
 
 guidance-docs/
 parameters.json
@@ -82,3 +80,4 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+.remember
