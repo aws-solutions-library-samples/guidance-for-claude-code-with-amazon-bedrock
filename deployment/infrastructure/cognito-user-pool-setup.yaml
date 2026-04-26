@@ -80,10 +80,17 @@ Resources:
           AttributeDataType: String
           Required: false
           Mutable: true
-      # Message configuration - don't automatically send messages
-      AutoVerifiedAttributes: []
+      # Message configuration - enable email for password reset
+      AutoVerifiedAttributes:
+        - email
       EmailConfiguration:
         EmailSendingAccount: COGNITO_DEFAULT
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
       # Disable self-registration as required
       Policies:
         PasswordPolicy:
