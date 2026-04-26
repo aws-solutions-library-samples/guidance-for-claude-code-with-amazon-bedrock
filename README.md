@@ -380,6 +380,7 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Deployment Guide](assets/docs/DEPLOYMENT.md) - Advanced deployment options
 - [Distribution Comparison](assets/docs/distribution/comparison.md) - Presigned URLs vs Landing Page
 - [Local Testing Guide](assets/docs/LOCAL_TESTING.md) - Testing before deployment
+- [LLM Gateway Integration](assets/docs/LLM_GATEWAY.md) - Routing Claude Code through an existing LLM gateway
 
 ### Monitoring & Analytics
 
