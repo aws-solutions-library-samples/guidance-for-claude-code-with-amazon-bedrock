@@ -628,7 +628,8 @@ class DeployCommand(Command):
                 # Add HTTPS domain parameters if configured
                 monitoring_config = getattr(profile, "monitoring_config", {})
                 if monitoring_config.get("custom_domain"):
-                    params.append(f"CustomDomainName={monitoring_config['custom_domain']}")
+                    domain = monitoring_config["custom_domain"].replace("https://", "").replace("http://", "").rstrip("/")
+                    params.append(f"CustomDomainName={domain}")
                     if monitoring_config.get("hosted_zone_id"):
                         params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
                     if monitoring_config.get("certificate_arn"):

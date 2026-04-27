@@ -1581,6 +1581,8 @@ class InitCommand(Command):
             monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
+        if monitoring_dict.get("certificate_arn"):
+            monitoring_config["certificate_arn"] = monitoring_dict["certificate_arn"]
 
         # Get SSO configuration or use defaults if SSO is disabled
         sso_enabled = config_data.get("sso_enabled", True)
