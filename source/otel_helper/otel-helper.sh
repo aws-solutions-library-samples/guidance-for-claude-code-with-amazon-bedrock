@@ -14,4 +14,7 @@ fi
 
 # Cache miss - fall back to full PyInstaller binary (which writes the cache)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "${CLAUDE_CODE_OTEL_ANONYMOUS:-}" = "1" ]; then
+    exec "$SCRIPT_DIR/otel-helper-bin" --anonymous "$@"
+fi
 exec "$SCRIPT_DIR/otel-helper-bin" "$@"

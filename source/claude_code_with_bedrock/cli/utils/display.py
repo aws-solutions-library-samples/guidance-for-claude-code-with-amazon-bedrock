@@ -40,24 +40,30 @@ def _display_table_format(console: Console, profile, identity_pool_id: str | Non
     config_table.add_row("AWS Profile", "ClaudeCode")
 
     # Provider information
-    config_table.add_row("OIDC Provider", profile.provider_domain)
-    config_table.add_row("Client ID", profile.client_id)
+    if getattr(profile, "sso_enabled", True):
+        config_table.add_row("OIDC Provider", profile.provider_domain)
+        config_table.add_row("Client ID", profile.client_id)
+    else:
+        config_table.add_row("Authentication", "Existing AWS profile (SSO disabled)")
 
     # Federation configuration
     federation_type = getattr(profile, "federation_type", "cognito")
-    if federation_type == "direct":
-        config_table.add_row("Federation Type", "Direct STS (12-hour sessions)")
-        federated_role_arn = getattr(profile, "federated_role_arn", None)
-        if federated_role_arn:
-            config_table.add_row("Federated Role", federated_role_arn.split("/")[-1])  # Show just role name
+    if getattr(profile, "sso_enabled", True):
+        if federation_type == "direct":
+            config_table.add_row("Federation Type", "Direct STS (12-hour sessions)")
+            federated_role_arn = getattr(profile, "federated_role_arn", None)
+            if federated_role_arn:
+                config_table.add_row("Federated Role", federated_role_arn.split("/")[-1])  # Show just role name
+        else:
+            config_table.add_row("Federation Type", "Cognito Identity Pool (8-hour sessions)")
     else:
-        config_table.add_row("Federation Type", "Cognito Identity Pool (8-hour sessions)")
+        config_table.add_row("Federation Type", "Existing AWS credentials")
 
     # AWS configuration
     config_table.add_row("AWS Region", profile.aws_region)
 
     # Identity Pool - show both name and ID if available
-    if identity_pool_id:
+    if identity_pool_id and getattr(profile, "sso_enabled", True):
         config_table.add_row("Identity Pool", f"{profile.identity_pool_name} ({identity_pool_id})")
     else:
         config_table.add_row("Identity Pool", profile.identity_pool_name)
@@ -102,24 +108,30 @@ def _display_simple_format(console: Console, profile, identity_pool_id: str | No
     console.print("  AWS Profile: [cyan]ClaudeCode[/cyan]")
 
     # Provider information
-    console.print(f"  OIDC Provider: [cyan]{profile.provider_domain}[/cyan]")
-    console.print(f"  Client ID: [cyan]{profile.client_id}[/cyan]")
+    if getattr(profile, "sso_enabled", True):
+        console.print(f"  OIDC Provider: [cyan]{profile.provider_domain}[/cyan]")
+        console.print(f"  Client ID: [cyan]{profile.client_id}[/cyan]")
+    else:
+        console.print("  Authentication: [cyan]Existing AWS profile (SSO disabled)[/cyan]")
 
     # Federation configuration
     federation_type = getattr(profile, "federation_type", "cognito")
-    if federation_type == "direct":
-        console.print("  Federation Type: [cyan]Direct STS (12-hour sessions)[/cyan]")
-        federated_role_arn = getattr(profile, "federated_role_arn", None)
-        if federated_role_arn:
-            console.print(f"  Federated Role: [cyan]{federated_role_arn.split('/')[-1]}[/cyan]")
+    if getattr(profile, "sso_enabled", True):
+        if federation_type == "direct":
+            console.print("  Federation Type: [cyan]Direct STS (12-hour sessions)[/cyan]")
+            federated_role_arn = getattr(profile, "federated_role_arn", None)
+            if federated_role_arn:
+                console.print(f"  Federated Role: [cyan]{federated_role_arn.split('/')[-1]}[/cyan]")
+        else:
+            console.print("  Federation Type: [cyan]Cognito Identity Pool (8-hour sessions)[/cyan]")
     else:
-        console.print("  Federation Type: [cyan]Cognito Identity Pool (8-hour sessions)[/cyan]")
+        console.print("  Federation Type: [cyan]Existing AWS credentials[/cyan]")
 
     # AWS configuration
     console.print(f"  AWS Region: [cyan]{profile.aws_region}[/cyan]")
 
     # Identity Pool - show actual ID if available
-    if identity_pool_id:
+    if identity_pool_id and getattr(profile, "sso_enabled", True):
         console.print(f"  Identity Pool: [cyan]{identity_pool_id}[/cyan]")
     else:
         console.print(f"  Identity Pool: [cyan]{profile.identity_pool_name}[/cyan]")

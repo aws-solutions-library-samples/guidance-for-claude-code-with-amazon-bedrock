@@ -47,6 +47,7 @@ Parameters:
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  NoCustomDomain: !Equals [!Ref CustomDomainName, '']
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
@@ -490,6 +491,30 @@ Resources:
   # ECS Service
   ECSService:
     Type: AWS::ECS::Service
+    Condition: NoCustomDomain
+    DependsOn:
+      - HTTPListener
+    Properties:
+      ServiceName: otel-collector-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: aws-otel-collector
+          ContainerPort: 4318
+          TargetGroupArn: !Ref HTTPTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+
+  ECSServiceWithHttps:
+    Type: AWS::ECS::Service
+    Condition: HasCustomDomain
     DependsOn:
       - HTTPListener
       - HTTPSListener

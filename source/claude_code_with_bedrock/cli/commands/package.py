@@ -127,22 +127,28 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get actual Identity Pool ID or Role ARN from stack outputs
-        console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
+        # Get actual Identity Pool ID or Role ARN from stack outputs when SSO auth is enabled.
+        # In existing-AWS-profile mode, there is no auth stack by design.
+        stack_outputs = None
+        if getattr(profile, "sso_enabled", True):
+            console.print("[yellow]Fetching deployment information...[/yellow]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
 
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+                return 1
 
         # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        federation_type = profile.federation_type if not stack_outputs else stack_outputs.get("FederationType", profile.federation_type)
         identity_pool_id = None
         federated_role_arn = None
 
-        if federation_type == "direct":
+        if not getattr(profile, "sso_enabled", True):
+            console.print("[yellow]SSO authentication is disabled for this profile.[/yellow]")
+            console.print("[dim]Package will rely on an existing AWS profile on each developer machine.[/dim]")
+        elif federation_type == "direct":
             # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
             # Then fallback to FederatedRoleArn (new templates)
             federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
@@ -161,7 +167,7 @@ class PackageCommand(Command):
         console.print(
             Panel.fit(
                 "[bold cyan]Package Builder[/bold cyan]\n\n"
-                f"Creating distribution package for {profile.provider_domain}",
+                f"Creating distribution package for {profile.provider_domain if getattr(profile, 'sso_enabled', True) else 'existing AWS authentication'}",
                 border_style="cyan",
                 padding=(1, 2),
             )
@@ -183,10 +189,13 @@ class PackageCommand(Command):
             "package_timestamp": timestamp,
             "package_version": "1.0.0",
             "federation_type": federation_type,
+            "sso_enabled": getattr(profile, "sso_enabled", True),
         }
 
         # Add federation-specific configuration
-        if federation_type == "direct":
+        if not getattr(profile, "sso_enabled", True):
+            pass
+        elif federation_type == "direct":
             embedded_config["federated_role_arn"] = federated_role_arn
             embedded_config["max_session_duration"] = profile.max_session_duration
         else:
@@ -337,7 +346,9 @@ class PackageCommand(Command):
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
-        federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
+        federation_identifier = None if not getattr(profile, "sso_enabled", True) else (
+            federated_role_arn if federation_type == "direct" else identity_pool_id
+        )
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Create installer
@@ -1678,7 +1689,7 @@ RUN pyinstaller \
         self,
         output_dir: Path,
         profile,
-        federation_identifier: str,
+        federation_identifier: str | None,
         federation_type: str = "cognito",
         profile_name: str = "ClaudeCode",
         console=None,
@@ -1703,8 +1714,12 @@ RUN pyinstaller \
             }
         }
 
+        config[profile_name]["sso_enabled"] = getattr(profile, "sso_enabled", True)
+
         # Add the appropriate federation field based on type
-        if federation_type == "direct":
+        if not getattr(profile, "sso_enabled", True):
+            config[profile_name]["federation_type"] = federation_type
+        elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
             config[profile_name]["federation_type"] = "direct"
             config[profile_name]["max_session_duration"] = profile.max_session_duration
@@ -1796,6 +1811,9 @@ RUN pyinstaller \
 
     def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
         """Create simple installer script."""
+        sso_enabled = getattr(profile, "sso_enabled", True)
+        organization_label = profile.provider_domain if sso_enabled else "Existing AWS authentication"
+        default_profile_name = profile.name or "ClaudeCode"
 
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
@@ -1803,7 +1821,7 @@ RUN pyinstaller \
 
         installer_content = f"""#!/bin/bash
 # Claude Code Authentication Installer
-# Organization: {profile.provider_domain}
+# Organization: {organization_label}
 # Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 set -e
@@ -1812,7 +1830,7 @@ echo "======================================"
 echo "Claude Code Authentication Installer"
 echo "======================================"
 echo
-echo "Organization: {profile.provider_domain}"
+echo "Organization: {organization_label}"
 echo
 
 
@@ -1860,7 +1878,7 @@ fi
 CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX"
 OTEL_BINARY="otel-helper-$BINARY_SUFFIX"
 
-if [ ! -f "$CREDENTIAL_BINARY" ]; then
+if [ "{str(sso_enabled).lower()}" = "true" ] && [ ! -f "$CREDENTIAL_BINARY" ]; then
     echo "❌ Binary not found for your platform: $CREDENTIAL_BINARY"
     echo "   Please ensure you have the correct package for your architecture."
     exit 1
@@ -1873,15 +1891,17 @@ echo
 echo "Installing authentication tools..."
 mkdir -p ~/claude-code-with-bedrock
 
-# Copy appropriate binary
-cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
-
 # Copy config
 cp config.json ~/claude-code-with-bedrock/
-chmod +x ~/claude-code-with-bedrock/credential-process
+
+# Copy appropriate binary when SSO auth is managed by this package
+if [ "{str(sso_enabled).lower()}" = "true" ]; then
+    cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+    chmod +x ~/claude-code-with-bedrock/credential-process
+fi
 
 # macOS Gatekeeper + Keychain notices
-if [[ "$OSTYPE" == "darwin"* ]]; then
+if [[ "$OSTYPE" == "darwin"* ]] && [ "{str(sso_enabled).lower()}" = "true" ]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
     # Without this, Gatekeeper blocks execution with "Apple could not verify..." dialog.
     xattr -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process 2>/dev/null || true
@@ -1916,9 +1936,25 @@ if [ -d "claude-settings" ]; then
         fi
 
         if [ "$SKIP_SETTINGS" != "true" ]; then
+            if [ "{str(sso_enabled).lower()}" = "false" ]; then
+                EXISTING_AWS_PROFILE=$(aws configure list-profiles | head -n 1)
+                if [ -n "$EXISTING_AWS_PROFILE" ]; then
+                    echo "Detected AWS profile: $EXISTING_AWS_PROFILE"
+                fi
+                read -p "AWS profile to use for Bedrock and monitoring [$EXISTING_AWS_PROFILE]: " AWS_PROFILE
+                if [ -z "$AWS_PROFILE" ]; then
+                    AWS_PROFILE="$EXISTING_AWS_PROFILE"
+                fi
+                if [ -z "$AWS_PROFILE" ]; then
+                    echo "❌ No AWS profile specified. Run 'aws configure sso' first."
+                    exit 1
+                fi
+            fi
+
             # Replace placeholders and write settings
             sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
                 -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
+                -e "s|__AWS_PROFILE_NAME__|${{AWS_PROFILE:-{default_profile_name}}}|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
             echo "✓ Claude Code settings configured"
         fi
@@ -1952,71 +1988,86 @@ if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "  ~/claude-code-with-bedrock/otel-helper-bin --test"
 fi
 
-# Update AWS config
-echo
-echo "Configuring AWS profiles..."
-mkdir -p ~/.aws
+if [ "{str(sso_enabled).lower()}" = "true" ]; then
+    # Update AWS config
+    echo
+    echo "Configuring AWS profiles..."
+    mkdir -p ~/.aws
 
-# Read all profiles from config.json
-PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
+    # Read all profiles from config.json
+    PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
 
-if [ -z "$PROFILES" ]; then
-    echo "❌ No profiles found in config.json"
-    exit 1
-fi
+    if [ -z "$PROFILES" ]; then
+        echo "❌ No profiles found in config.json"
+        exit 1
+    fi
 
-echo "Found profiles: $PROFILES"
-echo
+    echo "Found profiles: $PROFILES"
+    echo
 
-# Get region from package settings (for Bedrock calls, not infrastructure)
-if [ -f "claude-settings/settings.json" ]; then
-    DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
-    'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
-else
-    DEFAULT_REGION="{profile.aws_region}"
-fi
+    # Get region from package settings (for Bedrock calls, not infrastructure)
+    if [ -f "claude-settings/settings.json" ]; then
+        DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
+        'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+    else
+        DEFAULT_REGION="{profile.aws_region}"
+    fi
 
-# Configure each profile
-for PROFILE_NAME in $PROFILES; do
-    echo "Configuring AWS profile: $PROFILE_NAME"
+    # Configure each profile
+    for PROFILE_NAME in $PROFILES; do
+        echo "Configuring AWS profile: $PROFILE_NAME"
 
-    # Remove old profile if exists
-    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+        # Remove old profile if exists
+        sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
 
-    # Get profile-specific region from config.json
-    PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
-    {{}}).get('aws_region', '$DEFAULT_REGION'))")
+        # Get profile-specific region from config.json
+        PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
+        {{}}).get('aws_region', '$DEFAULT_REGION'))")
 
-    # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+        # Add new profile with --profile flag (cross-platform, no shell required)
+        cat >> ~/.aws/config << EOF
 [profile $PROFILE_NAME]
 credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
-    echo "  ✓ Created AWS profile '$PROFILE_NAME'"
-done
+        echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+    done
 
-echo
-echo "======================================"
-echo "✓ Installation complete!"
-echo "======================================"
-echo
-echo "Available profiles:"
-for PROFILE_NAME in $PROFILES; do
-    echo "  - $PROFILE_NAME"
-done
-echo
-echo "To use Claude Code authentication:"
-echo "  export AWS_PROFILE=<profile-name>"
-echo "  aws sts get-caller-identity"
-echo
-echo "Example:"
-FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
-echo "  export AWS_PROFILE=$FIRST_PROFILE"
-echo "  aws sts get-caller-identity"
-echo
-echo "Note: Authentication will automatically open your browser when needed."
-echo
+    echo
+    echo "======================================"
+    echo "✓ Installation complete!"
+    echo "======================================"
+    echo
+    echo "Available profiles:"
+    for PROFILE_NAME in $PROFILES; do
+        echo "  - $PROFILE_NAME"
+    done
+    echo
+    echo "To use Claude Code authentication:"
+    echo "  export AWS_PROFILE=<profile-name>"
+    echo "  aws sts get-caller-identity"
+    echo
+    echo "Example:"
+    FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
+    echo "  export AWS_PROFILE=$FIRST_PROFILE"
+    echo "  aws sts get-caller-identity"
+    echo
+    echo "Note: Authentication will automatically open your browser when needed."
+    echo
+else
+    echo
+    echo "======================================"
+    echo "✓ Installation complete!"
+    echo "======================================"
+    echo
+    echo "This package uses your existing AWS credentials."
+    echo "Make sure you have already run:"
+    echo "  aws configure sso"
+    echo "  aws sso login --profile <your-profile>"
+    echo
+    echo "Claude Code settings were configured to use the AWS profile you selected."
+    echo
+fi
 """
 
         installer_path = output_dir / "install.sh"
@@ -2032,17 +2083,19 @@ echo
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
+        sso_enabled = getattr(profile, "sso_enabled", True)
+        organization_label = profile.provider_domain if sso_enabled else "Existing AWS authentication"
 
         installer_content = f"""@echo off
 REM Claude Code Authentication Installer for Windows
-REM Organization: {profile.provider_domain}
+REM Organization: {organization_label}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 echo ======================================
 echo Claude Code Authentication Installer
 echo ======================================
 echo.
-echo Organization: {profile.provider_domain}
+echo Organization: {organization_label}
 echo.
 
 REM Check prerequisites
@@ -2063,6 +2116,9 @@ REM Create directory
 echo Installing authentication tools...
 if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
 
+"""
+        if sso_enabled:
+            installer_content += """
 REM Copy credential process executable with renamed target
 echo Copying credential process...
 copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
@@ -2071,6 +2127,8 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+"""
+        installer_content += f"""
 
 REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
@@ -2088,9 +2146,9 @@ if exist "claude-settings" (
     if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
 
     REM Copy settings and replace placeholders
-    if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
-        if exist "%USERPROFILE%\\.claude\\settings.json" (
+        if exist "claude-settings\\settings.json" (
+            set SKIP_SETTINGS=false
+            if exist "%USERPROFILE%\\.claude\\settings.json" (
             echo Existing Claude Code settings found
             set /p OVERWRITE="Overwrite with new settings? (y/n): "
             if /i not "%OVERWRITE%"=="y" (
@@ -2100,21 +2158,42 @@ if exist "claude-settings" (
         )
 
         if not "%SKIP_SETTINGS%"=="true" (
+"""
+        if not sso_enabled:
+            installer_content += r"""
+            for /f %%p in ('aws configure list-profiles') do (
+                if not defined EXISTING_AWS_PROFILE set EXISTING_AWS_PROFILE=%%p
+            )
+            if defined EXISTING_AWS_PROFILE echo Detected AWS profile: %EXISTING_AWS_PROFILE%
+            set /p AWS_PROFILE=AWS profile to use for Bedrock and monitoring [%EXISTING_AWS_PROFILE%]: 
+            if "%AWS_PROFILE%"=="" set AWS_PROFILE=%EXISTING_AWS_PROFILE%
+            if "%AWS_PROFILE%"=="" (
+                echo ERROR: No AWS profile specified. Run aws configure sso first.
+                pause
+                exit /b 1
+            )
+"""
+        installer_content += r"""
             REM Use PowerShell to replace placeholders
             powershell -Command ^
             "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
             -replace '\\\\\\\\', '/'; ^
             $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
             -replace '\\\\\\\\', '/'; ^
+            $awsProfile = if ($env:AWS_PROFILE) { $env:AWS_PROFILE } else { 'ClaudeCode' }; ^
             (Get-Content 'claude-settings\\\\settings.json') ^
             -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
+            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath ^
+            -replace '__AWS_PROFILE_NAME__', $awsProfile | ^
             Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
             echo OK Claude Code settings configured
         )
     )
 )
 
+"""
+        if sso_enabled:
+            installer_content += f"""
 REM Configure AWS profiles
 echo.
 echo Configuring AWS profiles...
@@ -2170,6 +2249,22 @@ echo Note: Authentication will automatically open your browser when needed.
 echo.
 pause
 """
+        else:
+            installer_content += """
+echo.
+echo ======================================
+echo Installation complete!
+echo ======================================
+echo.
+echo This package uses your existing AWS credentials.
+echo Make sure you have already run:
+echo   aws configure sso
+echo   aws sso login --profile ^<your-profile^>
+echo.
+echo Claude Code settings were configured to use the AWS profile you selected.
+echo.
+pause
+"""
 
         installer_path = output_dir / "install.bat"
         with open(installer_path, "w", encoding="utf-8") as f:
@@ -2180,7 +2275,8 @@ pause
 
     def _create_documentation(self, output_dir: Path, profile, timestamp: str):
         """Create user documentation."""
-        readme_content = f"""# Claude Code Authentication Setup
+        if getattr(profile, "sso_enabled", True):
+            readme_content = f"""# Claude Code Authentication Setup
 
 ## Quick Start
 
@@ -2316,6 +2412,77 @@ Configuration Details:
 - Organization: {profile.provider_domain}
 - Region: {profile.aws_region}
 - Package Version: {timestamp}"""
+        else:
+            readme_content = f"""# Claude Code Bedrock Setup
+
+## Quick Start
+
+### Before Installing
+
+Configure your AWS SSO profile if you have not already:
+
+```bash
+aws configure sso
+aws sso login --profile <your-profile>
+```
+
+### macOS/Linux
+
+1. Extract the package:
+   ```bash
+   unzip claude-code-package-*.zip
+   cd claude-code-package
+   ```
+
+2. Run the installer:
+   ```bash
+   ./install.sh
+   ```
+
+3. Choose the existing AWS profile you want Claude Code to use.
+
+### Windows
+
+1. Extract the package
+2. Run `install.bat`
+3. Choose the existing AWS profile you want Claude Code to use
+
+## What This Does
+
+- Configures Claude Code to use Amazon Bedrock
+- Reuses your existing AWS SSO profile for authentication
+- Installs the OTEL helper for usage attribution and monitoring
+
+## Requirements
+
+- AWS CLI v2
+- An existing AWS profile with Bedrock access
+
+## Troubleshooting
+
+### AWS Profile Not Found
+
+If the installer cannot find a usable AWS profile, run:
+
+```bash
+aws configure sso
+aws sso login --profile <your-profile>
+```
+
+### Verify Access
+
+```bash
+AWS_PROFILE=<your-profile> aws sts get-caller-identity
+```
+
+## Support
+
+Contact your IT administrator for help.
+
+Configuration Details:
+- Organization: Existing AWS authentication
+- Region: {profile.aws_region}
+- Package Version: {timestamp}"""
 
         # Add analytics information if enabled
         if profile.monitoring_enabled and getattr(profile, "analytics_enabled", True):
@@ -2363,7 +2530,7 @@ Available metrics include:
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     "CLAUDE_CODE_USE_BEDROCK": "1",
                     # AWS_PROFILE is used by both AWS SDK and otel-helper
-                    "AWS_PROFILE": profile_name,
+                    "AWS_PROFILE": profile_name if getattr(profile, "sso_enabled", True) else "__AWS_PROFILE_NAME__",
                 }
             }
 
@@ -2373,7 +2540,7 @@ Available metrics include:
                 settings["includeCoAuthoredBy"] = False
 
             # Add awsAuthRefresh for session-based credential storage
-            if profile.credential_storage == "session":
+            if getattr(profile, "sso_enabled", True) and profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add selected model as environment variable if available
@@ -2442,6 +2609,9 @@ Available metrics include:
                                 cost_center=default,organization=default",
                             }
                         )
+
+                        if not getattr(profile, "sso_enabled", True):
+                            settings["env"]["CLAUDE_CODE_OTEL_ANONYMOUS"] = "1"
 
                         # Add the helper executable for generating OTEL headers with user attributes
                         # Use a placeholder that will be replaced by the installer script based on platform

@@ -1303,6 +1303,8 @@ class InitCommand(Command):
     def _review_configuration(self, config: dict[str, Any]) -> bool:
         """Review configuration with user."""
         console = Console()
+        sso_enabled = config.get("sso_enabled", True)
+        oidc_config = config.get("okta", {})
 
         console.print("\n[bold blue]Step 4: Review Configuration[/bold blue]")
         console.print("─" * 30)
@@ -1313,15 +1315,16 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        if sso_enabled:
+            provider_domain = oidc_config.get("domain", "Not configured")
+            client_id = oidc_config.get("client_id", "Not configured")
+            table.add_row("OIDC Provider", provider_domain)
+            table.add_row(
+                "OIDC Client ID",
+                client_id[:20] + "..." if len(client_id) > 20 else client_id,
+            )
+        else:
+            table.add_row("SSO Authentication", "✗ Disabled")
         table.add_row(
             "Credential Storage",
             (
@@ -1935,13 +1938,17 @@ class InitCommand(Command):
     def _show_existing_deployment(self, config: dict[str, Any]) -> None:
         """Show summary of existing deployment."""
         console = Console()
+        sso_enabled = config.get("sso_enabled", True)
 
-        console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        if sso_enabled and "okta" in config and "domain" in config["okta"]:
+            console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        else:
+            console.print("• OIDC Provider: [cyan]Disabled[/cyan]")
 
         # Show Cognito-specific fields if using Cognito User Pool
         if "cognito_user_pool_id" in config:
             console.print(f"• Cognito User Pool ID: [cyan]{config['cognito_user_pool_id']}[/cyan]")
-        if "okta" in config and "client_id" in config["okta"]:
+        if sso_enabled and "okta" in config and "client_id" in config["okta"]:
             console.print(f"• Client ID: [cyan]{config['okta']['client_id']}[/cyan]")
 
         cred_storage = "Keyring" if config.get("credential_storage") == "keyring" else "Session Files"
