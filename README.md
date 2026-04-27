@@ -1,6 +1,6 @@
-# Guidance for Claude Code with Amazon Bedrock
+# Guidance for Claude Code and Cowork on Amazon Bedrock
 
-This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools) or AWS IAM Identity Center (SSO) for centralized access control, audit trails, and usage monitoring across your organization.
+This guidance provides enterprise deployment patterns for Claude Code and Claude Cowork (Claude Desktop) with Amazon Bedrock using existing identity providers. Deploy once to enable both Claude Code CLI and Claude Cowork Desktop across your organization, with centralized access control, audit trails, and usage monitoring.
 
 ## Key Features
 
@@ -23,6 +23,14 @@ This guidance provides enterprise deployment patterns for Claude Code with Amazo
 - **AWS CLI/SDK Integration**: Works with any AWS tool or SDK
 - **Multi-Profile Support**: Manage multiple authentication profiles
 - **Cross-Platform**: Works on Windows, macOS, and Linux
+
+### For Users (Claude Cowork)
+
+- **Claude Desktop Experience**: Research, document analysis, data processing, and report generation
+- **No CLI Required**: Users just open Claude Desktop — authentication is handled by the credential helper
+- **MDM Deployment**: Configure via Jamf, Intune, or Group Policy using generated .mobileconfig/.reg files
+- **Projects, Artifacts, and MCP**: Full Claude Desktop capabilities including connectors and plugins
+- **Consumption-Based Pricing**: No Anthropic seat licensing — billed through your existing AWS agreement
 
 ## Table of Contents
 
@@ -62,6 +70,16 @@ The deployment creates:
 
 See [QUICK_START.md](QUICK_START.md) for complete step-by-step deployment instructions.
 
+### Extend to Claude Cowork
+
+If you've deployed this guidance for Claude Code, extend it to Claude Cowork (Claude Desktop) with one command:
+
+```bash
+poetry run ccwb cowork generate
+```
+
+This generates MDM configuration files (JSON, macOS .mobileconfig, Windows .reg) using your existing deployment profile. See the [CoWork 3P Guide](assets/docs/COWORK_3P.md) for setup and deployment details.
+
 ## Architecture Overview
 
 This guidance uses Direct IAM OIDC federation as the recommended authentication pattern. This provides temporary AWS credentials with complete user attribution for audit trails and usage monitoring.
@@ -72,7 +90,7 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 
 ![Architecture Diagram](assets/images/credential-flow-direct-diagram.png)
 
-1. **User initiates authentication**: User requests access to Amazon Bedrock through Claude Code
+1. **User initiates authentication**: User requests access to Amazon Bedrock through Claude Code or Claude Cowork
 2. **OIDC authentication**: User authenticates with their OIDC provider and receives an ID token
 3. **Token submission to IAM**: Application sends the OIDC ID token to Amazon Cognito
 4. **IAM returns credentials**: AWS IAM validates and returns temporary AWS credentials
@@ -153,11 +171,16 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
 
 ### For End Users
 
-**Software Requirements:**
+**Claude Code:**
 
-- AWS CLI v2 (for credential process integration)
 - Claude Code installed
 - Web browser for SSO authentication
+- AWS CLI v2 (optional)
+
+**Claude Cowork:**
+
+- Claude Desktop installed ([download](https://claude.com/download))
+- MDM configuration deployed by IT admin (generated via `ccwb cowork generate`)
 
 **No AWS account required** - users authenticate through your organization's identity provider and receive temporary credentials automatically.
 
@@ -388,7 +411,8 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 
 ### Claude Cowork (Desktop)
 
-- [Claude Cowork 3P Guide](assets/docs/COWORK_3P.md) - Use this solution's credential helper with Claude Desktop in third-party platform mode
+- [CoWork 3P Guide](assets/docs/COWORK_3P.md) - Setup and deployment for Claude Desktop with Bedrock
+- [AWS Blog: Running Claude Cowork in Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/from-developer-desks-to-the-whole-organization-running-claude-cowork-in-amazon-bedrock/)
 
 ### Identity Provider Setup
 
