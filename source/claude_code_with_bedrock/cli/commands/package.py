@@ -1819,10 +1819,10 @@ echo
 # Check prerequisites
 echo "Checking prerequisites..."
 
-if ! command -v aws &> /dev/null; then
-    echo "❌ AWS CLI is not installed"
-    echo "   Please install from https://aws.amazon.com/cli/"
-    exit 1
+if command -v aws &> /dev/null; then
+    echo "✓ AWS CLI found (optional)"
+else
+    echo "ℹ  AWS CLI not found — not required. The credential process binary handles authentication directly."
 fi
 
 echo "✓ Prerequisites found"
@@ -2050,10 +2050,9 @@ echo Checking prerequisites...
 
 where aws >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: AWS CLI is not installed
-    echo        Please install from https://aws.amazon.com/cli/
-    pause
-    exit /b 1
+    echo INFO: AWS CLI not found -- not required. The credential process binary handles authentication directly.
+) else (
+    echo OK AWS CLI found [optional]
 )
 
 echo OK Prerequisites found
@@ -2364,6 +2363,11 @@ Available metrics include:
                     "CLAUDE_CODE_USE_BEDROCK": "1",
                     # AWS_PROFILE is used by both AWS SDK and otel-helper
                     "AWS_PROFILE": profile_name,
+                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
+                    # directly without requiring the AWS CLI or ~/.aws/config.
+                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                    # install.sh/install.bat with the actual binary path at install time.
+                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
                 }
             }
 
