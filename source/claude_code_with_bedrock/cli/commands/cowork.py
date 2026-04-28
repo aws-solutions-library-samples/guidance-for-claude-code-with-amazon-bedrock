@@ -160,12 +160,15 @@ class CoworkGenerateCommand(Command):
             console.print(f"  • {f}")
 
         console.print("\n[bold]Next steps:[/bold]")
-        console.print("  macOS: Deploy .mobileconfig via Jamf, Kandji, or Mosyle")
-        console.print("  Windows: Deploy .reg via Group Policy, Intune, or SCCM")
-        console.print("  Manual: Import cowork-3p-config.json via Claude Desktop Setup UI")
+        console.print("  1. Deploy MDM configuration to managed devices:")
+        console.print("     macOS: [cyan]sudo cp cowork-3p.mobileconfig '/Library/Managed Preferences/'[/cyan]")
+        console.print("            or deploy via Jamf, Kandji, Mosyle")
+        console.print("     Windows: [cyan]reg import cowork-3p.reg[/cyan]")
+        console.print("              or deploy via Group Policy, Intune")
+        console.print("  2. Users download Claude Desktop from [cyan]claude.com/download[/cyan]")
+        console.print("  3. Verify with: [cyan]poetry run ccwb test[/cyan]")
         console.print(
-            "\n[dim]Docs: https://support.claude.com/en/articles/14680741"
-            "-install-and-configure-claude-cowork-with-third-party-platforms[/dim]"
+            "\n[dim]Full guide: assets/docs/COWORK_3P.md[/dim]"
         )
 
         return 0

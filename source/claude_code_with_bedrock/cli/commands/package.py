@@ -79,6 +79,15 @@ class PackageCommand(Command):
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
+        # Cowork-only deployments don't need packages — redirect to cowork generate
+        if getattr(profile, "deployment_scope", "both") == "cowork":
+            console.print("[yellow]This profile is configured for Claude Cowork only.[/yellow]")
+            console.print("Cowork deployments use MDM configuration instead of packages.\n")
+            console.print("Run: [cyan]poetry run ccwb cowork generate[/cyan]")
+            console.print("\nTo build Claude Code packages, update your profile with: [cyan]poetry run ccwb init[/cyan]")
+            console.print("and select 'Both' or 'Claude Code' as the deployment scope.")
+            return 0
+
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
         if target_platform == "all":  # Default value, prompt user
@@ -1802,14 +1811,14 @@ RUN pyinstaller \
         [platform for platform, _ in built_otel_helpers] if built_otel_helpers else []
 
         installer_content = f"""#!/bin/bash
-# Claude Code Authentication Installer
+# Claude Authentication Installer
 # Organization: {profile.provider_domain}
 # Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 set -e
 
 echo "======================================"
-echo "Claude Code Authentication Installer"
+echo "Claude Authentication Installer"
 echo "======================================"
 echo
 echo "Organization: {profile.provider_domain}"
@@ -2006,7 +2015,7 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo "To use Claude Code authentication:"
+echo "To use authentication:"
 echo "  export AWS_PROFILE=<profile-name>"
 echo "  aws sts get-caller-identity"
 echo
@@ -2034,12 +2043,12 @@ echo
         """Create Windows batch installer script."""
 
         installer_content = f"""@echo off
-REM Claude Code Authentication Installer for Windows
+REM Claude Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 echo ======================================
-echo Claude Code Authentication Installer
+echo Claude Authentication Installer
 echo ======================================
 echo.
 echo Organization: {profile.provider_domain}

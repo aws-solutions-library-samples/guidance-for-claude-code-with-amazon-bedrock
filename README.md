@@ -1,6 +1,6 @@
-# Guidance for Claude Code and Cowork on Amazon Bedrock
+# Guidance for Claude Cowork and Code on Amazon Bedrock
 
-This guidance provides enterprise deployment patterns for Claude Code and Claude Cowork (Claude Desktop) with Amazon Bedrock using existing identity providers. Deploy once to enable both Claude Code CLI and Claude Cowork Desktop across your organization, with centralized access control, audit trails, and usage monitoring.
+This guidance provides enterprise deployment patterns for Claude Cowork (Claude Desktop) and Claude Code with Amazon Bedrock using existing identity providers. Deploy once to enable Claude Cowork Desktop for your entire organization and Claude Code CLI for your developers, with centralized access control, audit trails, and usage monitoring.
 
 ## Key Features
 
@@ -16,14 +16,6 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 - **Multi-Platform Support**: Windows, macOS (ARM & Intel), and Linux distributions
 - **Claude Cowork 3P Compatible**: Same credential helper works with Claude Desktop in third-party platform mode — one deployment covers both Claude Code CLI and Claude Cowork
 
-### For End Users
-
-- **Seamless Authentication**: Log in with corporate credentials
-- **Automatic Credential Refresh**: No manual token management required
-- **AWS CLI/SDK Integration**: Works with any AWS tool or SDK
-- **Multi-Profile Support**: Manage multiple authentication profiles
-- **Cross-Platform**: Works on Windows, macOS, and Linux
-
 ### For Users (Claude Cowork)
 
 - **Claude Desktop Experience**: Research, document analysis, data processing, and report generation
@@ -31,6 +23,14 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 - **MDM Deployment**: Configure via Jamf, Intune, or Group Policy using generated .mobileconfig/.reg files
 - **Projects, Artifacts, and MCP**: Full Claude Desktop capabilities including connectors and plugins
 - **Consumption-Based Pricing**: No Anthropic seat licensing — billed through your existing AWS agreement
+
+### For End Users (Claude Code)
+
+- **Seamless Authentication**: Log in with corporate credentials
+- **Automatic Credential Refresh**: No manual token management required
+- **AWS CLI/SDK Integration**: Works with any AWS tool or SDK
+- **Multi-Profile Support**: Manage multiple authentication profiles
+- **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## Table of Contents
 
@@ -70,15 +70,17 @@ The deployment creates:
 
 See [QUICK_START.md](QUICK_START.md) for complete step-by-step deployment instructions.
 
-### Extend to Claude Cowork
+### Generate CoWork MDM Configuration
 
-If you've deployed this guidance for Claude Code, extend it to Claude Cowork (Claude Desktop) with one command:
+After deploying infrastructure, generate MDM configuration files for Claude Cowork:
 
 ```bash
 poetry run ccwb cowork generate
 ```
 
-This generates MDM configuration files (JSON, macOS .mobileconfig, Windows .reg) using your existing deployment profile. See the [CoWork 3P Guide](assets/docs/COWORK_3P.md) for setup and deployment details.
+This creates ready-to-deploy MDM files (JSON, macOS .mobileconfig, Windows .reg). See the [CoWork 3P Guide](assets/docs/COWORK_3P.md) for deployment details.
+
+> **Note:** Running `ccwb package` with Cowork enabled also generates these files alongside Claude Code packages.
 
 ## Architecture Overview
 
@@ -126,18 +128,25 @@ When SSO authentication is disabled:
 - You want to enforce organization-wide access policies
 - You need detailed audit trails with user information
 
-To deploy without SSO authentication, simply answer "No" when prompted "Enable SSO authentication?" during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
+To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
+
+> **New in v2.2+:** IAM Identity Center is now a first-class authentication option. Select **"AWS IAM Identity Center (SSO)"** in `ccwb init` to get guided setup, `~/.aws/config` generation, and the correct CloudFormation stack — without the undocumented workaround of disabling SSO. See the [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md) for details.
 
 ## Authentication Modes
 
-This guidance supports two identity paths — both deliver the same core value: per-user identity resolution, centralized access control, audit trails, and usage monitoring.
+This guidance supports three identity paths. All paths deliver per-user identity resolution, centralized access control, audit trails, and usage monitoring.
 
-| Mode | Identity Source | Best For |
-|------|----------------|----------|
-| **External IdP (OIDC)** | Okta, Azure AD, Auth0, Cognito User Pools | Orgs with an existing enterprise IdP |
-| **AWS SSO (IAM Identity Center)** | `AWSReservedSSO_*` IAM role names | Orgs using native AWS identity, or teams wanting a faster path to deployment |
+| Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
+|------|--------------------|----------------|----------------|-------------------|----------|
+| **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Azure AD, Auth0, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
+| **AWS IAM Identity Center** | `AWS IAM Identity Center` | `AWSReservedSSO_*` IAM role ARN (email + permission set) | Up to 90 days (recommended: 7 days) | ❌ Not available | Orgs on native AWS identity, or where OIDC localhost callback is blocked |
+| **None** | `None` | IAM user ARN or hashed role principal | AWS credential TTL | ❌ Not available | Internal tools / analytics-only deployments |
 
-Both modes are production-ready. The OIDC path is recommended for organizations with an existing IdP. The AWS SSO path is recommended for smaller teams or those already standardized on IAM Identity Center.
+**Choosing a path:**
+
+- Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
+- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. See [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md).
+- Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
 
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
 
@@ -171,16 +180,16 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
 
 ### For End Users
 
+**Claude Cowork:**
+
+- Claude Desktop installed ([download](https://claude.com/download))
+- MDM configuration deployed by IT admin (generated via `ccwb cowork generate`)
+
 **Claude Code:**
 
 - Claude Code installed
 - Web browser for SSO authentication
 - AWS CLI v2 (optional)
-
-**Claude Cowork:**
-
-- Claude Desktop installed ([download](https://claude.com/download))
-- MDM configuration deployed by IT admin (generated via `ccwb cowork generate`)
 
 **No AWS account required** - users authenticate through your organization's identity provider and receive temporary credentials automatically.
 

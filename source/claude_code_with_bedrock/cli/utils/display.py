@@ -37,6 +37,12 @@ def _display_table_format(console: Console, profile, identity_pool_id: str | Non
 
     # Configuration and AWS profile names
     config_table.add_row("Configuration Profile", profile.name)
+
+    # Deployment scope
+    scope = getattr(profile, "deployment_scope", "both")
+    scope_display = {"cowork": "Claude Cowork (Desktop)", "code": "Claude Code (CLI)", "both": "Claude Cowork & Code"}.get(scope, scope)
+    config_table.add_row("Deployment Scope", scope_display)
+
     config_table.add_row("AWS Profile", "ClaudeCode")
 
     # Provider information

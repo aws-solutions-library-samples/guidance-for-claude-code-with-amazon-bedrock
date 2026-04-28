@@ -42,7 +42,7 @@ from .commands.test import TestCommand
 
 def create_application() -> Application:
     """Create the CLI application."""
-    application = Application("claude-code-with-bedrock", "1.0.0")
+    application = Application("ccwb", "2.0.0")
 
     # Add commands
     application.add(InitCommand())

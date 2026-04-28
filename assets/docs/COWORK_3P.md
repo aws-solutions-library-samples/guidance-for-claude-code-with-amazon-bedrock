@@ -42,9 +42,9 @@ The workflow depends on whether you've already deployed this solution for Claude
 3. Distribute the `credential-process` binary to users (if not already done)
 
 **New deployments** (starting from scratch):
-1. Follow the [Quick Start Guide](../../QUICK_START.md) to deploy authentication infrastructure
-2. Run `ccwb package` to build distribution packages — CoWork 3P configs are auto-generated alongside
-3. Deploy MDM configuration files and distribute packages to users
+1. Follow the [Quick Start Guide](../../QUICK_START.md) Steps 1–3 (prerequisites, configuration, infrastructure)
+2. Run `ccwb cowork generate` (Step 5) or `ccwb package` (Steps 4+5 for both Code and Cowork)
+3. Deploy MDM configuration files to managed devices via your MDM solution
 
 ## Configuration
 

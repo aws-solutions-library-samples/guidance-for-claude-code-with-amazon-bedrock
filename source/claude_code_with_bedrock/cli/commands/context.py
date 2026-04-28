@@ -190,7 +190,7 @@ class ContextShowCommand(Command):
             # AWS Infrastructure
             console.print("\n[bold cyan]AWS Infrastructure:[/bold cyan]")
             console.print(f"  Region:             {profile.aws_region}")
-            console.print(f"  Identity Pool Name: {profile.identity_pool_name}")
+            console.print(f"  Stack Name: {profile.identity_pool_name}")
             console.print(f"  Federation Type:    {profile.federation_type}")
             if profile.federated_role_arn:
                 console.print(f"  Federated Role ARN: {profile.federated_role_arn}")

@@ -1,5 +1,5 @@
 # ABOUTME: Interactive setup wizard for first-time users
-# ABOUTME: Guides through complete Claude Code with Bedrock deployment
+# ABOUTME: Guides through complete Claude Cowork & Code with Bedrock deployment
 
 """Init command - Interactive setup wizard."""
 
@@ -33,17 +33,19 @@ from claude_code_with_bedrock.config import Config, Profile
 
 
 def validate_identity_pool_name(value: str) -> bool | str:
-    """Validate identity pool name format.
+    """Validate stack base name format and length.
 
     Args:
-        value: The identity pool name to validate
+        value: The stack base name to validate
 
     Returns:
         True if valid, error message if invalid
     """
-    if value and re.match(r"^[a-zA-Z0-9_-]+$", value):
-        return True
-    return "Invalid pool name (alphanumeric, underscore, hyphen only)"
+    if not value or not re.match(r"^[a-zA-Z0-9_-]+$", value):
+        return "Invalid name (alphanumeric, underscore, hyphen only)"
+    if len(value) > 18:
+        return f"Name must be 18 characters or fewer (currently {len(value)}). AWS resource names derived from this have a 32-character limit."
+    return True
 
 
 def validate_cognito_user_pool_id(value: str) -> bool | str:
@@ -114,7 +116,7 @@ class InitCommand(Command):
             console.print("\nNext steps:")
             console.print("• Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]")
             console.print("• Create package: [cyan]poetry run ccwb package[/cyan]")
-            console.print("• Test authentication: [cyan]poetry run ccwb test[/cyan]")
+            console.print("• Test: [cyan]poetry run ccwb test[/cyan]")
             return 0
 
         # Otherwise, show the configuration summary and ask what to do
@@ -182,9 +184,9 @@ class InitCommand(Command):
 
         # Welcome message
         welcome = Panel.fit(
-            "[bold cyan]Welcome to Claude Code with Bedrock Setup![/bold cyan]\n\n"
-            "This wizard will help you deploy Claude Code using Amazon Bedrock with:\n"
-            "  • Secure authentication via your identity provider\n"
+            "[bold cyan]Welcome to Claude Cowork & Code with Bedrock Setup![/bold cyan]\n\n"
+            "This wizard will help you deploy Claude Cowork (Desktop) and/or Claude Code using Amazon Bedrock with:\n"
+            "  • Secure authentication via your identity provider or AWS IAM Identity Center\n"
             "  • Usage monitoring and dashboards",
             border_style="cyan",
             padding=(1, 2),
@@ -214,7 +216,7 @@ class InitCommand(Command):
             "Next steps:\n"
             "1. Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]\n"
             "2. Create package: [cyan]poetry run ccwb package[/cyan]\n"
-            "3. Test authentication: [cyan]poetry run ccwb test[/cyan]\n"
+            "3. Test: [cyan]poetry run ccwb test[/cyan]\n"
             f"4. View profile: [cyan]poetry run ccwb context show {profile_name}[/cyan]",
             border_style="green",
             padding=(1, 2),
@@ -291,31 +293,195 @@ class InitCommand(Command):
             skip_monitoring = last_step in ["monitoring_complete", "bedrock_complete"]
             skip_bedrock = last_step in ["bedrock_complete"]
 
-        # SSO Authentication Configuration
+        # Deployment Scope Selection
+        console.print("\n[bold blue]Deployment Scope[/bold blue]")
+        console.print("─" * 40)
+        console.print("Choose what you're deploying. Claude Cowork (Desktop) is the simplest path.")
+
+        saved_scope = config.get("deployment_scope", "both")
+        scope = questionary.select(
+            "What are you deploying?",
+            choices=[
+                questionary.Choice(
+                    "Claude Cowork (Desktop) — for all users, MDM-managed",
+                    value="cowork",
+                ),
+                questionary.Choice(
+                    "Claude Code (CLI) — for developers, package-based",
+                    value="code",
+                ),
+                questionary.Choice(
+                    "Both — Claude Cowork and Claude Code",
+                    value="both",
+                ),
+            ],
+            default=saved_scope,
+        ).ask()
+
+        if scope is None:
+            return None
+
+        config["deployment_scope"] = scope
+
+        # Auto-set cowork_3p based on scope
+        if scope in ("cowork", "both"):
+            if "cowork_3p" not in config:
+                config["cowork_3p"] = {}
+            config["cowork_3p"]["enabled"] = True
+        elif scope == "code":
+            if "cowork_3p" not in config:
+                config["cowork_3p"] = {}
+            config["cowork_3p"]["enabled"] = False
+
+        # Authentication Method Selection
         if not skip_okta:
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            console.print("\n[bold]SSO Authentication[/bold]")
-            console.print("Enable Single Sign-On authentication via identity providers")
-            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
-            console.print("\nWhen disabled:")
-            console.print("  • Uses AWS IAM roles for access control")
-            console.print("  • Metrics will use anonymous tracking based on IAM identity")
-            console.print("  • No user authentication required\n")
+            console.print("\n[bold]Authentication Method[/bold]")
+            console.print("Choose how developers will authenticate to use Amazon Bedrock:\n")
+            console.print("  • [cyan]OIDC / Direct IdP[/cyan]: Okta, Azure AD, Auth0 (or any OIDC provider)")
+            console.print("    Full user attribution, quota enforcement, centralized IdP control")
+            console.print("  • [cyan]AWS IAM Identity Center[/cyan]: Native AWS SSO")
+            console.print("    Sessions up to 7 days, no external IdP needed, SSO-based identity attribution")
+            console.print("  • [cyan]None[/cyan]: Use existing AWS credentials (IAM roles, profiles, etc.)")
+            console.print("    No auth stack deployed; identity detection via ARN parsing\n")
 
-            sso_enabled = questionary.confirm(
-                "Enable SSO authentication?",
-                default=config.get("sso_enabled", True),
+            # Derive default from saved config
+            _saved_auth_type = config.get("auth_type")
+            if _saved_auth_type is None:
+                # Backward-compat: derive from sso_enabled
+                _saved_auth_type = "oidc" if config.get("sso_enabled", True) else "none"
+
+            auth_type = questionary.select(
+                "Authentication method:",
+                choices=[
+                    questionary.Choice(
+                        "OIDC / Direct IdP (Okta, Azure AD, Auth0, or any OIDC provider)",
+                        value="oidc",
+                    ),
+                    questionary.Choice(
+                        "AWS IAM Identity Center (SSO)",
+                        value="idc",
+                    ),
+                    questionary.Choice(
+                        "None (use existing AWS credentials)",
+                        value="none",
+                    ),
+                ],
+                default=_saved_auth_type,
             ).ask()
 
-            if sso_enabled is None:
+            if auth_type is None:
                 return None
 
-            config["sso_enabled"] = sso_enabled
+            config["auth_type"] = auth_type
+            # Keep sso_enabled in sync for backward compatibility with older code paths
+            config["sso_enabled"] = auth_type == "oidc"
+
+        # IAM Identity Center Configuration
+        if not skip_okta and config.get("auth_type") == "idc":
+            console.print("\n[bold blue]IAM Identity Center Configuration[/bold blue]")
+            console.print("─" * 40)
+
+            idc_existing = config.get("idc", {})
+
+            idc_start_url = questionary.text(
+                "IAM Identity Center start URL:",
+                validate=lambda x: bool(x and x.startswith("https://")) or "Must be a valid HTTPS URL",
+                instruction="(e.g., https://your-company.awsapps.com/start)",
+                default=idc_existing.get("start_url", ""),
+            ).ask()
+            if not idc_start_url:
+                return None
+            idc_start_url = idc_start_url.rstrip("/")
+
+            idc_region = questionary.text(
+                "AWS region for IAM Identity Center (SSO region):",
+                validate=lambda x: bool(x) or "Region cannot be empty",
+                instruction="(e.g., us-east-1 — the region where your IDC instance is deployed)",
+                default=idc_existing.get("sso_region", config.get("aws", {}).get("region", "us-east-1")),
+            ).ask()
+            if not idc_region:
+                return None
+
+            idc_account_id = questionary.text(
+                "AWS Account ID (12 digits):",
+                validate=lambda x: (x.isdigit() and len(x) == 12) or "Must be a 12-digit AWS account ID",
+                default=idc_existing.get("account_id", ""),
+            ).ask()
+            if not idc_account_id:
+                return None
+
+            idc_permission_set = questionary.text(
+                "Permission set / role name in IAM Identity Center:",
+                validate=lambda x: bool(x) or "Permission set name cannot be empty",
+                instruction=(
+                    "(e.g., BedrockDeveloperAccess — the Permission Set assigned to developers)"
+                ),
+                default=idc_existing.get("permission_set", "BedrockDeveloperAccess"),
+            ).ask()
+            if not idc_permission_set:
+                return None
+
+            # Generate the ~/.aws/config block
+            sso_session_name = idc_start_url.split("//")[1].split(".")[0]  # e.g. "your-company"
+
+            aws_config_block = (
+                f"\n[profile ClaudeCode]\n"
+                f"sso_session    = {sso_session_name}\n"
+                f"sso_account_id = {idc_account_id}\n"
+                f"sso_role_name  = {idc_permission_set}\n"
+                f"region         = {idc_region}\n"
+                f"\n[sso-session {sso_session_name}]\n"
+                f"sso_start_url          = {idc_start_url}\n"
+                f"sso_region             = {idc_region}\n"
+                f"sso_registration_scopes = sso:account:access\n"
+            )
+
+            console.print("\n[bold cyan]Generated ~/.aws/config block:[/bold cyan]")
+            console.print(aws_config_block)
+
+            write_aws_config = questionary.confirm(
+                "Append this block to ~/.aws/config?",
+                default=True,
+            ).ask()
+
+            if write_aws_config:
+                aws_config_path = Path.home() / ".aws" / "config"
+                aws_config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(aws_config_path, "a") as f:
+                    f.write(aws_config_block)
+                console.print(f"[green]✓[/green] Written to {aws_config_path}")
+                console.print("\n[bold yellow]Next step:[/bold yellow]")
+                console.print("  [cyan]aws sso login --profile ClaudeCode[/cyan]")
+                console.print("  This opens a browser once. After login, credentials refresh silently.")
+                console.print(
+                    "\n[dim]Tip: Set the portal session duration to 168 hours (7 days) in the IAM Identity[/dim]"
+                )
+                console.print(
+                    "[dim]Center console to minimise re-authentication prompts.[/dim]"
+                )
+            else:
+                console.print("\n[yellow]Skipped writing ~/.aws/config.[/yellow]")
+                console.print("Add the following block manually:")
+                console.print(aws_config_block)
+
+            config["idc"] = {
+                "start_url": idc_start_url,
+                "sso_region": idc_region,
+                "account_id": idc_account_id,
+                "permission_set": idc_permission_set,
+                "sso_session_name": sso_session_name,
+            }
+            # IDC uses session files by default (AWS SDK resolves creds natively)
+            config["credential_storage"] = config.get("credential_storage", "session")
+
+            # Save progress
+            progress.save_step("oidc_complete", config)
 
         # OIDC Provider Configuration
-        if not skip_okta and config.get("sso_enabled", True):
+        if not skip_okta and config.get("auth_type", "oidc") == "oidc":
             console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
             console.print("─" * 30)
 
@@ -490,23 +656,27 @@ class InitCommand(Command):
                 config["client_certificate_path"] = client_certificate_path
                 config["client_certificate_key_path"] = client_certificate_key_path
 
-            # Credential Storage Method
-            console.print("\n[bold]Credential Storage Method[/bold]")
-            console.print("Choose how to store AWS credentials locally:")
-            console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
-            console.print("  • [cyan]Session Files[/cyan]: Temporary files (deleted on logout)\n")
+            # Credential Storage Method (skip for Cowork-only)
+            _cred_scope = config.get("deployment_scope", "both")
+            if _cred_scope in ("code", "both"):
+                console.print("\n[bold]Credential Storage Method[/bold]")
+                console.print("Choose how to store AWS credentials locally:")
+                console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
+                console.print("  • [cyan]Session Files[/cyan]: Temporary files (deleted on logout)\n")
 
-            credential_storage = questionary.select(
-                "Select credential storage method:",
-                choices=[
-                    questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
-                    questionary.Choice("Session Files (Temporary storage)", value="session"),
-                ],
-                default=config.get("credential_storage", "session"),
-            ).ask()
+                credential_storage = questionary.select(
+                    "Select credential storage method:",
+                    choices=[
+                        questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
+                        questionary.Choice("Session Files (Temporary storage)", value="session"),
+                    ],
+                    default=config.get("credential_storage", "session"),
+                ).ask()
 
-            if not credential_storage:
-                return None
+                if not credential_storage:
+                    return None
+            else:
+                credential_storage = config.get("credential_storage", "session")
 
             # Preserve existing okta settings, only update domain/client_id
             if "okta" not in config:
@@ -518,28 +688,30 @@ class InitCommand(Command):
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
 
-            # Ask about federation type
-            console.print("\n[cyan]Federation Type Selection[/cyan]")
-            console.print("Direct STS.")
-            console.print("Cognito Identity Pool.\n")
+            # Ask about federation type (only for OIDC auth — IDC/None use direct)
+            auth_type = config.get("auth_type", "oidc")
+            if auth_type in ("idc", "none"):
+                config["federation_type"] = "direct"
+            else:
+                console.print("\n[cyan]Federation Type Selection[/cyan]")
+                console.print("Choose how OIDC tokens are exchanged for AWS credentials.\n")
 
-            # Use existing federation type as default if available
-            existing_federation_type = config.get("federation_type", "direct")
+                existing_federation_type = config.get("federation_type", "direct")
 
-            federation_type = questionary.select(
-                "Choose federation type:",
-                choices=[
-                    questionary.Choice("Direct STS", value="direct"),
-                    questionary.Choice("Cognito Identity Pool", value="cognito"),
-                ],
-                default=existing_federation_type,
-            ).ask()
+                federation_type = questionary.select(
+                    "Choose federation type:",
+                    choices=[
+                        questionary.Choice("Direct STS (recommended)", value="direct"),
+                        questionary.Choice("Cognito Identity Pool (legacy — only if you have an existing pool)", value="cognito"),
+                    ],
+                    default=existing_federation_type,
+                ).ask()
 
-            if not federation_type:
-                return None
+                if not federation_type:
+                    return None
 
-            config["federation_type"] = federation_type
-            config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
+                config["federation_type"] = federation_type
+                config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
 
             # Save progress
             progress.save_step("oidc_complete", config)
@@ -576,7 +748,7 @@ class InitCommand(Command):
             saved_region = config.get("aws", {}).get("region", current_region)
 
             region = questionary.select(
-                "Select AWS Region for infrastructure deployment (Cognito, IAM, monitoring):",
+                "Select AWS Region for infrastructure deployment (IAM, monitoring):",
                 choices=common_regions,
                 default=saved_region if saved_region in common_regions else "us-east-1",
                 instruction="(This is where your authentication and monitoring resources will be created)",
@@ -586,18 +758,20 @@ class InitCommand(Command):
                 return None
 
             # For Direct STS, we use a stack name instead of Identity Pool Name
+            # For IDC or None auth, just use a stack base name (no identity pool)
             # But we keep the same field for backward compatibility
+            auth_type = config.get("auth_type", "oidc")
             federation_type = config.get("federation_type", "cognito")
-            if federation_type == "direct":
+            if auth_type in ("idc", "none") or federation_type == "direct":
                 stack_base_name = questionary.text(
                     "Stack base name (for CloudFormation):",
-                    default=config.get("aws", {}).get("identity_pool_name", "claude-code-auth"),
+                    default=config.get("aws", {}).get("identity_pool_name", "claude-auth"),
                     validate=validate_identity_pool_name,
                 ).ask()
             else:
                 stack_base_name = questionary.text(
                     "Identity Pool Name:",
-                    default=config.get("aws", {}).get("identity_pool_name", "claude-code-auth"),
+                    default=config.get("aws", {}).get("identity_pool_name", "claude-auth"),
                     validate=validate_identity_pool_name,
                 ).ask()
 
@@ -702,8 +876,10 @@ class InitCommand(Command):
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
 
-                # Analytics configuration (only if monitoring is enabled)
-                console.print("\n[bold]Analytics Pipeline[/bold]")
+                # Analytics and quota (Claude Code-specific — skip for Cowork-only)
+                scope = config.get("deployment_scope", "both")
+                if scope in ("code", "both"):
+                    console.print("\n[bold]Analytics Pipeline[/bold]")
                 console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
                 enable_analytics = questionary.confirm(
                     "Enable analytics?",
@@ -726,7 +902,7 @@ class InitCommand(Command):
                 console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
                 enable_quota_monitoring = questionary.confirm(
                     "Enable quota monitoring?",
-                    default=config.get("quota", {}).get("enabled", True),
+                    default=config.get("quota", {}).get("enabled", False),
                 ).ask()
 
                 # Preserve existing quota settings, only update enabled flag
@@ -843,44 +1019,72 @@ class InitCommand(Command):
                     console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
 
+                else:
+                    # Cowork-only: skip analytics and quota
+                    if "analytics" not in config:
+                        config["analytics"] = {}
+                    config["analytics"]["enabled"] = False
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = False
+
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
 
-        # Additional optional features
-        console.print("\n[bold]Windows Build Support[/bold]")
-        console.print("Build Windows binaries using AWS CodeBuild")
-        enable_codebuild = questionary.confirm(
-            "Enable Windows builds?", default=config.get("codebuild", {}).get("enabled", False)
-        ).ask()
+        # Additional optional features (scope-dependent)
+        scope = config.get("deployment_scope", "both")
 
-        # Preserve existing codebuild settings, only update enabled flag
-        if "codebuild" not in config:
-            config["codebuild"] = {}
-        config["codebuild"]["enabled"] = enable_codebuild
+        # Claude Code-specific: Windows builds
+        if scope in ("code", "both"):
+            console.print("\n[bold]Windows Build Support[/bold]")
+            console.print("Build Windows binaries using AWS CodeBuild")
+            enable_codebuild = questionary.confirm(
+                "Enable Windows builds?", default=config.get("codebuild", {}).get("enabled", False)
+            ).ask()
 
-        if enable_codebuild:
-            console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
+            if "codebuild" not in config:
+                config["codebuild"] = {}
+            config["codebuild"]["enabled"] = enable_codebuild
 
-        # Claude Cowork 3P MDM configuration
-        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
-        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
-        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
-        enable_cowork = questionary.confirm(
-            "Generate CoWork 3P MDM configuration during packaging?",
-            default=config.get("cowork_3p", {}).get("enabled", True),
-        ).ask()
+            if enable_codebuild:
+                console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
+        else:
+            # Cowork-only: skip CodeBuild
+            if "codebuild" not in config:
+                config["codebuild"] = {}
+            config["codebuild"]["enabled"] = False
 
-        if "cowork_3p" not in config:
-            config["cowork_3p"] = {}
-        config["cowork_3p"]["enabled"] = enable_cowork
+        # CoWork MDM config — already set by scope selection, show confirmation
+        if scope in ("cowork", "both"):
+            console.print("\n[green]✓[/green] Claude Cowork MDM configuration will be generated")
+        elif scope == "code":
+            # Code-only: ask if they also want CoWork
+            console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
+            console.print("Optionally generate MDM configuration for Claude Cowork")
+            enable_cowork = questionary.confirm(
+                "Generate CoWork 3P MDM configuration?",
+                default=config.get("cowork_3p", {}).get("enabled", False),
+            ).ask()
 
-        if enable_cowork:
-            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
+            if "cowork_3p" not in config:
+                config["cowork_3p"] = {}
+            config["cowork_3p"]["enabled"] = enable_cowork
 
-        # Package distribution support
-        console.print("\n[bold]Package Distribution[/bold]")
-        console.print("Choose how to distribute Claude Code packages to end users:")
-        console.print("  • Presigned S3 URLs: Simple, no authentication (good for < 20 users)")
+            if enable_cowork:
+                console.print("[green]✓[/green] CoWork 3P configs will be generated")
+
+        # Claude Code-specific: Package distribution
+        if scope not in ("code", "both"):
+            # Cowork-only: skip package distribution
+            if "distribution" not in config:
+                config["distribution"] = {}
+            config["distribution"]["enabled"] = False
+            config["distribution"]["type"] = None
+        else:
+            console.print("\n[bold]Package Distribution[/bold]")
+            console.print("Choose how to distribute Claude Code packages to end users:")
+        if scope in ("code", "both"):
+            console.print("  • Presigned S3 URLs: Simple, no authentication (good for < 20 users)")
         console.print("  • Landing Page: IdP authentication with web UI (good for 20-100 users)")
 
         distribution_choices = [
@@ -1131,6 +1335,7 @@ class InitCommand(Command):
         # Bedrock model and cross-region configuration
         if not skip_bedrock:
             console.print("\n[bold blue]Step 3: Bedrock Model Selection[/bold blue]")
+            console.print("Select the Claude model for both Claude Code and Claude Cowork")
             console.print("─" * 40)
 
             # Import centralized model configuration
@@ -1308,20 +1513,30 @@ class InitCommand(Command):
         console.print("─" * 30)
 
         # Create a nice table using Rich
-        table = Table(title="Configuration Summary", box=box.ROUNDED, show_header=True, header_style="bold cyan")
+        _scope_label = {"cowork": "Claude Cowork", "code": "Claude Code", "both": "Claude Cowork & Code"}.get(config.get("deployment_scope", "both"), "Claude Cowork & Code")
+        table = Table(title=f"{_scope_label} — Configuration Summary", box=box.ROUNDED, show_header=True, header_style="bold cyan")
 
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        _auth_type = config.get("auth_type", "oidc" if config.get("sso_enabled", True) else "none")
+        if _auth_type == "oidc":
+            table.add_row("Authentication", "OIDC / Direct IdP")
+            table.add_row("OIDC Provider", config.get("okta", {}).get("domain", "(not set)"))
+            _client_id = config.get("okta", {}).get("client_id", "")
+            table.add_row(
+                "OIDC Client ID",
+                (_client_id[:20] + "..." if len(_client_id) > 20 else _client_id) if _client_id else "(not set)",
+            )
+        elif _auth_type == "idc":
+            idc_cfg = config.get("idc", {})
+            table.add_row("Authentication", "AWS IAM Identity Center (SSO)")
+            table.add_row("IDC Start URL", idc_cfg.get("start_url", "(not set)"))
+            table.add_row("IDC Account ID", idc_cfg.get("account_id", "(not set)"))
+            table.add_row("Permission Set", idc_cfg.get("permission_set", "(not set)"))
+        else:
+            table.add_row("Authentication", "None (existing AWS credentials)")
+
         table.add_row(
             "Credential Storage",
             (
@@ -1330,8 +1545,8 @@ class InitCommand(Command):
                 else "Session Files (temporary)"
             ),
         )
-        table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
-        table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
+        table.add_row("Infrastructure Region", f"{config['aws']['region']} (IAM, Monitoring)")
+        table.add_row("Stack Name", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
             quota_config = config.get("quota", {})
@@ -1390,11 +1605,21 @@ class InitCommand(Command):
 
         # Show what will be created
         console.print("\n[bold yellow]Resources to be created:[/bold yellow]")
-        if config.get("federation_type") == "direct":
-            console.print("• IAM OIDC Provider for authentication")
+        _rev_auth_type = config.get("auth_type", "oidc" if config.get("sso_enabled", True) else "none")
+        if _rev_auth_type == "oidc":
+            if config.get("federation_type") == "direct":
+                console.print("• IAM OIDC Provider for authentication")
+            else:
+                console.print("• Authentication infrastructure")
+            console.print("• IAM roles and policies for Bedrock access")
+        elif _rev_auth_type == "idc":
+            console.print("• IAM customer-managed policy with Bedrock permissions (bedrock-auth-idc stack)")
+            console.print("• IAM role for IDC role-chaining (BedrockIDCRole)")
+            console.print(
+                "[dim]  Attach the BedrockAccessPolicy to your IDC Permission Set for direct access[/dim]"
+            )
         else:
-            console.print("• Cognito Identity Pool for authentication")
-        console.print("• IAM roles and policies for Bedrock access")
+            console.print("• No authentication stack (existing AWS credentials will be used)")
         if config.get("monitoring", {}).get("enabled"):
             console.print("• CloudWatch dashboards for usage monitoring")
             console.print("• OpenTelemetry collector for metrics aggregation")
@@ -1517,7 +1742,7 @@ class InitCommand(Command):
             "[bold green]✓ Setup complete![/bold green]\n\n"
             "Next steps:\n"
             "1. Create package: [cyan]poetry run ccwb package[/cyan]\n"
-            "2. Test authentication: [cyan]poetry run ccwb test[/cyan]\n"
+            "2. Test: [cyan]poetry run ccwb test[/cyan]\n"
             "3. Distribute to users (see dist/ folder)",
             border_style="green",
             padding=(1, 2),
@@ -1546,10 +1771,18 @@ class InitCommand(Command):
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
-        # Get SSO configuration or use defaults if SSO is disabled
-        sso_enabled = config_data.get("sso_enabled", True)
-        provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
-        client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+        # Determine auth type and derive SSO/provider fields accordingly
+        auth_type = config_data.get("auth_type", "oidc" if config_data.get("sso_enabled", True) else "none")
+        sso_enabled = auth_type == "oidc"
+
+        if auth_type == "oidc":
+            provider_domain = config_data.get("okta", {}).get("domain", "none")
+            client_id = config_data.get("okta", {}).get("client_id", "none")
+        else:
+            provider_domain = "none"
+            client_id = "none"
+
+        idc_cfg = config_data.get("idc", {})
 
         profile = Profile(
             name=profile_name,
@@ -1574,7 +1807,12 @@ class InitCommand(Command):
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
-            sso_enabled=config_data.get("sso_enabled", True),
+            sso_enabled=sso_enabled,
+            auth_type=auth_type,
+            # IAM Identity Center fields
+            idc_start_url=idc_cfg.get("start_url"),
+            idc_account_id=idc_cfg.get("account_id"),
+            idc_permission_set_name=idc_cfg.get("permission_set"),
             azure_auth_mode=config_data.get("azure_auth_mode"),
             client_certificate_path=config_data.get("client_certificate_path"),
             client_certificate_key_path=config_data.get("client_certificate_key_path"),
@@ -1601,6 +1839,7 @@ class InitCommand(Command):
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
+            deployment_scope=config_data.get("deployment_scope", "both"),
         )
 
         config.add_profile(profile)
@@ -1888,6 +2127,7 @@ class InitCommand(Command):
 
             # Add CoWork 3P configuration
             existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+            existing_config["deployment_scope"] = profile.deployment_scope
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
@@ -1947,7 +2187,7 @@ class InitCommand(Command):
         cred_storage = "Keyring" if config.get("credential_storage") == "keyring" else "Session Files"
         console.print(f"• Credential Storage: [cyan]{cred_storage}[/cyan]")
         console.print(f"• AWS Region: [cyan]{config['aws']['region']}[/cyan]")
-        console.print(f"• Identity Pool: [cyan]{config['aws']['identity_pool_name']}[/cyan]")
+        console.print(f"• Stack Name: [cyan]{config['aws']['identity_pool_name']}[/cyan]")
 
         # Show selected model if present
         selected_model = config["aws"].get("selected_model")

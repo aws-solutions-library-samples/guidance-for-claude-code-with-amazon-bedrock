@@ -54,7 +54,7 @@ class DeployCommand(Command):
         # Welcome
         console.print(
             Panel.fit(
-                "[bold cyan]Claude Code Infrastructure Deployment[/bold cyan]\n\n"
+                "[bold cyan]Claude Cowork & Code Infrastructure Deployment[/bold cyan]\n\n"
                 "Deploy or update CloudFormation stacks",
                 border_style="cyan",
                 padding=(1, 2),
@@ -95,8 +95,9 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
-                if not getattr(profile, "sso_enabled", True):
-                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
+                _auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+                if _auth_type == "none":
+                    console.print("[yellow]Authentication is disabled (auth_type=none) in your configuration.[/yellow]")
                     console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
@@ -165,8 +166,9 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order
-            # Only deploy auth stack if SSO is enabled (default: True for backward compatibility)
-            if getattr(profile, "sso_enabled", True):
+            # Deploy auth stack for OIDC and IDC paths; skip only for auth_type="none"
+            _auth_type_all = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+            if _auth_type_all != "none":
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
             # Deploy distribution after networking if it's landing-page type
@@ -188,8 +190,8 @@ class DeployCommand(Command):
                 # Check if quota monitoring is enabled
                 if getattr(profile, "quota_monitoring_enabled", False):
                     stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
-            # Check if CodeBuild is enabled
-            if getattr(profile, "enable_codebuild", False):
+            # Check if CodeBuild is enabled (skip for cowork-only deployments)
+            if getattr(profile, "enable_codebuild", False) and getattr(profile, "deployment_scope", "both") != "cowork":
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
         # Initialize CloudFormation manager
@@ -353,7 +355,42 @@ class DeployCommand(Command):
 
             # Deploy based on stack type
             if stack_type == "auth":
-                # Select template based on provider type
+                # Use profile regions, or fall back to all known Bedrock regions
+                bedrock_regions = profile.allowed_bedrock_regions
+                if not bedrock_regions:
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
+                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+                auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+
+                if auth_type == "idc":
+                    # IAM Identity Center path — use dedicated IDC template
+                    template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+
+                    if not template.exists():
+                        console.print("[red]Error: bedrock-auth-idc.yaml template not found[/red]")
+                        return 1
+
+                    # Derive role name from permission set or use default
+                    idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
+
+                    params = [
+                        f"FederatedRoleName={idc_role_name}",
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying IAM Identity Center auth stack...",
+                    )
+
+                # OIDC path — select template based on provider type
                 provider_type = profile.provider_type or "okta"
                 template_map = {
                     "okta": "bedrock-auth-okta.yaml",
@@ -370,8 +407,6 @@ class DeployCommand(Command):
                     console.print(f"[red]Error: Template not found: {template_file}[/red]")
                     console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
                     return 1
-
-                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
                 # Build parameters
                 params = []
@@ -431,12 +466,6 @@ class DeployCommand(Command):
                             f"CognitoUserPoolDomain={cognito_domain}",
                         ]
                     )
-
-                # Use profile regions, or fall back to all known Bedrock regions
-                bedrock_regions = profile.allowed_bedrock_regions
-                if not bedrock_regions:
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
-                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
                     [
