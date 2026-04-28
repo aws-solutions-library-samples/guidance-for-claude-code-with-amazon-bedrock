@@ -23,6 +23,15 @@ from claude_code_with_bedrock.cli.utils.cf_exceptions import (
     ResourceConflictError,
     StackRollbackError,
 )
+
+# Regions supporting WINDOWS_SERVER_2022_CONTAINER for CodeBuild.
+# See: https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-compute-types.html
+CODEBUILD_WINDOWS_REGIONS = [
+    "us-east-1", "us-east-2", "us-west-2",
+    "eu-west-1", "eu-central-1",
+    "ap-northeast-1", "ap-southeast-2",
+    "sa-east-1",
+]
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.config import Config
 
@@ -150,11 +159,16 @@ class DeployCommand(Command):
                     console.print("Run 'poetry run ccwb init' and enable distribution features.")
                     return 1
             elif stack_arg == "codebuild":
-                if profile.enable_codebuild:
-                    stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
-                else:
+                if not profile.enable_codebuild:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+                if profile.aws_region not in CODEBUILD_WINDOWS_REGIONS:
+                    console.print(
+                        f"[red]Error: Windows CodeBuild is not available in {profile.aws_region}.[/red]"
+                    )
+                    console.print(f"[yellow]Supported regions: {', '.join(CODEBUILD_WINDOWS_REGIONS)}[/yellow]")
+                    return 1
+                stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
@@ -898,6 +912,22 @@ class DeployCommand(Command):
                             pass
 
             elif stack_type == "codebuild":
+                # Windows CodeBuild images are only available in specific regions
+                if profile.aws_region not in CODEBUILD_WINDOWS_REGIONS:
+                    console.print(
+                        f"[red]Error: Windows CodeBuild (WINDOWS_SERVER_2022_CONTAINER) is not available "
+                        f"in {profile.aws_region}.[/red]"
+                    )
+                    console.print(
+                        f"[yellow]Supported regions: {', '.join(CODEBUILD_WINDOWS_REGIONS)}[/yellow]"
+                    )
+                    console.print(
+                        "[dim]CodeBuild is only used for building Windows installer binaries — "
+                        "it does not affect where Claude Code runs. Consider deploying your main "
+                        "stack in your preferred region and CodeBuild separately in a supported region.[/dim]"
+                    )
+                    return 1
+
                 template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
                 stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]

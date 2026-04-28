@@ -160,7 +160,7 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
   - IAM roles and policies
   - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
   - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
-  - (Optional) AWS CodeBuild
+  - (Optional) AWS CodeBuild — Windows builds only available in `us-east-1`, `us-east-2`, `us-west-2`, `eu-west-1`, `eu-central-1`, `ap-northeast-1`, `ap-southeast-2`, `sa-east-1`
 - Amazon Bedrock activated in target regions
 
 **OIDC Provider Requirements:**
