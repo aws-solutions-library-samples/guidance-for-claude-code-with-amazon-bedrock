@@ -262,6 +262,12 @@ Resources:
                   if path.startswith('/docs'):
                       return serve_documentation(path)
 
+                  # Handle download redirects via custom domain (avoids Chrome Safe Browsing
+                  # warnings that occur when linking directly to s3.amazonaws.com URLs)
+                  if path.startswith('/download/'):
+                      platform = path.split('/download/', 1)[-1].strip('/')
+                      return handle_download(platform)
+
                   # Extract user email from ALB authentication headers
                   # ALB has already validated authentication - trust the header
                   user_email = extract_user_email(event)
@@ -272,13 +278,13 @@ Resources:
                   # List packages in S3
                   packages = list_packages()
 
-                  # Generate presigned URLs for each package
+                  # Use /download/<platform> paths instead of direct S3 presigned URLs.
+                  # This routes downloads through the trusted custom domain, avoiding
+                  # Chrome Safe Browsing warnings for s3.amazonaws.com download URLs.
                   download_urls = {}
                   for platform in ['windows', 'linux', 'mac', 'all-platforms']:
                       if platform in packages:
-                          download_urls[platform] = generate_presigned_url(
-                              f"packages/{platform}/latest.zip"
-                          )
+                          download_urls[platform] = f"/download/{platform}"
 
                   # Get metadata from first available package (prefer windows)
                   metadata_source = packages.get('windows') or packages.get('mac') or packages.get('linux') or packages.get('all-platforms', {})
@@ -379,17 +385,62 @@ Resources:
 
               return packages
 
-          def generate_presigned_url(s3_key):
-              """Generate presigned URL for S3 object"""
+          def handle_download(platform):
+              """Redirect to presigned S3 URL via custom domain.
+              Serving downloads through /download/<platform> keeps presigned URLs
+              out of the page HTML and routes the download through the trusted custom
+              domain, which avoids Chrome Safe Browsing warnings for s3.amazonaws.com."""
+              valid_platforms = ['windows', 'linux', 'mac', 'all-platforms']
+              if platform not in valid_platforms:
+                  return {
+                      'statusCode': 404,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>404 - Package Not Found</h1></body></html>'
+                  }
+
+              s3_key = f"packages/{platform}/latest.zip"
+
+              # Verify the package exists before redirecting
               try:
-                  return s3_client.generate_presigned_url(
+                  s3_client.head_object(Bucket=BUCKET_NAME, Key=s3_key)
+              except Exception:
+                  return {
+                      'statusCode': 404,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>Package not available</h1><p>No package has been uploaded for this platform yet.</p></body></html>'
+                  }
+
+              filename_map = {
+                  'windows': 'claude-code-windows-installer.zip',
+                  'linux': 'claude-code-linux-installer.zip',
+                  'mac': 'claude-code-mac-installer.zip',
+                  'all-platforms': 'claude-code-all-platforms-installer.zip',
+              }
+              filename = filename_map[platform]
+
+              try:
+                  url = s3_client.generate_presigned_url(
                       'get_object',
-                      Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+                      Params={
+                          'Bucket': BUCKET_NAME,
+                          'Key': s3_key,
+                          'ResponseContentDisposition': f'attachment; filename="{filename}"',
+                          'ResponseContentType': 'application/zip',
+                      },
                       ExpiresIn=PRESIGNED_URL_EXPIRY
                   )
+                  return {
+                      'statusCode': 302,
+                      'headers': {'Location': url},
+                      'body': ''
+                  }
               except Exception as e:
-                  print(f"Error generating presigned URL for {s3_key}: {e}")
-                  return '#'
+                  print(f"Error generating download URL for {platform}: {e}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>Error</h1><p>Could not generate download link.</p></body></html>'
+                  }
 
           def serve_documentation(path):
               """Serve documentation HTML from S3 docs/ prefix"""
