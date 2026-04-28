@@ -2441,9 +2441,6 @@ Available metrics include:
                                 "OTEL_LOGS_EXPORTER": "otlp",
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
                             }
                         )
 
