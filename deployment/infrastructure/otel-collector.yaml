@@ -28,7 +28,12 @@ Parameters:
   HostedZoneId:
     Type: String
     Default: ''
-    Description: Route53 hosted zone ID for custom domain (required if CustomDomainName is provided)
+    Description: Route53 hosted zone ID for custom domain - required for automatic ACM certificate creation and DNS record. Not needed when using CertificateArn with external DNS (e.g., Cloudflare).
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ARN of an existing ACM certificate for HTTPS. Use this when DNS is managed externally (e.g., Cloudflare) and you cannot use Route53 for automatic certificate validation. When provided, HostedZoneId is not required.
 
   OidcIssuerUrl:
     Type: String
@@ -47,6 +52,20 @@ Parameters:
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasExternalCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+  CreateAcmCertificate: !And
+    - !Condition HasCustomDomain
+    - !Condition HasHostedZone
+    - !Not [!Condition HasExternalCertificate]
+  CreateDnsRecord: !And
+    - !Condition HasCustomDomain
+    - !Condition HasHostedZone
+  EnableHttps: !And
+    - !Condition HasCustomDomain
+    - !Or
+      - !Condition HasHostedZone
+      - !Condition HasExternalCertificate
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
@@ -123,10 +142,10 @@ Resources:
         - Key: Name
           Value: otel-collector-task-sg
 
-  # ACM Certificate (created automatically when domain is provided)
+  # ACM Certificate (created automatically when using Route53 for DNS validation)
   Certificate:
     Type: AWS::CertificateManager::Certificate
-    Condition: HasCustomDomain
+    Condition: CreateAcmCertificate
     Properties:
       DomainName: !Ref CustomDomainName
       DomainValidationOptions:
@@ -137,10 +156,10 @@ Resources:
         - Key: Name
           Value: !Sub '${AWS::StackName}-certificate'
 
-  # Route53 Record for custom domain
+  # Route53 Record for custom domain (only when Route53 manages DNS)
   DNSRecord:
     Type: AWS::Route53::RecordSet
-    Condition: HasCustomDomain
+    Condition: CreateDnsRecord
     DependsOn: Certificate
     Properties:
       HostedZoneId: !Ref HostedZoneId
@@ -201,30 +220,33 @@ Resources:
       Protocol: HTTP
       DefaultActions:
         - Type: !If
-            - HasCustomDomain
+            - EnableHttps
             - redirect
             - forward
           RedirectConfig: !If
-            - HasCustomDomain
+            - EnableHttps
             - Protocol: HTTPS
               Port: '443'
               StatusCode: HTTP_301
             - !Ref AWS::NoValue
           TargetGroupArn: !If
-            - HasCustomDomain
+            - EnableHttps
             - !Ref AWS::NoValue
             - !Ref HTTPTargetGroup
 
   HTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: HasCustomDomain
-    DependsOn: HTTPListener  # Ensure HTTP listener updates first to release target group
+    Condition: EnableHttps
+    DependsOn: HTTPListener
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 443
       Protocol: HTTPS
       Certificates:
-        - CertificateArn: !Ref Certificate
+        - CertificateArn: !If
+            - HasExternalCertificate
+            - !Ref CertificateArn
+            - !Ref Certificate
       DefaultActions: !If
         - HasJwtAuth
         - - Type: jwt-validation
@@ -549,7 +571,7 @@ Outputs:
   CollectorEndpoint:
     Description: Endpoint for OTLP metrics
     Value: !If
-      - HasCustomDomain
+      - EnableHttps
       - !Sub 'https://${CustomDomainName}'
       - !Sub 'http://${LoadBalancer.DNSName}'
     Export:
@@ -572,12 +594,18 @@ Outputs:
   Note:
     Description: Important deployment information
     Value: !If
-      - HasCustomDomain
-      - !Sub |
-        OTEL collector is available at: https://${CustomDomainName}
-        Certificate validation is automatic via Route53.
-        Claude Code settings will use this HTTPS endpoint.
+      - EnableHttps
+      - !If
+        - HasExternalCertificate
+        - !Sub |
+          OTEL collector is available at: https://${CustomDomainName}
+          HTTPS is enabled via external ACM certificate.
+          Claude Code settings will use this HTTPS endpoint.
+        - !Sub |
+          OTEL collector is available at: https://${CustomDomainName}
+          HTTPS is enabled via auto-provisioned Route53 certificate.
+          Claude Code settings will use this HTTPS endpoint.
       - !Sub |
         OTEL collector is available at: http://${LoadBalancer.DNSName}
         WARNING: Using HTTP - data is not encrypted in transit.
-        For HTTPS, provide CustomDomainName and HostedZoneId parameters.
+        For HTTPS, provide CustomDomainName with either HostedZoneId (Route53) or CertificateArn (external DNS like Cloudflare).

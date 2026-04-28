@@ -127,6 +127,18 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     if not profile.monitoring_enabled:
         return
 
+    monitoring_config = getattr(profile, "monitoring_config", {}) or {}
+    custom_domain = monitoring_config.get("custom_domain")
+
+    if custom_domain:
+        domain = custom_domain.replace("https://", "").replace("http://", "").rstrip("/")
+        endpoint = f"https://{domain}"
+        mdm_config["otlpEndpoint"] = endpoint
+        mdm_config["otlpProtocol"] = "http/protobuf"
+        console.print(f"[dim]OTLP endpoint: {endpoint} (from profile custom domain)[/dim]")
+        return
+
+
     monitoring_stack = profile.stack_names.get(
         "monitoring", f"{profile.identity_pool_name}-otel-collector"
     )
