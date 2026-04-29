@@ -29,7 +29,7 @@ ccwb = "claude_code_with_bedrock.cli:main"
 credential-provider = "credential_provider:main"
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.10,<3.15"
 boto3 = "^1.42.88"
 requests = "^2.33.1"
 PyJWT = "^2.8.0"

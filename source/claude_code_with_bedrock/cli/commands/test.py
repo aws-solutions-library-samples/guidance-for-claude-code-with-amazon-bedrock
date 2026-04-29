@@ -58,13 +58,18 @@ class TestCommand(Command):
         # Welcome
         console.print(
             Panel.fit(
-                "[bold cyan]Claude Code Package Test[/bold cyan]\n\n"
+                "[bold cyan]Claude Authentication Test[/bold cyan]\n\n"
                 f"Testing profile: [bold]{test_profile_name}[/bold]\n"
                 "This will test authentication and verify Bedrock API access in your configured region",
                 border_style="cyan",
                 padding=(1, 2),
             )
         )
+
+        # Cowork-only: test infrastructure directly (no package needed)
+        if getattr(profile, "deployment_scope", "both") == "cowork":
+            console.print("[dim]Cowork-only profile — testing infrastructure (no package required)[/dim]\n")
+            return self._test_cowork_infrastructure(profile, test_profile_name, console)
 
         # Check if package exists - look in multiple locations
         # First try the source directory (where package command creates it)
@@ -104,7 +109,8 @@ class TestCommand(Command):
                 console.print(f"[dim]Using package from: {package_dir}[/dim]")
 
         if not package_dir:
-            console.print("[red]No package found. Run 'poetry run ccwb package' first.[/red]")
+            console.print("[red]No package found.[/red]")
+            console.print("Run [cyan]poetry run ccwb package[/cyan] (Claude Code) or [cyan]poetry run ccwb cowork generate[/cyan] (Cowork)")
             console.print("[dim]Searched in:[/dim]")
             console.print(f"[dim]  - {source_dist}/{test_profile_name}/<timestamp>/[/dim]")
             console.print(f"[dim]  - {local_dist}/{test_profile_name}/<timestamp>/[/dim]")
@@ -1419,3 +1425,77 @@ class TestCommand(Command):
             console.print("\n[yellow]Quota tests passed with warnings.[/yellow]")
         else:
             console.print("\n[green]All quota tests passed![/green]")
+
+    def _test_cowork_infrastructure(self, profile, profile_name: str, console) -> int:
+        """Test infrastructure for Cowork-only deployments (no package required)."""
+        from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+
+        results = []
+        passed = 0
+        failed = 0
+
+        # Test 1: Auth stack deployed
+        console.print("[bold]Step 1: Checking auth stack[/bold]")
+        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+        auth_outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        if auth_outputs:
+            console.print(f"  [green]✓[/green] Auth stack deployed: {auth_stack}")
+            passed += 1
+        else:
+            console.print(f"  [red]✗[/red] Auth stack not found: {auth_stack}")
+            console.print("    Run: [cyan]poetry run ccwb deploy[/cyan]")
+            failed += 1
+
+        # Test 2: Bedrock access
+        console.print("\n[bold]Step 2: Checking Bedrock access[/bold]")
+        try:
+            import boto3
+            bedrock = boto3.client("bedrock", region_name=profile.aws_region)
+            bedrock.list_foundation_models(byOutputModality="TEXT")
+            console.print(f"  [green]✓[/green] Bedrock accessible in {profile.aws_region}")
+            passed += 1
+        except Exception as e:
+            console.print(f"  [red]✗[/red] Bedrock not accessible: {e}")
+            failed += 1
+
+        # Test 3: CoWork MDM config generated
+        console.print("\n[bold]Step 3: Checking CoWork MDM config[/bold]")
+        cowork_dir = Path("dist") / "cowork-3p"
+        source_cowork = Path(__file__).parent.parent.parent.parent / "dist" / "cowork-3p"
+        config_found = False
+        for d in [cowork_dir, source_cowork]:
+            if (d / "cowork-3p-config.json").exists():
+                console.print(f"  [green]✓[/green] CoWork MDM config found: {d}")
+                config_found = True
+                passed += 1
+                break
+        if not config_found:
+            console.print("  [yellow]![/yellow] CoWork MDM config not generated yet")
+            console.print("    Run: [cyan]poetry run ccwb cowork generate[/cyan]")
+            failed += 1
+
+        # Test 4: Monitoring stack (optional)
+        if profile.monitoring_enabled:
+            console.print("\n[bold]Step 4: Checking monitoring stack[/bold]")
+            monitoring_stack = profile.stack_names.get(
+                "monitoring", f"{profile.identity_pool_name}-otel-collector"
+            )
+            monitoring_outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
+            if monitoring_outputs:
+                endpoint = monitoring_outputs.get("CollectorEndpoint", "N/A")
+                console.print(f"  [green]✓[/green] Monitoring stack deployed")
+                console.print(f"    OTLP Endpoint: {endpoint}")
+                passed += 1
+            else:
+                console.print(f"  [yellow]![/yellow] Monitoring stack not found: {monitoring_stack}")
+                failed += 1
+
+        # Summary
+        total = passed + failed
+        console.print(f"\n[bold]Summary:[/bold] {passed}/{total} checks passed")
+        if failed == 0:
+            console.print("[green]✓ Infrastructure ready for Claude Cowork deployment[/green]")
+        else:
+            console.print("[yellow]Some checks failed — see above for details[/yellow]")
+
+        return 0 if failed == 0 else 1

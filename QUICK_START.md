@@ -1,8 +1,19 @@
 # Quick Start Guide
 
-Complete deployment walkthrough for IT administrators deploying Claude Code with Amazon Bedrock.
+Complete deployment walkthrough for IT administrators deploying Claude Cowork and/or Claude Code with Amazon Bedrock.
 
-**Time Required:** 2-3 hours for initial deployment
+## Choose Your Path
+
+| | Claude Cowork (Desktop) | Claude Code (CLI) | Both |
+|---|---|---|---|
+| **For** | All users | Developers | Full org |
+| **Setup** | Deploy infra → generate MDM config | Deploy infra → build packages | Deploy infra → build packages (includes MDM) |
+| **Time** | ~1 hour | 2–3 hours | 2–3 hours |
+| **Steps** | 1–3, then 5 | 1–4 | 1–5 |
+
+All paths share Steps 1–3 (prerequisites, configuration, infrastructure). The divergence is Step 4 (Code packages) vs Step 5 (Cowork MDM config).
+
+**Time Required:** ~1 hour (Cowork only) or 2–3 hours (Code or Both)
 **Skill Level:** AWS administrator with IAM/CloudFormation experience
 
 ---
@@ -11,9 +22,9 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 
 ### Software Requirements
 
-- Python 3.10-3.13
+- Python 3.10+
 - Poetry (dependency management)
-- AWS CLI v2
+- AWS CLI v2 (optional — not required for Cowork-only deployments)
 - Git
 
 ### AWS Requirements
@@ -133,7 +144,7 @@ This creates the following AWS resources:
 - Amazon Athena for SQL analytics on collected metrics (if analytics enabled)
 - S3 bucket for long-term metrics storage (if analytics enabled)
 
-### Step 4: Create Distribution Package
+### Step 4: Create Distribution Package (Claude Code)
 
 Build the package for end users:
 
@@ -177,7 +188,24 @@ The package builder:
 - Includes the OTEL helper for extracting user attributes from JWT tokens
 - Creates a unified installer that auto-detects the user's platform
 
-### Step 5: Test the Setup
+### Step 5: Generate CoWork MDM Configuration (Claude Cowork)
+
+If you selected Claude Cowork during `ccwb init`, generate MDM configuration files:
+
+```bash
+poetry run ccwb cowork generate
+```
+
+This creates `dist/cowork-3p/` containing:
+- `cowork-3p-config.json` — Raw MDM JSON (for Claude Desktop Setup UI import)
+- `cowork-3p.mobileconfig` — macOS MDM profile (deploy via Jamf, Kandji, Mosyle)
+- `cowork-3p.reg` — Windows registry file (deploy via Group Policy, Intune)
+
+Deploy these files to managed devices via your MDM solution. See the [CoWork 3P Guide](assets/docs/COWORK_3P.md) for detailed deployment instructions.
+
+> **Note:** If you ran `ccwb package` with both Cowork and Code enabled, CoWork MDM files are auto-generated alongside the Code packages.
+
+### Step 6: Test the Setup
 
 Verify everything works correctly:
 
@@ -193,7 +221,7 @@ This will:
 - Check Amazon Bedrock access
 - (Optional) Test actual API calls with `--api` flag
 
-### Step 6: Distribute Packages to Users
+### Step 7: Distribute Packages to Users (Claude Code)
 
 You have three options for sharing packages with users. The distribution method is configured during `ccwb init` (Step 2).
 

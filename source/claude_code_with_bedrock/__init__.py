@@ -1,4 +1,4 @@
-# ABOUTME: Claude Code with Bedrock - Deploy and manage Claude Code on Amazon Bedrock
+# ABOUTME: Claude Cowork & Code with Bedrock - Deploy and manage on Amazon Bedrock
 # ABOUTME: Main package for enterprise deployment of Claude Code using Amazon Bedrock
 
 """Claude Code with Bedrock - Enterprise deployment tool."""

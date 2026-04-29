@@ -68,7 +68,7 @@ class StatusCommand(Command):
         # Header
         console.print(
             Panel.fit(
-                "[bold cyan]Claude Code with Bedrock - Deployment Status[/bold cyan]",
+                "[bold cyan]Claude Cowork & Code with Bedrock - Deployment Status[/bold cyan]",
                 border_style="cyan",
                 padding=(1, 2),
             )
