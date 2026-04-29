@@ -50,6 +50,9 @@ class PackageCommand(Command):
             default=None,
         ),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
+        option(
+            "skip-prompt", description="Skip interactive prompts and use sensible defaults for CI", flag=True
+        ),
     ]
 
     def handle(self) -> int:
@@ -80,8 +83,13 @@ class PackageCommand(Command):
             return 1
 
         # Interactive prompts if not provided via CLI
+        skip_prompt = self.option("skip-prompt")
         target_platform = self.option("target-platform")
         if target_platform == "all":  # Default value, prompt user
+            if skip_prompt:
+                console.print("[red]--skip-prompt requires --target-platform to be set explicitly.[/red]")
+                return 1
+
             # Build list of available platform choices
             # Note: "macos" is omitted because it's just a smart alias for the current architecture
             # Users should explicitly choose macos-arm64 or macos-intel for clarity
@@ -107,10 +115,13 @@ class PackageCommand(Command):
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
 
         # Prompt for co-authorship preference (default to No - opt-in approach)
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?",
-            default=False,
-        ).ask()
+        if skip_prompt:
+            include_coauthored_by = profile.include_coauthored_by
+        else:
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?",
+                default=False,
+            ).ask()
 
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
