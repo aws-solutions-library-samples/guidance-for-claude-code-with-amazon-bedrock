@@ -2034,6 +2034,7 @@ echo
         """Create Windows batch installer script."""
 
         installer_content = f"""@echo off
+SETLOCAL ENABLEDELAYEDEXPANSION
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -2088,28 +2089,20 @@ if exist "claude-settings" (
 
     REM Copy settings and replace placeholders
     if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
+        set "SKIP_SETTINGS=false"
         if exist "%USERPROFILE%\\.claude\\settings.json" (
             echo Existing Claude Code settings found
             set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
+            if /i not "!OVERWRITE!"=="y" (
                 echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
+                set "SKIP_SETTINGS=true"
             )
         )
 
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
-            echo OK Claude Code settings configured
+        if "!SKIP_SETTINGS!"=="false" (
+            REM Use PowerShell to replace placeholders (single-line, avoids ^ issues in quoted strings)
+            powershell -NoProfile -Command "$otel = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe').Replace('\\', '/'); $cred = ($env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe').Replace('\\', '/'); (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otel -replace '__CREDENTIAL_PROCESS_PATH__', $cred | Set-Content ($env:USERPROFILE + '\\.claude\\settings.json')"
+            echo OK Claude settings configured
         )
     )
 )
@@ -2168,6 +2161,8 @@ echo.
 echo Note: Authentication will automatically open your browser when needed.
 echo.
 pause
+
+ENDLOCAL
 """
 
         installer_path = output_dir / "install.bat"
