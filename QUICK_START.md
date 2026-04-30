@@ -817,6 +817,51 @@ To manually specify a different port, set the `REDIRECT_PORT` environment variab
 export REDIRECT_PORT=8401
 ```
 
+### `Exec format error` on the credential-process binary (end user)
+
+If an end user sees this when running `aws sts get-caller-identity` or launching Claude:
+
+```
+[Errno 8] Exec format error: '/Users/<username>/claude-code-with-bedrock/credential-process'
+```
+
+or directly:
+
+```
+zsh: exec format error: ./credential-process
+```
+
+**This is a CPU architecture mismatch** — the binary was built for a different architecture than the user's machine. `chmod +x` will not fix it.
+
+**Diagnose (run on the user's machine):**
+
+```bash
+uname -m                                                  # their CPU arch
+file ~/claude-code-with-bedrock/credential-process        # binary's CPU arch
+```
+
+| `uname -m` result | Binary arch | Cause |
+|---|---|---|
+| `x86_64` (Intel Mac) | `arm64` | Intel binary was not built — only ARM64 was in the package |
+| `arm64` (Apple Silicon) | `x86_64` | Wrong binary manually copied |
+
+**Fix (admin) — rebuild with both macOS architectures:**
+
+```bash
+# One-time setup: x86_64 Python environment on Apple Silicon Mac
+arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+arch -x86_64 /usr/local/bin/brew install python@3.12
+arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
+
+# Rebuild — now produces both macos-arm64 and macos-intel
+poetry run ccwb package --target-platform all
+```
+
+Redistribute the new package. The installer auto-detects architecture and installs the correct binary.
+
+> **Why this happens:** Building on Apple Silicon only produces `credential-process-macos-arm64` by default. The Intel (`macos-intel`) build is optional and requires the x86_64 Python environment above. ARM64 binaries cannot run on Intel Macs — unlike the reverse (Intel binaries run on Apple Silicon via Rosetta).
+
 ### Build Failures
 
 Check Windows build status:
