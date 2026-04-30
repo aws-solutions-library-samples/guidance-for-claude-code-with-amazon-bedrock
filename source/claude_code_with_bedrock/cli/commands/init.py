@@ -231,6 +231,7 @@ class InitCommand(Command):
 
         # Required checks
         checks = {
+            "AWS CLI installed": self._check_aws_cli(),
             "AWS credentials configured": self._check_aws_credentials(),
             "Python 3.10+ available": self._check_python_version(),
         }
@@ -248,19 +249,6 @@ class InitCommand(Command):
             else:
                 console.print(f"  [red]✗[/red] {check}")
                 all_passed = False
-
-        # AWS CLI is optional: Claude Code itself uses credential-process via
-        # AWS_CREDENTIAL_PROCESS in ~/.claude/settings.json.  The CLI is only
-        # needed here to deploy CloudFormation infrastructure and can be omitted
-        # by teams that use an alternative deployment mechanism.
-        aws_cli_present = self._check_aws_cli()
-        if aws_cli_present:
-            console.print("  [green]✓[/green] AWS CLI installed [dim](used for infrastructure deployment)[/dim]")
-        else:
-            console.print(
-                "  [yellow]⚠[/yellow] AWS CLI not found [dim](optional — only needed for CloudFormation "
-                "deployment; developer packages work without it)[/dim]"
-            )
 
         # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
         if region:
