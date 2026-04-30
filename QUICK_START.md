@@ -38,7 +38,6 @@ This guide covers the **AWS infrastructure** side of the deployment. It assumes 
 | **Microsoft Entra ID (Azure AD)** | [Microsoft Entra ID Setup Guide](assets/docs/providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [Auth0 Setup Guide](assets/docs/providers/auth0-setup.md) |
 | **AWS Cognito User Pool** | [Cognito User Pool Setup Guide](assets/docs/providers/cognito-user-pool-setup.md) |
-| **AWS IAM Identity Center (SSO)** | [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md) |
 
 Each guide walks through creating the application, setting the redirect URI to `http://localhost:8400/callback`, enabling PKCE, and noting the two values you will need here: your **provider domain** and **client ID**.
 
@@ -104,9 +103,9 @@ ccwb init
 │
 ├── Profile name → e.g. "CorpIT-Prod"
 │
-├── STEP 1: Authentication method?
+├── STEP 1: Enable SSO authentication? (Y/n)
 │   │
-│   ├── OIDC / Direct IdP ──────────────────────────────────────────┐
+│   ├── Yes (default) ──────────────────────────────────────────────┐
 │   │                                                                │
 │   │   Provider domain? (e.g. company.okta.com)                    │
 │   │   Client ID?                                                   │
@@ -119,14 +118,7 @@ ccwb init
 │   │   ├── Credential storage: Keyring / Session Files              │
 │   │   └── Federation type: Direct STS / Cognito Identity Pool      │
 │   │                                                                │
-│   ├── IAM Identity Center ─────────────────────────────────────── │
-│   │   Start URL?                                                   │
-│   │   SSO region?                                                  │
-│   │   Account ID?                                                  │
-│   │   Permission set name?                                         │
-│   │   Write to ~/.aws/config? (Yes/No)                             │
-│   │                                                                │
-│   └── None → skips all auth questions, goes to Step 2 ───────────┘
+│   └── No → skips all auth questions, goes to Step 2 ─────────────┘
 │
 ├── STEP 2: AWS Infrastructure
 │   ├── AWS region? (where CloudFormation stacks are deployed)
@@ -227,19 +219,20 @@ poetry run ccwb init
 
 #### Step 1: Authentication Configuration
 
-**What it asks:** `Authentication method:`
+**What it asks:** `Enable SSO authentication? (Y/n)`
 
-Choose how developers will authenticate to reach Bedrock:
+Choose whether developers will authenticate through an OIDC identity provider to reach Bedrock:
 
-| Choice | When to use |
+| Answer | When to use |
 |---|---|
-| **OIDC / Direct IdP** | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
-| **AWS IAM Identity Center** | Your org already uses AWS SSO — no external IdP needed, sessions up to 7 days |
-| **None** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
+| **Yes** (default) | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
+| **No** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
+
+> **Note:** AWS IAM Identity Center (SSO) support is coming in a future release. If your org uses AWS SSO today, choose **No** and configure developer access via your existing IAM Identity Center setup outside this tool.
 
 ---
 
-##### If you chose OIDC / Direct IdP
+##### If you answered Yes (SSO enabled)
 
 **Q: `Enter your OIDC provider domain:`**
 
@@ -312,44 +305,26 @@ How the OIDC token is exchanged for AWS temporary credentials:
 
 ---
 
-##### If you chose AWS IAM Identity Center
-
-**Q: `IAM Identity Center start URL:`**
-Your SSO portal URL, e.g. `https://your-company.awsapps.com/start`
-
-**Q: `AWS region for IAM Identity Center:`**
-The region where your IAM IDC instance is deployed, e.g. `us-east-1`
-
-**Q: `AWS Account ID:`**
-12-digit account ID of the account where Bedrock will be invoked
-
-**Q: `Permission set / role name:`**
-The IAM IDC Permission Set name assigned to developers, e.g. `BedrockDeveloperAccess`
-
-The wizard auto-generates the `~/.aws/config` block and asks if you want it written automatically. Answer **Yes**.
-
----
-
-##### If you chose None
+##### If you answered No (SSO disabled)
 
 No authentication questions are asked. The wizard skips directly to Step 2.
 
-**What "None" means in practice:**
+**What SSO disabled means in practice:**
 
 - **No auth infrastructure is deployed** — no IAM OIDC Provider, no Cognito Identity Pool, no IAM role for developers is created.
 - **No `credential_process` binary is distributed** — end users will not get an installer or auto-refreshing AWS credentials from this tool.
 - **You are responsible for giving developers Bedrock access** via whatever IAM mechanism already exists in your account (IAM users, existing roles, existing SSO, etc.).
 
-**When to choose None:**
+**When to choose No:**
 
-| Scenario | Why None makes sense |
+| Scenario | Why disabling SSO makes sense |
 |---|---|
 | You only want the monitoring/analytics stack | Deploy dashboards without changing how developers authenticate |
 | Developers already have Bedrock access via existing roles | Adding another auth layer would be redundant |
 | Pilot/testing with a shared IAM user | Fastest way to test the monitoring stack before committing to full OIDC setup |
 | You will configure auth manually after deployment | Advanced users who want to customise the CloudFormation templates directly |
 
-> **Note:** Quota monitoring and per-user attribution features require OIDC or IAM IDC auth. With `None`, the monitoring stack will still collect aggregate metrics but cannot attribute usage to individual users.
+> **Note:** Quota monitoring and per-user attribution require SSO enabled. With SSO disabled, the monitoring stack still collects aggregate metrics but cannot attribute usage to individual users.
 
 ---
 
