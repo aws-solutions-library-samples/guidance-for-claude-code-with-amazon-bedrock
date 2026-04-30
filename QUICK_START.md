@@ -644,11 +644,11 @@ The `ccwb package` command prompts you to select one or more platforms via a che
 | Apple Silicon only | `macos-arm64` |
 | Intel Macs only | `macos-intel` |
 | Mixed fleet | `macos-arm64` + `macos-intel` |
-| Unsure | `macos-intel` — runs on both via Rosetta |
+| Unsure | `macos-arm64` — always builds on Apple Silicon with no extra setup |
 
 Not sure what your developers are running? Have them run `uname -m`: `arm64` = Apple Silicon, `x86_64` = Intel.
 
-> **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped. See [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional).
+> **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped and **no binary is included in the package**. Complete the [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) before selecting `macos-intel`.
 
 **Package Workflow:**
 
