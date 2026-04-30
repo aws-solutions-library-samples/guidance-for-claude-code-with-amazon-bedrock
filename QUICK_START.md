@@ -16,6 +16,19 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 - AWS CLI v2
 - Git
 
+**macOS admins — check your machine architecture before building:**
+
+```bash
+uname -m
+```
+
+| Output | Your Mac | Builds natively |
+|--------|----------|----------------|
+| `arm64` | Apple Silicon (M1/M2/M3/M4) | `macos-arm64` — Intel requires [optional setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) |
+| `x86_64` | Intel Mac | `macos-intel` — cannot build `macos-arm64` |
+
+> Intel (`macos-intel`) binaries run on both Intel and Apple Silicon Macs (via Rosetta). ARM64 binaries only run on Apple Silicon. If your developers have a **mixed fleet**, build `macos-intel` — it covers everyone.
+
 ### AWS Requirements
 
 - AWS account with appropriate IAM permissions to create:
@@ -622,6 +635,38 @@ poetry run ccwb builds
 poetry run ccwb distribute
 ```
 
+**Choosing macOS targets:**
+
+Before selecting, check your machine's architecture:
+
+```bash
+uname -m
+python3 -c "import platform; print(platform.machine())"
+poetry run python -c "import platform; print(platform.machine())"
+```
+
+All three should return the same value. The Poetry command is most important — it confirms what architecture PyInstaller will use when building the binary.
+
+- `arm64` → you are on Apple Silicon — select `macos-arm64`
+- `x86_64` → you are on Intel — select `macos-intel`
+
+The `ccwb package` command prompts you to select one or more platforms via a checkbox. **You must build for the architecture your developers are running** — ask your developers to run the same commands on their machines and tell you the output before you build:
+
+```bash
+uname -m
+python3 -c "import platform; print(platform.machine())"
+```
+
+Pick based on what your developers report:
+
+| Your developers report | Select |
+|------------------------|--------|
+| `arm64` (Apple Silicon) | `macos-arm64` |
+| `x86_64` (Intel) | `macos-intel` |
+| Both | `macos-arm64` + `macos-intel` |
+
+> **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped and **no binary is included in the package**. Complete the [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) before selecting `macos-intel`.
+
 **Package Workflow:**
 
 1. **Local builds**: macOS/Linux executables are built locally using PyInstaller
@@ -816,6 +861,84 @@ To manually specify a different port, set the `REDIRECT_PORT` environment variab
 ```bash
 export REDIRECT_PORT=8401
 ```
+
+### `Exec format error` on the credential-process binary (end user)
+
+If an end user sees this when running `aws sts get-caller-identity` or launching Claude:
+
+```
+[Errno 8] Exec format error: '/Users/<username>/claude-code-with-bedrock/credential-process'
+```
+
+or directly:
+
+```
+zsh: exec format error: ./credential-process
+```
+
+**This is a CPU architecture mismatch** — the binary was built for a different architecture than the user's machine. `chmod +x` will not fix it.
+
+**Diagnose (run on the user's machine):**
+
+```bash
+uname -m                                                  # their CPU arch
+file ~/claude-code-with-bedrock/credential-process        # binary's CPU arch
+```
+
+| `uname -m` result | Binary arch | Cause |
+|---|---|---|
+| `x86_64` (Intel Mac) | `arm64` | Intel binary was not built — only ARM64 was in the package |
+| `arm64` (Apple Silicon) | `x86_64` | Wrong binary manually copied |
+
+**Fix (admin) — rebuild with both macOS architectures:**
+
+```bash
+# One-time setup: x86_64 Python environment on Apple Silicon Mac
+arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+arch -x86_64 /usr/local/bin/brew install python@3.12
+arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
+
+# Rebuild — now produces both macos-arm64 and macos-intel
+poetry run ccwb package --target-platform all
+```
+
+Redistribute the new package. The installer auto-detects architecture and installs the correct binary.
+
+> **Why this happens:** Building on Apple Silicon only produces `credential-process-macos-arm64` by default. The Intel (`macos-intel`) build is optional and requires the x86_64 Python environment above. ARM64 binaries cannot run on Intel Macs — unlike the reverse (Intel binaries run on Apple Silicon via Rosetta).
+
+### Windows `install.bat` — `-replace was unexpected at this time.`
+
+If running `install.bat` on Windows produces this error:
+
+```
+-replace was unexpected at this time.
+```
+
+**Root cause:** This is a cmd.exe parser bug in the generated installer — `^` line-continuation characters inside a double-quoted PowerShell command get consumed by cmd.exe, causing `-replace` to be treated as a standalone batch command rather than part of the PowerShell string. A code fix is included in the next release.
+
+**Workaround:** The binary and `config.json` are already copied before this error occurs — only the `~/.claude/settings.json` placeholder replacement fails. Complete the installation manually:
+
+**Step 1** — Open **PowerShell** (not cmd.exe) from the extracted package folder and run:
+
+```powershell
+$otelPath = "$env:USERPROFILE\claude-code-with-bedrock\otel-helper.exe" -replace '\\', '/'
+$credPath = "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe" -replace '\\', '/'
+(Get-Content 'claude-settings\settings.json') `
+    -replace '__OTEL_HELPER_PATH__', $otelPath `
+    -replace '__CREDENTIAL_PROCESS_PATH__', $credPath |
+    Set-Content "$env:USERPROFILE\.claude\settings.json"
+```
+
+**Step 2** — Configure the AWS profile (replace `<profile-name>` with the name shown in `config.json`):
+
+```powershell
+aws configure set credential_process `
+    "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe --profile <profile-name>" `
+    --profile <profile-name>
+```
+
+> **Why PowerShell works:** PowerShell uses backtick (`` ` ``) for line continuation — there is no cmd.exe parser involved to mangle the `-replace` operators.
 
 ### Build Failures
 
