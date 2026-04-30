@@ -74,9 +74,11 @@ poetry run ccwb package --target-platform=linux      # Linux via Docker
   - ARM64: Native build on Apple Silicon Macs (works on all Macs via Rosetta)
   - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
   - Universal: Requires both architectures' Python libraries
-- **Linux x64/ARM64**: Uses PyInstaller in Docker containers
+- **Linux x64/ARM64**: Uses PyInstaller in Docker containers (cross-compiled from macOS)
   - Automatically builds both architectures when Docker is available
   - Docker Desktop handles architecture emulation via Rosetta
+  - **Requires Docker Desktop installed and running** — if absent, Linux builds are skipped with a warning and all other platforms continue normally
+  - macOS and Windows builds have no dependency on Docker
 
 **Optional: Intel Mac Setup**
 

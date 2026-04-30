@@ -661,7 +661,7 @@ The `dist/` folder will contain:
 The package builder:
 
 - Automatically builds binaries for both macOS and Linux by default
-- Uses Docker for cross-platform Linux builds when running on macOS
+- Uses Docker to cross-compile Linux binaries when running on macOS — **Docker Desktop must be installed and running**; if not present, Linux builds are skipped with a warning and macOS/Windows builds continue unaffected
 - Includes the OTEL helper for extracting user attributes from JWT tokens
 - Creates a unified installer that auto-detects the user's platform
 
@@ -747,7 +747,10 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
   - ARM64: Native build on Apple Silicon Macs
   - Intel: Optional - requires x86_64 Python environment on ARM Macs
   - Universal: Requires both architectures' Python libraries
-- **Linux**: Docker with PyInstaller (for building on non-Linux hosts)
+- **Linux**: Docker with PyInstaller (cross-compiled from macOS host)
+  - Requires [Docker Desktop](https://docs.docker.com/get-docker/) installed and running
+  - If Docker is not installed or its daemon is not running, Linux builds are skipped with a warning
+  - macOS and Windows builds have **no dependency on Docker**
 
 ### Optional: Intel Mac Builds
 

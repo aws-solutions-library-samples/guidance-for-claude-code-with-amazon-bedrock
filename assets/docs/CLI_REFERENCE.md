@@ -266,10 +266,12 @@ poetry run ccwb package [options]
   - ARM64: Native build on Apple Silicon Macs (works on all Macs)
   - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
   - Universal: Requires both architectures' Python libraries (not currently automated)
-- **Linux**: Uses PyInstaller in Docker containers
+- **Linux**: Uses PyInstaller in Docker containers (cross-compiled from macOS host)
   - x64: Uses linux/amd64 Docker platform
   - ARM64: Uses linux/arm64 Docker platform
   - Docker Desktop handles architecture emulation automatically
+  - **Requires Docker Desktop to be installed and running** — see Graceful Fallback Behavior below
+  - Not required for macOS or Windows builds
 - **Windows**: Uses Nuitka via AWS CodeBuild (if enabled during init)
   - Automated builds take 12-15 minutes
   - Requires CodeBuild to be enabled during `init`
@@ -306,7 +308,10 @@ The package command is designed to handle missing optional components gracefully
 
 - **Intel Mac builds**: Skipped if x86_64 Python environment is not available on ARM Macs
 - **Windows builds**: Skipped if CodeBuild was not enabled during `init`
-- **Linux builds**: Skipped if Docker is not available
+- **Linux builds (from macOS)**: Skipped with a warning in two cases:
+  - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
+  - Docker is installed but the daemon is not running — open Docker Desktop and wait for it to start, then retry
+  - macOS and Windows builds are **unaffected** by Docker availability
 - **At least one platform must build successfully** for the package command to succeed
 
 This ensures that packaging always works, even if some optional platforms are not available.

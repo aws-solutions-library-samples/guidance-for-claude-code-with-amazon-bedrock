@@ -238,8 +238,12 @@ class PackageCommand(Command):
                         else:
                             platforms_to_build.append("macos-intel")
 
-                        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
-                        if docker_check.returncode == 0:
+                        try:
+                            docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+                            docker_available = docker_check.returncode == 0
+                        except FileNotFoundError:
+                            docker_available = False
+                        if docker_available:
                             platforms_to_build.append("linux-x64")
                             platforms_to_build.append("linux-arm64")
                     elif current_os == "linux":
@@ -278,8 +282,12 @@ class PackageCommand(Command):
                     platforms_to_build.append("macos-intel")
 
                 # Check if Docker is available for Linux builds
-                docker_check = subprocess.run(["docker", "--version"], capture_output=True)
-                if docker_check.returncode == 0:
+                try:
+                    docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+                    docker_available = docker_check.returncode == 0
+                except FileNotFoundError:
+                    docker_available = False
+                if docker_available:
                     platforms_to_build.append("linux-x64")
                     platforms_to_build.append("linux-arm64")
 
@@ -895,8 +903,12 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux-x64"
 
         # Check if Docker is available and running
-        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
-        if docker_check.returncode != 0:
+        try:
+            docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+            docker_installed = docker_check.returncode == 0
+        except FileNotFoundError:
+            docker_installed = False
+        if not docker_installed:
             console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} build[/yellow]")
             console.print("[dim]Linux binaries require Docker Desktop to be installed and running.[/dim]")
             console.print("[dim]Install Docker: https://docs.docker.com/get-docker/[/dim]")
@@ -1089,8 +1101,12 @@ RUN pyinstaller \
             binary_name = "otel-helper-linux-x64"
 
         # Check if Docker is available and running
-        docker_check = subprocess.run(["docker", "--version"], capture_output=True)
-        if docker_check.returncode != 0:
+        try:
+            docker_check = subprocess.run(["docker", "--version"], capture_output=True)
+            docker_installed = docker_check.returncode == 0
+        except FileNotFoundError:
+            docker_installed = False
+        if not docker_installed:
             console.print(f"\n[yellow]⚠️  Docker not found - skipping Linux {arch} OTEL helper build[/yellow]")
             console.print("[dim]Linux binaries require Docker Desktop to be installed and running.[/dim]")
             console.print(f"[dim]Skipping otel-helper-linux-{arch}[/dim]\n")
