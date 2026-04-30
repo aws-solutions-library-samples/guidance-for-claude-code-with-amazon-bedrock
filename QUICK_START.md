@@ -646,13 +646,19 @@ uname -m
 - `arm64` → you are on Apple Silicon — select `macos-arm64`
 - `x86_64` → you are on Intel — select `macos-intel`
 
-The `ccwb package` command prompts you to select one or more platforms via a checkbox. Pick based on your developers' hardware:
+The `ccwb package` command prompts you to select one or more platforms via a checkbox. **You must build for the architecture your developers are running** — ask your developers to run the same command on their machines and tell you the output before you build:
 
-| Your developers have | Select |
-|----------------------|--------|
-| Apple Silicon only | `macos-arm64` |
-| Intel Macs only | `macos-intel` |
-| Mixed fleet | `macos-arm64` + `macos-intel` |
+```bash
+uname -m
+```
+
+Pick based on what your developers report:
+
+| Your developers report | Select |
+|------------------------|--------|
+| `arm64` (Apple Silicon) | `macos-arm64` |
+| `x86_64` (Intel) | `macos-intel` |
+| Both | `macos-arm64` + `macos-intel` |
 
 > **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped and **no binary is included in the package**. Complete the [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) before selecting `macos-intel`.
 
