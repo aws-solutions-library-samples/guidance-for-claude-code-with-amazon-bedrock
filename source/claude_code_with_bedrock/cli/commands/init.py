@@ -231,7 +231,6 @@ class InitCommand(Command):
 
         # Required checks
         checks = {
-            "AWS CLI installed": self._check_aws_cli(),
             "AWS credentials configured": self._check_aws_credentials(),
             "Python 3.10+ available": self._check_python_version(),
         }
@@ -249,6 +248,19 @@ class InitCommand(Command):
             else:
                 console.print(f"  [red]✗[/red] {check}")
                 all_passed = False
+
+        # AWS CLI is optional: Claude Code itself uses credential-process via
+        # AWS_CREDENTIAL_PROCESS in ~/.claude/settings.json.  The CLI is only
+        # needed here to deploy CloudFormation infrastructure and can be omitted
+        # by teams that use an alternative deployment mechanism.
+        aws_cli_present = self._check_aws_cli()
+        if aws_cli_present:
+            console.print("  [green]✓[/green] AWS CLI installed [dim](used for infrastructure deployment)[/dim]")
+        else:
+            console.print(
+                "  [yellow]⚠[/yellow] AWS CLI not found [dim](optional — only needed for CloudFormation "
+                "deployment; developer packages work without it)[/dim]"
+            )
 
         # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
         if region:
@@ -654,11 +666,12 @@ class InitCommand(Command):
                 existing_custom_domain = config["monitoring"].get("custom_domain")
                 existing_zone_id = config["monitoring"].get("hosted_zone_id")
                 already_configured = bool(existing_custom_domain and existing_zone_id)
+                has_existing_domain = bool(existing_custom_domain)
 
-                if already_configured:
+                if has_existing_domain:
                     console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
 
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=already_configured).ask()
+                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=has_existing_domain).ask()
 
                 if enable_https:
                     custom_domain = questionary.text(
@@ -667,8 +680,14 @@ class InitCommand(Command):
                         default=existing_custom_domain if existing_custom_domain else "",
                     ).ask()
 
+                    # Save the domain immediately — regardless of what happens with
+                    # hosted zone lookup. This is the root cause of "domain never saves":
+                    # previously the domain was only written inside the if hosted_zones
+                    # block, so any Route53 failure silently discarded the user's input.
+                    config["monitoring"]["custom_domain"] = custom_domain
+
                     # Get Route53 hosted zones
-                    hosted_zones = self._get_hosted_zones()
+                    hosted_zones, zones_error = self._get_hosted_zones()
                     if hosted_zones:
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
@@ -690,13 +709,23 @@ class InitCommand(Command):
 
                         # Extract zone ID
                         zone_id = selected_zone.split("(")[-1].rstrip(")")
-
-                        config["monitoring"]["custom_domain"] = custom_domain
                         config["monitoring"]["hosted_zone_id"] = zone_id
                         console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
-                        console.print("[yellow]No Route53 hosted zones found. HTTPS requires a hosted zone.[/yellow]")
-                        console.print("[dim]You can add these parameters manually during deployment.[/dim]")
+                        if zones_error:
+                            console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
+                        else:
+                            console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
+                        console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                        manual_zone_id = questionary.text(
+                            "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                            default=existing_zone_id if existing_zone_id else "",
+                        ).ask()
+                        if manual_zone_id and manual_zone_id.strip():
+                            config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                            console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                        else:
+                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None
@@ -1322,6 +1351,7 @@ class InitCommand(Command):
                 else config["okta"]["client_id"]
             ),
         )
+
         table.add_row(
             "Credential Storage",
             (
@@ -1620,10 +1650,24 @@ class InitCommand(Command):
 
     def _check_aws_credentials(self) -> bool:
         """Check if AWS credentials are configured."""
+        console = Console()
         try:
             boto3.client("sts").get_caller_identity()
             return True
-        except Exception:
+        except Exception as e:
+            err = str(e)
+            console.print(f"    [dim red]Credential error: {err}[/dim red]")
+            if "ExpiredToken" in err or "expired" in err.lower():
+                console.print(
+                    "    [dim]Hint: Expired credentials in ~/.aws/credentials are blocking the EC2 instance role.\n"
+                    "    Run: [cyan]unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN[/cyan]\n"
+                    "    Then clear the [default] section from ~/.aws/credentials and retry.[/dim]"
+                )
+            elif "NoCredentialProviders" in err or "Unable to locate credentials" in err:
+                console.print(
+                    "    [dim]Hint: No credentials found. Configure via env vars, ~/.aws/credentials,\n"
+                    "    an IAM instance profile, or AWS SSO.[/dim]"
+                )
             return False
 
     def _check_python_version(self) -> bool:
@@ -2023,16 +2067,21 @@ class InitCommand(Command):
         except Exception:
             return {}
 
-    def _get_hosted_zones(self) -> list[dict[str, Any]]:
-        """Get available Route53 hosted zones."""
+    def _get_hosted_zones(self) -> tuple[list[dict[str, Any]], str | None]:
+        """Get available Route53 hosted zones.
+
+        Returns:
+            Tuple of (zones list, error message or None).
+            On success: (zones, None). On failure: ([], error_string).
+        """
         try:
             import boto3
 
             client = boto3.client("route53")
             response = client.list_hosted_zones()
-            return response.get("HostedZones", [])
-        except Exception:
-            return []
+            return response.get("HostedZones", []), None
+        except Exception as e:
+            return [], str(e)
 
     def _configure_vpc(self, region: str, existing_vpc_config: dict[str, Any] = None) -> dict[str, Any]:
         """Configure VPC for monitoring stack."""
