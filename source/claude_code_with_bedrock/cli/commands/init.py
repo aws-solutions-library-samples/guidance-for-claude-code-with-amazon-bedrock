@@ -1668,24 +1668,59 @@ class InitCommand(Command):
             return False
 
     def _check_aws_credentials(self) -> bool:
-        """Check if AWS credentials are configured."""
+        """Check if AWS credentials are configured.
+
+        If AWS_ACCESS_KEY_ID env vars are set but expired, boto3 won't
+        fall through to ~/.aws/credentials or SSO cache. We detect
+        credential-specific errors and retry without env vars.
+        """
+        import os
+
         console = Console()
         try:
             boto3.client("sts").get_caller_identity()
             return True
         except Exception as e:
             err = str(e)
-            console.print(f"    [dim red]Credential error: {err}[/dim red]")
+
+            # Only retry for credential-specific errors (not network/throttling)
+            credential_errors = ["ExpiredToken", "InvalidClientTokenId", "SignatureDoesNotMatch",
+                                 "expired", "ExpiredTokenException"]
+            is_credential_error = any(ce in err for ce in credential_errors)
+
+            # If credential error and env vars are set, retry without them
+            if is_credential_error:
+                env_keys = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+                env_backup = {k: os.environ.pop(k) for k in env_keys if k in os.environ}
+
+                if env_backup:
+                    try:
+                        boto3.client("sts").get_caller_identity()
+                        console.print(
+                            "    [yellow]\u26a0[/yellow] [dim]Expired AWS session env vars detected and ignored[/dim]"
+                        )
+                        return True
+                    except Exception:
+                        os.environ.update(env_backup)  # Restore on failure
+
+            # Show error-specific guidance
+            console.print(f"    [dim red]Credential error: {err[:120]}[/dim red]")
             if "ExpiredToken" in err or "expired" in err.lower():
                 console.print(
-                    "    [dim]Hint: Expired credentials in ~/.aws/credentials are blocking the EC2 instance role.\n"
-                    "    Run: [cyan]unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN[/cyan]\n"
-                    "    Then clear the [default] section from ~/.aws/credentials and retry.[/dim]"
+                    "    [dim]Hint: Your session has expired. Try:[/dim]\n"
+                    "    [dim]  \u2022 aws sso login --profile <profile>[/dim]\n"
+                    "    [dim]  \u2022 export AWS_PROFILE=<your-profile>[/dim]"
                 )
             elif "NoCredentialProviders" in err or "Unable to locate credentials" in err:
                 console.print(
-                    "    [dim]Hint: No credentials found. Configure via env vars, ~/.aws/credentials,\n"
-                    "    an IAM instance profile, or AWS SSO.[/dim]"
+                    "    [dim]Hint: No credentials found. Try:[/dim]\n"
+                    "    [dim]  \u2022 export AWS_PROFILE=<your-profile>[/dim]\n"
+                    "    [dim]  \u2022 aws sso login --profile <profile>[/dim]\n"
+                    "    [dim]  \u2022 aws configure[/dim]"
+                )
+            else:
+                console.print(
+                    "    [dim]  \u2022 Check: aws sts get-caller-identity[/dim]"
                 )
             return False
 
