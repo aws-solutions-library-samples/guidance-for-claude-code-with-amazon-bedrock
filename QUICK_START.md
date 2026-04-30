@@ -16,6 +16,19 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 - AWS CLI v2
 - Git
 
+**macOS admins — check your machine architecture before building:**
+
+```bash
+uname -m
+```
+
+| Output | Your Mac | Builds natively |
+|--------|----------|----------------|
+| `arm64` | Apple Silicon (M1/M2/M3/M4) | `macos-arm64` — Intel requires [optional setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) |
+| `x86_64` | Intel Mac | `macos-intel` — cannot build `macos-arm64` |
+
+> Intel (`macos-intel`) binaries run on both Intel and Apple Silicon Macs (via Rosetta). ARM64 binaries only run on Apple Silicon. If your developers have a **mixed fleet**, build `macos-intel` — it covers everyone.
+
 ### AWS Requirements
 
 - AWS account with appropriate IAM permissions to create:
@@ -621,6 +634,21 @@ poetry run ccwb builds
 # When ready, create distribution URL (optional)
 poetry run ccwb distribute
 ```
+
+**Choosing macOS targets:**
+
+The `ccwb package` command prompts you to select one or more platforms via a checkbox. Pick based on your developers' hardware:
+
+| Your developers have | Select |
+|----------------------|--------|
+| Apple Silicon only | `macos-arm64` |
+| Intel Macs only | `macos-intel` |
+| Mixed fleet | `macos-arm64` + `macos-intel` |
+| Unsure | `macos-intel` — runs on both via Rosetta |
+
+Not sure what your developers are running? Have them run `uname -m`: `arm64` = Apple Silicon, `x86_64` = Intel.
+
+> **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped. See [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional).
 
 **Package Workflow:**
 
