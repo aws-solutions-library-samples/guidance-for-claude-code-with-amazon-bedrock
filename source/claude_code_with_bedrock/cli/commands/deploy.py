@@ -803,27 +803,27 @@ class DeployCommand(Command):
                     "MetricsAggregatorRoleName", "claude-code-auth-dashboard-MetricsAggregatorRole-*"
                 )
 
-                # Get OIDC configuration for JWT authentication
-                if profile.provider_type == "cognito":
-                    # Cognito issuer uses cognito-idp endpoint, not the hosted UI domain
-                    pool_id = getattr(profile, "cognito_user_pool_id", "")
-                    if pool_id:
-                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
-                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+                # Get OIDC configuration for JWT authentication (only when SSO is enabled)
+                oidc_issuer_url = ""
+                oidc_client_id = ""
+                if getattr(profile, "sso_enabled", True):
+                    if profile.provider_type == "cognito":
+                        pool_id = getattr(profile, "cognito_user_pool_id", "")
+                        if pool_id:
+                            pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+                            oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+                        else:
+                            raise ValueError(
+                                "Cognito User Pool ID is required for quota monitoring JWT authentication. "
+                                "Please set cognito_user_pool_id in your profile configuration."
+                            )
                     else:
-                        raise ValueError(
-                            "Cognito User Pool ID is required for quota monitoring JWT authentication. "
-                            "Please set cognito_user_pool_id in your profile configuration."
-                        )
-                else:
-                    oidc_issuer_url = profile.provider_domain
-                    # Ensure issuer URL has https:// prefix
-                    if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
-                        oidc_issuer_url = f"https://{oidc_issuer_url}"
-                # Auth0 tokens include trailing slash in iss claim, so authorizer must match
-                if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
-                    oidc_issuer_url = f"{oidc_issuer_url}/"
-                oidc_client_id = profile.client_id
+                        oidc_issuer_url = profile.provider_domain
+                        if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
+                            oidc_issuer_url = f"https://{oidc_issuer_url}"
+                    if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
+                        oidc_issuer_url = f"{oidc_issuer_url}/"
+                    oidc_client_id = profile.client_id
 
                 # Pass explicitly so the profile is the source of truth; the CF template
                 # default is 'false' to match the opt-in intent of this field.

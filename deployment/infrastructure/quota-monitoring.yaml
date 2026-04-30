@@ -61,11 +61,17 @@ Parameters:
   # JWT Authentication Parameters for Quota Check API
   OidcIssuerUrl:
     Type: String
-    Description: OIDC provider issuer URL for JWT validation (e.g., https://company.okta.com)
+    Default: ''
+    Description: OIDC provider issuer URL for JWT validation (e.g., https://company.okta.com) - leave empty to disable JWT auth
 
   OidcClientId:
     Type: String
+    Default: ''
     Description: OIDC client ID (audience) for JWT validation
+
+Conditions:
+  HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
+  NoJwtAuth: !Equals [!Ref OidcIssuerUrl, '']
 
 Resources:
   # DynamoDB table for quota policies (user, group, default levels)
@@ -296,9 +302,10 @@ Resources:
           - Authorization
         MaxAge: 300
 
-  # JWT Authorizer for OIDC token validation
+  # JWT Authorizer for OIDC token validation (only when SSO is enabled)
   QuotaCheckAuthorizer:
     Type: AWS::ApiGatewayV2::Authorizer
+    Condition: HasJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       AuthorizerType: JWT
@@ -319,15 +326,24 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check (JWT authenticated)
-  QuotaCheckRoute:
+  # Route for GET /check (JWT authenticated when SSO enabled, open when disabled)
+  QuotaCheckRouteWithAuth:
     Type: AWS::ApiGatewayV2::Route
+    Condition: HasJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
       AuthorizerId: !Ref QuotaCheckAuthorizer
       AuthorizationType: JWT
+
+  QuotaCheckRouteNoAuth:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: NoJwtAuth
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      RouteKey: 'GET /check'
+      Target: !Sub 'integrations/${QuotaCheckIntegration}'
 
   # Default stage with auto-deploy
   QuotaCheckStage:

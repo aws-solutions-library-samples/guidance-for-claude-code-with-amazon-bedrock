@@ -1313,15 +1313,18 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        if config.get("sso_enabled", True) and "okta" in config:
+            table.add_row("OIDC Provider", config["okta"]["domain"])
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    config["okta"]["client_id"][:20] + "..."
+                    if len(config["okta"]["client_id"]) > 20
+                    else config["okta"]["client_id"]
+                ),
+            )
+        else:
+            table.add_row("Authentication", "AWS SSO / IAM Identity Center (no OIDC)")
         table.add_row(
             "Credential Storage",
             (
@@ -1936,13 +1939,14 @@ class InitCommand(Command):
         """Show summary of existing deployment."""
         console = Console()
 
-        console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
-
-        # Show Cognito-specific fields if using Cognito User Pool
-        if "cognito_user_pool_id" in config:
-            console.print(f"• Cognito User Pool ID: [cyan]{config['cognito_user_pool_id']}[/cyan]")
-        if "okta" in config and "client_id" in config["okta"]:
-            console.print(f"• Client ID: [cyan]{config['okta']['client_id']}[/cyan]")
+        if config.get("sso_enabled", True) and "okta" in config:
+            console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+            if "cognito_user_pool_id" in config:
+                console.print(f"• Cognito User Pool ID: [cyan]{config['cognito_user_pool_id']}[/cyan]")
+            if "client_id" in config["okta"]:
+                console.print(f"• Client ID: [cyan]{config['okta']['client_id']}[/cyan]")
+        else:
+            console.print("• Authentication: [cyan]AWS SSO / IAM Identity Center (no OIDC)[/cyan]")
 
         cred_storage = "Keyring" if config.get("credential_storage") == "keyring" else "Session Files"
         console.print(f"• Credential Storage: [cyan]{cred_storage}[/cyan]")
