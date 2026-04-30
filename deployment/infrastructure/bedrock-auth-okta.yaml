@@ -93,6 +93,7 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock-runtime:InvokeModel'
@@ -110,6 +111,7 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock-runtime:InvokeModel'

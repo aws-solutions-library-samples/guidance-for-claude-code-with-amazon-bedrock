@@ -137,6 +137,7 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
             Resource:
