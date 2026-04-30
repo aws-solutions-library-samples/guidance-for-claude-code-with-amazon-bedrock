@@ -594,7 +594,7 @@ class DeployCommand(Command):
 
             elif stack_type == "s3bucket":
                 template = project_root / "deployment" / "infrastructure" / "s3bucket.yaml"
-                stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-s3bucket")
+                stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
                 params = []
                 return deploy_with_cf(template, stack_name, params, task_description="Deploying S3 Bucket...")
             elif stack_type == "monitoring":
