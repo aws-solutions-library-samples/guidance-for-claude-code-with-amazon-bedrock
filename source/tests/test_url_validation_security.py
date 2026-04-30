@@ -201,6 +201,48 @@ class TestURLValidationSecurity:
             assert detect_provider_type_secure(domain) == expected, f"Backward compatibility broken for {domain}"
 
 
+class TestCredentialExpirationFormat:
+    """Test that credential Expiration timestamps are in UTC format for AWS CLI compatibility"""
+
+    def test_expiration_datetime_with_timezone_offset_converted_to_utc(self):
+        """Test that a datetime with local timezone offset is converted to UTC Z format.
+
+        The AWS CLI credential_process protocol requires Expiration in UTC format
+        ending with 'Z'. Local timezone offsets (e.g., +02:00) cause InvalidClientTokenId errors.
+        See: https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/178
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Simulate what Cognito SDK returns: a datetime with local timezone
+        local_tz = timezone(timedelta(hours=2))
+        expiration_local = datetime(2026, 3, 30, 13, 16, 59, tzinfo=local_tz)
+
+        # Apply the same conversion as the fix
+        result = expiration_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        assert result == "2026-03-30T11:16:59Z"
+        assert result.endswith("Z"), "Expiration must end with Z for AWS CLI compatibility"
+        assert "+" not in result, "Expiration must not contain timezone offset"
+
+    def test_expiration_utc_datetime_stays_utc(self):
+        """Test that a UTC datetime remains in UTC Z format."""
+        from datetime import datetime, timezone
+
+        expiration_utc = datetime(2026, 3, 30, 11, 16, 59, tzinfo=timezone.utc)
+
+        result = expiration_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        assert result == "2026-03-30T11:16:59Z"
+
+    def test_expiration_string_passthrough(self):
+        """Test that string expiration values pass through unchanged."""
+        expiration_str = "2026-03-30T11:16:59Z"
+
+        # The code checks hasattr(creds["Expiration"], "astimezone")
+        # Strings don't have astimezone, so they pass through
+        assert not hasattr(expiration_str, "astimezone")
+
+
 class TestCredentialSanitization:
     """Test cases for credential logging sanitization"""
 

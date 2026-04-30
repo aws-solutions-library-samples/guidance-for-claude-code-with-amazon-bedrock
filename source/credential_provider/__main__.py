@@ -1115,8 +1115,8 @@ class MultiProviderAuth:
                 "SecretAccessKey": creds["SecretAccessKey"],
                 "SessionToken": creds["SessionToken"],
                 "Expiration": (
-                    creds["Expiration"].isoformat()
-                    if hasattr(creds["Expiration"], "isoformat")
+                    creds["Expiration"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if hasattr(creds["Expiration"], "astimezone")
                     else creds["Expiration"]
                 ),
             }
@@ -1258,8 +1258,8 @@ class MultiProviderAuth:
                 "SecretAccessKey": creds["SecretKey"],
                 "SessionToken": creds["SessionToken"],
                 "Expiration": (
-                    creds["Expiration"].isoformat()
-                    if hasattr(creds["Expiration"], "isoformat")
+                    creds["Expiration"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if hasattr(creds["Expiration"], "astimezone")
                     else creds["Expiration"]
                 ),
             }
