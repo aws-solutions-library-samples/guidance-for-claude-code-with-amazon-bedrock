@@ -435,7 +435,15 @@ class TestCommand(Command):
         if failed > 0:
             console.print("\n[red]Some tests failed. Please check the details above.[/red]")
             console.print("\n[bold]Troubleshooting tips:[/bold]")
-            console.print("• Ensure you have access to the Okta application")
+            provider_type = getattr(profile, "provider_type", None) or "okta"
+            provider_labels = {
+                "okta": "Okta",
+                "azure": "Microsoft Entra ID (Azure AD)",
+                "auth0": "Auth0",
+                "cognito": "AWS Cognito",
+            }
+            provider_label = provider_labels.get(provider_type, provider_type.title())
+            console.print(f"• Ensure you have access to the {provider_label} application")
             console.print("• Check that the Cognito Identity Pool is deployed")
             console.print("• Verify IAM roles have correct permissions")
             console.print("• Make sure Bedrock is enabled in your AWS account")
