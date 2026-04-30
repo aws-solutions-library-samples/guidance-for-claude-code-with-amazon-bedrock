@@ -790,11 +790,12 @@ class InitCommand(Command):
                 existing_custom_domain = config["monitoring"].get("custom_domain")
                 existing_zone_id = config["monitoring"].get("hosted_zone_id")
                 already_configured = bool(existing_custom_domain and existing_zone_id)
+                has_existing_domain = bool(existing_custom_domain)
 
-                if already_configured:
+                if has_existing_domain:
                     console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
 
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=already_configured).ask()
+                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=has_existing_domain).ask()
 
                 if enable_https:
                     custom_domain = questionary.text(
@@ -1788,10 +1789,24 @@ class InitCommand(Command):
 
     def _check_aws_credentials(self) -> bool:
         """Check if AWS credentials are configured."""
+        console = Console()
         try:
             boto3.client("sts").get_caller_identity()
             return True
-        except Exception:
+        except Exception as e:
+            err = str(e)
+            console.print(f"    [dim red]Credential error: {err}[/dim red]")
+            if "ExpiredToken" in err or "expired" in err.lower():
+                console.print(
+                    "    [dim]Hint: Expired credentials in ~/.aws/credentials are blocking the EC2 instance role.\n"
+                    "    Run: [cyan]unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN[/cyan]\n"
+                    "    Then clear the [default] section from ~/.aws/credentials and retry.[/dim]"
+                )
+            elif "NoCredentialProviders" in err or "Unable to locate credentials" in err:
+                console.print(
+                    "    [dim]Hint: No credentials found. Configure via env vars, ~/.aws/credentials,\n"
+                    "    an IAM instance profile, or AWS SSO.[/dim]"
+                )
             return False
 
     def _check_python_version(self) -> bool:

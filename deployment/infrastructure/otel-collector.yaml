@@ -47,6 +47,7 @@ Parameters:
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  NoCustomDomain: !Equals [!Ref CustomDomainName, '']
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
@@ -487,9 +488,40 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
-  # ECS Service
-  ECSService:
+  # ECS Service — split into two conditional resources so that each path has
+  # the correct DependsOn without referencing a conditionally-absent resource.
+  # CloudFormation validates DependsOn unconditionally at parse time, so a
+  # single resource cannot safely list a conditional resource as a dependency.
+
+  # HTTP-only path (no custom domain): wait only for HTTPListener
+  ECSServiceHTTP:
     Type: AWS::ECS::Service
+    Condition: NoCustomDomain
+    DependsOn:
+      - HTTPListener
+    Properties:
+      ServiceName: otel-collector-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: aws-otel-collector
+          ContainerPort: 4318
+          TargetGroupArn: !Ref HTTPTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+
+  # HTTPS path (custom domain): wait for both listeners so the target group
+  # association via HTTPSListener is ready before the service registers tasks
+  ECSServiceHTTPS:
+    Type: AWS::ECS::Service
+    Condition: HasCustomDomain
     DependsOn:
       - HTTPListener
       - HTTPSListener
