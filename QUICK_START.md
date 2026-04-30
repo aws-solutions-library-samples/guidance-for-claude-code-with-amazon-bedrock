@@ -862,6 +862,39 @@ Redistribute the new package. The installer auto-detects architecture and instal
 
 > **Why this happens:** Building on Apple Silicon only produces `credential-process-macos-arm64` by default. The Intel (`macos-intel`) build is optional and requires the x86_64 Python environment above. ARM64 binaries cannot run on Intel Macs — unlike the reverse (Intel binaries run on Apple Silicon via Rosetta).
 
+### Windows `install.bat` — `-replace was unexpected at this time.`
+
+If running `install.bat` on Windows produces this error:
+
+```
+-replace was unexpected at this time.
+```
+
+**Root cause:** This is a cmd.exe parser bug in the generated installer — `^` line-continuation characters inside a double-quoted PowerShell command get consumed by cmd.exe, causing `-replace` to be treated as a standalone batch command rather than part of the PowerShell string. A code fix is included in the next release.
+
+**Workaround:** The binary and `config.json` are already copied before this error occurs — only the `~/.claude/settings.json` placeholder replacement fails. Complete the installation manually:
+
+**Step 1** — Open **PowerShell** (not cmd.exe) from the extracted package folder and run:
+
+```powershell
+$otelPath = "$env:USERPROFILE\claude-code-with-bedrock\otel-helper.exe" -replace '\\', '/'
+$credPath = "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe" -replace '\\', '/'
+(Get-Content 'claude-settings\settings.json') `
+    -replace '__OTEL_HELPER_PATH__', $otelPath `
+    -replace '__CREDENTIAL_PROCESS_PATH__', $credPath |
+    Set-Content "$env:USERPROFILE\.claude\settings.json"
+```
+
+**Step 2** — Configure the AWS profile (replace `<profile-name>` with the name shown in `config.json`):
+
+```powershell
+aws configure set credential_process `
+    "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe --profile <profile-name>" `
+    --profile <profile-name>
+```
+
+> **Why PowerShell works:** PowerShell uses backtick (`` ` ``) for line continuation — there is no cmd.exe parser involved to mangle the `-replace` operators.
+
 ### Build Failures
 
 Check Windows build status:
