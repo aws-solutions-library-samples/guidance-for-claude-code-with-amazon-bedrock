@@ -804,8 +804,14 @@ class InitCommand(Command):
                         default=existing_custom_domain if existing_custom_domain else "",
                     ).ask()
 
+                    # Save the domain immediately — regardless of what happens with
+                    # hosted zone lookup. This is the root cause of "domain never saves":
+                    # previously the domain was only written inside the if hosted_zones
+                    # block, so any Route53 failure silently discarded the user's input.
+                    config["monitoring"]["custom_domain"] = custom_domain
+
                     # Get Route53 hosted zones
-                    hosted_zones = self._get_hosted_zones()
+                    hosted_zones, zones_error = self._get_hosted_zones()
                     if hosted_zones:
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
@@ -827,13 +833,23 @@ class InitCommand(Command):
 
                         # Extract zone ID
                         zone_id = selected_zone.split("(")[-1].rstrip(")")
-
-                        config["monitoring"]["custom_domain"] = custom_domain
                         config["monitoring"]["hosted_zone_id"] = zone_id
                         console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
-                        console.print("[yellow]No Route53 hosted zones found. HTTPS requires a hosted zone.[/yellow]")
-                        console.print("[dim]You can add these parameters manually during deployment.[/dim]")
+                        if zones_error:
+                            console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
+                        else:
+                            console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
+                        console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                        manual_zone_id = questionary.text(
+                            "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                            default=existing_zone_id if existing_zone_id else "",
+                        ).ask()
+                        if manual_zone_id and manual_zone_id.strip():
+                            config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                            console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                        else:
+                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None
@@ -2206,16 +2222,21 @@ class InitCommand(Command):
         except Exception:
             return {}
 
-    def _get_hosted_zones(self) -> list[dict[str, Any]]:
-        """Get available Route53 hosted zones."""
+    def _get_hosted_zones(self) -> tuple[list[dict[str, Any]], str | None]:
+        """Get available Route53 hosted zones.
+
+        Returns:
+            Tuple of (zones list, error message or None).
+            On success: (zones, None). On failure: ([], error_string).
+        """
         try:
             import boto3
 
             client = boto3.client("route53")
             response = client.list_hosted_zones()
-            return response.get("HostedZones", [])
-        except Exception:
-            return []
+            return response.get("HostedZones", []), None
+        except Exception as e:
+            return [], str(e)
 
     def _configure_vpc(self, region: str, existing_vpc_config: dict[str, Any] = None) -> dict[str, Any]:
         """Configure VPC for monitoring stack."""
