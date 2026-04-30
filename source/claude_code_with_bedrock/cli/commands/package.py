@@ -2050,6 +2050,7 @@ echo
         """Create Windows batch installer script."""
 
         installer_content = f"""@echo off
+SETLOCAL ENABLEDELAYEDEXPANSION
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -2116,15 +2117,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
-            powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
-            -replace '\\\\\\\\', '/'; ^
-            (Get-Content 'claude-settings\\\\settings.json') ^
-            -replace '__OTEL_HELPER_PATH__', $otelPath ^
-            -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ^
-            Set-Content '%USERPROFILE%\\\\.claude\\\\settings.json'"
+            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
