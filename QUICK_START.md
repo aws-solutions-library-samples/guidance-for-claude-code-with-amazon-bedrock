@@ -245,7 +245,18 @@ Enter the domain of your identity provider — the base URL without `https://`:
 | Auth0 | `company.auth0.com` |
 | Cognito User Pool | `my-app.auth.us-east-1.amazoncognito.com` |
 
-The wizard auto-detects the provider type from the domain. If it detects Cognito, it will also ask for your **User Pool ID** (case-sensitive, format: `us-east-1_XXXXXXXXX`).
+The wizard auto-detects the provider type from the domain for the four known providers above. If it detects Cognito, it will also ask for your **User Pool ID** (case-sensitive, format: `us-east-1_XXXXXXXXX`).
+
+> **Custom or non-standard OIDC domains** (e.g. Keycloak, PingFederate, Okta vanity domains like `sso.mycompany.com`): the wizard cannot auto-detect the type and will prompt you to select manually:
+> ```
+> Could not auto-detect provider type from domain.
+> Select your identity provider type:
+>   > Okta (or generic OIDC)
+>     Microsoft Entra ID / Azure AD
+>     Auth0
+>     AWS Cognito User Pool
+> ```
+> Choose **Okta (or generic OIDC)** for any standard OIDC provider not listed (Keycloak, PingFederate, ADFS, etc.) — it uses the most compatible CloudFormation template.
 
 ---
 
