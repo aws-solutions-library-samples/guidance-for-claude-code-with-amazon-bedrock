@@ -1,3 +1,8 @@
+# THIS VERSION ALLOWS MOVING USAGE CONTROL SERVER SIDE
+# BY USING INFERENCE PROFILES FOR COST TRACKING AND THRESHOLD CONTROLS
+# EACH USER WILL HAVE HIS OWN INFERENCE PROFILES
+
+
 # Guidance for Claude Code with Amazon Bedrock
 
 This guidance provides enterprise deployment patterns for Claude Code with Amazon Bedrock using existing identity providers. Integrates with your IdP (Okta, Azure AD, Auth0, Cognito User Pools) for centralized access control, audit trails, and usage monitoring across your organization.
