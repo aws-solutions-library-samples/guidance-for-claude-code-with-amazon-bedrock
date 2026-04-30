@@ -300,7 +300,7 @@ arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
 - For `--target-platform=all`: Skips Intel builds with a note, builds all other platforms
 - For `--target-platform=macos-intel`: Shows instructions for optional setup, skips the build
 - The package process continues successfully without Intel binaries
-- ARM64 binaries can be distributed to all Mac users (Intel and Apple Silicon)
+- Intel (`macos-intel`) binaries can be distributed to all Mac users — they run natively on Intel Macs and via Rosetta on Apple Silicon. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
 
 **Graceful Fallback Behavior:**
 
