@@ -641,15 +641,20 @@ Before selecting, check your machine's architecture:
 
 ```bash
 uname -m
+python3 -c "import platform; print(platform.machine())"
+poetry run python -c "import platform; print(platform.machine())"
 ```
+
+All three should return the same value. The Poetry command is most important — it confirms what architecture PyInstaller will use when building the binary.
 
 - `arm64` → you are on Apple Silicon — select `macos-arm64`
 - `x86_64` → you are on Intel — select `macos-intel`
 
-The `ccwb package` command prompts you to select one or more platforms via a checkbox. **You must build for the architecture your developers are running** — ask your developers to run the same command on their machines and tell you the output before you build:
+The `ccwb package` command prompts you to select one or more platforms via a checkbox. **You must build for the architecture your developers are running** — ask your developers to run the same commands on their machines and tell you the output before you build:
 
 ```bash
 uname -m
+python3 -c "import platform; print(platform.machine())"
 ```
 
 Pick based on what your developers report:
