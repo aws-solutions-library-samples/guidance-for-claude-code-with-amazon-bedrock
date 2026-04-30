@@ -545,10 +545,13 @@ Resources:
 
   # Auto Scaling - Commented out due to service-linked role requirements
   # Uncomment if you want auto-scaling and have the necessary service-linked role
+  # Note: ECSService was split into ECSServiceHTTP (Condition: NoCustomDomain) and
+  # ECSServiceHTTPS (Condition: HasCustomDomain). If re-enabling auto-scaling, use
+  # the variant that matches your deployment (custom domain vs HTTP-only).
   #
   # ServiceScalingTarget:
   #   Type: AWS::ApplicationAutoScaling::ScalableTarget
-  #   DependsOn: ECSService
+  #   DependsOn: ECSServiceHTTPS  # or ECSServiceHTTP if not using a custom domain
   #   Properties:
   #     MaxCapacity: 3
   #     MinCapacity: 1
