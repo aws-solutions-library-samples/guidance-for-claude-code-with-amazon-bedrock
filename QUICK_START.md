@@ -24,10 +24,10 @@ uname -m
 
 | Output | Your Mac | Builds natively |
 |--------|----------|----------------|
-| `arm64` | Apple Silicon (M1/M2/M3/M4) | `macos-arm64` — Intel requires [optional setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) |
-| `x86_64` | Intel Mac | `macos-intel` — cannot build `macos-arm64` |
+| `arm64` | Apple Silicon (M1/M2/M3/M4) | `macos-arm64` — Apple Silicon only; Intel Macs cannot run it |
+| `x86_64` | Intel Mac | `macos-intel` — covers all Macs (runs natively on Intel, via Rosetta on Apple Silicon) |
 
-> Intel (`macos-intel`) binaries run on both Intel and Apple Silicon Macs (via Rosetta). ARM64 binaries only run on Apple Silicon. If your developers have a **mixed fleet**, build `macos-intel` — it covers everyone.
+> Intel (`macos-intel`) binaries run via Rosetta on Apple Silicon Macs, so a single Intel binary covers your entire Mac fleet. ARM64 binaries only run on Apple Silicon. If your admin is on Apple Silicon, use the [cross-arch setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional) to build the Intel binary.
 
 ### AWS Requirements
 
@@ -665,7 +665,7 @@ Pick based on what your developers report:
 | `x86_64` (Intel) | `macos-intel` |
 | Both | `macos-arm64` + `macos-intel` |
 
-> **Note:** Building `macos-intel` on an Apple Silicon Mac requires a one-time x86_64 Python setup. If not configured, the Intel build is skipped and **no binary is included in the package**. Complete the [Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) before selecting `macos-intel`.
+> **Note:** `macos-intel` binaries run on all Macs — natively on Intel, via Rosetta on Apple Silicon. If you have Intel Mac users in your org, build `macos-intel`. On Apple Silicon, this requires a universal2 Python (see [Cross-arch macOS Build Setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional)).
 
 **Package Workflow:**
 
@@ -775,21 +775,21 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
 
 - **Windows**: AWS CodeBuild with Nuitka (automated)
 - **macOS**: PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs
-  - Intel: Optional - requires x86_64 Python environment on ARM Macs
-  - Universal: Requires both architectures' Python libraries
+  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
+  - Intel: Native build on Intel Macs — cross-arch from Apple Silicon requires universal2 Python (optional)
+  - Universal: Requires universal2 Python (optional)
 - **Linux**: Docker with PyInstaller (cross-compiled from macOS host)
   - Requires [Docker Desktop](https://docs.docker.com/get-docker/) installed and running
   - If Docker is not installed or its daemon is not running, Linux builds are skipped with a warning
   - macOS and Windows builds have **no dependency on Docker**
 
-### Optional: Intel Mac Builds
+### Optional: Cross-arch macOS Builds
 
-Intel Mac builds require an x86_64 Python environment on Apple Silicon Macs.
+By default, `ccwb package` builds only for your Mac's own architecture. If you need to also build for the other architecture (e.g. Intel on Apple Silicon), install a universal2 Python from python.org — `ccwb` will detect it automatically.
 
-See [CLI Reference - Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) for setup instructions.
+See [CLI Reference - Cross-arch macOS Build Setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional) for setup instructions.
 
-If not configured, the package command will skip Intel builds and continue with other platforms.
+If not configured, cross-arch builds are skipped and the package command continues with other platforms. Intel (`macos-intel`) binaries cover all Macs via Rosetta, so admins on Intel Macs can skip this. Admins on Apple Silicon who have Intel Mac users in their org should install the universal2 Python to produce the Intel binary.
 
 ---
 
@@ -893,11 +893,9 @@ file ~/claude-code-with-bedrock/credential-process        # binary's CPU arch
 **Fix (admin) — rebuild with both macOS architectures:**
 
 ```bash
-# One-time setup: x86_64 Python environment on Apple Silicon Mac
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-arch -x86_64 /usr/local/bin/brew install python@3.12
-arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
-arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
+# One-time setup: install Python universal2 from https://www.python.org/downloads/macos/
+# Download the "macOS 64-bit universal2 installer" for Python 3.12 and run it.
+# ccwb detects it automatically at /Library/Frameworks/Python.framework/
 
 # Rebuild — now produces both macos-arm64 and macos-intel
 poetry run ccwb package --target-platform all
@@ -905,7 +903,7 @@ poetry run ccwb package --target-platform all
 
 Redistribute the new package. The installer auto-detects architecture and installs the correct binary.
 
-> **Why this happens:** Building on Apple Silicon only produces `credential-process-macos-arm64` by default. The Intel (`macos-intel`) build is optional and requires the x86_64 Python environment above. ARM64 binaries cannot run on Intel Macs — unlike the reverse (Intel binaries run on Apple Silicon via Rosetta).
+> **Why this happens:** Without a universal2 Python, `ccwb package` builds only for the host Mac's architecture. An ARM64-only package has no Intel binary, so Intel Mac users get `exec format error` — ARM64 binaries cannot run on Intel Macs. Install a universal2 Python to also build the Intel binary, which covers all Mac users.
 
 ### Windows `install.bat` — `-replace was unexpected at this time.`
 
