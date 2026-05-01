@@ -1300,6 +1300,10 @@ class DeployCommand(Command):
                 try:
                     iam_client.create_service_linked_role(AWSServiceName="ecs.amazonaws.com")
                     console.print("[green]✓ ECS service linked role created[/green]")
+                    # Wait for IAM propagation before proceeding with ECS cluster creation
+                    import time
+                    console.print("[dim]Waiting for IAM role propagation...[/dim]")
+                    time.sleep(10)
                 except iam_client.exceptions.InvalidInputException as e:
                     # Role might already exist (race condition)
                     if "has been taken in this account" in str(e):
