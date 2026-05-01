@@ -129,12 +129,21 @@ class PackageCommand(Command):
 
         # Get actual Identity Pool ID or Role ARN from stack outputs
         console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
+        if getattr(profile, "sso_enabled", True):
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+        else:
+            stack_outputs = None
 
         if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+            if not getattr(profile, "sso_enabled", True):
+                console.print(
+                    "[red]Package building requires an authentication stack. "
+                    "Re-run 'ccwb init' with SSO enabled to deploy the auth infrastructure.[/red]"
+                )
+            else:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
             return 1
 
         # Check federation type and get appropriate identifier

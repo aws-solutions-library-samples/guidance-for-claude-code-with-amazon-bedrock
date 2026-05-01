@@ -120,8 +120,8 @@ class TestBuildClientAssertion:
         header = pyjwt.get_unverified_header(assertion)
         claims = pyjwt.decode(assertion, options={"verify_signature": False})
 
-        assert header["alg"] == "RS256"
-        assert "x5t" in header
+        assert header["alg"] == "PS256"
+        assert "x5t#S256" in header
         assert claims["aud"] == token_url
         assert claims["iss"] == "test-client-id"
         assert claims["sub"] == "test-client-id"
@@ -162,7 +162,7 @@ class TestBuildClientAssertion:
         claims = pyjwt.decode(
             assertion,
             private_key.public_key(),
-            algorithms=["RS256"],
+            algorithms=["PS256"],
             audience=token_url,
         )
         assert claims["iss"] == "test-client-id"
@@ -183,10 +183,10 @@ class TestBuildClientAssertion:
         assertion = auth._build_client_assertion("https://example.com/token")
         header = pyjwt.get_unverified_header(assertion)
 
-        expected_thumbprint = cert.fingerprint(crypto_hashes.SHA1())
+        expected_thumbprint = cert.fingerprint(crypto_hashes.SHA256())
         expected_x5t = base64.urlsafe_b64encode(expected_thumbprint).rstrip(b"=").decode()
 
-        assert header["x5t"] == expected_x5t
+        assert header["x5t#S256"] == expected_x5t
 
     def test_each_assertion_has_unique_jti(self, tmp_path):
         private_key = _generate_rsa_keypair()

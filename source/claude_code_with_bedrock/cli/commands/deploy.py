@@ -924,9 +924,12 @@ class DeployCommand(Command):
 
     def _show_stack_outputs(self, profile, console: Console, config: Config) -> None:
         """Show outputs from deployed stacks."""
-        # Get auth stack outputs
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        # Get auth stack outputs (only if SSO is enabled)
+        if getattr(profile, "sso_enabled", True):
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        else:
+            outputs = None
 
         if outputs:
             console.print("\n[bold]Authentication Stack:[/bold]")

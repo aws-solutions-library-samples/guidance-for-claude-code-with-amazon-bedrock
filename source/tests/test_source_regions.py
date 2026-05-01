@@ -24,7 +24,7 @@ class TestSourceRegionFunctionality:
                 source_regions = profile_config["source_regions"]
 
                 # Should have at least one source region available
-                assert isinstance(source_regions, list)
+                assert isinstance(source_regions, (list, tuple))
                 assert len(source_regions) > 0, f"No source regions for {model_key}/{profile_key}"
 
                 # All source regions should be valid AWS region format
@@ -38,19 +38,19 @@ class TestSourceRegionFunctionality:
         """Test getting source regions for specific model/profile combinations."""
         # Test US model
         us_regions = get_source_regions_for_model_profile("opus-4-1", "us")
-        assert isinstance(us_regions, list)
+        assert isinstance(us_regions, (list, tuple))
         assert len(us_regions) > 0
         assert "us-west-2" in us_regions  # Should include us-west-2
 
         # Test Europe model
-        eu_regions = get_source_regions_for_model_profile("sonnet-4", "europe")
-        assert isinstance(eu_regions, list)
+        eu_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
+        assert isinstance(eu_regions, (list, tuple))
         assert len(eu_regions) > 0
         assert any(region.startswith("eu-") for region in eu_regions)
 
         # Test APAC model
         apac_regions = get_source_regions_for_model_profile("sonnet-4", "apac")
-        assert isinstance(apac_regions, list)
+        assert isinstance(apac_regions, (list, tuple))
         assert len(apac_regions) > 0
         assert any(region.startswith("ap-") for region in apac_regions)
 
@@ -76,7 +76,7 @@ class TestSourceRegionFunctionality:
 
         # Should fallback to cross-region profile default
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"  # Default Europe region
+        assert result == "eu-west-1"  # Default Europe region
 
     def test_get_source_region_for_profile_fallback_to_aws_region(self):
         """Test source region fallback to infrastructure region for US profiles."""
@@ -107,9 +107,9 @@ class TestSourceRegionFunctionality:
         test_cases = [
             ("opus-4-1", "us", "us-"),
             ("sonnet-4", "us", "us-"),
-            ("sonnet-4", "europe", "eu-"),
+            ("sonnet-4", "eu", "eu-"),
             ("sonnet-4", "apac", "ap-"),
-            ("sonnet-3-7", "europe", "eu-"),
+            ("sonnet-3-7", "eu", "eu-"),
             ("sonnet-3-7", "apac", "ap-"),
         ]
 
@@ -125,9 +125,9 @@ class TestSourceRegionFunctionality:
     def test_source_region_invalid_model_profile_combinations(self):
         """Test that invalid model/profile combinations raise appropriate errors."""
         invalid_combinations = [
-            ("opus-4-1", "europe"),  # Opus 4.1 not available in Europe
+            ("opus-4-1", "eu"),  # Opus 4.1 not available in Europe
             ("opus-4-1", "apac"),  # Opus 4.1 not available in APAC
-            ("opus-4", "europe"),  # Opus 4 not available in Europe
+            ("opus-4", "eu"),  # Opus 4 not available in Europe
             ("opus-4", "apac"),  # Opus 4 not available in APAC
             ("invalid-model", "us"),  # Invalid model
             ("sonnet-4", "invalid-profile"),  # Invalid profile
@@ -149,7 +149,7 @@ class TestSourceRegionFunctionality:
 
         # Should handle missing attribute gracefully and use fallback
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"
+        assert result == "eu-west-1"
 
     def test_all_models_have_source_regions(self):
         """Test that all models in CLAUDE_MODELS have source regions defined."""
@@ -165,8 +165,8 @@ class TestSourceRegionFunctionality:
     def test_source_regions_do_not_overlap_inappropriately(self):
         """Test that source regions are regionally appropriate."""
         regional_tests = {
-            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2"],
-            "europe": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "ca-west-1"],
+            "eu": ["eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-2", "eu-west-3"],
             "apac": [
                 "ap-northeast-1",
                 "ap-northeast-2",

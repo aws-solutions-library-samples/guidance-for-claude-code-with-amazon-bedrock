@@ -174,10 +174,11 @@ class StatusCommand(Command):
         """Get status of all stacks."""
         stacks = {}
 
-        # Check auth stack
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        auth_status = self._check_stack(auth_stack, profile.aws_region)
-        stacks["auth"] = auth_status
+        # Check auth stack (only if SSO is enabled)
+        if getattr(profile, "sso_enabled", True):
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            auth_status = self._check_stack(auth_stack, profile.aws_region)
+            stacks["auth"] = auth_status
 
         if profile.monitoring_enabled:
             # Check monitoring stack
@@ -218,9 +219,12 @@ class StatusCommand(Command):
         """Get all relevant endpoints."""
         endpoints = {}
 
-        # Get auth stack outputs
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        auth_outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        # Get auth stack outputs (only if SSO is enabled)
+        if getattr(profile, "sso_enabled", True):
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            auth_outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        else:
+            auth_outputs = None
 
         if auth_outputs:
             endpoints["identity_pool_id"] = auth_outputs.get("IdentityPoolId")

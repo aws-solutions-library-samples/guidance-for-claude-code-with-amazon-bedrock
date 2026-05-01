@@ -1313,23 +1313,27 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
-        table.add_row(
-            "Credential Storage",
-            (
-                "Keyring (OS secure storage)"
-                if config.get("credential_storage") == "keyring"
-                else "Session Files (temporary)"
-            ),
-        )
+        if config.get("sso_enabled", False) and "okta" in config:
+            table.add_row("OIDC Provider", config["okta"]["domain"])
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    config["okta"]["client_id"][:20] + "..."
+                    if len(config["okta"]["client_id"]) > 20
+                    else config["okta"]["client_id"]
+                ),
+            )
+            table.add_row(
+                "Credential Storage",
+                (
+                    "Keyring (OS secure storage)"
+                    if config.get("credential_storage") == "keyring"
+                    else "Session Files (temporary)"
+                ),
+            )
+        else:
+            table.add_row("SSO Authentication", "✗ Disabled (IAM roles)")
+
         table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
