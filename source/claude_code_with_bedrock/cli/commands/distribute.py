@@ -770,7 +770,7 @@ class DistributeCommand(Command):
             if not windows_downloaded:
                 build_info_file = Path.home() / ".claude-code" / "latest-build.json"
                 if build_info_file.exists():
-                    with open(build_info_file) as f:
+                    with open(build_info_file, encoding="utf-8") as f:
                         build_info = json.load(f)
 
                     # Check build status

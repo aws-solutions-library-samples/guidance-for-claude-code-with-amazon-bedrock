@@ -147,7 +147,7 @@ class MultiProviderAuth:
             if not config_path.exists():
                 return None
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 file_config = json.load(f)
 
             # New format with "profiles" key
@@ -188,7 +188,7 @@ class MultiProviderAuth:
                 f"Configuration file not found in {binary_dir} or {Path.home() / 'claude-code-with-bedrock'}"
             )
 
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             file_config = json.load(f)
 
         # Handle new config format with profiles
@@ -575,7 +575,7 @@ class MultiProviderAuth:
                 # Use simple session file per profile
                 token_file = session_dir / f"{self.profile}-monitoring.json"
 
-                with open(token_file, "w") as f:
+                with open(token_file, "w", encoding="utf-8") as f:
                     json.dump(token_data, f)
                 token_file.chmod(0o600)
 
@@ -613,7 +613,7 @@ class MultiProviderAuth:
                 if not token_file.exists():
                     return None
 
-                with open(token_file) as f:
+                with open(token_file, encoding="utf-8") as f:
                     token_data = json.load(f)
 
             # Check expiration
@@ -674,7 +674,7 @@ class MultiProviderAuth:
             temp_fd, temp_path = tempfile.mkstemp(dir=credentials_path.parent, prefix=".credentials.", suffix=".tmp")
 
             try:
-                with os.fdopen(temp_fd, "w") as f:
+                with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
                     config.write(f)
 
                 # Set restrictive permissions on temp file
@@ -1361,7 +1361,7 @@ class MultiProviderAuth:
                 session_dir = Path.home() / ".claude-code-session"
                 timestamp_file = session_dir / f"{self.profile}-quota-check.json"
                 if timestamp_file.exists():
-                    with open(timestamp_file) as f:
+                    with open(timestamp_file, encoding="utf-8") as f:
                         data = json.load(f)
                         return datetime.fromisoformat(data["last_check"])
             return None
@@ -1379,7 +1379,7 @@ class MultiProviderAuth:
                 session_dir = Path.home() / ".claude-code-session"
                 session_dir.mkdir(parents=True, exist_ok=True)
                 timestamp_file = session_dir / f"{self.profile}-quota-check.json"
-                with open(timestamp_file, "w") as f:
+                with open(timestamp_file, "w", encoding="utf-8") as f:
                     json.dump({"last_check": now}, f)
                 timestamp_file.chmod(0o600)
             self._debug_print("Saved quota check timestamp")
@@ -1398,7 +1398,7 @@ class MultiProviderAuth:
                 session_dir = Path.home() / ".claude-code-session"
                 token_file = session_dir / f"{self.profile}-monitoring.json"
                 if token_file.exists():
-                    with open(token_file) as f:
+                    with open(token_file, encoding="utf-8") as f:
                         token_data = json.load(f)
                         return {"email": token_data.get("email", "")}
             return None

@@ -171,7 +171,7 @@ class TestCommand(Command):
         console.print("✓ Found config.json")
 
         # Read and display config details
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             pkg_config = json.load(f)
             # Try to read from the specified profile name, fall back to "ClaudeCode" for backward compatibility
             profile_config = pkg_config.get(test_profile_name) or pkg_config.get("ClaudeCode", {})
@@ -492,7 +492,7 @@ class TestCommand(Command):
             if not aws_config_file.exists():
                 return {"status": "✗", "details": "AWS config file not found"}
 
-            with open(aws_config_file) as f:
+            with open(aws_config_file, encoding="utf-8") as f:
                 content = f.read()
                 if f"[profile {profile_name}]" in content:
                     return {"status": "✓", "details": f"Profile '{profile_name}' found"}
@@ -814,7 +814,7 @@ class TestCommand(Command):
         if not config_file.exists():
             return None
         try:
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 config = json.load(f)
             # config.json has profile names as top-level keys
             # Return the first (usually only) profile
@@ -943,7 +943,7 @@ class TestCommand(Command):
             if result.returncode == 0:
                 # Check if we got a response
                 try:
-                    with open("/tmp/bedrock-test-output.json") as f:
+                    with open("/tmp/bedrock-test-output.json", encoding="utf-8") as f:
                         response = json.load(f)
                         if "content" in response and len(response["content"]) > 0:
                             text = response["content"][0].get("text", "").strip()

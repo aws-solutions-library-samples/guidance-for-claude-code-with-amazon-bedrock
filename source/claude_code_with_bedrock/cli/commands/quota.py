@@ -1048,7 +1048,7 @@ class QuotaExportCommand(Command):
             if to_stdout:
                 print(output)
             else:
-                with open(file_path, "w") as f:
+                with open(file_path, "w", encoding="utf-8") as f:
                     f.write(output)
                 console.print(f"[green]Exported {len(policies)} policies to {file_path}[/green]")
 
@@ -1201,7 +1201,7 @@ class QuotaImportCommand(Command):
         """
         file_ext = Path(file_path).suffix.lower()
 
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             if file_ext == ".csv":
                 reader = csv.DictReader(f)
                 return list(reader)

@@ -252,7 +252,7 @@ def read_cached_headers():
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
-        with open(cache_path) as f:
+        with open(cache_path, encoding="utf-8") as f:
             cached = json.load(f)
         headers = cached.get("headers")
         if not headers:
@@ -273,7 +273,7 @@ def write_cached_headers(headers, token_exp):
         # Write main cache file atomically (prevents shell wrapper reading partial JSON)
         fd, tmp_path = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"headers": headers, "token_exp": token_exp, "cached_at": int(time.time())}, f)
             os.chmod(tmp_path, 0o600)
             os.rename(tmp_path, str(cache_path))
@@ -285,7 +285,7 @@ def write_cached_headers(headers, token_exp):
         raw_path = cache_path.with_suffix(".raw")
         fd, tmp_path = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(headers, f)
             os.chmod(tmp_path, 0o600)
             os.rename(tmp_path, str(raw_path))

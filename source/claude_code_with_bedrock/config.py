@@ -208,7 +208,7 @@ class Config:
         # Load global config
         if cls.CONFIG_FILE.exists():
             try:
-                with open(cls.CONFIG_FILE) as f:
+                with open(cls.CONFIG_FILE, encoding="utf-8") as f:
                     data = json.load(f)
 
                 return cls(
@@ -230,7 +230,7 @@ class Config:
             "profiles_dir": str(self.PROFILES_DIR),
         }
 
-        with open(self.CONFIG_FILE, "w") as f:
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def load_profile(self, name: str | None = None) -> Profile:
@@ -257,7 +257,7 @@ class Config:
             raise FileNotFoundError(f"Profile not found: {profile_name}")
 
         try:
-            with open(profile_path) as f:
+            with open(profile_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             return Profile.from_dict(data)
@@ -287,7 +287,7 @@ class Config:
         # Save to file
         profile_path = self.PROFILES_DIR / f"{profile.name}.json"
 
-        with open(profile_path, "w") as f:
+        with open(profile_path, "w", encoding="utf-8") as f:
             json.dump(profile.to_dict(), f, indent=2)
 
         # Set as active if it's the first profile

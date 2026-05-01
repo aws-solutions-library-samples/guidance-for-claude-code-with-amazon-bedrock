@@ -36,7 +36,7 @@ def migrate_legacy_config() -> bool:
 
     try:
         # Load legacy config
-        with open(legacy_config_file) as f:
+        with open(legacy_config_file, encoding="utf-8") as f:
             legacy_data = json.load(f)
 
         # Extract profiles and default profile
@@ -64,7 +64,7 @@ def migrate_legacy_config() -> bool:
 
                 # Save to individual file
                 profile_path = new_profiles_dir / f"{profile_name}.json"
-                with open(profile_path, "w") as f:
+                with open(profile_path, "w", encoding="utf-8") as f:
                     json.dump(profile.to_dict(), f, indent=2)
 
                 print(f"   ✓ Migrated profile: {profile_name}")
@@ -84,7 +84,7 @@ def migrate_legacy_config() -> bool:
             "profiles_dir": str(new_profiles_dir),
         }
 
-        with open(Config.CONFIG_FILE, "w") as f:
+        with open(Config.CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(new_config_data, f, indent=2)
 
         print(f"   ✓ Created global config with active profile: {active_profile_name}")

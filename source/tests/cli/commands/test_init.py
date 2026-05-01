@@ -286,7 +286,7 @@ class TestInitCommandRegression:
             Path(__file__).parent.parent.parent.parent / "claude_code_with_bedrock" / "cli" / "commands" / "init.py"
         )
 
-        with open(init_file_path) as f:
+        with open(init_file_path, encoding="utf-8") as f:
             content = f.read()
 
         # Count occurrences of 'import re'
