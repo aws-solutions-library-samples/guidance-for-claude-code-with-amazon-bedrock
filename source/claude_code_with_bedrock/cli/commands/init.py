@@ -1464,7 +1464,14 @@ class InitCommand(Command):
             if dist_type == "landing-page":
                 console.print("• Authenticated landing page distribution (ALB + Lambda + S3)")
                 idp_provider = config.get("distribution", {}).get("idp_provider", "")
-                console.print(f"• IdP authentication: {idp_provider.upper() if idp_provider else 'configured'}")
+                idp_display_names = {
+                    "okta": "Okta",
+                    "azure": "Azure AD / Entra ID",
+                    "auth0": "Auth0",
+                    "cognito": "AWS Cognito User Pool",
+                }
+                idp_label = idp_display_names.get(idp_provider, idp_provider.upper() if idp_provider else "configured")
+                console.print(f"• IdP authentication: {idp_label}")
                 if config.get("distribution", {}).get("custom_domain"):
                     console.print(f"• Custom domain: {config['distribution']['custom_domain']}")
             elif dist_type == "presigned-s3":
