@@ -2416,14 +2416,19 @@ Available metrics include:
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:
-                settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
+                from claude_code_with_bedrock.models import get_claude_code_alias, resolve_model_for_tier
+
+                # Use a Claude Code alias (sonnet/opus/opusplan/haiku) so ANTHROPIC_MODEL
+                # feeds through the DEFAULT_*_MODEL resolution chain for CRIS-aware routing.
+                # model_alias is set during ccwb init (e.g. opus vs opusplan for Opus models).
+                alias = getattr(profile, "model_alias", None) or get_claude_code_alias(profile.selected_model)
+                settings["env"]["ANTHROPIC_MODEL"] = alias or profile.selected_model
 
                 # Set all model tier env vars using the CRIS prefix from init.
                 # Claude Code uses these to resolve the correct CRIS-prefixed
                 # models for each tier (small/fast, default sonnet/opus/haiku).
                 # This ensures all tiers respect the admin's routing geography
                 # choice and works correctly with model aliases like 'opusplan'.
-                from claude_code_with_bedrock.models import resolve_model_for_tier
                 cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
 
                 haiku_model = resolve_model_for_tier("haiku", cris_prefix)

@@ -1276,6 +1276,34 @@ class InitCommand(Command):
             config["aws"]["selected_model"] = model_id
             config["aws"]["cross_region_profile"] = selected_profile
 
+            # For Opus models, ask whether to use opusplan or standard opus
+            if selected_model_key.startswith("opus"):
+                saved_alias = config.get("aws", {}).get("model_alias")
+                opus_alias = questionary.select(
+                    "How should Claude Code use this Opus model?",
+                    choices=[
+                        questionary.Choice(
+                            title="opusplan  Use Opus during plan mode, then switch to Sonnet for execution",
+                            value="opusplan",
+                        ),
+                        questionary.Choice(
+                            title="opus       Standard Opus for all interactions",
+                            value="opus",
+                        ),
+                    ],
+                    default=saved_alias if saved_alias in ("opusplan", "opus") else "opusplan",
+                    instruction="(Use arrow keys to select, Enter to confirm)",
+                ).ask()
+
+                if opus_alias is None:  # User cancelled
+                    return None
+
+                config["aws"]["model_alias"] = opus_alias
+                console.print(f"[green]✓[/green] Model alias: {opus_alias}")
+            else:
+                # For non-Opus models, alias is derived automatically from the tier
+                config["aws"].pop("model_alias", None)
+
             # Get destination regions for the model/profile combination
             destination_regions = get_destination_regions_for_model_profile(selected_model_key, selected_profile)
 
@@ -1625,6 +1653,7 @@ class InitCommand(Command):
             allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
             cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
             selected_model=config_data["aws"].get("selected_model"),
+            model_alias=config_data["aws"].get("model_alias"),
             selected_source_region=config_data["aws"].get("selected_source_region"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
