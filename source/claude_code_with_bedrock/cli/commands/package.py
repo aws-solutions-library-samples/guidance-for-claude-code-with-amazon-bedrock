@@ -304,11 +304,12 @@ class PackageCommand(Command):
             platforms_to_build = [target_platform]
 
         built_executables = []
+        built_go_executables = []
         built_otel_helpers = []
 
         console.print()
         for platform_name in platforms_to_build:
-            # Build credential process
+            # Build credential process (Python)
             console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
             try:
                 executable_path = self._build_executable(output_dir, platform_name)
@@ -320,6 +321,14 @@ class PackageCommand(Command):
                     built_executables.append((platform_name, executable_path))
             except Exception as e:
                 console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
+
+            # Build Go credential process (beta)
+            console.print(f"[cyan]Building Go credential process (beta) for {platform_name}...[/cyan]")
+            try:
+                go_executable_path = self._build_go_executable(output_dir, platform_name)
+                built_go_executables.append((platform_name, go_executable_path))
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not build Go credential process for {platform_name}: {e}[/yellow]")
 
             # Build OTEL helper if monitoring is enabled
             if profile.monitoring_enabled:
@@ -385,6 +394,9 @@ class PackageCommand(Command):
         for platform_name, executable_path in built_executables:
             binary_name = executable_path.name
             console.print(f"  • {binary_name} - Authentication executable for {platform_name}")
+        for platform_name, executable_path in built_go_executables:
+            binary_name = executable_path.name
+            console.print(f"  • {binary_name} - [bold]Beta[/bold] Go authentication executable for {platform_name}")
 
         console.print("  • config.json - Configuration")
         console.print("  • install.sh - Installation script for macOS/Linux")
@@ -500,6 +512,80 @@ class PackageCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
+
+    def _build_go_executable(self, output_dir: Path, target_platform: str) -> Path:
+        """Build Go credential process binary via cross-compilation."""
+        console = Console()
+        go_source_dir = Path(__file__).parent.parent.parent.parent / "credential-process-go"
+
+        if not go_source_dir.exists():
+            raise FileNotFoundError(f"Go source not found at {go_source_dir}")
+
+        # Check if Go is installed
+        go_check = subprocess.run(["go", "version"], capture_output=True, text=True)
+        if go_check.returncode != 0:
+            raise RuntimeError(
+                "Go is not installed. Install from https://go.dev/dl/\n"
+                "The Go credential process is optional - the standard Python version will still be built."
+            )
+
+        # Map target platform to GOOS/GOARCH
+        platform_map = {
+            "macos-arm64": ("darwin", "arm64"),
+            "macos-intel": ("darwin", "amd64"),
+            "macos-universal": None,  # Not supported for Go, build arm64
+            "linux-x64": ("linux", "amd64"),
+            "linux-arm64": ("linux", "arm64"),
+            "linux": ("linux", "amd64"),
+            "windows": ("windows", "amd64"),
+            "macos": None,  # Detect at runtime
+        }
+
+        target = platform_map.get(target_platform)
+        if target is None:
+            if target_platform in ("macos", "macos-universal"):
+                import platform as plat
+                if plat.machine().lower() == "arm64":
+                    target = ("darwin", "arm64")
+                else:
+                    target = ("darwin", "amd64")
+            else:
+                raise ValueError(f"Unsupported Go build target: {target_platform}")
+
+        goos, goarch = target
+
+        # Determine output binary name
+        suffix_map = {
+            ("darwin", "arm64"): "macos-arm64",
+            ("darwin", "amd64"): "macos-intel",
+            ("linux", "amd64"): "linux-x64",
+            ("linux", "arm64"): "linux-arm64",
+            ("windows", "amd64"): "windows",
+        }
+        platform_suffix = suffix_map.get((goos, goarch), f"{goos}-{goarch}")
+        ext = ".exe" if goos == "windows" else ""
+        binary_name = f"credential-process-go-{platform_suffix}{ext}"
+        binary_path = output_dir / binary_name
+
+        ldflags = "-s -w -X main.version=1.0.0-beta"
+        env = os.environ.copy()
+        env["GOOS"] = goos
+        env["GOARCH"] = goarch
+        env["CGO_ENABLED"] = "0"
+
+        cmd = ["go", "build", f"-ldflags={ldflags}", "-o", str(binary_path), "."]
+
+        console.print(f"[dim]  Go cross-compile: GOOS={goos} GOARCH={goarch}[/dim]")
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=go_source_dir, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Go build failed:\n{result.stderr}")
+
+        if not binary_path.exists():
+            raise RuntimeError(f"Go binary not created: {binary_path}")
+
+        binary_path.chmod(0o755)
+        console.print(f"[green]  ✓ Go binary built: {binary_name}[/green]")
+        return binary_path
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for target platform using appropriate tool."""
@@ -1874,23 +1960,50 @@ fi
 
 # Check if binary for platform exists
 CREDENTIAL_BINARY="credential-process-$BINARY_SUFFIX"
+GO_CREDENTIAL_BINARY="credential-process-go-$BINARY_SUFFIX"
 OTEL_BINARY="otel-helper-$BINARY_SUFFIX"
 
 if [ ! -f "$CREDENTIAL_BINARY" ]; then
-    echo "❌ Binary not found for your platform: $CREDENTIAL_BINARY"
+    echo "Binary not found for your platform: $CREDENTIAL_BINARY"
     echo "   Please ensure you have the correct package for your architecture."
     exit 1
 fi
 """
 
         installer_content += f"""
+# Credential engine selection
+SELECTED_BINARY="$CREDENTIAL_BINARY"
+if [ -f "$GO_CREDENTIAL_BINARY" ]; then
+    echo
+    echo "--------------------------------------"
+    echo "Credential Engine Selection"
+    echo "--------------------------------------"
+    echo
+    echo "Two credential engines are available:"
+    echo
+    echo "  [1] Standard (Python) - Stable, well-tested"
+    echo "  [2] Beta: High-performance (Go) - Faster startup, lower memory usage"
+    echo
+    read -p "Select credential engine [1]: " ENGINE_CHOICE
+    if [[ -z "$ENGINE_CHOICE" ]]; then
+        ENGINE_CHOICE="1"
+    fi
+    if [[ "$ENGINE_CHOICE" == "2" ]]; then
+        SELECTED_BINARY="$GO_CREDENTIAL_BINARY"
+        echo "Using Go credential engine (beta)"
+    else
+        echo "Using standard credential engine"
+    fi
+    echo
+fi
+
 # Create directory
 echo
 echo "Installing authentication tools..."
 mkdir -p ~/claude-code-with-bedrock
 
 # Copy appropriate binary
-cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+cp "$SELECTED_BINARY" ~/claude-code-with-bedrock/credential-process
 
 # Copy config
 cp config.json ~/claude-code-with-bedrock/
