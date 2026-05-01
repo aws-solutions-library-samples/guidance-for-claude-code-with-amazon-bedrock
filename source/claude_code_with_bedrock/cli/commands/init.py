@@ -308,23 +308,27 @@ class InitCommand(Command):
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            console.print("\n[bold]SSO Authentication[/bold]")
-            console.print("Enable Single Sign-On authentication via identity providers")
-            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
-            console.print("\nWhen disabled:")
-            console.print("  • Uses AWS IAM roles for access control")
-            console.print("  • Metrics will use anonymous tracking based on IAM identity")
-            console.print("  • No user authentication required\n")
+            # Skip the SSO toggle when updating an existing profile — preserve the saved value
+            if existing_config and "sso_enabled" in existing_config:
+                config["sso_enabled"] = existing_config["sso_enabled"]
+            else:
+                console.print("\n[bold]SSO Authentication[/bold]")
+                console.print("Enable Single Sign-On authentication via identity providers")
+                console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
+                console.print("\nWhen disabled:")
+                console.print("  • Uses AWS IAM roles for access control")
+                console.print("  • Metrics will use anonymous tracking based on IAM identity")
+                console.print("  • No user authentication required\n")
 
-            sso_enabled = questionary.confirm(
-                "Enable SSO authentication?",
-                default=config.get("sso_enabled", True),
-            ).ask()
+                sso_enabled = questionary.confirm(
+                    "Enable SSO authentication?",
+                    default=config.get("sso_enabled", True),
+                ).ask()
 
-            if sso_enabled is None:
-                return None
+                if sso_enabled is None:
+                    return None
 
-            config["sso_enabled"] = sso_enabled
+                config["sso_enabled"] = sso_enabled
 
         # OIDC Provider Configuration
         if not skip_okta and config.get("sso_enabled", True):
@@ -1920,6 +1924,10 @@ class InitCommand(Command):
                     else None,
                 },
             }
+
+            # Preserve sso_enabled flag (added in PR #71; missing here caused it to always default to True)
+            if hasattr(profile, "sso_enabled"):
+                existing_config["sso_enabled"] = profile.sso_enabled
 
             # Add provider type if present (critical to preserve during updates)
             if hasattr(profile, "provider_type") and profile.provider_type:

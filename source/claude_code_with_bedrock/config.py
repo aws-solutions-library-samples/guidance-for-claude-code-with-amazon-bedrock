@@ -124,6 +124,12 @@ class Profile:
         if "credential_storage" not in data:
             data["credential_storage"] = "session"
 
+        # Infer sso_enabled for profiles saved before PR #71 introduced the field:
+        # if provider_domain is set to a real value, SSO was enabled.
+        if "sso_enabled" not in data:
+            domain = data.get("provider_domain", "none")
+            data["sso_enabled"] = bool(domain and domain != "none")
+
         # Auto-detect provider type if not set
         if "provider_type" not in data and "provider_domain" in data:
             domain = data["provider_domain"]
