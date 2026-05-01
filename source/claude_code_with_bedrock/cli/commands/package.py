@@ -24,6 +24,308 @@ from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
 )
 
+# Auto-provisioned Python builds for cross-arch PyInstaller runs on macOS.
+# Source: https://github.com/astral-sh/python-build-standalone (MIT-licensed, maintained by Astral).
+# These are thin Mach-O binaries of the specified arch — running PyInstaller under them guarantees
+# the embedded libpython in the resulting onefile binary is the correct arch, which is what
+# actually determines whether the built binary will run on the target Mac.
+#
+# We pin a specific release tag + SHA256 per arch so every admin building from this repo gets a
+# bit-for-bit identical interpreter, independent of what "latest" happens to be on the build day.
+# This also protects against a compromised upstream release silently propagating to every build.
+#
+# To bump: pick a new release from https://github.com/astral-sh/python-build-standalone/releases,
+# update _PBS_RELEASE_TAG + _PBS_PY_VERSION, and replace both SHA256s with values from that
+# release's SHA256SUMS file.
+_PBS_RELEASE_TAG = "20260414"
+_PBS_PY_VERSION = "3.12.13"
+_PBS_ARCH_TO_TRIPLE = {
+    "x86_64": "x86_64-apple-darwin",
+    "arm64": "aarch64-apple-darwin",
+}
+# SHA256s from https://github.com/astral-sh/python-build-standalone/releases/download/20260414/SHA256SUMS
+_PBS_ARCH_TO_SHA256 = {
+    "x86_64": "801b03fbe004181d55a02ebd8b4e04d74973e70d716062aebe3b3cf32e9be297",
+    "arm64": "8966b2bcd9fa03ba22c080ad15a86bc12e41a00122b16f4b3740e302261124d9",
+}
+
+
+def _resolve_pbs_download_url(arch: str) -> tuple[str, str]:
+    """Return (download_url, expected_sha256) for the pinned python-build-standalone CPython release.
+
+    No network call — the tag, version, and hashes are baked into this module so every build is
+    reproducible and auditable.
+    """
+    triple = _PBS_ARCH_TO_TRIPLE.get(arch)
+    sha256 = _PBS_ARCH_TO_SHA256.get(arch)
+    if triple is None or sha256 is None:
+        raise RuntimeError(f"Auto-provisioning not supported for arch: {arch}")
+
+    asset_name = f"cpython-{_PBS_PY_VERSION}+{_PBS_RELEASE_TAG}-{triple}-install_only.tar.gz"
+    url = f"https://github.com/astral-sh/python-build-standalone/releases/download/{_PBS_RELEASE_TAG}/{asset_name}"
+    return url, sha256
+
+
+def _build_venvs_root() -> Path:
+    return Path.home() / ".ccwb" / "build-venvs"
+
+
+def _legacy_venv_path(arch: str) -> Path | None:
+    """Pre-auto-provision user-created venvs — kept for backwards compatibility."""
+    if arch == "x86_64":
+        return Path.home() / "venv-x86"
+    return None
+
+
+def _get_binary_architectures(path: Path) -> list[str]:
+    """Return arch slices in a Mach-O or ELF binary, or [] if unknown."""
+    if not path.exists():
+        return []
+    system = platform.system().lower()
+    if system == "darwin":
+        # Security: lipo and file are system binaries, path is from Path object (validated)
+        result = subprocess.run(["/usr/bin/lipo", "-info", str(path)], capture_output=True, text=True)  # nosec B603 B607
+        if result.returncode != 0:
+            return []
+        out = result.stdout.strip()
+        if "is architecture:" in out:
+            return [out.rsplit(":", 1)[1].strip()]
+        if "are:" in out:
+            return out.rsplit(":", 1)[1].strip().split()
+        return []
+    # Security: file is a system binary, path is from Path object (validated)
+    result = subprocess.run(["/usr/bin/file", "-b", str(path)], capture_output=True, text=True)  # nosec B603 B607
+    if result.returncode != 0:
+        return []
+    out = result.stdout.lower()
+    archs = []
+    if "x86-64" in out or "x86_64" in out:
+        archs.append("x86_64")
+    if "aarch64" in out or "arm64" in out:
+        archs.append("arm64")
+    return archs
+
+
+def _get_pyinstaller_embedded_libpython_arch(binary_path: Path) -> list[str] | None:
+    """Return arch slices of the libpython bundled inside a PyInstaller onefile, or None on failure.
+
+    PyInstaller's bootloader is universal2 and gets thinned to whatever --target-arch requested,
+    so the outer Mach-O header can be misleading. The bundled libpython reflects the actual host
+    Python interpreter arch, which is what matters at runtime.
+    """
+    try:
+        from PyInstaller.archive.readers import CArchiveReader
+    except ImportError:
+        return None
+    try:
+        reader = CArchiveReader(str(binary_path))
+        toc = reader.toc
+        entries = list(toc.keys()) if isinstance(toc, dict) else [e[0] for e in toc]
+    except Exception:
+        return None
+    libpython_entry = next(
+        (name for name in entries if name.startswith("libpython") and name.endswith(".dylib")),
+        None,
+    )
+    if libpython_entry is None:
+        libpython_entry = next((name for name in entries if name.endswith("/Python3") or name == "Python"), None)
+    if libpython_entry is None:
+        return None
+    import tempfile
+    try:
+        data = reader.extract(libpython_entry)
+        payload = data[1] if isinstance(data, tuple) else data
+        # Security: NamedTemporaryFile with delete=False in secure temp directory, cleaned up in finally
+        with tempfile.NamedTemporaryFile(suffix=".dylib", delete=False, dir=tempfile.gettempdir()) as tmp:  # nosec B108
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+    except Exception:
+        return None
+    try:
+        return _get_binary_architectures(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _warn_on_arch_mismatch(console: Console, path: Path, expected_arch: str) -> None:
+    """Warn (don't fail) if the produced binary doesn't actually match the requested arch."""
+    if not path.exists():
+        return
+    if platform.system().lower() == "darwin":
+        embedded = _get_pyinstaller_embedded_libpython_arch(path)
+        if embedded is not None and expected_arch not in embedded:
+            console.print(
+                f"[yellow]⚠️  {path.name} embeds a {'+'.join(embedded)} libpython "
+                f"but was built for {expected_arch} — the binary may not run on {expected_arch} Macs. "
+                f"This usually indicates a problem with the build-venv provisioning.[/yellow]"
+            )
+            return
+    archs = _get_binary_architectures(path)
+    if archs and expected_arch not in archs:
+        console.print(
+            f"[yellow]⚠️  {path.name} is {'+'.join(archs)}, expected {expected_arch}.[/yellow]"
+        )
+
+
+def _provision_build_venv(arch: str, console: Console, runtime_packages: list[str]) -> Path:
+    """Ensure a thin-arch Python venv exists at ~/.ccwb/build-venvs/<arch>/ with PyInstaller + runtime deps.
+
+    Downloads from python-build-standalone on first use. Subsequent calls return the cached venv.
+    Falls back to ~/venv-x86 (legacy) if present and valid.
+
+    Raises RuntimeError if auto-provisioning fails (network error, unsupported arch, etc).
+    """
+    if arch not in _PBS_ARCH_TO_TRIPLE:
+        raise RuntimeError(f"Auto-provisioning not supported for arch: {arch}")
+
+    legacy = _legacy_venv_path(arch)
+    if legacy and (legacy / "bin" / "pyinstaller").exists():
+        return legacy
+
+    import shutil
+    import tarfile
+    import tempfile
+    from urllib.request import urlopen
+
+    venv_dir = _build_venvs_root() / arch
+    pyinstaller_bin = venv_dir / "bin" / "pyinstaller"
+    python_bin = venv_dir / "bin" / "python3"
+
+    if pyinstaller_bin.exists() and python_bin.exists():
+        actual_archs = _get_binary_architectures(python_bin)
+        if arch in actual_archs:
+            return venv_dir
+        console.print(f"[yellow]Rebuilding {arch} build-venv (wrong architecture detected)[/yellow]")
+        shutil.rmtree(venv_dir, ignore_errors=True)
+
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    console.print(f"[cyan]Provisioning {arch} build environment (one-time setup, ~15MB download)...[/cyan]")
+
+    url, expected_sha256 = _resolve_pbs_download_url(arch)
+    import hashlib
+
+    # Security: TemporaryDirectory creates secure temp directory with restricted permissions
+    with tempfile.TemporaryDirectory() as tmpdir:  # nosec B108
+        tarball = Path(tmpdir) / "python.tar.gz"
+        hasher = hashlib.sha256()
+        try:
+            # Security: hardcoded HTTPS URL to github.com release asset for pinned PBS tag
+            with urlopen(url, timeout=120) as resp, open(tarball, "wb") as f:  # nosec B310
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    f.write(chunk)
+        except Exception as e:
+            raise RuntimeError(f"Failed to download standalone Python for {arch}: {e}") from e
+
+        actual_sha256 = hasher.hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"SHA256 mismatch for {arch} Python tarball: expected {expected_sha256}, got {actual_sha256}. "
+                f"Refusing to use a tampered or corrupted download."
+            )
+
+        extract_dir = Path(tmpdir) / "extract"
+        extract_dir.mkdir()
+        try:
+            with tarfile.open(tarball, "r:gz") as tar:
+                # Security: filter tarfile members to prevent path traversal attacks
+                def is_safe_member(member: tarfile.TarInfo) -> bool:
+                    """Check if tarfile member is safe to extract (no path traversal)."""
+                    member_path = Path(extract_dir) / member.name
+                    try:
+                        # Resolve to absolute path and check it's within extract_dir
+                        member_path.resolve().relative_to(extract_dir.resolve())
+                        return True
+                    except ValueError:
+                        # Path escapes extract_dir
+                        return False
+
+                safe_members = [m for m in tar.getmembers() if is_safe_member(m)]
+                tar.extractall(extract_dir, members=safe_members)  # nosec B202
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract Python tarball for {arch}: {e}") from e
+
+        source_python_root = extract_dir / "python"
+        if not source_python_root.exists():
+            raise RuntimeError(f"Unexpected tarball layout — 'python/' not found under {extract_dir}")
+
+        source_python = source_python_root / "bin" / "python3"
+        actual = _get_binary_architectures(source_python)
+        if arch not in actual:
+            raise RuntimeError(
+                f"Downloaded Python has wrong arch: expected {arch}, got {'+'.join(actual) or 'unknown'}"
+            )
+
+        if venv_dir.exists():
+            shutil.rmtree(venv_dir)
+        shutil.copytree(source_python_root, venv_dir, symlinks=True)
+
+    # Security: arch is from validated _PBS_ARCH_TO_TRIPLE, python_bin is from provisioned venv,
+    # runtime_packages is from hardcoded _CREDENTIAL_PROVIDER_RUNTIME_DEPS
+    pip_cmd = [
+        "/usr/bin/arch", f"-{arch}", str(python_bin), "-m", "pip", "install",
+        "--quiet", "pyinstaller", *runtime_packages,
+    ]
+    result = subprocess.run(pip_cmd, capture_output=True, text=True)  # nosec B603
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to install PyInstaller into {arch} build-venv: {result.stderr or result.stdout}")
+
+    if not pyinstaller_bin.exists():
+        raise RuntimeError(f"PyInstaller not found at {pyinstaller_bin} after install")
+
+    console.print(f"[green]✓ {arch} build environment ready at {venv_dir}[/green]")
+    return venv_dir
+
+
+def _pyinstaller_command_for_macos_arch(
+    arch: str,
+    console: Console,
+    runtime_packages: list[str],
+) -> tuple[list[str], str, bool] | None:
+    """Return (command_prefix, workpath_suffix, is_cross_arch) for running PyInstaller targeting `arch`.
+
+    Strategy:
+      1. If Poetry's Python natively supports the target arch (thin match or universal2), run
+         `poetry run pyinstaller` wrapped in `arch -<arch>` so the interpreter executes at the
+         right arch. No provisioning needed.
+      2. Otherwise, auto-provision ~/.ccwb/build-venvs/<arch>/ and use its pyinstaller binary.
+
+    Returns None only if the caller should skip (unsupported target). Raises RuntimeError on
+    provisioning failure.
+    """
+    source_dir = Path(__file__).parent.parent.parent.parent
+    # Security: poetry is from user's PATH, but command is hardcoded and executed from source_dir
+    interp_check = subprocess.run(
+        ["poetry", "run", "python", "-c", "import sys; print(sys.executable)"],  # nosec B603 B607
+        capture_output=True,
+        text=True,
+        cwd=source_dir,
+    )
+    poetry_python_archs: list[str] = []
+    if interp_check.returncode == 0 and interp_check.stdout.strip():
+        poetry_python_archs = _get_binary_architectures(Path(interp_check.stdout.strip()))
+
+    if arch in poetry_python_archs:
+        # Security: arch is from validated _PBS_ARCH_TO_TRIPLE
+        return (["/usr/bin/arch", f"-{arch}", "poetry", "run", "pyinstaller"], "poetry", False)
+
+    if arch not in _PBS_ARCH_TO_TRIPLE:
+        return None
+
+    venv_dir = _provision_build_venv(arch, console, runtime_packages)
+    pyinstaller_bin = venv_dir / "bin" / "pyinstaller"
+    # Security: arch is from validated _PBS_ARCH_TO_TRIPLE, pyinstaller_bin is from provisioned venv
+    return (["/usr/bin/arch", f"-{arch}", str(pyinstaller_bin)], arch, True)
+
+
+# Runtime packages needed to bundle the credential provider and otel helper.
+# Kept in sync with source/pyproject.toml runtime deps.
+_CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "cryptography"]
+_OTEL_HELPER_RUNTIME_DEPS: list[str] = []  # otel_helper uses only stdlib
+
 
 class PackageCommand(Command):
     """
@@ -198,25 +500,8 @@ class PackageCommand(Command):
         # Build package
         console.print("\n[bold]Building package...[/bold]")
 
-        # Pre-flight check for Intel builds on ARM Macs
-        if platform.system().lower() == "darwin" and platform.machine().lower() == "arm64":
-            if target_platform in ["macos-intel", "all"]:
-                x86_venv_path = Path.home() / "venv-x86"
-                if not (x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists()):
-                    if target_platform == "macos-intel":
-                        console.print("\n[yellow]⚠️  Intel Mac build environment not found[/yellow]")
-                        console.print("[dim]Intel builds require an x86_64 Python environment on Apple Silicon.[/dim]")
-                        console.print("[dim]ARM64 binaries work on Intel Macs via Rosetta, so this is optional.[/dim]")
-                        console.print("\n[dim]To set up Intel builds (optional):[/dim]")
-                        console.print("[dim]1. Install x86_64 Homebrew:[/dim]")
-                        console.print(
-                            '[dim]   arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"[/dim]'
-                        )
-                        console.print("[dim]2. Install Python and create environment:[/dim]")
-                        console.print("[dim]   arch -x86_64 /usr/local/bin/brew install python@3.12[/dim]")
-                        console.print("[dim]   arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86[/dim]")
-                        console.print("[dim]   arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring[/dim]")
-                        console.print()
+        # Cross-arch macOS builds use auto-provisioned Python environments in ~/.ccwb/build-venvs/;
+        # the first build for each arch triggers a one-time ~15MB download. No manual setup required.
 
         # Build executable(s) using PyInstaller/Docker
         # Handle both list and single platform selection
@@ -230,13 +515,9 @@ class PackageCommand(Command):
                     current_machine = platform.machine().lower()
 
                     if current_os == "darwin":
-                        if current_machine == "arm64":
-                            platforms_to_build.append("macos-arm64")
-                            x86_venv_path = Path.home() / "venv-x86"
-                            if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
-                                platforms_to_build.append("macos-intel")
-                        else:
-                            platforms_to_build.append("macos-intel")
+                        # Both arches are always buildable — cross-arch auto-provisions its own venv.
+                        platforms_to_build.append("macos-arm64")
+                        platforms_to_build.append("macos-intel")
 
                         try:
                             docker_check = subprocess.run(["docker", "--version"], capture_output=True)
@@ -264,22 +545,9 @@ class PackageCommand(Command):
             current_machine = platform.machine().lower()
 
             if current_os == "darwin":
-                # On macOS, build for current architecture
-                if current_machine == "arm64":
-                    platforms_to_build.append("macos-arm64")
-                    # Check if x86_64 environment is available for Intel builds
-                    x86_venv_path = Path.home() / "venv-x86"
-                    if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
-                        platforms_to_build.append("macos-intel")
-                    else:
-                        # Check if Rosetta is available (for informational message)
-                        rosetta_check = subprocess.run(["arch", "-x86_64", "true"], capture_output=True)
-                        if rosetta_check.returncode == 0:
-                            console.print(
-                                "[dim]Note: Intel Mac builds available with optional setup. See docs for details.[/dim]"
-                            )
-                else:
-                    platforms_to_build.append("macos-intel")
+                # Both macOS arches are always buildable — cross-arch auto-provisions its own venv.
+                platforms_to_build.append("macos-arm64")
+                platforms_to_build.append("macos-intel")
 
                 # Check if Docker is available for Linux builds
                 try:
@@ -524,8 +792,6 @@ class PackageCommand(Command):
             return self._build_macos_pyinstaller(output_dir, "arm64")
         elif target_platform == "macos-intel":
             return self._build_macos_pyinstaller(output_dir, "x86_64")
-        elif target_platform == "macos-universal":
-            return self._build_macos_pyinstaller(output_dir, "universal2")
         elif target_platform == "linux-x64":
             # Build Linux x64 binary via Docker with PyInstaller
             return self._build_linux_via_docker(output_dir, "x64")
@@ -717,95 +983,53 @@ class PackageCommand(Command):
         return output_dir / binary_name
 
     def _build_macos_pyinstaller(self, output_dir: Path, arch: str) -> Path:
-        """Build macOS executable using PyInstaller with target architecture."""
+        """Build macOS executable using PyInstaller, targeting `arch` (arm64 or x86_64).
+
+        Uses an arch-matched Python interpreter so the bundled libpython is the correct arch,
+        auto-provisioning one if necessary.
+        """
         console = Console()
         verbose = self.option("build-verbose")
 
-        # Determine binary name based on architecture
         if arch == "arm64":
             binary_name = "credential-process-macos-arm64"
         elif arch == "x86_64":
             binary_name = "credential-process-macos-intel"
-        elif arch == "universal2":
-            binary_name = "credential-process-macos-universal"
         else:
             raise ValueError(f"Unsupported macOS architecture: {arch}")
 
-        # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "credential_provider" / "__main__.py"
         if not src_file.exists():
             raise FileNotFoundError(f"Source file not found: {src_file}")
 
         console.print(f"[yellow]Building macOS {arch} binary with PyInstaller...[/yellow]")
 
-        # Check if we need to use x86_64 Python for Intel builds
-        use_x86_python = False
-        x86_venv_path = Path.home() / "venv-x86"
+        resolved = _pyinstaller_command_for_macos_arch(arch, console, _CREDENTIAL_PROVIDER_RUNTIME_DEPS)
+        if resolved is None:
+            raise RuntimeError(f"Cannot build for macOS {arch}: no compatible Python interpreter available.")
+        cmd_prefix, workpath_suffix, _ = resolved
 
-        if arch == "x86_64" and platform.machine().lower() == "arm64":
-            # On ARM Mac building Intel binary - check for x86_64 environment
-            if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
-                use_x86_python = True
-                console.print("[dim]Using x86_64 Python environment for Intel build[/dim]")
-            else:
-                console.print("\n[yellow]⚠️  Intel Mac build skipped (optional)[/yellow]")
-                console.print("[dim]Intel binaries are optional. ARM64 binaries work on Intel Macs via Rosetta.[/dim]")
-                console.print("[dim]To enable Intel builds on Apple Silicon, see:[/dim]")
-                console.print(
-                    "[dim]https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock#optional-intel-mac-builds[/dim]\n"
-                )
-                # Return dummy path - the main loop will handle this gracefully
-                return output_dir / binary_name
-
-        # Determine log level based on verbose flag
         log_level = "INFO" if verbose else "WARN"
+        workpath = f"/tmp/pyinstaller-{workpath_suffix}"
 
-        # Build PyInstaller command
-        if use_x86_python:
-            # Use x86_64 Python environment
-            cmd = [
-                "arch",
-                "-x86_64",
-                str(x86_venv_path / "bin" / "pyinstaller"),
-                "--onefile",
-                "--clean",
-                "--noconfirm",
-                f"--name={binary_name}",
-                f"--distpath={str(output_dir)}",
-                "--workpath=/tmp/pyinstaller-x86",
-                "--specpath=/tmp/pyinstaller-x86",
-                f"--log-level={log_level}",
-                # Hidden imports for our dependencies
-                "--hidden-import=keyring.backends.macOS",
-                "--hidden-import=keyring.backends.SecretService",
-                "--hidden-import=keyring.backends.Windows",
-                "--hidden-import=keyring.backends.chainer",
-                str(src_file),
-            ]
-        else:
-            # Use regular Poetry environment
-            cmd = [
-                "poetry",
-                "run",
-                "pyinstaller",
-                "--onefile",
-                "--clean",
-                "--noconfirm",
-                f"--target-arch={arch}",
-                f"--name={binary_name}",
-                f"--distpath={str(output_dir)}",
-                "--workpath=/tmp/pyinstaller",
-                "--specpath=/tmp/pyinstaller",
-                f"--log-level={log_level}",
-                # Hidden imports for our dependencies
-                "--hidden-import=keyring.backends.macOS",
-                "--hidden-import=keyring.backends.SecretService",
-                "--hidden-import=keyring.backends.Windows",
-                "--hidden-import=keyring.backends.chainer",
-                str(src_file),
-            ]
+        cmd = [
+            *cmd_prefix,
+            "--onefile",
+            "--clean",
+            "--noconfirm",
+            f"--target-arch={arch}",
+            f"--name={binary_name}",
+            f"--distpath={str(output_dir)}",
+            f"--workpath={workpath}",
+            f"--specpath={workpath}",
+            f"--log-level={log_level}",
+            "--hidden-import=keyring.backends.macOS",
+            "--hidden-import=keyring.backends.SecretService",
+            "--hidden-import=keyring.backends.Windows",
+            "--hidden-import=keyring.backends.chainer",
+            str(src_file),
+        ]
 
-        # Run PyInstaller from source directory
         source_dir = Path(__file__).parent.parent.parent.parent
         result = subprocess.run(cmd, capture_output=not verbose, text=True, cwd=source_dir)
 
@@ -816,6 +1040,7 @@ class PackageCommand(Command):
         binary_path = output_dir / binary_name
         if binary_path.exists():
             binary_path.chmod(0o755)
+            _warn_on_arch_mismatch(console, binary_path, arch)
             console.print(f"[green]✓ macOS {arch} binary built successfully with PyInstaller[/green]")
             return binary_path
         else:
@@ -1457,8 +1682,6 @@ RUN pyinstaller \
             return self._build_otel_helper_pyinstaller(output_dir, "macos", "arm64")
         elif target_platform == "macos-intel":
             return self._build_otel_helper_pyinstaller(output_dir, "macos", "x86_64")
-        elif target_platform == "macos-universal":
-            return self._build_otel_helper_pyinstaller(output_dir, "macos", "universal2")
         elif target_platform == "macos":
             import platform
 
@@ -1480,24 +1703,24 @@ RUN pyinstaller \
         raise ValueError(f"Unsupported target platform for OTEL helper: {target_platform}")
 
     def _build_otel_helper_pyinstaller(self, output_dir: Path, platform_name: str, arch: str | None) -> Path:
-        """Build OTEL helper using PyInstaller."""
+        """Build OTEL helper using PyInstaller.
+
+        macOS uses an arch-matched Python (auto-provisioned if needed) for the same reasons
+        described in _build_macos_pyinstaller.
+        """
         import platform as platform_module
 
         console = Console()
         verbose = self.option("build-verbose")
 
-        # Determine binary name
         if platform_name == "macos":
             if arch == "arm64":
                 binary_name = "otel-helper-macos-arm64"
             elif arch == "x86_64":
                 binary_name = "otel-helper-macos-intel"
-            elif arch == "universal2":
-                binary_name = "otel-helper-macos-universal"
             else:
                 binary_name = "otel-helper-macos"
         elif platform_name == "linux":
-            # Detect architecture and set appropriate binary name
             machine = platform_module.machine().lower()
             if machine in ["aarch64", "arm64"]:
                 binary_name = "otel-helper-linux-arm64"
@@ -1506,50 +1729,35 @@ RUN pyinstaller \
         else:
             raise ValueError(f"Unsupported platform for OTEL helper: {platform_name}")
 
-        # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent / "otel_helper" / "__main__.py"
         if not src_file.exists():
             raise FileNotFoundError(f"OTEL helper source not found: {src_file}")
 
         console.print(f"[yellow]Building OTEL helper for {platform_name} {arch or ''} with PyInstaller...[/yellow]")
 
-        # Check if we need to use x86_64 Python for Intel builds on macOS
-        use_x86_python = False
-        x86_venv_path = Path.home() / "venv-x86"
-
-        if platform_name == "macos" and arch == "x86_64" and platform_module.machine().lower() == "arm64":
-            # On ARM Mac building Intel binary - check for x86_64 environment
-            if x86_venv_path.exists() and (x86_venv_path / "bin" / "pyinstaller").exists():
-                use_x86_python = True
-                console.print("[dim]Using x86_64 Python environment for Intel OTEL helper build[/dim]")
-            else:
-                console.print("[yellow]Warning: x86_64 Python environment not found at ~/venv-x86[/yellow]")
-                console.print("[yellow]Skipping Intel OTEL helper build[/yellow]")
-                # For OTEL helper, we can skip if not available (it's optional)
-                return output_dir / binary_name  # Return expected path even if not built
-
-        # Determine log level based on verbose flag
         log_level = "INFO" if verbose else "WARN"
 
-        # Build PyInstaller command
-        if use_x86_python:
-            # Use x86_64 Python environment
+        if platform_name == "macos" and arch in ("arm64", "x86_64"):
+            resolved = _pyinstaller_command_for_macos_arch(arch, console, _OTEL_HELPER_RUNTIME_DEPS)
+            if resolved is None:
+                raise RuntimeError(f"Cannot build OTEL helper for macOS {arch}: no compatible Python available.")
+            cmd_prefix, workpath_suffix, _ = resolved
+            workpath = f"/tmp/pyinstaller-otel-{workpath_suffix}"
             cmd = [
-                "arch",
-                "-x86_64",
-                str(x86_venv_path / "bin" / "pyinstaller"),
+                *cmd_prefix,
                 "--onefile",
                 "--clean",
                 "--noconfirm",
+                f"--target-arch={arch}",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
-                "--workpath=/tmp/pyinstaller-x86",
-                "--specpath=/tmp/pyinstaller-x86",
+                f"--workpath={workpath}",
+                f"--specpath={workpath}",
                 f"--log-level={log_level}",
                 str(src_file),
             ]
         else:
-            # Use regular Poetry environment
+            # Linux (native) or macOS with no specific arch — use Poetry's Python as-is.
             cmd = [
                 "poetry",
                 "run",
@@ -1564,12 +1772,9 @@ RUN pyinstaller \
                 f"--log-level={log_level}",
                 str(src_file),
             ]
+            if platform_name == "macos" and arch:
+                cmd.insert(5, f"--target-arch={arch}")
 
-        # Add target architecture for macOS (only for regular Poetry environment)
-        if not use_x86_python and platform_name == "macos" and arch:
-            cmd.insert(5, f"--target-arch={arch}")
-
-        # Run PyInstaller from source directory
         source_dir = Path(__file__).parent.parent.parent.parent
         result = subprocess.run(cmd, capture_output=not verbose, text=True, cwd=source_dir)
 
@@ -1580,6 +1785,8 @@ RUN pyinstaller \
         binary_path = output_dir / binary_name
         if binary_path.exists():
             binary_path.chmod(0o755)
+            if platform_name == "macos" and arch in ("arm64", "x86_64"):
+                _warn_on_arch_mismatch(console, binary_path, arch)
             console.print("[green]✓ OTEL helper built successfully with PyInstaller[/green]")
             return binary_path
         else:

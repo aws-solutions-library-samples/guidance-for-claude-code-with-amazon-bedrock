@@ -783,13 +783,9 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
   - If Docker is not installed or its daemon is not running, Linux builds are skipped with a warning
   - macOS and Windows builds have **no dependency on Docker**
 
-### Optional: Intel Mac Builds
+### Cross-Architecture macOS Builds
 
-Intel Mac builds require an x86_64 Python environment on Apple Silicon Macs.
-
-See [CLI Reference - Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) for setup instructions.
-
-If not configured, the package command will skip Intel builds and continue with other platforms.
+Both ARM64 and Intel macOS binaries build automatically — no manual setup. When the Poetry Python can't natively target the requested architecture, `ccwb package` auto-provisions a thin arch-matched Python into `~/.ccwb/build-venvs/<arch>/` (one-time ~15MB download per architecture).
 
 ---
 
@@ -893,19 +889,15 @@ file ~/claude-code-with-bedrock/credential-process        # binary's CPU arch
 **Fix (admin) — rebuild with both macOS architectures:**
 
 ```bash
-# One-time setup: x86_64 Python environment on Apple Silicon Mac
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-arch -x86_64 /usr/local/bin/brew install python@3.12
-arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
-arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
-
-# Rebuild — now produces both macos-arm64 and macos-intel
+# Rebuild — produces both macos-arm64 and macos-intel
 poetry run ccwb package --target-platform all
 ```
 
+On first use, `ccwb package` auto-provisions a thin arch-matched Python into `~/.ccwb/build-venvs/<arch>/` (one-time ~15MB download per architecture). No manual `~/venv-x86` setup is required.
+
 Redistribute the new package. The installer auto-detects architecture and installs the correct binary.
 
-> **Why this happens:** Building on Apple Silicon only produces `credential-process-macos-arm64` by default. The Intel (`macos-intel`) build is optional and requires the x86_64 Python environment above. ARM64 binaries cannot run on Intel Macs — unlike the reverse (Intel binaries run on Apple Silicon via Rosetta).
+> **Why this happens:** ARM64 binaries cannot run on Intel Macs. If a package only contains `credential-process-macos-arm64`, Intel users will see `Exec format error`. Intel (`macos-intel`) binaries run on both Intel Macs natively and on Apple Silicon via Rosetta, so `--target-platform all` is the safest option.
 
 ### Windows `install.bat` — `-replace was unexpected at this time.`
 

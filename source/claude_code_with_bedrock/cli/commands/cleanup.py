@@ -73,6 +73,18 @@ class CleanupCommand(Command):
         if claude_settings.exists():
             items_to_remove.append(("File", str(claude_settings), "Claude Code telemetry settings"))
 
+        # Check for auto-provisioned macOS cross-arch build environments
+        build_venvs_dir = Path.home() / ".ccwb" / "build-venvs"
+        if build_venvs_dir.exists() and any(build_venvs_dir.iterdir()):
+            archs = sorted(p.name for p in build_venvs_dir.iterdir() if p.is_dir())
+            items_to_remove.append(
+                (
+                    "Directory",
+                    str(build_venvs_dir),
+                    f"Auto-provisioned Python build venvs ({', '.join(archs)})" if archs else "Auto-provisioned Python build venvs",
+                )
+            )
+
         if not items_to_remove:
             console.print("[green]No authentication components found to clean up.[/green]")
             return 0
@@ -135,6 +147,14 @@ class CleanupCommand(Command):
                 console.print(f"✓ Removed AWS profile '{profile_name}'")
             except Exception as e:
                 console.print(f"[red]✗ Failed to remove AWS profile: {e}[/red]")
+
+        # Remove auto-provisioned build venvs
+        if build_venvs_dir.exists() and any(build_venvs_dir.iterdir()):
+            try:
+                shutil.rmtree(build_venvs_dir)
+                console.print(f"✓ Removed {build_venvs_dir}")
+            except Exception as e:
+                console.print(f"[red]✗ Failed to remove {build_venvs_dir}: {e}[/red]")
 
         # Remove Claude settings if empty directory
         if claude_settings.exists():

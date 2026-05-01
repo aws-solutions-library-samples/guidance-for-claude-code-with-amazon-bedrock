@@ -277,36 +277,23 @@ poetry run ccwb package [options]
   - Requires CodeBuild to be enabled during `init`
   - Will be skipped if CodeBuild is not enabled
 
-**Intel Mac Build Setup (Optional):**
+**Cross-Architecture macOS Builds (Automatic):**
 
-To enable Intel builds on Apple Silicon Macs (optional):
+Both ARM64 and Intel macOS binaries are always buildable on Apple Silicon Macs (and vice versa on Intel Macs). No manual setup is required.
 
-```bash
-# Step 1: Install x86_64 Homebrew (if not already installed)
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+When the Poetry Python interpreter cannot natively target the requested architecture, `ccwb package` auto-provisions a thin arch-matched Python from [python-build-standalone](https://github.com/astral-sh/python-build-standalone) into `~/.ccwb/build-venvs/<arch>/`. The first build for each architecture triggers a one-time ~15MB download; subsequent builds reuse the cached environment.
 
-# Step 2: Install x86_64 Python
-arch -x86_64 /usr/local/bin/brew install python@3.12
+A legacy `~/venv-x86` (created manually by the user before auto-provisioning existed) is still honored if present, for backwards compatibility.
 
-# Step 3: Create x86_64 virtual environment
-arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+**Binary Compatibility:**
 
-# Step 4: Install required packages
-arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
-```
-
-**Behavior when Intel environment is not set up:**
-
-- For `--target-platform=all`: Skips Intel builds with a note, builds all other platforms
-- For `--target-platform=macos-intel`: Shows instructions for optional setup, skips the build
-- The package process continues successfully without Intel binaries
-- Intel (`macos-intel`) binaries can be distributed to all Mac users — they run natively on Intel Macs and via Rosetta on Apple Silicon. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
+- Intel (`macos-intel`) binaries can be distributed to all Mac users — they run natively on Intel Macs and via Rosetta on Apple Silicon.
+- ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
 
 **Graceful Fallback Behavior:**
 
 The package command is designed to handle missing optional components gracefully:
 
-- **Intel Mac builds**: Skipped if x86_64 Python environment is not available on ARM Macs
 - **Windows builds**: Skipped if CodeBuild was not enabled during `init`
 - **Linux builds (from macOS)**: Skipped with a warning in two cases:
   - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
