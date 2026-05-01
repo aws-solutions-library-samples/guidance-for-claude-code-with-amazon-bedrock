@@ -237,7 +237,7 @@ poetry run ccwb package [options]
 - `--target-platform <platform>` - Target platform for binary (default: "all")
   - `macos` - Build for current macOS architecture
   - `macos-arm64` - Build for Apple Silicon Macs
-  - `macos-intel` - Build for Intel Macs (uses Rosetta on ARM Macs)
+  - `macos-intel` - Build for Intel Macs (cross-arch on Apple Silicon requires universal2 Python)
   - `linux` - Build for Linux (native, current architecture)
   - `linux-x64` - Build for Linux x64 using Docker
   - `linux-arm64` - Build for Linux ARM64 using Docker
@@ -263,9 +263,9 @@ poetry run ccwb package [options]
 **Platform Support (Hybrid Build System):**
 
 - **macOS**: Uses PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs (works on all Macs)
-  - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
-  - Universal: Requires both architectures' Python libraries (not currently automated)
+  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
+  - Intel: Runs natively on Intel Macs and on Apple Silicon via Rosetta — covers all Mac users with one binary
+  - Cross-arch: **Optional** — build the other architecture from your current Mac; requires a universal2 Python (see below)
 - **Linux**: Uses PyInstaller in Docker containers (cross-compiled from macOS host)
   - x64: Uses linux/amd64 Docker platform
   - ARM64: Uses linux/arm64 Docker platform
@@ -277,36 +277,30 @@ poetry run ccwb package [options]
   - Requires CodeBuild to be enabled during `init`
   - Will be skipped if CodeBuild is not enabled
 
-**Intel Mac Build Setup (Optional):**
+**Cross-arch macOS Build Setup (Optional):**
 
-To enable Intel builds on Apple Silicon Macs (optional):
+By default, `ccwb package` builds a binary for your Mac's own architecture. The Intel (`macos-intel`) binary covers all Mac users — it runs natively on Intel Macs and via Rosetta on Apple Silicon — so an Apple Silicon admin who needs to support Intel Mac users should build the Intel binary using this setup.
 
-```bash
-# Step 1: Install x86_64 Homebrew (if not already installed)
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM64 binary on Intel), install a universal2 Python:
 
-# Step 2: Install x86_64 Python
-arch -x86_64 /usr/local/bin/brew install python@3.12
+1. Download the **macOS 64-bit universal2 installer** for Python 3.12 from [python.org/downloads/macos](https://www.python.org/downloads/macos/)
+2. Run the installer — it places Python at `/Library/Frameworks/Python.framework/`
+3. Re-run `ccwb package` — it detects the universal2 Python automatically
 
-# Step 3: Create x86_64 virtual environment
-arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+`ccwb` creates an isolated per-arch build environment at `~/.ccwb/build-venvs/` on first cross-arch build (~30s). Subsequent runs reuse it.
 
-# Step 4: Install required packages
-arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
-```
+**Behavior when universal2 Python is not installed:**
 
-**Behavior when Intel environment is not set up:**
-
-- For `--target-platform=all`: Skips Intel builds with a note, builds all other platforms
-- For `--target-platform=macos-intel`: Shows instructions for optional setup, skips the build
-- The package process continues successfully without Intel binaries
-- Intel (`macos-intel`) binaries can be distributed to all Mac users — they run natively on Intel Macs and via Rosetta on Apple Silicon. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
+- For `--target-platform=all`: Skips the cross-arch target with a note, builds all other platforms normally
+- For an explicit cross-arch target (e.g. `--target-platform=macos-intel` on Apple Silicon): Fails with a clear error pointing to the python.org installer
+- The package process continues successfully without cross-arch binaries
+- Note: Intel (`macos-intel`) binaries run natively on Intel Macs and via Rosetta on Apple Silicon — they cover all Mac users. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
 
 **Graceful Fallback Behavior:**
 
 The package command is designed to handle missing optional components gracefully:
 
-- **Intel Mac builds**: Skipped if x86_64 Python environment is not available on ARM Macs
+- **Cross-arch macOS builds**: Skipped if universal2 Python is not installed (see Cross-arch macOS Build Setup above)
 - **Windows builds**: Skipped if CodeBuild was not enabled during `init`
 - **Linux builds (from macOS)**: Skipped with a warning in two cases:
   - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
