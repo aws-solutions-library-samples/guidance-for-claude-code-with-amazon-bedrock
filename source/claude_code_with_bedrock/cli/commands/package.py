@@ -25,6 +25,40 @@ from claude_code_with_bedrock.models import (
 )
 
 
+def _assert_host_os_can_build_macos() -> None:
+    """Refuse to produce macOS binaries from a non-macOS host.
+
+    PyInstaller is not a cross-OS compiler: run on Linux, it emits Linux ELF
+    binaries regardless of --target-arch. Without this guard, a Linux-host
+    build would write ELF content into a macOS-named output file, and the
+    resulting package would fail on end-user Macs with "exec format error"
+    (the macOS kernel cannot load ELF binaries and Rosetta only translates
+    Mach-O, not ELF).
+
+    macOS binaries must be built on macOS — this is a property of Apple's
+    platform, not a limitation of this tool.
+    """
+    host = platform.system().lower()
+    if host == "darwin":
+        return
+    raise RuntimeError(
+        f"Cannot build macOS binaries on {platform.system()}.\n"
+        f"\n"
+        f"PyInstaller cannot cross-compile across operating systems. On "
+        f"{platform.system()}, it produces {platform.system()}-native binaries "
+        f"regardless of --target-arch.\n"
+        f"\n"
+        f"Options for producing macOS binaries:\n"
+        f"  1. Run `ccwb package` on a macOS workstation\n"
+        f"  2. Use a CI macOS runner (GitHub Actions `macos-latest`, AWS\n"
+        f"     CodeBuild macOS project, or a self-hosted Mac runner) and\n"
+        f"     collect the artifacts from there\n"
+        f"  3. Drop macOS targets from this build — run with\n"
+        f"     --target-platform=linux-x64,linux-arm64,windows\n"
+        f"     to build only the platforms your current host supports"
+    )
+
+
 class PackageCommand(Command):
     """
     Build distribution packages for your organization
@@ -718,6 +752,7 @@ class PackageCommand(Command):
 
     def _build_macos_pyinstaller(self, output_dir: Path, arch: str) -> Path:
         """Build macOS executable using PyInstaller with target architecture."""
+        _assert_host_os_can_build_macos()
         console = Console()
         verbose = self.option("build-verbose")
 
@@ -1482,6 +1517,9 @@ RUN pyinstaller \
     def _build_otel_helper_pyinstaller(self, output_dir: Path, platform_name: str, arch: str | None) -> Path:
         """Build OTEL helper using PyInstaller."""
         import platform as platform_module
+
+        if platform_name == "macos":
+            _assert_host_os_can_build_macos()
 
         console = Console()
         verbose = self.option("build-verbose")

@@ -262,16 +262,28 @@ poetry run ccwb package [options]
 
 **Platform Support (Hybrid Build System):**
 
+PyInstaller is a runtime bundler, not a cross-OS compiler. It emits binaries in the host OS's native format (Mach-O on macOS, ELF on Linux). That constrains which targets each build host can produce:
+
+| Target binary | Build host required | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | **macOS** | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container when building from macOS) |
+| `windows` | any host | AWS CodeBuild (remote) |
+
+> **Linux admins cannot build macOS binaries.** There is no supported path for producing Mach-O binaries on Linux — Apple's platform design makes this infeasible. If `ccwb package` detects a macOS target on a non-macOS host, the build refuses with a clear error rather than silently producing an ELF binary labeled as macOS (which would fail on end-user Macs with `exec format error`).
+>
+> To produce macOS binaries, use a macOS workstation, a CI macOS runner (GitHub Actions `macos-latest`, AWS CodeBuild macOS project, or a self-hosted Mac runner), or an EC2 Mac instance, and collect the artifacts from there.
+
 - **macOS**: Uses PyInstaller with architecture-specific builds
   - ARM64: Native build on Apple Silicon Macs (works on all Macs)
   - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
   - Universal: Requires both architectures' Python libraries (not currently automated)
-- **Linux**: Uses PyInstaller in Docker containers (cross-compiled from macOS host)
+- **Linux**: Uses PyInstaller in Docker containers (when building from a macOS host)
   - x64: Uses linux/amd64 Docker platform
   - ARM64: Uses linux/arm64 Docker platform
   - Docker Desktop handles architecture emulation automatically
   - **Requires Docker Desktop to be installed and running** — see Graceful Fallback Behavior below
-  - Not required for macOS or Windows builds
+  - On a Linux host, PyInstaller runs natively — Docker is not required
 - **Windows**: Uses Nuitka via AWS CodeBuild (if enabled during init)
   - Automated builds take 12-15 minutes
   - Requires CodeBuild to be enabled during `init`
@@ -312,6 +324,7 @@ The package command is designed to handle missing optional components gracefully
   - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
   - Docker is installed but the daemon is not running — open Docker Desktop and wait for it to start, then retry
   - macOS and Windows builds are **unaffected** by Docker availability
+- **macOS builds (from non-macOS host)**: Refused with a clear error explaining that PyInstaller cannot cross-compile and listing alternative paths (macOS workstation, CI runner, EC2 Mac). Other targets in the same `ccwb package` invocation continue to build normally.
 - **At least one platform must build successfully** for the package command to succeed
 
 This ensures that packaging always works, even if some optional platforms are not available.

@@ -669,10 +669,20 @@ Pick based on what your developers report:
 
 **Package Workflow:**
 
-1. **Local builds**: macOS/Linux executables are built locally using PyInstaller
+1. **Local builds**: macOS and Linux executables are built locally using PyInstaller. See the host-OS matrix below — PyInstaller cannot cross-compile across operating systems, so **macOS binaries must be built on macOS** and **Linux binaries must be built on Linux** (or on macOS via Docker).
 2. **Windows builds**: Trigger AWS CodeBuild for Windows executables (20+ minutes) - requires enabling CodeBuild during `init`
 3. **Check status**: Monitor build progress with `poetry run ccwb builds`
 4. **Create distribution**: Use `distribute` to upload and generate presigned URLs
+
+**Host-OS requirements for each target:**
+
+| Target binary | Build host must be | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | macOS | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container used when building from macOS) |
+| `windows` | any host with CodeBuild enabled | AWS CodeBuild (remote build) |
+
+> **Linux admins cannot build macOS binaries.** PyInstaller on Linux emits Linux ELF binaries regardless of the requested target architecture, and macOS cannot load ELF. If you run `ccwb package --target-platform=macos-arm64` on Linux, the build refuses with a clear error. To produce macOS binaries, use a macOS workstation or a CI macOS runner (e.g. GitHub Actions `macos-latest`) and collect the artifacts from there.
 
 > **Note**: Windows builds are optional and require CodeBuild to be enabled during the `init` process. If not enabled, the package command will skip Windows builds and continue with other platforms.
 
@@ -691,8 +701,9 @@ The `dist/` folder will contain:
 
 The package builder:
 
-- Automatically builds binaries for both macOS and Linux by default
-- Uses Docker to cross-compile Linux binaries when running on macOS — **Docker Desktop must be installed and running**; if not present, Linux builds are skipped with a warning and macOS/Windows builds continue unaffected
+- Builds binaries for the platforms your current host supports (see host-OS matrix above). On a macOS host that's macOS natively plus Linux via Docker; on a Linux host that's Linux only
+- Uses Docker to produce Linux binaries from a macOS host — **Docker Desktop must be installed and running**; if not present, Linux builds are skipped with a warning and other platforms continue unaffected
+- Refuses to attempt macOS targets from a non-macOS host (fails fast with a clear error rather than silently producing invalid binaries)
 - Includes the OTEL helper for extracting user attributes from JWT tokens
 - Creates a unified installer that auto-detects the user's platform
 
