@@ -84,6 +84,16 @@ This command reads federation configuration from the admin profile (saved during
 
 **Legacy build mode (PyInstaller / Nuitka / Docker):**
 
+PyInstaller emits binaries in the host OS's native format, so the build host must match the target OS. Only Windows (via CodeBuild) escapes this constraint.
+
+| Target binary | Build host required | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | **macOS** | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container when building from macOS) |
+| `windows` | any host | AWS CodeBuild (remote) |
+
+**Linux admins cannot produce macOS binaries** — see [CLI Reference: Platform Support](CLI_REFERENCE.md#platform-support-hybrid-build-system) for details. The package command refuses this combination with a clear error; to produce macOS binaries use a macOS workstation, a CI macOS runner, or an EC2 Mac instance.
+
 - **Windows**: Uses Nuitka via AWS CodeBuild
   - Optimized for performance and minimal antivirus false positives
 - **macOS**: Uses PyInstaller with architecture-specific builds
@@ -93,7 +103,7 @@ This command reads federation configuration from the admin profile (saved during
 - **Linux x64/ARM64**: Uses PyInstaller in Docker containers (cross-compiled from macOS)
   - Automatically builds both architectures when Docker is available
   - Docker Desktop handles architecture emulation via Rosetta
-  - **Requires Docker Desktop installed and running** — if absent, Linux builds are skipped with a warning and all other platforms continue normally
+  - **When building from macOS, requires Docker Desktop installed and running** — if absent, Linux builds are skipped with a warning and all other platforms continue normally
   - macOS and Windows builds have no dependency on Docker
 
 **Which macOS binary should you ship?**
