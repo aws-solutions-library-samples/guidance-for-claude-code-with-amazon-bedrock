@@ -33,8 +33,9 @@ def lambda_handler(event, context):
         # Get time range in ISO format for DynamoDB queries
         start_iso, end_iso = get_time_range_iso(time_range, default_hours=1)
         
-        # Aggregate tokens by user across entire time range
+        # Aggregate tokens and cost by user across entire time range
         user_tokens = defaultdict(float)
+        user_costs = defaultdict(float)
         
         # Single query for all USER records in the time range
         response = table.query(
@@ -43,7 +44,7 @@ def lambda_handler(event, context):
                                                    f'{end_iso}#USER#~')
         )
         
-        # Aggregate tokens by user
+        # Aggregate tokens and cost by user
         for item in response.get('Items', []):
             # Extract user email from sort key
             # SK format is: ISO_TIMESTAMP#USER#email
@@ -51,7 +52,9 @@ def lambda_handler(event, context):
             if len(sk_parts) >= 3 and sk_parts[1] == 'USER':
                 user_email = '#'.join(sk_parts[2:])  # Handle emails with # if any
                 tokens = float(item.get('tokens', Decimal(0)))
+                cost = float(item.get('estimated_cost', Decimal(0)))
                 user_tokens[user_email] += tokens
+                user_costs[user_email] += cost
         
         # Handle pagination if needed
         while 'LastEvaluatedKey' in response:
@@ -67,7 +70,9 @@ def lambda_handler(event, context):
                 if len(sk_parts) >= 3 and sk_parts[1] == 'USER':
                     user_email = '#'.join(sk_parts[2:])
                     tokens = float(item.get('tokens', Decimal(0)))
+                    cost = float(item.get('estimated_cost', Decimal(0)))
                     user_tokens[user_email] += tokens
+                    user_costs[user_email] += cost
         
         # Sort users by total tokens and take top 10
         sorted_users = sorted(user_tokens.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -77,7 +82,8 @@ def lambda_handler(event, context):
             if total > 0:
                 users.append({
                     'user': user_email,
-                    'tokens': total
+                    'tokens': total,
+                    'cost': user_costs.get(user_email, 0.0),
                 })
         
         # Calculate total tokens for percentage
@@ -90,6 +96,10 @@ def lambda_handler(event, context):
             percentage_str = format_percentage(user['tokens'], total_all_users)
             # Format the username
             username = user['user'].split('@')[0][:20]  # First part of email, truncated
+            # Format cost
+            cost = user.get('cost', 0.0)
+            cost_str = f"${cost:,.2f}" if cost >= 0.01 else f"${cost:,.4f}" if cost > 0 else ""
+            cost_display = f" • {cost_str}" if cost_str else ""
             
             items_html += f"""
             <div style="
@@ -135,7 +145,7 @@ def lambda_handler(event, context):
                     text-align: right;
                     min-width: 120px;
                     flex-shrink: 0;
-                ">{percentage_str} • {format_number(user['tokens'])}</div>
+                ">{percentage_str} • {format_number(user['tokens'])}{cost_display}</div>
             </div>
             """
         

@@ -22,6 +22,178 @@ QUOTA_TABLE = os.environ.get("QUOTA_TABLE")  # Optional - only set if quota moni
 POLICIES_TABLE = os.environ.get("POLICIES_TABLE")  # Optional - for fine-grained quotas
 ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 AGGREGATION_WINDOW = 5  # minutes
+PRICING_REGION = os.environ.get("PRICING_REGION", "us-east-1")
+PRICING_CACHE_FILE = "/tmp/bedrock_prices.json"
+PRICING_CACHE_TTL = 7 * 86400  # 7 days
+
+# Hardcoded fallback prices (per 1K tokens, USD) — used only if Pricing API
+# has never been reached and no /tmp cache exists.
+DEFAULT_PRICES = {
+    "anthropic.claude-opus-4-6": {"input": 0.015, "output": 0.075, "cache_read": 0.01875},
+    "anthropic.claude-opus-4-5": {"input": 0.015, "output": 0.075, "cache_read": 0.01875},
+    "anthropic.claude-opus-4-1": {"input": 0.015, "output": 0.075, "cache_read": 0.01875},
+    "anthropic.claude-opus-4": {"input": 0.015, "output": 0.075, "cache_read": 0.01875},
+    "anthropic.claude-sonnet-4-6": {"input": 0.003, "output": 0.015, "cache_read": 0.003},
+    "anthropic.claude-sonnet-4-5": {"input": 0.003, "output": 0.015, "cache_read": 0.003},
+    "anthropic.claude-sonnet-4": {"input": 0.003, "output": 0.015, "cache_read": 0.003},
+    "anthropic.claude-sonnet-3-7": {"input": 0.003, "output": 0.015, "cache_read": 0.003},
+    "anthropic.claude-3-7-sonnet": {"input": 0.003, "output": 0.015, "cache_read": 0.003},
+    "anthropic.claude-haiku-4-5": {"input": 0.0008, "output": 0.004, "cache_read": 0.0008},
+    "anthropic.claude-3-5-haiku": {"input": 0.0008, "output": 0.004, "cache_read": 0.0008},
+}
+DEFAULT_PRICE_PER_1K = {"input": 0.003, "output": 0.015, "cache_read": 0.003}  # Sonnet-class fallback
+
+# Module-level pricing cache — persists across warm Lambda invocations
+_pricing_cache = None
+
+
+def _match_model_prices(model_id, prices):
+    """Look up pricing for a model ID, handling version suffixes and partial matches."""
+    if not model_id or not prices:
+        return DEFAULT_PRICE_PER_1K
+
+    # Exact match
+    if model_id in prices:
+        return prices[model_id]
+
+    # Strip version suffix (e.g. anthropic.claude-sonnet-4-20250514-v1:0 → anthropic.claude-sonnet-4)
+    for key in prices:
+        if model_id.startswith(key) or key.startswith(model_id):
+            return prices[key]
+
+    # Partial match on model family
+    model_lower = model_id.lower()
+    for key, val in prices.items():
+        if key.lower() in model_lower or model_lower in key.lower():
+            return val
+
+    print(f"[WARN] No pricing found for model '{model_id}', using default")
+    return DEFAULT_PRICE_PER_1K
+
+
+def fetch_bedrock_prices(region):
+    """Fetch Bedrock model prices from AWS Pricing API with /tmp file caching.
+
+    Cache strategy:
+    - Check /tmp/bedrock_prices.json (persists across warm invocations and
+      some cold starts on the same execution environment)
+    - If cache is valid (< 7 days old), return cached prices
+    - Otherwise fetch from Pricing API, save to /tmp, return
+    - On API failure: return stale cache or DEFAULT_PRICES
+    """
+    # Check /tmp cache
+    try:
+        if os.path.exists(PRICING_CACHE_FILE):
+            with open(PRICING_CACHE_FILE) as f:
+                cached = json.load(f)
+            age = time.time() - cached.get("fetched_at", 0)
+            if age < PRICING_CACHE_TTL:
+                print(f"[INFO] Using cached pricing (age: {age/3600:.1f}h)")
+                return cached["prices"]
+            else:
+                print(f"[INFO] Pricing cache expired (age: {age/86400:.1f}d), refreshing")
+    except Exception as e:
+        print(f"[WARN] Error reading pricing cache: {e}")
+
+    # Fetch from Pricing API
+    try:
+        pricing_client = boto3.client("pricing", region_name="us-east-1")
+        prices = {}
+        next_token = None
+
+        while True:
+            params = {
+                "ServiceCode": "AmazonBedrock",
+                "Filters": [
+                    {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+                    {"Type": "TERM_MATCH", "Field": "feature", "Value": "On-demand Inference"},
+                ],
+                "MaxResults": 100,
+            }
+            if next_token:
+                params["NextToken"] = next_token
+
+            response = pricing_client.get_products(**params)
+
+            for price_json_str in response.get("PriceList", []):
+                price_item = json.loads(price_json_str) if isinstance(price_json_str, str) else price_json_str
+                attrs = price_item.get("product", {}).get("attributes", {})
+                model_id = attrs.get("modelId", "")
+                inference_type = attrs.get("inferenceType", "").lower()
+
+                if not model_id:
+                    continue
+
+                # Extract price per 1K tokens
+                for term_type in price_item.get("terms", {}).values():
+                    for term in term_type.values():
+                        for dim in term.get("priceDimensions", {}).values():
+                            if dim.get("unit") == "1K tokens":
+                                usd = float(dim.get("pricePerUnit", {}).get("USD", "0"))
+                                if model_id not in prices:
+                                    prices[model_id] = {}
+                                if "input" in inference_type:
+                                    prices[model_id]["input"] = usd
+                                elif "output" in inference_type:
+                                    prices[model_id]["output"] = usd
+                                elif "cache" in inference_type and "read" in inference_type:
+                                    prices[model_id]["cache_read"] = usd
+
+            next_token = response.get("NextToken")
+            if not next_token:
+                break
+
+        # Ensure all models have all price types
+        for model_id in prices:
+            prices[model_id].setdefault("input", DEFAULT_PRICE_PER_1K["input"])
+            prices[model_id].setdefault("output", DEFAULT_PRICE_PER_1K["output"])
+            prices[model_id].setdefault("cache_read", DEFAULT_PRICE_PER_1K["cache_read"])
+
+        print(f"[INFO] Fetched pricing for {len(prices)} models from Pricing API")
+
+        # Save to /tmp
+        try:
+            with open(PRICING_CACHE_FILE, "w") as f:
+                json.dump({"prices": prices, "fetched_at": time.time()}, f)
+        except Exception as e:
+            print(f"[WARN] Failed to save pricing cache: {e}")
+
+        return prices if prices else DEFAULT_PRICES
+
+    except Exception as e:
+        print(f"[WARN] Failed to fetch pricing from API: {e}")
+        # Try stale cache
+        try:
+            if os.path.exists(PRICING_CACHE_FILE):
+                with open(PRICING_CACHE_FILE) as f:
+                    return json.load(f)["prices"]
+        except Exception:
+            pass
+        print("[WARN] Using hardcoded default prices")
+        return DEFAULT_PRICES
+
+
+def get_model_prices():
+    """Get model prices with in-memory caching (zero IO on warm invocations)."""
+    global _pricing_cache
+    if _pricing_cache is not None:
+        return _pricing_cache
+    region = os.environ.get("METRICS_REGION", PRICING_REGION)
+    _pricing_cache = fetch_bedrock_prices(region)
+    return _pricing_cache
+
+
+def calculate_estimated_cost(input_tokens, output_tokens, cache_tokens, model):
+    """Calculate estimated cost in USD for a set of token counts and model."""
+    prices = get_model_prices()
+    model_prices = _match_model_prices(model, prices)
+    cost = (
+        (input_tokens / 1000.0) * model_prices.get("input", DEFAULT_PRICE_PER_1K["input"])
+        + (output_tokens / 1000.0) * model_prices.get("output", DEFAULT_PRICE_PER_1K["output"])
+        + (cache_tokens / 1000.0) * model_prices.get("cache_read", DEFAULT_PRICE_PER_1K["cache_read"])
+    )
+    return round(cost, 6)
+
 
 # DynamoDB tables
 table = dynamodb.Table(METRICS_TABLE)
@@ -779,11 +951,19 @@ def write_to_dynamodb(
 
             # 3. Write individual user metrics for this window
             for user in user_details:
+                # Calculate estimated cost using dynamic pricing
+                est_cost = calculate_estimated_cost(
+                    float(user.get("input_tokens", 0)),
+                    float(user.get("output_tokens", 0)),
+                    float(user.get("cache_tokens", 0)),
+                    user.get("model", ""),
+                )
                 user_item = {
                     "pk": "METRICS",
                     "sk": f'{iso_timestamp}#USER#{user["email"]}',
                     "tokens": Decimal(str(user.get("tokens", 0))),
                     "requests": Decimal(str(user.get("requests", 0))),
+                    "estimated_cost": Decimal(str(est_cost)),
                     "email": user["email"],
                     "timestamp": iso_timestamp,
                     "ttl": ttl,

@@ -207,6 +207,14 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt MetricsTable.Arn
+        - PolicyName: PricingAPIAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                Resource: '*'
 
   MetricsAggregatorFunction:
     Type: AWS::Lambda::Function
@@ -223,6 +231,7 @@ Resources:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
           METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_TABLE: !Ref MetricsTable
+          PRICING_REGION: !Ref AWS::Region
       Code: ./lambda-functions/metrics_aggregator/
 
   MetricsAggregatorScheduleRule:
