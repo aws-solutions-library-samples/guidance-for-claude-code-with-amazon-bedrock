@@ -16,6 +16,19 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 - AWS CLI v2
 - Git
 
+**macOS admins — check your machine architecture before building:**
+
+```bash
+uname -m
+```
+
+| Output | Your Mac | Builds natively |
+|--------|----------|----------------|
+| `arm64` | Apple Silicon (M1/M2/M3/M4) | `macos-arm64` — Apple Silicon only; Intel Macs cannot run it |
+| `x86_64` | Intel Mac | `macos-intel` — covers all Macs (runs natively on Intel, via Rosetta on Apple Silicon) |
+
+> Intel (`macos-intel`) binaries run via Rosetta on Apple Silicon Macs, so a single Intel binary covers your entire Mac fleet. ARM64 binaries only run on Apple Silicon. If your admin is on Apple Silicon, use the [cross-arch setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional) to build the Intel binary.
+
 ### AWS Requirements
 
 - AWS account with appropriate IAM permissions to create:
@@ -38,7 +51,6 @@ This guide covers the **AWS infrastructure** side of the deployment. It assumes 
 | **Microsoft Entra ID (Azure AD)** | [Microsoft Entra ID Setup Guide](assets/docs/providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [Auth0 Setup Guide](assets/docs/providers/auth0-setup.md) |
 | **AWS Cognito User Pool** | [Cognito User Pool Setup Guide](assets/docs/providers/cognito-user-pool-setup.md) |
-| **AWS IAM Identity Center (SSO)** | [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md) |
 
 Each guide walks through creating the application, setting the redirect URI to `http://localhost:8400/callback`, enabling PKCE, and noting the two values you will need here: your **provider domain** and **client ID**.
 
@@ -104,9 +116,9 @@ ccwb init
 │
 ├── Profile name → e.g. "CorpIT-Prod"
 │
-├── STEP 1: Authentication method?
+├── STEP 1: Enable SSO authentication? (Y/n)
 │   │
-│   ├── OIDC / Direct IdP ──────────────────────────────────────────┐
+│   ├── Yes (default) ──────────────────────────────────────────────┐
 │   │                                                                │
 │   │   Provider domain? (e.g. company.okta.com)                    │
 │   │   Client ID?                                                   │
@@ -119,14 +131,7 @@ ccwb init
 │   │   ├── Credential storage: Keyring / Session Files              │
 │   │   └── Federation type: Direct STS / Cognito Identity Pool      │
 │   │                                                                │
-│   ├── IAM Identity Center ─────────────────────────────────────── │
-│   │   Start URL?                                                   │
-│   │   SSO region?                                                  │
-│   │   Account ID?                                                  │
-│   │   Permission set name?                                         │
-│   │   Write to ~/.aws/config? (Yes/No)                             │
-│   │                                                                │
-│   └── None → skips all auth questions, goes to Step 2 ───────────┘
+│   └── No → skips all auth questions, goes to Step 2 ─────────────┘
 │
 ├── STEP 2: AWS Infrastructure
 │   ├── AWS region? (where CloudFormation stacks are deployed)
@@ -227,19 +232,20 @@ poetry run ccwb init
 
 #### Step 1: Authentication Configuration
 
-**What it asks:** `Authentication method:`
+**What it asks:** `Enable SSO authentication? (Y/n)`
 
-Choose how developers will authenticate to reach Bedrock:
+Choose whether developers will authenticate through an OIDC identity provider to reach Bedrock:
 
-| Choice | When to use |
+| Answer | When to use |
 |---|---|
-| **OIDC / Direct IdP** | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
-| **AWS IAM Identity Center** | Your org already uses AWS SSO — no external IdP needed, sessions up to 7 days |
-| **None** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
+| **Yes** (default) | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
+| **No** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
+
+> **Note:** AWS IAM Identity Center (SSO) support is coming in a future release. If your org uses AWS SSO today, choose **No** and configure developer access via your existing IAM Identity Center setup outside this tool.
 
 ---
 
-##### If you chose OIDC / Direct IdP
+##### If you answered Yes (SSO enabled)
 
 **Q: `Enter your OIDC provider domain:`**
 
@@ -252,7 +258,18 @@ Enter the domain of your identity provider — the base URL without `https://`:
 | Auth0 | `company.auth0.com` |
 | Cognito User Pool | `my-app.auth.us-east-1.amazoncognito.com` |
 
-The wizard auto-detects the provider type from the domain. If it detects Cognito, it will also ask for your **User Pool ID** (case-sensitive, format: `us-east-1_XXXXXXXXX`).
+The wizard auto-detects the provider type from the domain for the four known providers above. If it detects Cognito, it will also ask for your **User Pool ID** (case-sensitive, format: `us-east-1_XXXXXXXXX`).
+
+> **Custom or non-standard OIDC domains** (e.g. Keycloak, PingFederate, Okta vanity domains like `sso.mycompany.com`): the wizard cannot auto-detect the type and will prompt you to select manually:
+> ```
+> Could not auto-detect provider type from domain.
+> Select your identity provider type:
+>   > Okta (or generic OIDC)
+>     Microsoft Entra ID / Azure AD
+>     Auth0
+>     AWS Cognito User Pool
+> ```
+> Choose **Okta (or generic OIDC)** for any standard OIDC provider not listed (Keycloak, PingFederate, ADFS, etc.) — it uses the most compatible CloudFormation template.
 
 ---
 
@@ -312,44 +329,26 @@ How the OIDC token is exchanged for AWS temporary credentials:
 
 ---
 
-##### If you chose AWS IAM Identity Center
-
-**Q: `IAM Identity Center start URL:`**
-Your SSO portal URL, e.g. `https://your-company.awsapps.com/start`
-
-**Q: `AWS region for IAM Identity Center:`**
-The region where your IAM IDC instance is deployed, e.g. `us-east-1`
-
-**Q: `AWS Account ID:`**
-12-digit account ID of the account where Bedrock will be invoked
-
-**Q: `Permission set / role name:`**
-The IAM IDC Permission Set name assigned to developers, e.g. `BedrockDeveloperAccess`
-
-The wizard auto-generates the `~/.aws/config` block and asks if you want it written automatically. Answer **Yes**.
-
----
-
-##### If you chose None
+##### If you answered No (SSO disabled)
 
 No authentication questions are asked. The wizard skips directly to Step 2.
 
-**What "None" means in practice:**
+**What SSO disabled means in practice:**
 
 - **No auth infrastructure is deployed** — no IAM OIDC Provider, no Cognito Identity Pool, no IAM role for developers is created.
 - **No `credential_process` binary is distributed** — end users will not get an installer or auto-refreshing AWS credentials from this tool.
 - **You are responsible for giving developers Bedrock access** via whatever IAM mechanism already exists in your account (IAM users, existing roles, existing SSO, etc.).
 
-**When to choose None:**
+**When to choose No:**
 
-| Scenario | Why None makes sense |
+| Scenario | Why disabling SSO makes sense |
 |---|---|
 | You only want the monitoring/analytics stack | Deploy dashboards without changing how developers authenticate |
 | Developers already have Bedrock access via existing roles | Adding another auth layer would be redundant |
 | Pilot/testing with a shared IAM user | Fastest way to test the monitoring stack before committing to full OIDC setup |
 | You will configure auth manually after deployment | Advanced users who want to customise the CloudFormation templates directly |
 
-> **Note:** Quota monitoring and per-user attribution features require OIDC or IAM IDC auth. With `None`, the monitoring stack will still collect aggregate metrics but cannot attribute usage to individual users.
+> **Note:** Quota monitoring and per-user attribution require SSO enabled. With SSO disabled, the monitoring stack still collects aggregate metrics but cannot attribute usage to individual users.
 
 ---
 
@@ -636,6 +635,38 @@ poetry run ccwb builds
 poetry run ccwb distribute
 ```
 
+**Choosing macOS targets:**
+
+Before selecting, check your machine's architecture:
+
+```bash
+uname -m
+python3 -c "import platform; print(platform.machine())"
+poetry run python -c "import platform; print(platform.machine())"
+```
+
+All three should return the same value. The Poetry command is most important — it confirms what architecture PyInstaller will use when building the binary.
+
+- `arm64` → you are on Apple Silicon — select `macos-arm64`
+- `x86_64` → you are on Intel — select `macos-intel`
+
+The `ccwb package` command prompts you to select one or more platforms via a checkbox. **You must build for the architecture your developers are running** — ask your developers to run the same commands on their machines and tell you the output before you build:
+
+```bash
+uname -m
+python3 -c "import platform; print(platform.machine())"
+```
+
+Pick based on what your developers report:
+
+| Your developers report | Select |
+|------------------------|--------|
+| `arm64` (Apple Silicon) | `macos-arm64` |
+| `x86_64` (Intel) | `macos-intel` |
+| Both | `macos-arm64` + `macos-intel` |
+
+> **Note:** `macos-intel` binaries run on all Macs — natively on Intel, via Rosetta on Apple Silicon. If you have Intel Mac users in your org, build `macos-intel`. On Apple Silicon, this requires a universal2 Python (see [Cross-arch macOS Build Setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional)).
+
 **Package Workflow:**
 
 1. **Local builds**: macOS/Linux executables are built locally using PyInstaller
@@ -744,21 +775,21 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
 
 - **Windows**: AWS CodeBuild with Nuitka (automated)
 - **macOS**: PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs
-  - Intel: Optional - requires x86_64 Python environment on ARM Macs
-  - Universal: Requires both architectures' Python libraries
+  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
+  - Intel: Native build on Intel Macs — cross-arch from Apple Silicon requires universal2 Python (optional)
+  - Universal: Requires universal2 Python (optional)
 - **Linux**: Docker with PyInstaller (cross-compiled from macOS host)
   - Requires [Docker Desktop](https://docs.docker.com/get-docker/) installed and running
   - If Docker is not installed or its daemon is not running, Linux builds are skipped with a warning
   - macOS and Windows builds have **no dependency on Docker**
 
-### Optional: Intel Mac Builds
+### Optional: Cross-arch macOS Builds
 
-Intel Mac builds require an x86_64 Python environment on Apple Silicon Macs.
+By default, `ccwb package` builds only for your Mac's own architecture. If you need to also build for the other architecture (e.g. Intel on Apple Silicon), install a universal2 Python from python.org — `ccwb` will detect it automatically.
 
-See [CLI Reference - Intel Mac Build Setup](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) for setup instructions.
+See [CLI Reference - Cross-arch macOS Build Setup](assets/docs/CLI_REFERENCE.md#cross-arch-macos-build-setup-optional) for setup instructions.
 
-If not configured, the package command will skip Intel builds and continue with other platforms.
+If not configured, cross-arch builds are skipped and the package command continues with other platforms. Intel (`macos-intel`) binaries cover all Macs via Rosetta, so admins on Intel Macs can skip this. Admins on Apple Silicon who have Intel Mac users in their org should install the universal2 Python to produce the Intel binary.
 
 ---
 
@@ -830,6 +861,82 @@ To manually specify a different port, set the `REDIRECT_PORT` environment variab
 ```bash
 export REDIRECT_PORT=8401
 ```
+
+### `Exec format error` on the credential-process binary (end user)
+
+If an end user sees this when running `aws sts get-caller-identity` or launching Claude:
+
+```
+[Errno 8] Exec format error: '/Users/<username>/claude-code-with-bedrock/credential-process'
+```
+
+or directly:
+
+```
+zsh: exec format error: ./credential-process
+```
+
+**This is a CPU architecture mismatch** — the binary was built for a different architecture than the user's machine. `chmod +x` will not fix it.
+
+**Diagnose (run on the user's machine):**
+
+```bash
+uname -m                                                  # their CPU arch
+file ~/claude-code-with-bedrock/credential-process        # binary's CPU arch
+```
+
+| `uname -m` result | Binary arch | Cause |
+|---|---|---|
+| `x86_64` (Intel Mac) | `arm64` | Intel binary was not built — only ARM64 was in the package |
+| `arm64` (Apple Silicon) | `x86_64` | Wrong binary manually copied |
+
+**Fix (admin) — rebuild with both macOS architectures:**
+
+```bash
+# One-time setup: install Python universal2 from https://www.python.org/downloads/macos/
+# Download the "macOS 64-bit universal2 installer" for Python 3.12 and run it.
+# ccwb detects it automatically at /Library/Frameworks/Python.framework/
+
+# Rebuild — now produces both macos-arm64 and macos-intel
+poetry run ccwb package --target-platform all
+```
+
+Redistribute the new package. The installer auto-detects architecture and installs the correct binary.
+
+> **Why this happens:** Without a universal2 Python, `ccwb package` builds only for the host Mac's architecture. An ARM64-only package has no Intel binary, so Intel Mac users get `exec format error` — ARM64 binaries cannot run on Intel Macs. Install a universal2 Python to also build the Intel binary, which covers all Mac users.
+
+### Windows `install.bat` — `-replace was unexpected at this time.`
+
+If running `install.bat` on Windows produces this error:
+
+```
+-replace was unexpected at this time.
+```
+
+**Root cause:** This is a cmd.exe parser bug in the generated installer — `^` line-continuation characters inside a double-quoted PowerShell command get consumed by cmd.exe, causing `-replace` to be treated as a standalone batch command rather than part of the PowerShell string. A code fix is included in the next release.
+
+**Workaround:** The binary and `config.json` are already copied before this error occurs — only the `~/.claude/settings.json` placeholder replacement fails. Complete the installation manually:
+
+**Step 1** — Open **PowerShell** (not cmd.exe) from the extracted package folder and run:
+
+```powershell
+$otelPath = "$env:USERPROFILE\claude-code-with-bedrock\otel-helper.exe" -replace '\\', '/'
+$credPath = "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe" -replace '\\', '/'
+(Get-Content 'claude-settings\settings.json') `
+    -replace '__OTEL_HELPER_PATH__', $otelPath `
+    -replace '__CREDENTIAL_PROCESS_PATH__', $credPath |
+    Set-Content "$env:USERPROFILE\.claude\settings.json"
+```
+
+**Step 2** — Configure the AWS profile (replace `<profile-name>` with the name shown in `config.json`):
+
+```powershell
+aws configure set credential_process `
+    "$env:USERPROFILE\claude-code-with-bedrock\credential-process.exe --profile <profile-name>" `
+    --profile <profile-name>
+```
+
+> **Why PowerShell works:** PowerShell uses backtick (`` ` ``) for line continuation — there is no cmd.exe parser involved to mangle the `-replace` operators.
 
 ### Build Failures
 

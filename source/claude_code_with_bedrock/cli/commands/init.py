@@ -513,6 +513,25 @@ class InitCommand(Command):
             except Exception:
                 pass  # Continue to manual selection if parsing fails
 
+            # If auto-detection failed (custom domain, Keycloak, PingFederate, etc.)
+            # ask the user to select the provider type manually so deploy never gets None
+            if provider_type is None:
+                console.print(
+                    "\n[yellow]Could not auto-detect provider type from domain.[/yellow]"
+                )
+                provider_type = questionary.select(
+                    "Select your identity provider type:",
+                    choices=[
+                        questionary.Choice("Okta (or generic OIDC)", value="okta"),
+                        questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
+                        questionary.Choice("Auth0", value="auth0"),
+                        questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                    ],
+                    instruction="(Used to select the correct CloudFormation template)",
+                ).ask()
+                if not provider_type:
+                    return None
+
             # For Cognito, we must ask for the User Pool ID
             # Cannot reliably extract from domain due to case sensitivity
             if provider_type == "cognito":
@@ -1587,7 +1606,14 @@ class InitCommand(Command):
             if dist_type == "landing-page":
                 console.print("• Authenticated landing page distribution (ALB + Lambda + S3)")
                 idp_provider = config.get("distribution", {}).get("idp_provider", "")
-                console.print(f"• IdP authentication: {idp_provider.upper() if idp_provider else 'configured'}")
+                idp_display_names = {
+                    "okta": "Okta",
+                    "azure": "Azure AD / Entra ID",
+                    "auth0": "Auth0",
+                    "cognito": "AWS Cognito User Pool",
+                }
+                idp_label = idp_display_names.get(idp_provider, idp_provider.upper() if idp_provider else "configured")
+                console.print(f"• IdP authentication: {idp_label}")
                 if config.get("distribution", {}).get("custom_domain"):
                     console.print(f"• Custom domain: {config['distribution']['custom_domain']}")
             elif dist_type == "presigned-s3":
