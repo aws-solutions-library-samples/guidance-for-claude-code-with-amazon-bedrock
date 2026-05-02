@@ -1382,14 +1382,24 @@ class InitCommand(Command):
                     "New tag key (empty to finish):",
                     default="",
                 ).ask()
+                tag_key = (tag_key or "").strip()
                 if not tag_key:
                     break
+                if tag_key.lower().startswith("aws:"):
+                    console.print("[red]✗ Tag keys cannot start with 'aws:' (reserved by AWS)[/red]")
+                    continue
+                if len(tag_key) > 128:
+                    console.print("[red]✗ Tag key exceeds 128 character limit[/red]")
+                    continue
                 tag_value = questionary.text(
                     f"Value for '{tag_key}':",
                     default=tags.get(tag_key, ""),
                 ).ask()
                 if tag_value is None:
                     break
+                if len(tag_value) > 256:
+                    console.print("[red]✗ Tag value exceeds 256 character limit[/red]")
+                    continue
                 tags[tag_key] = tag_value
                 console.print(f"[green]✓[/green] Tag: {tag_key}={tag_value}")
             config["tags"] = tags
@@ -1486,6 +1496,10 @@ class InitCommand(Command):
             table.add_row("AWS Account", account_id)
         else:
             table.add_row("AWS Account", "[yellow]Unable to determine[/yellow]")
+
+        # Show resource tags
+        if config.get("tags"):
+            table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
         console.print(table)
 
