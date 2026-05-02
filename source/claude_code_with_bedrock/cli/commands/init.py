@@ -1346,6 +1346,68 @@ class InitCommand(Command):
             # Save progress
             progress.save_step("bedrock_complete", config)
 
+        # Resource Tags (optional)
+        console.print("\n[bold blue]Resource Tags (Optional)[/bold blue]")
+        console.print("─" * 30)
+        console.print("[dim]Tags are applied to all deployed CloudFormation stacks.[/dim]")
+
+        add_tags = questionary.confirm(
+            "Would you like to add resource tags?",
+            default=bool(config.get("tags")),
+        ).ask()
+
+        if add_tags:
+            existing_tags = dict(config.get("tags", {}))
+            tags = {}
+
+            # Let user confirm/edit existing tags first
+            if existing_tags:
+                console.print("[dim]Existing tags (edit value or leave empty to remove):[/dim]")
+                for key, value in existing_tags.items():
+                    tag_value = questionary.text(
+                        f"  {key}:",
+                        default=value,
+                    ).ask()
+                    if tag_value is None:
+                        return None
+                    if tag_value:
+                        tags[key] = tag_value
+                        console.print(f"[green]✓[/green] Tag: {key}={tag_value}")
+                    else:
+                        console.print(f"[yellow]✗[/yellow] Removed tag: {key}")
+
+            # Then allow adding new tags
+            while True:
+                tag_key = questionary.text(
+                    "New tag key (empty to finish):",
+                    default="",
+                ).ask()
+                tag_key = (tag_key or "").strip()
+                if not tag_key:
+                    break
+                if tag_key.lower().startswith("aws:"):
+                    console.print("[red]✗ Tag keys cannot start with 'aws:' (reserved by AWS)[/red]")
+                    continue
+                if len(tag_key) > 128:
+                    console.print("[red]✗ Tag key exceeds 128 character limit[/red]")
+                    continue
+                tag_value = questionary.text(
+                    f"Value for '{tag_key}':",
+                    default=tags.get(tag_key, ""),
+                ).ask()
+                if tag_value is None:
+                    break
+                if len(tag_value) > 256:
+                    console.print("[red]✗ Tag value exceeds 256 character limit[/red]")
+                    continue
+                tags[tag_key] = tag_value
+                console.print(f"[green]✓[/green] Tag: {tag_key}={tag_value}")
+            config["tags"] = tags
+        elif add_tags is None:
+            return None
+        else:
+            config["tags"] = config.get("tags", {})
+
         return config
 
     def _review_configuration(self, config: dict[str, Any]) -> bool:
@@ -1434,6 +1496,10 @@ class InitCommand(Command):
             table.add_row("AWS Account", account_id)
         else:
             table.add_row("AWS Account", "[yellow]Unable to determine[/yellow]")
+
+        # Show resource tags
+        if config.get("tags"):
+            table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
         console.print(table)
 
@@ -1657,6 +1723,7 @@ class InitCommand(Command):
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
+            tags=config_data.get("tags", {}),
         )
 
         config.add_profile(profile)
@@ -1996,6 +2063,10 @@ class InitCommand(Command):
             # Add selected source region if present
             if hasattr(profile, "selected_source_region") and profile.selected_source_region:
                 existing_config["aws"]["selected_source_region"] = profile.selected_source_region
+
+            # Add resource tags if present
+            if hasattr(profile, "tags") and profile.tags:
+                existing_config["tags"] = profile.tags
 
             return existing_config
 

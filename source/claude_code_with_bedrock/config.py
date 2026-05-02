@@ -82,6 +82,9 @@ class Profile:
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
+    # Resource tagging
+    tags: dict[str, str] = field(default_factory=dict)  # Tags applied to all deployed CloudFormation stacks
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
