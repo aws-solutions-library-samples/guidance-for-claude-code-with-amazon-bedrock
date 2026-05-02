@@ -246,7 +246,7 @@ class PackageCommand(Command):
 
         # Create timestamped output directory under profile name
         timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        output_dir = Path("./dist") / profile_name / timestamp
+        output_dir = (Path("./dist") / profile_name / timestamp).resolve()
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
