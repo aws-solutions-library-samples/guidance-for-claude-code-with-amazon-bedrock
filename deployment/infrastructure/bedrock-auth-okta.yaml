@@ -97,7 +97,7 @@ Resources:
               - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
               - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
             Condition:
-              StringLike:
+              StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - Sid: AllowBedrockInvokeGlobal
             Effect: Allow
@@ -116,7 +116,7 @@ Resources:
               - 'bedrock:GetInferenceProfile'
             Resource: '*'
             Condition:
-              StringLike:
+              StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
           - Sid: AllowBedrockListGlobal
             Effect: Allow
