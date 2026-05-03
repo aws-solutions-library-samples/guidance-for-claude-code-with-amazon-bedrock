@@ -339,7 +339,8 @@ class InitCommand(Command):
                     "(e.g., company.okta.com, company.auth0.com, "
                     "login.microsoftonline.com/{tenant-id}/v2.0, "
                     "my-app.auth.us-east-1.amazoncognito.com, or "
-                    "my-app.auth-fips.us-gov-west-1.amazoncognito.com for GovCloud)"
+                    "my-app.auth-fips.us-gov-west-1.amazoncognito.com for GovCloud, "
+                    "or keycloak.example.com/realms/my-realm for Keycloak)"
                 ),
                 default=config.get("okta", {}).get("domain", ""),
             ).ask()
@@ -384,6 +385,8 @@ class InitCommand(Command):
                     elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
                         # Handle cognito-idp.{region}.amazonaws.com format (commercial and GovCloud)
                         provider_type = "cognito"
+                    elif '/realms/' in provider_domain:
+                        provider_type = "keycloak"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
             except Exception:
@@ -402,6 +405,7 @@ class InitCommand(Command):
                         questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
                         questionary.Choice("Auth0", value="auth0"),
                         questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                        questionary.Choice("Keycloak", value="keycloak"),
                     ],
                     instruction="(Used to select the correct CloudFormation template)",
                 ).ask()
@@ -441,6 +445,34 @@ class InitCommand(Command):
 
                 if not cognito_user_pool_id:
                     return None
+
+            # For Keycloak, ask for TLS thumbprint
+            keycloak_thumbprint = None
+            if provider_type == "keycloak":
+                console.print("\n[yellow]Keycloak TLS Certificate Thumbprint[/yellow]")
+                console.print("The IAM OIDC Provider requires a TLS certificate thumbprint.")
+                console.print("Get it with:")
+                kc_host = provider_domain.split('/realms/')[0] if '/realms/' in provider_domain else provider_domain
+                openssl_cmd = (
+                    f"openssl s_client -connect {kc_host}:443 2>/dev/null"
+                    " | openssl x509 -fingerprint -sha1 -noout"
+                    " | sed 's/://g' | cut -d= -f2 | tr '[:upper:]' '[:lower:]'"
+                )
+                console.print(f"  [cyan]{openssl_cmd}[/cyan]")
+                console.print("[dim]Leave empty to use default (all-zeros). Some regions reject all-zeros.[/dim]")
+
+                keycloak_thumbprint = questionary.text(
+                    "Keycloak TLS thumbprint (40 hex chars, or Enter to skip):",
+                    default=config.get("keycloak_thumbprint", ""),
+                    validate=lambda x: (
+                        x == ""
+                        or (len(x) == 40 and all(c in "0123456789abcdefABCDEF" for c in x))
+                        or "Must be 40 hex characters or empty"
+                    ),
+                ).ask()
+
+                if keycloak_thumbprint:
+                    keycloak_thumbprint = keycloak_thumbprint.lower()
 
             client_id = questionary.text(
                 "Enter your OIDC Client ID:",
@@ -548,6 +580,8 @@ class InitCommand(Command):
             config["provider_type"] = provider_type
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
+            if keycloak_thumbprint:
+                config["keycloak_thumbprint"] = keycloak_thumbprint
 
             # Ask about federation type
             console.print("\n[cyan]Federation Type Selection[/cyan]")
@@ -964,6 +998,7 @@ class InitCommand(Command):
                 questionary.Choice("Azure AD / Entra ID", value="azure"),
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                questionary.Choice("Keycloak", value="keycloak"),
             ]
 
             idp_provider = questionary.select(
@@ -1751,6 +1786,7 @@ class InitCommand(Command):
             inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+            keycloak_thumbprint=config_data.get("keycloak_thumbprint"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             sso_enabled=config_data.get("sso_enabled", True),
@@ -2067,6 +2103,10 @@ class InitCommand(Command):
             # Add Cognito User Pool ID if present
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:
                 existing_config["cognito_user_pool_id"] = profile.cognito_user_pool_id
+
+            # Add Keycloak thumbprint if present
+            if hasattr(profile, "keycloak_thumbprint") and profile.keycloak_thumbprint:
+                existing_config["keycloak_thumbprint"] = profile.keycloak_thumbprint
 
             # Add selected model if present
             if hasattr(profile, "selected_model") and profile.selected_model:

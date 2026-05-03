@@ -27,6 +27,17 @@ from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationMana
 from claude_code_with_bedrock.config import Config
 
 
+def _parse_keycloak_domain(domain: str) -> tuple[str, str]:
+    """Return (host, realm) from a Keycloak domain like 'kc.example.com/realms/myrealm'."""
+    # Strip scheme — CloudFormation templates prepend https://
+    domain = domain.removeprefix("https://").removeprefix("http://")
+    if "/realms/" in domain:
+        host, realm = domain.split("/realms/", 1)
+        return host, realm.rstrip("/")
+    return domain, "master"
+
+
+
 class DeployCommand(Command):
     name = "deploy"
     description = "Deploy AWS infrastructure (auth, monitoring, dashboards)"
@@ -364,6 +375,7 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "keycloak": "bedrock-auth-keycloak.yaml",
                 }
 
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
@@ -435,6 +447,17 @@ class DeployCommand(Command):
                             f"CognitoUserPoolDomain={cognito_domain}",
                         ]
                     )
+                elif provider_type == "keycloak":
+                    domain = profile.provider_domain
+                    host, realm = _parse_keycloak_domain(domain)
+                    params.extend([
+                        f"KeycloakDomain={host}",
+                        f"KeycloakRealm={realm}",
+                        f"KeycloakClientId={profile.client_id}",
+                    ])
+                    thumbprint = getattr(profile, 'keycloak_thumbprint', None)
+                    if thumbprint:
+                        params.append(f"KeycloakThumbprint={thumbprint}")
 
                 # Use profile regions, or fall back to all known Bedrock regions
                 bedrock_regions = profile.allowed_bedrock_regions
@@ -536,6 +559,15 @@ class DeployCommand(Command):
                                 f"CognitoClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]
                         )
+                    elif profile.distribution_idp_provider == "keycloak":
+                        dist_domain = profile.distribution_idp_domain or ''
+                        kc_host, kc_realm = _parse_keycloak_domain(dist_domain)
+                        params.extend([
+                            f"KeycloakDomain={kc_host}",
+                            f"KeycloakRealm={kc_realm}",
+                            f"KeycloakClientId={profile.distribution_idp_client_id}",
+                            f"KeycloakClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                        ])
 
                     # Add optional custom domain parameters
                     if profile.distribution_custom_domain:
@@ -666,10 +698,15 @@ class DeployCommand(Command):
                                 oidc_jwks = (
                                     f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
                                 )
+                        elif provider_type == "keycloak":
+                            domain = provider_domain.removeprefix("https://").removeprefix("http://").rstrip("/")
+                            oidc_issuer = f"https://{domain}"
+                            oidc_jwks = f"https://{domain}/protocol/openid-connect/certs"
                         if oidc_issuer and oidc_jwks:
                             params.append(f"OidcIssuerUrl={oidc_issuer}")
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
                             params.append(f"OidcClientId={profile.client_id}")
+
 
                 console.print(f"[dim]Using parameters: {params}[/dim]")
                 return deploy_with_cf(

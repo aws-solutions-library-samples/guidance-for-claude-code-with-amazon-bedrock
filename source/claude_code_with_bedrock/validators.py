@@ -124,7 +124,7 @@ class ProfileValidator:
 
         # Validate provider type if specified
         provider_type = profile_data.get("provider_type")
-        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito"]:
+        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito", "keycloak"]:
             warnings.append(f"Unknown provider_type: {provider_type}")
 
         # Conditional validation: Cognito requires user_pool_id
@@ -161,10 +161,10 @@ class ProfileValidator:
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
-                elif dist_provider not in ["okta", "auth0", "azure", "cognito"]:
+                elif dist_provider not in ["okta", "auth0", "azure", "cognito", "keycloak"]:
                     errors.append(
                         f"Invalid distribution_idp_provider: {dist_provider}. "
-                        "Must be 'okta', 'auth0', 'azure', or 'cognito'"
+                        "Must be 'okta', 'auth0', 'azure', 'cognito', or 'keycloak'"
                     )
 
                 dist_domain = profile_data.get("distribution_idp_domain")

@@ -1862,6 +1862,8 @@ RUN pyinstaller \
                 return "azure"
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 return "cognito"
+            elif '/realms/' in domain:
+                return "keycloak"
             else:
                 return "oidc"  # Default to generic OIDC
         except Exception:

@@ -179,6 +179,8 @@ def extract_user_info(payload):
                     org_id = "auth0"
                 elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
+                elif '/realms/' in issuer:
+                    org_id = "keycloak"
         except Exception:
             pass  # Keep default org_id if parsing fails
 

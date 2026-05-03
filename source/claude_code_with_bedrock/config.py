@@ -35,14 +35,14 @@ class Profile:
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "keycloak"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
     distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
-    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_provider: str | None = None  # "okta"|"azure"|"auth0"|"cognito"|"keycloak" (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
@@ -88,6 +88,9 @@ class Profile:
     inference_profile_opus_arn: str | None = None  # Optional inference profile ARN for Opus tier
     inference_profile_sonnet_arn: str | None = None  # Optional inference profile ARN for Sonnet tier
     inference_profile_haiku_arn: str | None = None  # Optional inference profile ARN for Haiku tier
+
+    # Keycloak-specific configuration
+    keycloak_thumbprint: str | None = None  # TLS certificate SHA-1 thumbprint (40 hex chars)
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
@@ -160,6 +163,12 @@ class Profile:
                             data["provider_type"] = "azure"
                         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                             data["provider_type"] = "cognito"
+
+                    # Keycloak detection uses path, not hostname
+                    if not data.get("provider_type") and "/realms/" in domain:
+                        data["provider_type"] = "keycloak"
+
+
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 

@@ -20,7 +20,7 @@ Parameters:
 
   IdPProvider:
     Type: String
-    AllowedValues: [okta, azure, auth0, cognito]
+    AllowedValues: [okta, azure, auth0, cognito, keycloak]
     Description: Identity provider type
 
   # Okta parameters
@@ -92,6 +92,27 @@ Parameters:
     Default: ''
     Description: Secrets Manager ARN for Cognito client secret
 
+  # Keycloak parameters
+  KeycloakDomain:
+    Type: String
+    Default: ''
+    Description: Keycloak host (e.g., keycloak.example.com)
+
+  KeycloakRealm:
+    Type: String
+    Default: ''
+    Description: Keycloak realm name
+
+  KeycloakClientId:
+    Type: String
+    Default: ''
+    Description: Keycloak web application client ID
+
+  KeycloakClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for Keycloak client secret
+
   # REQUIRED: Custom domain for HTTPS/OIDC authentication
   CustomDomainName:
     Type: String
@@ -114,6 +135,7 @@ Conditions:
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
   IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
   IsCognito: !Equals [!Ref IdPProvider, 'cognito']
+  IsKeycloak: !Equals [!Ref IdPProvider, 'keycloak']
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
 
 Resources:
@@ -798,7 +820,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}'
-                  - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+                  - !If
+                    - IsKeycloak
+                    - !Sub 'https://${KeycloakDomain}/realms/${KeycloakRealm}'
+                    - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
             AuthorizationEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/authorize'
@@ -808,7 +833,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/authorize'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+                  - !If
+                    - IsKeycloak
+                    - !Sub 'https://${KeycloakDomain}/realms/${KeycloakRealm}/protocol/openid-connect/auth'
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
             TokenEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/token'
@@ -818,7 +846,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/oauth/token'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+                  - !If
+                    - IsKeycloak
+                    - !Sub 'https://${KeycloakDomain}/realms/${KeycloakRealm}/protocol/openid-connect/token'
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
             UserInfoEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/userinfo'
@@ -828,7 +859,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/userinfo'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+                  - !If
+                    - IsKeycloak
+                    - !Sub 'https://${KeycloakDomain}/realms/${KeycloakRealm}/protocol/openid-connect/userinfo'
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
             ClientId: !If
               - IsOkta
               - !Ref OktaClientId
@@ -838,7 +872,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Ref Auth0ClientId
-                  - !Ref CognitoClientId
+                  - !If
+                    - IsKeycloak
+                    - !Ref KeycloakClientId
+                    - !Ref CognitoClientId
             ClientSecret: !If
               - IsOkta
               - !Sub '{{resolve:secretsmanager:${OktaClientSecretArn}:SecretString}}'
@@ -848,7 +885,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub '{{resolve:secretsmanager:${Auth0ClientSecretArn}:SecretString}}'
-                  - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+                  - !If
+                    - IsKeycloak
+                    - !Sub '{{resolve:secretsmanager:${KeycloakClientSecretArn}:SecretString}}'
+                    - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
             SessionTimeout: 43200  # 12 hours
             Scope: 'openid email profile'
             OnUnauthenticatedRequest: authenticate
