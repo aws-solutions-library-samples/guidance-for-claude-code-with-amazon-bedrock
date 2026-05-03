@@ -21,6 +21,7 @@ from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
+    get_models_for_tier,
     get_source_region_for_profile,
 )
 
@@ -534,7 +535,7 @@ class PackageCommand(Command):
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
 
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=self._get_codebuild_region(profile))
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -1331,6 +1332,13 @@ RUN pyinstaller \
                 subprocess.run(["docker", "rm", container_name], capture_output=True)
                 subprocess.run(["docker", "rmi", image_tag], capture_output=True)
 
+    def _get_codebuild_region(self, profile):
+        windows_regions = {
+            "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
+            "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
+        }
+        return profile.aws_region if profile.aws_region in windows_regions else "us-east-1"
+
     def _build_windows_via_codebuild(self, output_dir: Path) -> Path:
         """Build Windows binaries using AWS CodeBuild."""
         import json
@@ -1348,7 +1356,7 @@ RUN pyinstaller \
 
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=self._get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -1386,7 +1394,8 @@ RUN pyinstaller \
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            codebuild_region = self._get_codebuild_region(profile)
+            stack_outputs = get_stack_outputs(stack_name, codebuild_region)
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -1408,7 +1417,7 @@ RUN pyinstaller \
 
             # Upload to S3
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=codebuild_region)
             try:
                 s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
@@ -1417,7 +1426,7 @@ RUN pyinstaller \
 
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]
@@ -2074,6 +2083,9 @@ credential_process = $HOME/claude-code-with-bedrock/credential-process --profile
 region = $PROFILE_REGION
 EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+
+    # Clear stale cached credentials from previous deployments
+    $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME --clear-cache 2>/dev/null || true
 done
 
 # Apply CoWork configuration profile on macOS if present
@@ -2217,11 +2229,22 @@ REM older ccwb auth logout) would shadow credential_process and break Cowork
 REM Desktop with a 403 InvalidClientTokenId.
 powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\[' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
 
-powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\[profile ' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza; Write-Host ('  OK Configured AWS profile ' + $p) }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to configure AWS profiles
-    pause
-    exit /b 1
+
+    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
+    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+
+
+    REM Set region
+    if defined PROFILE_REGION (
+        aws configure set region !PROFILE_REGION! --profile %%p
+    ) else (
+        aws configure set region {profile.aws_region} --profile %%p
+    )
+
+    echo   OK Created AWS profile '%%p'
+
+    REM Clear stale cached credentials from previous deployments
+    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile %%p --clear-cache >nul 2>&1
 )
 
 echo.
@@ -2458,25 +2481,20 @@ Available metrics include:
             if hasattr(profile, "selected_model") and profile.selected_model:
                 settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
 
-                # Set all model tier env vars using the CRIS prefix from init.
-                # Claude Code uses these to resolve the correct CRIS-prefixed
-                # models for each tier (small/fast, default sonnet/opus/haiku).
-                # This ensures all tiers respect the admin's routing geography
-                # choice and works correctly with model aliases like 'opus', 'sonnet', 'haiku'.
-                from claude_code_with_bedrock.models import resolve_model_for_tier
-                cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
-
-                haiku_model = resolve_model_for_tier("haiku", cris_prefix)
-                sonnet_model = resolve_model_for_tier("sonnet", cris_prefix)
-                opus_model = resolve_model_for_tier("opus", cris_prefix)
-
-                if haiku_model:
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = haiku_model
-                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_model
-                if sonnet_model:
-                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_model
-                if opus_model:
-                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_model
+            # Set per-tier model defaults for /model opus, /model sonnet, /model haiku
+            # These are configured during ccwb init and stored in the profile
+            # Independent of selected_model — tier defaults apply even when auto-select is used
+            if profile.default_opus_model:
+                settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = profile.default_opus_model
+            if profile.default_sonnet_model:
+                settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = profile.default_sonnet_model
+            if profile.default_haiku_model:
+                settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = profile.default_haiku_model
+            elif profile.default_sonnet_model:
+                # Only fallback to sonnet when no haiku model exists for this profile
+                cross_region_profile = getattr(profile, "cross_region_profile", None) or "us"
+                if not get_models_for_tier("haiku", cross_region_profile):
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = profile.default_sonnet_model
 
                 # Override with Application Inference Profile ARNs when configured
                 opus_arn = getattr(profile, "inference_profile_opus_arn", None)
@@ -2541,8 +2559,10 @@ Available metrics include:
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                                 # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
+                                "OTEL_RESOURCE_ATTRIBUTES": (
+                                    "department=engineering,team.id=default,"
+                                    "cost_center=default,organization=default"
+                                ),
                             }
                         )
 

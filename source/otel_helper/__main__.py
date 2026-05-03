@@ -752,6 +752,11 @@ def main():
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
+        # Forward Bearer token for ALB OIDC JWT validation on the OTEL collector endpoint
+        if token:
+            headers_dict["authorization"] = f"Bearer {token}"
+
+
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")
