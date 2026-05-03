@@ -170,7 +170,6 @@ Resources:
                   'cloudwatch:namespace':
                     - 'ClaudeCode'
                     - 'AWS/Bedrock'
-                StringLike:
                   'aws:RequestedRegion': !Ref AllowedBedrockRegions
             - !Ref 'AWS::NoValue'
 

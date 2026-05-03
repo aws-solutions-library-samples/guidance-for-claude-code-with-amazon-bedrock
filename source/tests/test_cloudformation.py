@@ -173,14 +173,14 @@ class TestCloudFormationCrossRegion:
                 assert "Condition" in stmt
 
                 condition = stmt["Condition"]
-                assert "StringLike" in condition
+                assert "StringEquals" in condition
 
                 # Should check aws:RequestedRegion
-                string_like = condition["StringLike"]
-                assert "aws:RequestedRegion" in string_like
+                string_equals = condition["StringEquals"]
+                assert "aws:RequestedRegion" in string_equals
 
                 # The value should reference the AllowedBedrockRegions parameter
-                region_ref = string_like["aws:RequestedRegion"]
+                region_ref = string_equals["aws:RequestedRegion"]
                 # Check if it's a Ref to AllowedBedrockRegions
                 assert isinstance(region_ref, dict)
                 assert "Ref" in region_ref
