@@ -1434,6 +1434,15 @@ def get_all_destination_regions_for_profile(profile_key: str) -> list[str]:
     return sorted(regions)
 
 
+def get_all_destination_regions() -> list[str]:
+    """Return all unique destination regions across all models and profiles."""
+    regions: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile in model_config["profiles"].values():
+            regions.update(profile.get("destination_regions", []))
+    return sorted(regions)
+
+
 def get_source_region_for_profile(profile, model_key: str = None, profile_key: str = None) -> str:
     """Get the source region for a profile, with model-specific logic if available."""
     # First priority: Use user-selected source region if available

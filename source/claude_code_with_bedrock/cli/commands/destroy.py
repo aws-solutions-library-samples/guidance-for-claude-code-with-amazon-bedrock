@@ -241,8 +241,8 @@ class DestroyCommand(Command):
                 with open(cred_path, "w") as f:
                     config.write(f)
                 console.print("[dim]Cleared cached credentials[/dim]")
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not clear cached credentials: {e}[/yellow]")
 
     def _show_cleanup_summary(
         self,

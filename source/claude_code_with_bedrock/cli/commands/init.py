@@ -1260,6 +1260,7 @@ class InitCommand(Command):
             # Import centralized model configuration
             from claude_code_with_bedrock.models import (
                 CLAUDE_MODELS,
+                get_all_destination_regions,
                 get_all_destination_regions_for_profile,
                 get_all_source_regions,
                 get_destination_regions_for_model_profile,
@@ -1357,7 +1358,7 @@ class InitCommand(Command):
             if selected_profile == _AUTO_PROFILE:
                 config["aws"]["cross_region_profile"] = None
                 config["aws"]["selected_model"] = None
-                config["aws"]["allowed_bedrock_regions"] = ["*"]
+                config["aws"]["allowed_bedrock_regions"] = get_all_destination_regions()
                 config["aws"]["default_opus_model"] = None
                 config["aws"]["default_sonnet_model"] = None
                 config["aws"]["default_haiku_model"] = None
@@ -1396,7 +1397,7 @@ class InitCommand(Command):
                 config["aws"]["selected_model"] = None
                 # Profile is known; use its destination regions instead of wildcard
                 profile_dest_regions = get_all_destination_regions_for_profile(selected_profile)
-                config["aws"]["allowed_bedrock_regions"] = profile_dest_regions if profile_dest_regions else ["*"]
+                config["aws"]["allowed_bedrock_regions"] = profile_dest_regions if profile_dest_regions else get_all_destination_regions()
                 console.print("[green]✓[/green] Auto-select: Claude Code will choose the model automatically")
             else:
                 model_id = get_model_id_for_profile(selected_model_key, selected_profile)
