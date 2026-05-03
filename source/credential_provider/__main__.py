@@ -25,334 +25,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-# Heavy libraries imported lazily to speed up startup (especially in PyInstaller binaries).
-# boto3, jwt, keyring, requests are only imported when first needed.
-boto3 = None
-jwt = None  # type: ignore[assignment]
-keyring = None
-requests = None  # type: ignore[assignment]
-UNSIGNED = None
-_BotocoreConfig = None
-
-
-def _ensure_boto3():
-    global boto3, UNSIGNED, _BotocoreConfig
-    if boto3 is None:
-        import boto3 as _boto3
-        from botocore import UNSIGNED as _UNSIGNED
-        from botocore.config import Config as _Config
-        boto3 = _boto3
-        UNSIGNED = _UNSIGNED
-        _BotocoreConfig = _Config
-
-
-def _ensure_requests():
-    global requests
-    if requests is None:
-        import requests as _requests
-        requests = _requests
-
-
-def _ensure_jwt():
-    global jwt
-    if jwt is None:
-        import jwt as _jwt
-        jwt = _jwt
-
-
-def _get_jwks_endpoint(provider_type, provider_domain, config=None):
-    """Get the JWKS endpoint URL for the given provider."""
-    if provider_type == "okta":
-        return f"https://{provider_domain}/oauth2/v1/keys"
-    elif provider_type == "auth0":
-        return f"https://{provider_domain}/.well-known/jwks.json"
-    elif provider_type == "azure":
-        # Extract tenant ID from config or domain
-        tenant_id = None
-        if config and "azure_tenant_id" in config:
-            tenant_id = config["azure_tenant_id"]
-        else:
-            # Try to extract from provider_domain if it contains the tenant
-            domain_parts = provider_domain.replace("https://", "").replace("login.microsoftonline.com/", "")
-            if "/" in domain_parts:
-                tenant_id = domain_parts.split("/")[0]
-            else:
-                # Use common endpoint for now - this will need tenant-specific config
-                tenant_id = "common"
-        return f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
-    elif provider_type == "cognito":
-        # Extract user pool ID and region from config
-        user_pool_id = config.get("cognito_user_pool_id") if config else None
-        aws_region = config.get("aws_region") if config else "us-east-1"
-        if user_pool_id:
-            return f"https://cognito-idp.{aws_region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json"
-        else:
-            raise ValueError("cognito_user_pool_id is required for Cognito JWT verification")
-    elif provider_type == "keycloak":
-        # Domain should include /realms/{realm} path
-        return f"https://{provider_domain}/protocol/openid-connect/certs"
-    else:
-        # Don't expose provider_type in error message
-        raise ValueError("Unsupported provider type for JWT verification")
-
-
-def _get_issuer_url(provider_type, provider_domain, config=None):
-    """Get the expected issuer URL for JWT validation."""
-    if provider_type == "okta":
-        return f"https://{provider_domain}"
-    elif provider_type == "auth0":
-        return f"https://{provider_domain}/"
-    elif provider_type == "azure":
-        tenant_id = None
-        if config and "azure_tenant_id" in config:
-            tenant_id = config["azure_tenant_id"]
-        else:
-            domain_parts = provider_domain.replace("https://", "").replace("login.microsoftonline.com/", "")
-            if "/" in domain_parts:
-                tenant_id = domain_parts.split("/")[0]
-            else:
-                tenant_id = "common"
-        return f"https://login.microsoftonline.com/{tenant_id}/v2.0"
-    elif provider_type == "cognito":
-        user_pool_id = config.get("cognito_user_pool_id") if config else None
-        aws_region = config.get("aws_region") if config else "us-east-1"
-        if user_pool_id:
-            return f"https://cognito-idp.{aws_region}.amazonaws.com/{user_pool_id}"
-        else:
-            raise ValueError("cognito_user_pool_id is required for Cognito JWT verification")
-    elif provider_type == "keycloak":
-        return f"https://{provider_domain}"
-    else:
-        # Don't expose provider_type in error message
-        raise ValueError("Unsupported provider type for issuer validation")
-
-
-def _fetch_jwks(jwks_url, timeout=10, debug=False):
-    """Fetch JWKS (JSON Web Key Set) from the provider."""
-    _ensure_requests()
-    error_handler = SecurityErrorHandler(debug)
-    try:
-        response = requests.get(jwks_url, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        raise error_handler.handle_network_error("JWKS fetch", e, jwks_url) from e
-
-
-def _get_signing_key(jwks, token_header, debug=False):
-    """Extract the signing key from JWKS that matches the token's key ID."""
-    error_handler = SecurityErrorHandler(debug)
-    try:
-        # Get the key ID from token header
-        kid = token_header.get("kid")
-        if not kid:
-            raise error_handler.handle_crypto_error("key ID extraction", Exception("Missing key ID"))
-
-        # Find matching key in JWKS
-        for key in jwks.get("keys", []):
-            if key.get("kid") == kid:
-                if key.get("kty") == "RSA":
-                    # Convert JWK to PEM format for PyJWT
-                    import base64
-
-                    from cryptography.hazmat.primitives import serialization
-                    from cryptography.hazmat.primitives.asymmetric import rsa
-
-                    # Decode n (modulus) and e (exponent) from base64url
-                    def base64url_decode(data):
-                        # Add padding if needed
-                        missing_padding = len(data) % 4
-                        if missing_padding:
-                            data += '=' * (4 - missing_padding)
-                        return base64.urlsafe_b64decode(data)
-
-                    n = int.from_bytes(base64url_decode(key["n"]), byteorder="big")
-                    e = int.from_bytes(base64url_decode(key["e"]), byteorder="big")
-
-                    # Create RSA public key
-                    public_key = rsa.RSAPublicNumbers(e, n).public_key()
-
-                    # Convert to PEM format
-                    pem = public_key.public_bytes(
-                        encoding=serialization.Encoding.PEM,
-                        format=serialization.PublicFormat.SubjectPublicKeyInfo
-                    )
-                    return pem
-                else:
-                    kty = key.get("kty", "unknown")
-                    error_msg = Exception("Unsupported key type")
-                    raise error_handler.handle_crypto_error("key format validation", error_msg, f"kty: {kty}")
-
-        raise error_handler.handle_crypto_error("key lookup", Exception("Key not found"), f"kid: {kid}")
-
-    except Exception as e:
-        if isinstance(e, Exception) and "Token validation failed" in str(e):
-            raise e  # Already handled by error_handler
-        raise error_handler.handle_crypto_error("signing key extraction", e) from e
-
-
-def _validate_jwt_with_signature(token, provider_type, provider_domain, client_id, config=None, debug=False):
-    """Validate JWT signature and claims."""
-    error_handler = SecurityErrorHandler(debug)
-
-    # Check for development bypass
-    if os.environ.get("CLAUDE_CODE_BYPASS_JWT_VERIFICATION", "").lower() == "true":
-        if debug:
-            msg = "WARNING: JWT signature verification bypassed via CLAUDE_CODE_BYPASS_JWT_VERIFICATION=true"
-            print(msg, file=sys.stderr)
-        _ensure_jwt()
-        return jwt.decode(token, options={"verify_signature": False})
-
-    try:
-        _ensure_jwt()
-
-        # Decode header to get algorithm and key ID
-        token_header = jwt.get_unverified_header(token)
-        algorithm = token_header.get("alg", "RS256")
-
-        if debug:
-            kid_display = token_header.get('kid', 'none')[:8] + "..." if token_header.get('kid') else 'none'
-            print(f"JWT algorithm: {algorithm}, kid: {kid_display}", file=sys.stderr)
-
-        # Fetch JWKS and get signing key
-        jwks_url = _get_jwks_endpoint(provider_type, provider_domain, config)
-        if debug:
-            # Only show domain, not full JWKS URL
-            from urllib.parse import urlparse
-            parsed = urlparse(jwks_url)
-            print(f"Fetching JWKS from: {parsed.netloc}", file=sys.stderr)
-
-        jwks = _fetch_jwks(jwks_url, debug=debug)
-        signing_key = _get_signing_key(jwks, token_header, debug=debug)
-
-        # Get expected issuer
-        expected_issuer = _get_issuer_url(provider_type, provider_domain, config)
-
-        # Validate JWT with signature, audience, and issuer
-        claims = jwt.decode(
-            token,
-            key=signing_key,
-            algorithms=[algorithm],
-            audience=client_id,
-            issuer=expected_issuer,
-            options={
-                "verify_signature": True,
-                "verify_aud": True,
-                "verify_iss": True,
-                "verify_exp": True,
-                "verify_nbf": True,
-                "verify_iat": True,
-            }
-        )
-
-        # Additional freshness validation (max 5 minutes old)
-        import time
-        current_time = int(time.time())
-        iat = claims.get("iat", 0)
-        max_age = 300  # 5 minutes
-
-        if current_time - iat > max_age:
-            age_seconds = current_time - iat
-            if debug:
-                msg = f"Token is too old (issued {age_seconds} seconds ago, max {max_age} seconds)"
-                print(f"Token freshness check failed: {msg}", file=sys.stderr)
-            raise Exception("Token has expired")
-
-        if debug:
-            print("JWT signature verification PASSED", file=sys.stderr)
-
-        return claims
-
-    except Exception as e:
-        error_msg = str(e)
-
-        # If it's already a handled error, re-raise it
-        handled_errors = ["Token validation failed", "Authentication failed", "Network connection failed"]
-        if any(handled_error in error_msg for handled_error in handled_errors):
-            raise e
-
-        # Handle specific JWT validation errors with generic messages
-        if "audience" in error_msg.lower():
-            if debug:
-                print(f"JWT audience validation failed. Expected: {client_id}. Error: {error_msg}", file=sys.stderr)
-            raise Exception("Token validation failed - invalid audience") from e
-        elif "issuer" in error_msg.lower():
-            if debug:
-                expected_issuer = _get_issuer_url(provider_type, provider_domain, config)
-                print(f"JWT issuer validation failed. Expected: {expected_issuer}. Error: {error_msg}", file=sys.stderr)
-            raise Exception("Token validation failed - invalid issuer") from e
-        elif "expired" in error_msg.lower() or "Token has expired" in error_msg:
-            if debug:
-                print(f"JWT token expired: {error_msg}", file=sys.stderr)
-            raise Exception("Token has expired") from e
-        else:
-            if debug:
-                print(f"JWT signature verification FAILED: {error_msg}", file=sys.stderr)
-            raise error_handler.handle_crypto_error("JWT validation", e) from e
-
-
-def _ensure_keyring():
-    global keyring
-    if keyring is None:
-        import keyring as _keyring
-        keyring = _keyring
+import boto3
+import jwt
+import keyring
+import requests
+from botocore import UNSIGNED
+from botocore.config import Config
 
 # No longer using file locks - using port-based locking instead
 
 __version__ = "1.0.0"
-
-
-class SecurityErrorHandler:
-    """Handles errors securely by logging details for admins while showing generic messages to users."""
-
-    def __init__(self, debug_mode: bool = False):
-        self.debug_mode = debug_mode
-
-    def handle_network_error(self, operation: str, error: Exception, sensitive_url: str = None) -> Exception:
-        """Handle network errors without exposing internal URLs."""
-        # Log full details for administrators (if logging were available)
-        if self.debug_mode and sensitive_url:
-            print(f"Network error during {operation} to {sensitive_url}: {error}", file=sys.stderr)
-        elif self.debug_mode:
-            print(f"Network error during {operation}: {error}", file=sys.stderr)
-
-        # Return generic error for users
-        if self.debug_mode:
-            return Exception(f"Network error during {operation}")
-        else:
-            return Exception("Network connection failed")
-
-    def handle_crypto_error(self, operation: str, error: Exception, sensitive_details: str = None) -> Exception:
-        """Handle cryptographic errors without exposing internal details."""
-        # Log full details for administrators
-        if self.debug_mode and sensitive_details:
-            print(f"Crypto error during {operation} ({sensitive_details}): {error}", file=sys.stderr)
-        elif self.debug_mode:
-            print(f"Crypto error during {operation}: {error}", file=sys.stderr)
-
-        # Return generic error for users
-        return Exception("Token validation failed")
-
-    def handle_auth_error(self, operation: str, error: Exception, response_text: str = None) -> Exception:
-        """Handle authentication errors without exposing OAuth provider details."""
-        # Log full details for administrators
-        if self.debug_mode and response_text:
-            print(f"Auth error during {operation}: {error}. Response: {response_text[:200]}", file=sys.stderr)
-        elif self.debug_mode:
-            print(f"Auth error during {operation}: {error}", file=sys.stderr)
-
-        # Return generic error for users
-        return Exception("Authentication failed. Please try again.")
-
-    def handle_config_error(self, operation: str, error: Exception, config_details: str = None) -> Exception:
-        """Handle configuration errors without exposing internal details."""
-        if self.debug_mode and config_details:
-            print(f"Config error during {operation} ({config_details}): {error}", file=sys.stderr)
-        elif self.debug_mode:
-            print(f"Config error during {operation}: {error}", file=sys.stderr)
-
-        return Exception("Configuration error")
-
 
 # OIDC Provider Configurations
 PROVIDER_CONFIGS = {
@@ -388,14 +70,6 @@ PROVIDER_CONFIGS = {
         "response_type": "code",
         "response_mode": "query",
     },
-    "keycloak": {
-        "name": "Keycloak",
-        "authorize_endpoint": "/protocol/openid-connect/auth",
-        "token_endpoint": "/protocol/openid-connect/token",
-        "scopes": "openid profile email",
-        "response_type": "code",
-        "response_mode": "query",
-    },
 }
 
 
@@ -421,9 +95,10 @@ class MultiProviderAuth:
             )
         self.provider_config = PROVIDER_CONFIGS[self.provider_type]
 
-        # OAuth configuration
-        self.redirect_port = int(os.getenv("REDIRECT_PORT", "8400"))
-        self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
+        # OAuth configuration - port selection deferred until authentication
+        self.preferred_port = int(os.getenv("REDIRECT_PORT", "8400"))
+        self.redirect_port = None
+        self.redirect_uri = None
 
         # Initialize credential storage
         self._init_credential_storage()
@@ -432,6 +107,31 @@ class MultiProviderAuth:
         """Print debug message only if debug mode is enabled"""
         if self.debug:
             print(f"Debug: {message}", file=sys.stderr)
+
+    def _get_available_port(self):
+        """Find an available port for OAuth callback, preferring the configured port."""
+        if self.redirect_port is not None:
+            return self.redirect_port
+
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            test_socket.bind(("127.0.0.1", self.preferred_port))
+            test_socket.close()
+            self.redirect_port = self.preferred_port
+        except OSError as e:
+            test_socket.close()
+            if e.errno == errno.EADDRINUSE:
+                self._debug_print(f"Port {self.preferred_port} in use, selecting available port")
+                auto_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                auto_socket.bind(("127.0.0.1", 0))
+                self.redirect_port = auto_socket.getsockname()[1]
+                auto_socket.close()
+                self._debug_print(f"Using port {self.redirect_port} for OAuth callback")
+            else:
+                raise
+
+        self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
+        return self.redirect_port
 
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
@@ -534,6 +234,16 @@ class MultiProviderAuth:
             "max_session_duration", 43200 if profile_config.get("federation_type") == "direct" else 28800
         )
 
+        # Load client secret from OS keyring if configured for secret-based confidential client.
+        # The secret is never written to config.json; it lives only in the keyring.
+        if profile_config.get("azure_auth_mode") == "secret":
+            try:
+                secret = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-client-secret")
+                if secret:
+                    profile_config["client_secret"] = secret
+            except Exception as e:
+                self._debug_print(f"Warning: could not read client secret from keyring: {e}")
+
         return profile_config
 
     def _detect_federation_type(self, config):
@@ -568,7 +278,7 @@ class MultiProviderAuth:
             # Fail with clear error for unknown providers
             raise ValueError(
                 "Unable to auto-detect provider type for empty domain. "
-                "Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool, Keycloak. "
+                "Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                 "Please check your provider domain configuration."
             )
 
@@ -583,7 +293,7 @@ class MultiProviderAuth:
                 # Fail with clear error for unknown providers
                 raise ValueError(
                     f"Unable to auto-detect provider type for domain '{domain}'. "
-                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool, Keycloak. "
+                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                     f"Please check your provider domain configuration."
                 )
 
@@ -602,22 +312,18 @@ class MultiProviderAuth:
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
                 return "cognito"
-            elif '/realms/' in domain:
-                return "keycloak"
             else:
                 # Fail with clear error for unknown providers
                 raise ValueError(
                     f"Unable to auto-detect provider type for domain '{domain}'. "
-                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool, Keycloak. "
+                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
                     f"Please check your provider domain configuration."
                 )
         except ValueError:
             raise
         except Exception as e:
-            # Don't expose domain in error message for security
-            if self.debug:
-                self._debug_print(f"Unable to auto-detect provider type for domain '{domain}': {e}")
-            raise ValueError("Unable to auto-detect provider type") from e
+            # Fail with clear error for unknown providers
+            raise ValueError(f"Unable to auto-detect provider type for domain '{domain}': {e}") from e
 
     def _init_credential_storage(self):
         """Initialize secure credential storage"""
@@ -633,7 +339,6 @@ class MultiProviderAuth:
     def get_cached_credentials(self):
         """Retrieve valid credentials from configured storage"""
         if self.credential_storage == "keyring":
-            _ensure_keyring()
             try:
                 # On Windows, credentials are split into multiple entries due to size limits
                 if platform.system() == "Windows":
@@ -712,7 +417,6 @@ class MultiProviderAuth:
     def save_credentials(self, credentials):
         """Save credentials to configured storage"""
         if self.credential_storage == "keyring":
-            _ensure_keyring()
             try:
                 # On Windows, split credentials into multiple entries due to size limits
                 # Windows Credential Manager has a 2560 byte limit, but uses UTF-16LE encoding
@@ -746,15 +450,13 @@ class MultiProviderAuth:
                     )
             except Exception as e:
                 self._debug_print(f"Error saving credentials to keyring: {e}")
-                error_handler = SecurityErrorHandler(self.debug)
-                raise error_handler.handle_config_error("credential storage", e, "keyring") from e
+                raise Exception(f"Failed to save credentials to keyring: {str(e)}") from e
         else:
             # Session storage uses ~/.aws/credentials file
             self.save_to_credentials_file(credentials, self.profile)
 
     def clear_cached_credentials(self):
         """Clear all cached credentials for this profile"""
-        _ensure_keyring()
         cleared_items = []
 
         # Clear from keyring by replacing with expired credentials
@@ -819,29 +521,17 @@ class MultiProviderAuth:
         try:
             credentials_path = Path.home() / ".aws" / "credentials"
             if credentials_path.exists():
-                import tempfile
-                from configparser import ConfigParser
-
-                config = ConfigParser(inline_comment_prefixes=())
-                config.read(credentials_path)
-                if config.remove_section(self.profile):
-                    # Section was present; write file back without it.
-                    # All other profile sections are preserved.
-                    temp_fd, temp_path = tempfile.mkstemp(
-                        dir=credentials_path.parent, prefix=".credentials.", suffix=".tmp"
-                    )
-                    try:
-                        with os.fdopen(temp_fd, "w") as f:
-                            config.write(f)
-                        os.chmod(temp_path, 0o600)
-                        os.replace(temp_path, credentials_path)
-                    except Exception:
-                        try:
-                            os.unlink(temp_path)
-                        except Exception:
-                            pass
-                        raise
-                    cleared_items.append("credentials file")
+                # Replace with expired dummy credentials instead of deleting
+                # This preserves the file for other profiles
+                expired_creds = {
+                    "Version": 1,
+                    "AccessKeyId": "EXPIRED",
+                    "SecretAccessKey": "EXPIRED",
+                    "SessionToken": "EXPIRED",
+                    "Expiration": "2000-01-01T00:00:00Z",
+                }
+                self.save_to_credentials_file(expired_creds, self.profile)
+                cleared_items.append("credentials file")
         except Exception as e:
             self._debug_print(f"Could not clear credentials file: {e}")
 
@@ -875,7 +565,6 @@ class MultiProviderAuth:
             }
 
             if self.credential_storage == "keyring":
-                _ensure_keyring()
                 # Store monitoring token in keyring
                 keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", json.dumps(token_data))
             else:
@@ -909,7 +598,6 @@ class MultiProviderAuth:
                 return env_token
 
             if self.credential_storage == "keyring":
-                _ensure_keyring()
                 # Retrieve from keyring
                 token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
 
@@ -1004,8 +692,7 @@ class MultiProviderAuth:
                     pass
                 raise
         except Exception as e:
-            error_handler = SecurityErrorHandler(self.debug)
-            raise error_handler.handle_config_error("credential file storage", e, "file system") from e
+            raise Exception(f"Failed to save credentials to file: {str(e)}") from e
 
     def read_from_credentials_file(self, profile="ClaudeCode"):
         """Read credentials from ~/.aws/credentials file
@@ -1089,8 +776,81 @@ class MultiProviderAuth:
             self._debug_print(f"Error parsing expiration: {e}")
             return True  # Assume expired on parse error
 
+    def _build_client_assertion(self, token_url: str) -> str:
+        """Build a signed JWT client assertion for certificate-based confidential client auth.
+
+        Used by Azure AD / Entra ID when 'Allow public client flows' is disabled.
+        Follows the Microsoft identity platform certificate credentials specification:
+        https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+
+        Args:
+            token_url: The token endpoint URL, used as the JWT audience.
+
+        Returns:
+            A signed JWT string to be sent as client_assertion.
+        """
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        # Env vars take precedence over config.json so paths stay portable across
+        # machines (self-install and admin-push scenarios).  This follows the
+        # Azure SDK convention for AZURE_CLIENT_CERTIFICATE_PATH.
+        cert_path = Path(
+            os.environ.get("AZURE_CLIENT_CERTIFICATE_PATH") or self.config["client_certificate_path"]
+        ).expanduser()
+        key_path = Path(
+            os.environ.get("AZURE_CLIENT_CERTIFICATE_KEY_PATH") or self.config["client_certificate_key_path"]
+        ).expanduser()
+
+        if not cert_path.exists():
+            raise FileNotFoundError(
+                f"Certificate file not found: {cert_path}\n"
+                "Set the AZURE_CLIENT_CERTIFICATE_PATH environment variable to the correct path, "
+                "or update 'client_certificate_path' in config.json."
+            )
+        if not key_path.exists():
+            raise FileNotFoundError(
+                f"Private key file not found: {key_path}\n"
+                "Set the AZURE_CLIENT_CERTIFICATE_KEY_PATH environment variable to the correct path, "
+                "or update 'client_certificate_key_path' in config.json."
+            )
+
+        cert_pem = cert_path.read_bytes()
+        key_pem = key_path.read_bytes()
+
+        cert = x509.load_pem_x509_certificate(cert_pem)
+        private_key = serialization.load_pem_private_key(key_pem, password=None)
+
+        # SHA-256 thumbprint of the DER-encoded certificate (x5t#S256 header)
+        # Per Microsoft Entra ID recommendation: https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+        thumbprint = cert.fingerprint(hashes.SHA256())
+        x5t_s256 = base64.urlsafe_b64encode(thumbprint).rstrip(b"=").decode()
+
+        now = int(time.time())
+        payload = {
+            "aud": token_url,
+            "iss": self.config["client_id"],
+            "sub": self.config["client_id"],
+            "jti": secrets.token_urlsafe(16),
+            "nbf": now,
+            "iat": now,
+            "exp": now + 300,  # 5-minute lifetime
+        }
+
+        # PyJWT encodes using the private key; headers must include x5t#S256
+        token = jwt.encode(
+            payload,
+            private_key,
+            algorithm="PS256",
+            headers={"x5t#S256": x5t_s256},
+        )
+        return token
+
     def authenticate_oidc(self):
         """Perform OIDC authentication with PKCE"""
+        self._get_available_port()
+
         state = secrets.token_urlsafe(16)
         nonce = secrets.token_urlsafe(16)
 
@@ -1178,7 +938,26 @@ class MultiProviderAuth:
         # Build token endpoint URL
         token_url = f"{base_url}{self.provider_config['token_endpoint']}"
 
-        _ensure_requests()
+        # Confidential client: inject client_secret or certificate assertion
+        if self.config.get("client_certificate_path") and self.config.get("client_certificate_key_path"):
+            token_data["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            token_data["client_assertion"] = self._build_client_assertion(token_url)
+        elif self.config.get("client_secret"):
+            token_data["client_secret"] = self.config["client_secret"]
+        else:
+            azure_auth_mode = self.config.get("azure_auth_mode")
+            if azure_auth_mode == "certificate":
+                raise ValueError(
+                    "azure_auth_mode is 'certificate' but no certificate paths are configured. "
+                    "Set AZURE_CLIENT_CERTIFICATE_PATH and AZURE_CLIENT_CERTIFICATE_KEY_PATH, "
+                    "or update 'client_certificate_path' and 'client_certificate_key_path' in config.json."
+                )
+            if azure_auth_mode == "secret":
+                raise ValueError(
+                    "azure_auth_mode is 'secret' but no client secret is stored. "
+                    f"Run: credential-process --set-client-secret --profile {self.profile}"
+                )
+
         token_response = requests.post(
             token_url,
             data=token_data,
@@ -1187,34 +966,12 @@ class MultiProviderAuth:
         )
 
         if not token_response.ok:
-            error_handler = SecurityErrorHandler(self.debug)
-            error_exception = Exception(f"HTTP {token_response.status_code}")
-            raise error_handler.handle_auth_error("token exchange", error_exception, token_response.text)
+            raise Exception(f"Token exchange failed: {token_response.text}")
 
         tokens = token_response.json()
 
-        # Validate JWT signature and claims
-        try:
-            id_token_claims = _validate_jwt_with_signature(
-                tokens["id_token"],
-                self.provider_type,
-                self.config["provider_domain"],
-                self.config["client_id"],
-                self.config,
-                debug=self.debug
-            )
-        except Exception as jwt_error:
-            if self.debug:
-                self._debug_print(f"JWT validation error: {jwt_error}")
-            # Fall back to no signature verification in development
-            if os.environ.get("CLAUDE_CODE_BYPASS_JWT_VERIFICATION", "").lower() == "true":
-                self._debug_print("Falling back to no signature verification due to bypass flag")
-                _ensure_jwt()
-                id_token_claims = jwt.decode(tokens["id_token"], options={"verify_signature": False})
-            else:
-                raise Exception(f"JWT validation failed: {jwt_error}") from jwt_error
-
         # Validate nonce in ID token (if provider includes it)
+        id_token_claims = jwt.decode(tokens["id_token"], options={"verify_signature": False})
         if "nonce" in id_token_claims and id_token_claims.get("nonce") != nonce:
             raise Exception("Invalid nonce in ID token")
 
@@ -1262,7 +1019,7 @@ class MultiProviderAuth:
 
             def _send_response(self, code, message):
                 self.send_response(code)
-                self.send_header("Content-type", "text/html")
+                self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
                 html = f"""
                 <html>
@@ -1312,48 +1069,33 @@ class MultiProviderAuth:
                 raise ValueError("federated_role_arn is required for direct STS federation")
 
             # Create STS client
-            _ensure_boto3()
             sts_client = boto3.client("sts", region_name=self.config["aws_region"])
 
-            # Prepare session tags from token claims
-            session_tags = []
-
-            # Map common claims to session tags
-            tag_mappings = {
-                "email": "UserEmail",
-                "sub": "UserId",
-                "preferred_username": "UserName",
-                "name": "UserName",  # Fallback for providers that use 'name' instead
-            }
-
-            for claim_key, tag_key in tag_mappings.items():
-                if claim_key in token_claims:
-                    # Session tag values have a 256 character limit
-                    tag_value = str(token_claims[claim_key])[:256]
-                    session_tags.append({"Key": tag_key, "Value": tag_value})
-
             # Generate session name from user identifier
-            # AWS RoleSessionName regex: [\w+=,.@-]*
+            # AWS RoleSessionName regex: [\w+=,.@-]*, max 64 chars
             # Auth0 often uses pipe-delimited format in sub claims (e.g., auth0|12345)
             # Sanitize to replace invalid characters with hyphens
             session_name = "claude-code"
-            if "sub" in token_claims:
-                # Use first 32 chars of sub for uniqueness, sanitized for AWS
+            if "email" in token_claims:
+                # Use full email for human-readable CUR cost attribution.
+                # The principal ARN (assumed-role/RoleName/alice@acme.com) appears
+                # in CUR line_item_iam_principal, enabling per-user cost visibility
+                # without requiring session tags.
+                session_name = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["email"]))[:64]
+            elif "sub" in token_claims:
+                # Fallback to sub when email is not available (e.g. some Entra ID configs)
                 sub_sanitized = re.sub(r"[^\w+=,.@-]", "-", str(token_claims["sub"])[:32])
                 session_name = f"claude-code-{sub_sanitized}"
-            elif "email" in token_claims:
-                # Use email username part, sanitized
-                email_part = token_claims["email"].split("@")[0][:32]
-                email_sanitized = re.sub(r"[^\w+=,.@-]", "-", email_part)
-                session_name = f"claude-code-{email_sanitized}"
 
             self._debug_print(f"Assuming role: {federated_role_arn}")
             self._debug_print(f"Session name: {session_name}")
-            self._debug_print(f"Session tags: {session_tags}")
 
             # Call AssumeRoleWithWebIdentity
-            # Note: AssumeRoleWithWebIdentity doesn't support Tags parameter directly
-            # Session tags must be passed via the token claims and configured in the trust policy
+            # Note: AssumeRoleWithWebIdentity does not support a Tags parameter.
+            # Session tags must be embedded in the JWT by the IdP as the
+            # https://aws.amazon.com/tags claim. Use the Cognito Identity Pool
+            # path (FederationType=cognito) for automatic tag mapping via
+            # PrincipalTags without IdP-side configuration.
             assume_role_params = {
                 "RoleArn": federated_role_arn,
                 "RoleSessionName": session_name,
@@ -1401,15 +1143,12 @@ class MultiProviderAuth:
                 self._debug_print("Detected invalid credentials, clearing cache...")
                 self.clear_cached_credentials()
                 # Add helpful message for user
-                if self.debug:
-                    self._debug_print(f"Original AWS STS error: {error_str}")
                 raise Exception(
-                    "Authentication failed - cached credentials were invalid and have been cleared.\n"
-                    "Please try again to re-authenticate."
+                    f"Authentication failed - cached credentials were invalid and have been cleared.\n"
+                    f"Please try again to re-authenticate.\n"
+                    f"Original error: {error_str}"
                 ) from e
-            if self.debug:
-                self._debug_print(f"AWS credentials error: {str(e)}")
-            raise Exception("Failed to get AWS credentials via Direct STS") from None
+            raise Exception(f"Failed to get AWS credentials via Direct STS: {str(e)}") from None
         finally:
             # Restore environment variables
             for var, value in saved_env.items():
@@ -1429,12 +1168,9 @@ class MultiProviderAuth:
 
         try:
             # Use unsigned requests for Cognito Identity (no AWS credentials needed)
-            _ensure_boto3()
             self._debug_print("Creating Cognito Identity client...")
             cognito_client = boto3.client(
-                "cognito-identity",
-                region_name=self.config["aws_region"],
-                config=_BotocoreConfig(signature_version=UNSIGNED),
+                "cognito-identity", region_name=self.config["aws_region"], config=Config(signature_version=UNSIGNED)
             )
             self._debug_print("Cognito client created")
 
@@ -1546,79 +1282,18 @@ class MultiProviderAuth:
                 self._debug_print("Detected invalid credentials, clearing cache...")
                 self.clear_cached_credentials()
                 # Add helpful message for user
-                if self.debug:
-                    self._debug_print(f"Original AWS Cognito error: {error_str}")
                 raise Exception(
-                    "Authentication failed - cached credentials were invalid and have been cleared.\n"
-                    "Please try again to re-authenticate."
+                    f"Authentication failed - cached credentials were invalid and have been cleared.\n"
+                    f"Please try again to re-authenticate.\n"
+                    f"Original error: {error_str}"
                 ) from e
-            if self.debug:
-                self._debug_print(f"AWS credentials error: {str(e)}")
-            raise Exception("Failed to get AWS credentials") from None
-
-    def _wait_for_auth_completion(self, timeout=60):
-        """Wait for another process to complete authentication using port-based detection"""
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            # Check if port is still in use (another auth in progress)
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
-                # Port is free, auth must have completed or failed
-                # Check for cached credentials
-                cached = self.get_cached_credentials()
-                if cached:
-                    return cached
-                else:
-                    # Auth failed or was cancelled
-                    return None
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port still in use, auth still in progress
-                    time.sleep(0.5)
-                else:
-                    # Other error
-                    raise
-            finally:
-                try:
-                    test_socket.close()
-                except Exception:
-                    pass
-
-        return None
+            raise Exception(f"Failed to get AWS credentials: {str(e)}") from None
 
     def authenticate_for_monitoring(self):
         """Authenticate specifically for monitoring token (no AWS credential output)"""
         try:
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
-                # We got the port, we can proceed with authentication
-                self._debug_print("Port available, proceeding with monitoring authentication")
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port in use, another auth is in progress
-                    self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
-
-                    # Wait for the other process to complete
-                    # After waiting, check if we now have a monitoring token
-                    self._wait_for_auth_completion()
-                    token = self.get_monitoring_token()
-                    if token:
-                        return token
-                    else:
-                        self._debug_print("Authentication timeout or failed in another process")
-                        return None
-                else:
-                    test_socket.close()
-                    raise
-
             # Authenticate with OIDC provider
+            # Note: Port selection is handled dynamically in authenticate_oidc()
             self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
             id_token, token_claims = self.authenticate_oidc()
 
@@ -1679,7 +1354,6 @@ class MultiProviderAuth:
         """Get timestamp of last quota check from storage."""
         try:
             if self.credential_storage == "keyring":
-                _ensure_keyring()
                 timestamp_str = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-quota-check")
                 if timestamp_str:
                     return datetime.fromisoformat(timestamp_str)
@@ -1700,7 +1374,6 @@ class MultiProviderAuth:
         try:
             now = datetime.now(timezone.utc).isoformat()
             if self.credential_storage == "keyring":
-                _ensure_keyring()
                 keyring.set_password("claude-code-with-bedrock", f"{self.profile}-quota-check", now)
             else:
                 session_dir = Path.home() / ".claude-code-session"
@@ -1717,7 +1390,6 @@ class MultiProviderAuth:
         """Get token claims from cached monitoring token for quota re-check."""
         try:
             if self.credential_storage == "keyring":
-                _ensure_keyring()
                 token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
                 if token_json:
                     token_data = json.loads(token_json)
@@ -1792,7 +1464,6 @@ class MultiProviderAuth:
         try:
             # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
             # The API extracts email/groups from validated JWT claims, not query params
-            _ensure_requests()
             response = requests.get(
                 f"{quota_api_endpoint}/check",
                 headers={"Authorization": f"Bearer {id_token}"},
@@ -1865,7 +1536,7 @@ class MultiProviderAuth:
         """
         reason = quota_result.get("reason", "unknown")
         message = quota_result.get("message", "Access blocked due to quota limits")
-        usage = quota_result.get("usage") or {}
+        usage = quota_result.get("usage", {})
         policy = quota_result.get("policy", {})
 
         print("\n" + "=" * 60, file=sys.stderr)
@@ -1900,7 +1571,7 @@ class MultiProviderAuth:
             is_blocked: Whether access is blocked (vs warning)
         """
         try:
-            usage = quota_result.get("usage") or {}
+            usage = quota_result.get("usage", {})
             message = quota_result.get("message", "")
 
             # Calculate percentages
@@ -2082,7 +1753,7 @@ class MultiProviderAuth:
             class QuotaPageHandler(BaseHTTPRequestHandler):
                 def do_GET(self):
                     self.send_response(200)
-                    self.send_header("Content-type", "text/html")
+                    self.send_header("Content-type", "text/html; charset=utf-8")
                     self.end_headers()
                     self.wfile.write(html.encode())
                     page_served["done"] = True
@@ -2091,7 +1762,7 @@ class MultiProviderAuth:
                     pass  # Suppress logs
 
             # Use a different port for quota page (8401) to avoid conflict with auth
-            quota_port = self.redirect_port + 1
+            quota_port = self.preferred_port + 1
             try:
                 server = HTTPServer(("127.0.0.1", quota_port), QuotaPageHandler)
                 server.timeout = 5  # 5 second timeout
@@ -2117,7 +1788,7 @@ class MultiProviderAuth:
         Args:
             quota_result: Result from quota check API
         """
-        usage = quota_result.get("usage") or {}
+        usage = quota_result.get("usage", {})
         monthly_percent = usage.get("monthly_percent", 0)
         daily_percent = usage.get("daily_percent", 0)
 
@@ -2158,7 +1829,6 @@ class MultiProviderAuth:
                 return None, None, None
 
             self._debug_print("Found valid cached id_token, attempting silent credential refresh...")
-            _ensure_jwt()
             token_claims = jwt.decode(id_token, options={"verify_signature": False})
 
             credentials = self.get_aws_credentials(id_token, token_claims)
@@ -2191,39 +1861,6 @@ class MultiProviderAuth:
                     else:
                         self._debug_print("No cached token for quota re-check, skipping")
 
-                # Output cached credentials (intended behavior for AWS CLI)
-                print(json.dumps(cached))  # noqa: S105
-                return 0
-
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
-                # We got the port, we can proceed with authentication
-                self._debug_print("Port available, proceeding with authentication")
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port in use, another auth is in progress
-                    self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
-
-                    # Wait for the other process to complete
-                    cached = self._wait_for_auth_completion()
-                    if cached:
-                        print(json.dumps(cached))
-                        return 0
-                    else:
-                        # Only print error to stderr for actual failures
-                        self._debug_print("Authentication timeout or failed in another process")
-                        return 1
-                else:
-                    test_socket.close()
-                    raise
-
-            # Check cache again (another process might have just finished)
-            cached = self.get_cached_credentials()
-            if cached:
                 # Output cached credentials (intended behavior for AWS CLI)
                 print(json.dumps(cached))  # noqa: S105
                 return 0
@@ -2282,10 +1919,6 @@ class MultiProviderAuth:
             return 1
         except Exception as e:
             error_msg = str(e)
-            # Print full traceback in debug mode
-            if self.debug:
-                import traceback
-                traceback.print_exc(file=sys.stderr)
             # Only print actual errors to stderr
             if "timeout" not in error_msg.lower():
                 print(f"Error: {error_msg}", file=sys.stderr)
@@ -2334,8 +1967,51 @@ def main():
         action="store_true",
         help="Refresh credentials if expired (for cron jobs with session storage)",
     )
+    parser.add_argument(
+        "--set-client-secret",
+        action="store_true",
+        default=False,
+        help=(
+            "Store Azure AD client secret in OS secure storage. "
+            "For non-interactive use set CCWB_CLIENT_SECRET env var before running; "
+            "otherwise an interactive prompt is shown. Blank input clears the stored secret."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # Handle --set-client-secret before loading full auth config.
+    # Secrets must never be passed as CLI arguments — they appear in shell history
+    # and process listings.  Use CCWB_CLIENT_SECRET env var for automation, or
+    # the interactive getpass prompt for manual setup.
+    if args.set_client_secret:
+        import getpass
+
+        env_secret = os.environ.get("CCWB_CLIENT_SECRET")
+        if env_secret is not None:
+            if not env_secret:
+                print("Error: CCWB_CLIENT_SECRET is set but empty.", file=sys.stderr)
+                sys.exit(1)
+            secret = env_secret
+        else:
+            secret = getpass.getpass(
+                f"Enter client secret for profile '{args.profile}' (press Enter to clear): "
+            )
+
+        try:
+            if not secret:
+                try:
+                    keyring.delete_password("claude-code-with-bedrock", f"{args.profile}-client-secret")
+                except keyring.errors.PasswordDeleteError:
+                    pass  # Secret already absent, nothing to clear
+                print(f"✓ Client secret cleared for profile '{args.profile}'", file=sys.stderr)
+            else:
+                keyring.set_password("claude-code-with-bedrock", f"{args.profile}-client-secret", secret)
+                print(f"✓ Client secret stored in OS secure storage for profile '{args.profile}'", file=sys.stderr)
+        except Exception as e:
+            print(f"Error managing client secret in keyring: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
 
     auth = MultiProviderAuth(profile=args.profile)
 

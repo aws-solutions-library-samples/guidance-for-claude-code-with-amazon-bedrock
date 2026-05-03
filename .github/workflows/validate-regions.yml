@@ -1,0 +1,44 @@
+name: Validate Bedrock Regions
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - 'source/claude_code_with_bedrock/models.py'
+      - 'deployment/infrastructure/bedrock-auth-*.yaml'
+      - 'deployment/infrastructure/cognito-identity-pool.yaml'
+  schedule:
+    # Weekly on Monday 9am UTC — catch new region launches
+    - cron: '0 9 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  validate-regions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install boto3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.BEDROCK_VALIDATION_ROLE_ARN }}
+          aws-region: us-east-1
+        # Only needed for live API checks. If no role configured,
+        # the script gracefully handles API failures and still
+        # validates CFN template sync against models.py.
+        continue-on-error: true
+
+      - name: Validate Bedrock regions
+        run: python scripts/validate_bedrock_regions.py

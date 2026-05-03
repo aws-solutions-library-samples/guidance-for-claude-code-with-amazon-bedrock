@@ -104,7 +104,7 @@ class InitCommand(Command):
 
         # If user explicitly chose "Update existing profile", skip the second prompt
         if existing_config and user_action == "update":
-            config = self._gather_configuration(progress, existing_config)
+            config = self._gather_configuration(progress, existing_config, profile_name)
             if not config:
                 return 1
             if not self._review_configuration(config):
@@ -145,7 +145,7 @@ class InitCommand(Command):
                 self._review_configuration(existing_config)
                 return 0
             elif action == "Update configuration":
-                config = self._gather_configuration(progress, existing_config)
+                config = self._gather_configuration(progress, existing_config, profile_name)
                 if not config:
                     return 1
                 if not self._review_configuration(config):
@@ -196,7 +196,7 @@ class InitCommand(Command):
             return 1
 
         # Gather configuration
-        config = self._gather_configuration(progress)
+        config = self._gather_configuration(progress, profile_name=profile_name)
         if not config:
             return 1
         # Review and confirm
@@ -231,7 +231,6 @@ class InitCommand(Command):
 
         # Required checks
         checks = {
-            "AWS CLI installed": self._check_aws_cli(),
             "AWS credentials configured": self._check_aws_credentials(),
             "Python 3.10+ available": self._check_python_version(),
         }
@@ -249,6 +248,19 @@ class InitCommand(Command):
             else:
                 console.print(f"  [red]✗[/red] {check}")
                 all_passed = False
+
+        # AWS CLI is optional: Claude Code itself uses credential-process via
+        # AWS_CREDENTIAL_PROCESS in ~/.claude/settings.json.  The CLI is only
+        # needed here to deploy CloudFormation infrastructure and can be omitted
+        # by teams that use an alternative deployment mechanism.
+        aws_cli_present = self._check_aws_cli()
+        if aws_cli_present:
+            console.print("  [green]✓[/green] AWS CLI installed [dim](used for infrastructure deployment)[/dim]")
+        else:
+            console.print(
+                "  [yellow]⚠[/yellow] AWS CLI not found [dim](optional — only needed for CloudFormation "
+                "deployment; developer packages work without it)[/dim]"
+            )
 
         # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
         if region:
@@ -268,7 +280,7 @@ class InitCommand(Command):
         return True
 
     def _gather_configuration(
-        self, progress: WizardProgress, existing_config: dict[str, Any] | None = None
+        self, progress: WizardProgress, existing_config: dict[str, Any] | None = None, profile_name: str | None = None
     ) -> dict[str, Any] | None:
         """Gather configuration from user."""
         console = Console()
@@ -293,9 +305,32 @@ class InitCommand(Command):
             skip_monitoring = last_step in ["monitoring_complete", "bedrock_complete"]
             skip_bedrock = last_step in ["bedrock_complete"]
 
-        # OIDC Provider Configuration
+        # SSO Authentication Configuration
         if not skip_okta:
-            console.print("\n[bold blue]Step 1: OIDC Provider Configuration[/bold blue]")
+            console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
+            console.print("─" * 40)
+
+            console.print("\n[bold]SSO Authentication[/bold]")
+            console.print("Enable Single Sign-On authentication via identity providers")
+            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
+            console.print("\nWhen disabled:")
+            console.print("  • Uses AWS IAM roles for access control")
+            console.print("  • Metrics will use anonymous tracking based on IAM identity")
+            console.print("  • No user authentication required\n")
+
+            sso_enabled = questionary.confirm(
+                "Enable SSO authentication?",
+                default=config.get("sso_enabled", True),
+            ).ask()
+
+            if sso_enabled is None:
+                return None
+
+            config["sso_enabled"] = sso_enabled
+
+        # OIDC Provider Configuration
+        if not skip_okta and config.get("sso_enabled", True):
+            console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
             console.print("─" * 30)
 
             provider_domain = questionary.text(
@@ -358,6 +393,25 @@ class InitCommand(Command):
                         provider_type = "cognito"
             except Exception:
                 pass  # Continue to manual selection if parsing fails
+
+            # If auto-detection failed (custom domain, Keycloak, PingFederate, etc.)
+            # ask the user to select the provider type manually so deploy never gets None
+            if provider_type is None:
+                console.print(
+                    "\n[yellow]Could not auto-detect provider type from domain.[/yellow]"
+                )
+                provider_type = questionary.select(
+                    "Select your identity provider type:",
+                    choices=[
+                        questionary.Choice("Okta (or generic OIDC)", value="okta"),
+                        questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
+                        questionary.Choice("Auth0", value="auth0"),
+                        questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                    ],
+                    instruction="(Used to select the correct CloudFormation template)",
+                ).ask()
+                if not provider_type:
+                    return None
 
             # For Cognito, we must ask for the User Pool ID
             # Cannot reliably extract from domain due to case sensitivity
@@ -429,6 +483,76 @@ class InitCommand(Command):
 
             if not client_id:
                 return None
+
+            # Confidential client configuration (Azure AD / Entra ID only)
+            client_secret = None
+            client_certificate_path = None
+            client_certificate_key_path = None
+
+            if provider_type == "azure":
+                console.print("\n[bold]Azure AD Authentication Mode[/bold]")
+                console.print(
+                    "Some enterprise Entra ID tenants disable public client flows.\n"
+                    "If yours does, configure a confidential client here.\n"
+                )
+
+                auth_mode = questionary.select(
+                    "Select authentication mode:",
+                    choices=[
+                        questionary.Choice("Public client (default, no secret required)", value="public"),
+                        questionary.Choice("Confidential client — client secret", value="secret"),
+                        questionary.Choice("Confidential client — certificate (recommended for enterprise)", value="certificate"),
+                    ],
+                    default=config.get("azure_auth_mode", "public"),
+                ).ask()
+
+                if not auth_mode:
+                    return None
+
+                if auth_mode == "secret":
+                    client_secret = questionary.password(
+                        "Enter your client secret:",
+                        validate=lambda x: bool(x) or "Client secret cannot be empty",
+                    ).ask()
+                    if not client_secret:
+                        return None
+                    if not profile_name:
+                        raise ValueError("profile_name is required to store client secret in keyring")
+                    import keyring as _keyring
+                    _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
+                    console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
+                    console.print(
+                        "[dim]  Distribute to end users: they must run[/dim]\n"
+                        "[dim]    credential-process --set-client-secret --profile <profile>[/dim]\n"
+                        "[dim]  to store the secret on their machine.[/dim]"
+                    )
+
+                elif auth_mode == "certificate":
+                    console.print(
+                        "\n[dim]Generate a self-signed cert with:[/dim]\n"
+                        "[dim]  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes[/dim]\n"
+                        "[dim]Then upload cert.pem to your app registration → Certificates & secrets.[/dim]\n"
+                    )
+                    client_certificate_path = questionary.text(
+                        "Path to certificate PEM file:",
+                        validate=lambda x: bool(x) or "Certificate path cannot be empty",
+                        default=config.get("client_certificate_path", ""),
+                    ).ask()
+                    if not client_certificate_path:
+                        return None
+
+                    client_certificate_key_path = questionary.text(
+                        "Path to private key PEM file:",
+                        validate=lambda x: bool(x) or "Key path cannot be empty",
+                        default=config.get("client_certificate_key_path", ""),
+                    ).ask()
+                    if not client_certificate_key_path:
+                        return None
+
+                config["azure_auth_mode"] = auth_mode
+                # client_secret is never written to config — it lives in the OS keyring
+                config["client_certificate_path"] = client_certificate_path
+                config["client_certificate_key_path"] = client_certificate_key_path
 
             # Credential Storage Method
             console.print("\n[bold]Credential Storage Method[/bold]")
@@ -599,12 +723,13 @@ class InitCommand(Command):
                 # Check if HTTPS is already configured
                 existing_custom_domain = config["monitoring"].get("custom_domain")
                 existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                already_configured = bool(existing_custom_domain)
+                already_configured = bool(existing_custom_domain and existing_zone_id)
+                has_existing_domain = bool(existing_custom_domain)
 
-                if already_configured:
+                if has_existing_domain:
                     console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
 
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=already_configured).ask()
+                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=has_existing_domain).ask()
 
                 if enable_https:
                     custom_domain = questionary.text(
@@ -613,8 +738,14 @@ class InitCommand(Command):
                         default=existing_custom_domain if existing_custom_domain else "",
                     ).ask()
 
+                    # Save the domain immediately — regardless of what happens with
+                    # hosted zone lookup. This is the root cause of "domain never saves":
+                    # previously the domain was only written inside the if hosted_zones
+                    # block, so any Route53 failure silently discarded the user's input.
+                    config["monitoring"]["custom_domain"] = custom_domain
+
                     # Get Route53 hosted zones
-                    hosted_zones = self._get_hosted_zones()
+                    hosted_zones, zones_error = self._get_hosted_zones()
                     if hosted_zones:
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
@@ -639,28 +770,25 @@ class InitCommand(Command):
                             default=default_zone if default_zone else zone_choices[0],
                         ).ask()
 
-                        if selected_zone == "Skip (use external DNS provider)":
-                            config["monitoring"]["custom_domain"] = custom_domain
-                            config["monitoring"]["hosted_zone_id"] = None
-                            console.print(
-                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
-                            )
-                            console.print(
-                                "[yellow]You will need to create DNS records manually during deployment.[/yellow]"
-                            )
-                        else:
-                            # Extract zone ID
-                            zone_id = selected_zone.split("(")[-1].rstrip(")")
-                            config["monitoring"]["custom_domain"] = custom_domain
-                            config["monitoring"]["hosted_zone_id"] = zone_id
-                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
-                    else:
-                        config["monitoring"]["custom_domain"] = custom_domain
-                        config["monitoring"]["hosted_zone_id"] = None
+                        # Extract zone ID
+                        zone_id = selected_zone.split("(")[-1].rstrip(")")
+                        config["monitoring"]["hosted_zone_id"] = zone_id
                         console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
-                        console.print(
-                            "[yellow]No Route53 zones found. You will need to create DNS records manually.[/yellow]"
-                        )
+                    else:
+                        if zones_error:
+                            console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
+                        else:
+                            console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
+                        console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                        manual_zone_id = questionary.text(
+                            "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                            default=existing_zone_id if existing_zone_id else "",
+                        ).ask()
+                        if manual_zone_id and manual_zone_id.strip():
+                            config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                            console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                        else:
+                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None
@@ -830,6 +958,22 @@ class InitCommand(Command):
 
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
+
+        # Claude Cowork 3P MDM configuration
+        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
+        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
+        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
+        enable_cowork = questionary.confirm(
+            "Generate CoWork 3P MDM configuration during packaging?",
+            default=config.get("cowork_3p", {}).get("enabled", True),
+        ).ask()
+
+        if "cowork_3p" not in config:
+            config["cowork_3p"] = {}
+        config["cowork_3p"]["enabled"] = enable_cowork
+
+        if enable_cowork:
+            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
 
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
@@ -1337,6 +1481,7 @@ class InitCommand(Command):
                 else config["okta"]["client_id"]
             ),
         )
+
         table.add_row(
             "Credential Storage",
             (
@@ -1380,16 +1525,8 @@ class InitCommand(Command):
 
         # Show selected model
         selected_model = config["aws"].get("selected_model", "")
-        model_display = {
-            "global.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (Global)",
-            "us.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6",
-            "eu.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (EU)",
-            "au.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (AU)",
-            "us.anthropic.claude-opus-4-1-20250805-v1:0": "Claude Opus 4.1",
-            "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
-            "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
-            "us.anthropic.claude-sonnet-4-20250514-v1:0": "Claude Sonnet 4",
-        }
+        from claude_code_with_bedrock.models import get_all_model_display_names
+        model_display = get_all_model_display_names()
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
 
@@ -1438,7 +1575,14 @@ class InitCommand(Command):
             if dist_type == "landing-page":
                 console.print("• Authenticated landing page distribution (ALB + Lambda + S3)")
                 idp_provider = config.get("distribution", {}).get("idp_provider", "")
-                console.print(f"• IdP authentication: {idp_provider.upper() if idp_provider else 'configured'}")
+                idp_display_names = {
+                    "okta": "Okta",
+                    "azure": "Azure AD / Entra ID",
+                    "auth0": "Auth0",
+                    "cognito": "AWS Cognito User Pool",
+                }
+                idp_label = idp_display_names.get(idp_provider, idp_provider.upper() if idp_provider else "configured")
+                console.print(f"• IdP authentication: {idp_label}")
                 if config.get("distribution", {}).get("custom_domain"):
                     console.print(f"• Custom domain: {config['distribution']['custom_domain']}")
             elif dist_type == "presigned-s3":
@@ -1569,10 +1713,15 @@ class InitCommand(Command):
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
+        # Get SSO configuration or use defaults if SSO is disabled
+        sso_enabled = config_data.get("sso_enabled", True)
+        provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
+        client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+
         profile = Profile(
             name=profile_name,
-            provider_domain=config_data["okta"]["domain"],
-            client_id=config_data["okta"]["client_id"],
+            provider_domain=provider_domain,
+            client_id=client_id,
             credential_storage=config_data.get("credential_storage", "session"),
             aws_region=config_data["aws"]["region"],
             identity_pool_name=config_data["aws"]["identity_pool_name"],
@@ -1596,6 +1745,10 @@ class InitCommand(Command):
             keycloak_thumbprint=config_data.get("keycloak_thumbprint"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
+            sso_enabled=config_data.get("sso_enabled", True),
+            azure_auth_mode=config_data.get("azure_auth_mode"),
+            client_certificate_path=config_data.get("client_certificate_path"),
+            client_certificate_key_path=config_data.get("client_certificate_key_path"),
             enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
             enable_distribution=config_data.get("distribution", {}).get("enabled", False),
             distribution_type=config_data.get("distribution", {}).get("type"),
@@ -1618,6 +1771,7 @@ class InitCommand(Command):
             daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
+            cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
         )
 
         config.add_profile(profile)
@@ -1637,10 +1791,24 @@ class InitCommand(Command):
 
     def _check_aws_credentials(self) -> bool:
         """Check if AWS credentials are configured."""
+        console = Console()
         try:
             boto3.client("sts").get_caller_identity()
             return True
-        except Exception:
+        except Exception as e:
+            err = str(e)
+            console.print(f"    [dim red]Credential error: {err}[/dim red]")
+            if "ExpiredToken" in err or "expired" in err.lower():
+                console.print(
+                    "    [dim]Hint: Expired credentials in ~/.aws/credentials are blocking the EC2 instance role.\n"
+                    "    Run: [cyan]unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN[/cyan]\n"
+                    "    Then clear the [default] section from ~/.aws/credentials and retry.[/dim]"
+                )
+            elif "NoCredentialProviders" in err or "Unable to locate credentials" in err:
+                console.print(
+                    "    [dim]Hint: No credentials found. Configure via env vars, ~/.aws/credentials,\n"
+                    "    an IAM instance profile, or AWS SSO.[/dim]"
+                )
             return False
 
     def _check_python_version(self) -> bool:
@@ -1909,6 +2077,9 @@ class InitCommand(Command):
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
 
+            # Add CoWork 3P configuration
+            existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
                 existing_config["distribution"] = {
@@ -1942,6 +2113,14 @@ class InitCommand(Command):
             if hasattr(profile, "analytics_enabled"):
                 existing_config["analytics"] = {"enabled": profile.analytics_enabled}
 
+            # Preserve confidential client configuration if present
+            # client_secret is never written to config — it lives in the OS keyring
+            if getattr(profile, "azure_auth_mode", None):
+                existing_config["azure_auth_mode"] = profile.azure_auth_mode
+            if getattr(profile, "client_certificate_path", None):
+                existing_config["client_certificate_path"] = profile.client_certificate_path
+                existing_config["client_certificate_key_path"] = profile.client_certificate_key_path
+
             # Add selected source region if present
             if hasattr(profile, "selected_source_region") and profile.selected_source_region:
                 existing_config["aws"]["selected_source_region"] = profile.selected_source_region
@@ -1971,16 +2150,8 @@ class InitCommand(Command):
         # Show selected model if present
         selected_model = config["aws"].get("selected_model")
         if selected_model:
-            model_names = {
-                "global.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (Global)",
-                "us.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6",
-                "eu.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (EU)",
-                "au.anthropic.claude-opus-4-6-v1": "Claude Opus 4.6 (AU)",
-                "us.anthropic.claude-opus-4-1-20250805-v1:0": "Claude Opus 4.1",
-                "us.anthropic.claude-opus-4-20250514-v1:0": "Claude Opus 4",
-                "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "Claude 3.7 Sonnet",
-                "us.anthropic.claude-sonnet-4-20250514-v1:0": "Claude Sonnet 4",
-            }
+            from claude_code_with_bedrock.models import get_all_model_display_names
+            model_names = get_all_model_display_names()
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
 
         # Show cross-region profile
@@ -2050,16 +2221,21 @@ class InitCommand(Command):
         except Exception:
             return {}
 
-    def _get_hosted_zones(self) -> list[dict[str, Any]]:
-        """Get available Route53 hosted zones."""
+    def _get_hosted_zones(self) -> tuple[list[dict[str, Any]], str | None]:
+        """Get available Route53 hosted zones.
+
+        Returns:
+            Tuple of (zones list, error message or None).
+            On success: (zones, None). On failure: ([], error_string).
+        """
         try:
             import boto3
 
             client = boto3.client("route53")
             response = client.list_hosted_zones()
-            return response.get("HostedZones", [])
-        except Exception:
-            return []
+            return response.get("HostedZones", []), None
+        except Exception as e:
+            return [], str(e)
 
     def _configure_vpc(self, region: str, existing_vpc_config: dict[str, Any] = None) -> dict[str, Any]:
         """Configure VPC for monitoring stack."""
