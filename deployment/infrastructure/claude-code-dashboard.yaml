@@ -14,8 +14,11 @@ Parameters:
 
   MetricsRegion:
     Type: String
-    Default: us-east-1
-    Description: Region where metrics log group exists
+    Default: ""
+    Description: Region where metrics log group exists (defaults to deploy region if empty)
+
+Conditions:
+  UseDefaultRegion: !Equals [!Ref MetricsRegion, ""]
 
 Resources:
   # DynamoDB Table for Metrics Storage
@@ -218,7 +221,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/metrics_aggregator/
 
@@ -257,7 +260,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_ONLY: 'true'
       Code: ./lambda-functions/total_tokens/
 
@@ -275,7 +278,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/operations_count/
 
   ActiveUsersWidget:
@@ -292,7 +295,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_ONLY: 'true'
           METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/active_users/
@@ -311,7 +314,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/token_by_model/
 
   CacheEfficiencyWidget:
@@ -328,7 +331,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_ONLY: 'true'
       Code: ./lambda-functions/cache_efficiency/
 
@@ -346,7 +349,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
           METRICS_ONLY: 'true'
           METRICS_TABLE: !Ref MetricsTable
       Code: ./lambda-functions/top_users/
@@ -365,7 +368,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/operations_by_type/
 
   TokenUsageByTypeWidget:
@@ -382,7 +385,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/token_usage_by_type/
 
   CodeGenerationByLanguageWidget:
@@ -399,7 +402,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/code_generation_by_language/
 
   LinesOfCodeWidget:
@@ -416,7 +419,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/lines_of_code/
 
   CommitsWidget:
@@ -433,7 +436,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/commits/
 
   CodeAcceptanceWidget:
@@ -450,7 +453,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/code_acceptance/
 
   ActiveHoursWidget:
@@ -467,7 +470,7 @@ Resources:
       Environment:
         Variables:
           METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !Ref MetricsRegion
+          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
       Code: ./lambda-functions/active_hours/
 
   # ModelQuotaUsageWidget:
@@ -484,7 +487,7 @@ Resources:
   #     Environment:
   #       Variables:
   #         METRICS_LOG_GROUP: !Ref MetricsLogGroup
-  #         METRICS_REGION: !Ref MetricsRegion
+  #         METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
   #         METRICS_ONLY: 'true'
   #         METRICS_TABLE: !Ref MetricsTable
   #     Code: ./lambda-functions/model_quota_usage/
@@ -618,7 +621,7 @@ Resources:
               "height": 6,
               "properties": {
                 "query": "SOURCE '/aws/claude-code/metrics' | fields @timestamp, @message | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by bin(5m)",
-                "region": "${MetricsRegion}",
+                "region": "${AWS::Region}",
                 "title": "Token Usage Over Time",
                 "queryLanguage": "cwli",
                 "view": "timeSeries"
@@ -632,7 +635,7 @@ Resources:
               "height": 6,
               "properties": {
                 "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-6/, tokens, 0) as opus_4_6, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-20250514|opus-4-0/, tokens, 0) as opus_4, if(model like /sonnet-4-5/, tokens, 0) as sonnet_4_5, if(model like /sonnet-4-[^5]|sonnet-4-20250514/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_6) as Opus_4_6, sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4_5) as Sonnet_4_5, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
-                "region": "${MetricsRegion}",
+                "region": "${AWS::Region}",
                 "title": "Token Usage by Model Over Time",
                 "queryLanguage": "cwli",
                 "view": "timeSeries",

@@ -349,6 +349,10 @@ To include user metadata in tokens:
    };
    ```
 
+### Cost Attribution (Optional)
+
+Per-user Bedrock costs are tracked automatically via the session name — no IdP changes needed. For additional tag-based attribution, you can inject AWS session tags into the ID token via a post-login Action. See [Cost Attribution](../COST_ATTRIBUTION.md#auth0) for details.
+
 ### Enable Enterprise Connections
 
 For SSO with corporate identity providers:

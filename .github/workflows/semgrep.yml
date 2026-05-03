@@ -1,0 +1,29 @@
+name: Semgrep
+on:
+  workflow_dispatch:
+  pull_request: {}
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: '15 12 * * *'
+permissions: {}
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep
+        run: semgrep --config auto --sarif --output semgrep.sarif . || true
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@f94817b9f0deeb3871261446912ae8f854d1b675
+        if: success() || failure()
+        with:
+          sarif_file: semgrep.sarif

@@ -69,9 +69,24 @@ class Profile:
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+    sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
+
+    # Confidential client authentication (Azure AD / Entra ID)
+    # If neither is set, public client flow is used (current default).
+    # If azure_auth_mode == "secret", the client secret is stored in the OS keyring
+    #   (never in config.json). Read at runtime via keyring by the credential provider.
+    # If azure_auth_mode == "certificate", certificate paths are stored in config.json
+    #   and used to build a signed JWT assertion.
+    azure_auth_mode: str | None = None  # "public", "secret", or "certificate"
+    client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
+    client_certificate_path: str | None = None  # Path to PEM certificate file
+    client_certificate_key_path: str | None = None  # Path to PEM private key file
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
+
+    # Claude Cowork 3P MDM configuration
+    cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
 
     # Legacy field support
     @property

@@ -378,6 +378,12 @@ For complete quota monitoring documentation, see [Quota Monitoring Guide](../QUO
 
 ---
 
+## Cost Attribution (Optional)
+
+Per-user Bedrock costs are tracked automatically via the session name — no IdP changes needed. For additional tag-based attribution, you can inject AWS session tags into the ID token. See [Cost Attribution](../COST_ATTRIBUTION.md#okta) for details.
+
+---
+
 ## Next Steps
 
 Once you've completed this Okta setup:
