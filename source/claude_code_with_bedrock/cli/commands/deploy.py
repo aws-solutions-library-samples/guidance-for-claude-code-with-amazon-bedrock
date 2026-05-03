@@ -508,10 +508,21 @@ class DeployCommand(Command):
                             ]
                         )
                     elif profile.distribution_idp_provider == "azure":
-                        # Extract tenant ID from domain or use full domain
+                        # Extract tenant ID (UUID) from domain
+                        tenant_match = re.search(
+                            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                            profile.distribution_idp_domain,
+                            re.IGNORECASE,
+                        )
+                        if not tenant_match:
+                            console.print(
+                                f"[red]Error:[/red] Could not extract Azure tenant ID from domain: "
+                                f"{profile.distribution_idp_domain}"
+                            )
+                            return 1
                         params.extend(
                             [
-                                f"AzureTenantId={__import__("re").search(r"[0-9a-f-]{36}", profile.distribution_idp_domain).group(0)}",
+                                f"AzureTenantId={tenant_match.group(0)}",
                                 f"AzureClientId={profile.distribution_idp_client_id}",
                                 f"AzureClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]

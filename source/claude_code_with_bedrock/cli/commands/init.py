@@ -1096,7 +1096,7 @@ class InitCommand(Command):
                 except Exception as e:
                     console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
                     console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
-                    secret_arn = secret_response["ARN"]
+                    secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
