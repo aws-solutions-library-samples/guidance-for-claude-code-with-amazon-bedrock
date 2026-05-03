@@ -325,6 +325,7 @@ def get_policy(policy_type: str, identifier: str) -> dict | None:
             "warning_threshold_80": int(item.get("warning_threshold_80", 0)),
             "warning_threshold_90": int(item.get("warning_threshold_90", 0)),
             "enforcement_mode": item.get("enforcement_mode", "alert"),
+            "daily_enforcement_mode": item.get("daily_enforcement_mode", "alert"),
             "enabled": item.get("enabled", True),
         }
     except Exception as e:
