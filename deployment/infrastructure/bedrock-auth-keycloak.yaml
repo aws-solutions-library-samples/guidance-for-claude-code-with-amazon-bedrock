@@ -13,14 +13,20 @@ Parameters:
   KeycloakDomain:
     Type: String
     Description: Keycloak host (e.g., keycloak.example.com)
+    AllowedPattern: '^[a-zA-Z0-9._-]+$'
+    ConstraintDescription: Must be a valid hostname (alphanumeric, dots, hyphens, underscores)
 
   KeycloakRealm:
     Type: String
     Description: Keycloak realm name (e.g., my-realm)
+    AllowedPattern: '^[a-zA-Z0-9._-]+$'
+    ConstraintDescription: Must be a valid realm name (alphanumeric, dots, hyphens, underscores)
 
   KeycloakClientId:
     Type: String
     Description: Keycloak OIDC client ID
+    AllowedPattern: '^[a-zA-Z0-9._-]+$'
+    ConstraintDescription: Must be a valid client ID (alphanumeric, dots, hyphens, underscores)
 
   KeycloakThumbprint:
     Type: String
