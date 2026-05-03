@@ -24,7 +24,7 @@ class TestSourceRegionFunctionality:
                 source_regions = profile_config["source_regions"]
 
                 # Should have at least one source region available
-                assert isinstance(source_regions, list)
+                assert isinstance(source_regions, list | tuple)
                 assert len(source_regions) > 0, f"No source regions for {model_key}/{profile_key}"
 
                 # All source regions should be valid AWS region format
@@ -76,7 +76,7 @@ class TestSourceRegionFunctionality:
 
         # Should fallback to cross-region profile default
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"  # Default Europe region
+        assert result == "eu-west-1"  # Default Europe region
 
     def test_get_source_region_for_profile_fallback_to_aws_region(self):
         """Test source region fallback to infrastructure region for US profiles."""
@@ -149,7 +149,7 @@ class TestSourceRegionFunctionality:
 
         # Should handle missing attribute gracefully and use fallback
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"
+        assert result == "eu-west-1"
 
     def test_all_models_have_source_regions(self):
         """Test that all models in CLAUDE_MODELS have source regions defined."""
@@ -182,8 +182,8 @@ class TestSourceRegionFunctionality:
                 "ap-southeast-1",
                 "ap-southeast-2",
             ],
-            "japan": ["ap-northeast-1", "ap-northeast-3"],
-            "australia": ["ap-southeast-2", "ap-southeast-4"],
+            "jp": ["ap-northeast-1", "ap-northeast-3"],
+            "au": ["ap-southeast-2", "ap-southeast-4"],
         }
 
         for model_key, model_config in CLAUDE_MODELS.items():
