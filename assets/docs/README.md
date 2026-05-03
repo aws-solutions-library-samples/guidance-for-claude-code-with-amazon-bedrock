@@ -2,31 +2,34 @@
 
 This folder contains documentation for users implementing and operating Claude Code on AWS infrastructure, with focus on the Enterprise Authentication deployment pattern.
 
-## Getting Started
+## Deployment — Required Reading Order
 
-### CLI Reference
+Deployment has two sides: your **identity provider (IdP)** and **AWS infrastructure**. The IdP side must be completed first — the AWS wizard asks for values you get from your IdP.
 
-- **File**: [CLI_REFERENCE.md](./CLI_REFERENCE.md)
-- **Purpose**: Complete command reference for ccwb
-- **Audience**: IT administrators deploying the solution
+### Step 1 — Configure your Identity Provider (do this first)
 
-### Deployment Guide
+Choose your IdP and follow the setup guide before running `ccwb init`:
 
-- **File**: [DEPLOYMENT.md](./DEPLOYMENT.md)
-- **Purpose**: Step-by-step deployment instructions
-- **Audience**: IT administrators
+| Identity Provider | Guide |
+|---|---|
+| **Okta** | [okta-setup.md](./providers/okta-setup.md) |
+| **Microsoft Entra ID (Azure AD)** | [microsoft-entra-id-setup.md](./providers/microsoft-entra-id-setup.md) |
+| **Auth0** | [auth0-setup.md](./providers/auth0-setup.md) |
+| **AWS Cognito User Pool** | [cognito-user-pool-setup.md](./providers/cognito-user-pool-setup.md) |
+| **AWS IAM Identity Center (SSO)** | [iam-identity-center-setup.md](./providers/iam-identity-center-setup.md) |
 
-### Architecture Overview
+### Step 2 — Deploy AWS infrastructure
 
-- **File**: [ARCHITECTURE.md](./ARCHITECTURE.md)
-- **Purpose**: Technical architecture details
-- **Audience**: Technical teams and architects
+Once you have your IdP **provider domain** and **client ID**, follow one of these:
 
-### Local Testing
+- **[QUICK_START.md](../../QUICK_START.md)** — Primary step-by-step reference (recommended starting point)
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** — More conceptual/narrative walkthrough of the same steps
 
-- **File**: [LOCAL_TESTING.md](./LOCAL_TESTING.md)
-- **Purpose**: Testing the solution before full deployment
-- **Audience**: IT administrators
+### Reference
+
+- **[CLI_REFERENCE.md](./CLI_REFERENCE.md)** — Complete `ccwb` command reference
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Technical architecture details
+- **[LOCAL_TESTING.md](./LOCAL_TESTING.md)** — Testing before full deployment
 
 ## Operations
 
@@ -42,12 +45,22 @@ This folder contains documentation for users implementing and operating Claude C
 - **Purpose**: Setup and usage of the analytics pipeline for tracking Claude Code metrics
 - **Audience**: IT administrators managing usage analytics
 
-## Provider Configuration
+### Quota Management
 
-### OIDC Provider Setup Guides
+- **File**: [QUOTA_MONITORING.md](./QUOTA_MONITORING.md)
+- **Purpose**: Per-user and per-group token quota enforcement and alerts
+- **Audience**: IT administrators managing usage costs
 
-- **Folder**: [providers/](./providers/)
-- **Okta**: [okta-setup.md](./providers/okta-setup.md)
-- **Microsoft Entra ID (Azure AD)**: [microsoft-entra-id-setup.md](./providers/microsoft-entra-id-setup.md)
-- **Auth0**: [auth0-setup.md](./providers/auth0-setup.md)
-- **AWS Cognito User Pool**: [cognito-user-pool-setup.md](./providers/cognito-user-pool-setup.md)
+### Cost Attribution
+
+- **File**: [COST_ATTRIBUTION.md](./COST_ATTRIBUTION.md)
+- **Purpose**: Per-user and per-team cost tracking via CUR 2.0 and Cost Explorer
+- **Audience**: IT administrators and finance teams
+
+## Claude Cowork (Desktop)
+
+### CoWork 3P Guide
+
+- **File**: [COWORK_3P.md](./COWORK_3P.md)
+- **Purpose**: Using this solution's credential helper with Claude Desktop in third-party platform mode
+- **Audience**: IT administrators deploying Claude Cowork with Amazon Bedrock

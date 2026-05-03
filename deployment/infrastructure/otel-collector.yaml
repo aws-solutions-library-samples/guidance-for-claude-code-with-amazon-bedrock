@@ -30,8 +30,26 @@ Parameters:
     Default: ''
     Description: Route53 hosted zone ID for custom domain (required if CustomDomainName is provided)
 
+  OidcIssuerUrl:
+    Type: String
+    Default: ''
+    Description: OIDC issuer URL for ALB JWT validation
+
+  OidcJwksEndpoint:
+    Type: String
+    Default: ''
+    Description: JWKS endpoint URL for ALB JWT signature validation
+
+  OidcClientId:
+    Type: String
+    Default: ''
+    Description: OIDC client ID for ALB JWT audience (aud) claim validation
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+  NoCustomDomain: !Equals [!Ref CustomDomainName, '']
+  HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
+  HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -208,9 +226,25 @@ Resources:
       Protocol: HTTPS
       Certificates:
         - CertificateArn: !Ref Certificate
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref HTTPTargetGroup
+      DefaultActions: !If
+        - HasJwtAuth
+        - - Type: jwt-validation
+            Order: 1
+            JwtValidationConfig:
+              Issuer: !Ref OidcIssuerUrl
+              JwksEndpoint: !Ref OidcJwksEndpoint
+              AdditionalClaims: !If
+                - HasOidcClientId
+                - - Name: aud
+                    Format: string-array
+                    Values:
+                      - !Ref OidcClientId
+                - !Ref AWS::NoValue
+          - Type: forward
+            Order: 2
+            TargetGroupArn: !Ref HTTPTargetGroup
+        - - Type: forward
+            TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
 
   # IAM Roles
@@ -412,8 +446,8 @@ Resources:
           extensions: [health_check]
           telemetry:
             logs:
-              level: debug
-              development: true
+              level: info
+              development: false
               encoding: json
               output_paths: [stdout]
           pipelines:
@@ -454,9 +488,15 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
-  # ECS Service
-  ECSService:
+  # ECS Service — split into two conditional resources so that each path has
+  # the correct DependsOn without referencing a conditionally-absent resource.
+  # CloudFormation validates DependsOn unconditionally at parse time, so a
+  # single resource cannot safely list a conditional resource as a dependency.
+
+  # HTTP-only path (no custom domain): wait only for HTTPListener
+  ECSServiceHTTP:
     Type: AWS::ECS::Service
+    Condition: NoCustomDomain
     DependsOn:
       - HTTPListener
     Properties:
@@ -477,12 +517,41 @@ Resources:
           TargetGroupArn: !Ref HTTPTargetGroup
       HealthCheckGracePeriodSeconds: 60
 
+  # HTTPS path (custom domain): wait for both listeners so the target group
+  # association via HTTPSListener is ready before the service registers tasks
+  ECSServiceHTTPS:
+    Type: AWS::ECS::Service
+    Condition: HasCustomDomain
+    DependsOn:
+      - HTTPListener
+      - HTTPSListener
+    Properties:
+      ServiceName: otel-collector-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: aws-otel-collector
+          ContainerPort: 4318
+          TargetGroupArn: !Ref HTTPTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+
   # Auto Scaling - Commented out due to service-linked role requirements
   # Uncomment if you want auto-scaling and have the necessary service-linked role
+  # Note: ECSService was split into ECSServiceHTTP (Condition: NoCustomDomain) and
+  # ECSServiceHTTPS (Condition: HasCustomDomain). If re-enabling auto-scaling, use
+  # the variant that matches your deployment (custom domain vs HTTP-only).
   #
   # ServiceScalingTarget:
   #   Type: AWS::ApplicationAutoScaling::ScalableTarget
-  #   DependsOn: ECSService
+  #   DependsOn: ECSServiceHTTPS  # or ECSServiceHTTP if not using a custom domain
   #   Properties:
   #     MaxCapacity: 3
   #     MinCapacity: 1

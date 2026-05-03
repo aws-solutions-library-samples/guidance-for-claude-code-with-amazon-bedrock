@@ -1,0 +1,108 @@
+---
+name: Release Merged (tag)
+description: |
+  Auto-triggered when a pull request from a release/** branch is merged into main.
+  Reads the bumped version from source/pyproject.toml, creates an annotated git
+  tag v{version}, and pushes it to the repository.
+  Pushing the tag automatically triggers the release.yml workflow which publishes
+  the GitHub Release.
+  Also closes any remaining stale release PRs when a non-release PR is merged.
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+permissions: {}
+jobs:
+  tag-on-release-merge:
+    name: Create Release Tag
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          set -euo pipefail
+
+          VERSION=$(python3 -c "
+          import re
+          content = open('source/pyproject.toml').read()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', content, re.MULTILINE)
+          if not m:
+              raise SystemExit('ERROR: version not found in source/pyproject.toml')
+          print(m.group(1))
+          ")
+
+          TAG="v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "Detected version=$VERSION  tag=$TAG"
+
+      - name: Validate tag does not already exist
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists — was this release already published?"
+            exit 1
+          fi
+          echo "Tag $TAG is available"
+
+      - name: Create and push annotated tag
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name  "github-actions[bot]"
+
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin "$TAG"
+
+          echo "::notice::Tag $TAG created and pushed"
+          echo "### :pushpin: Tag Created" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                           >> "$GITHUB_STEP_SUMMARY"
+          echo "Tag \`$TAG\` pushed — the [Release workflow](https://github.com/${{ github.repository }}/actions/workflows/release.yml) will now publish the GitHub Release." >> "$GITHUB_STEP_SUMMARY"
+
+  close-stale-release-prs:
+    name: Close Stale Release PRs
+    if: >
+      github.event.pull_request.merged == true &&
+      !startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close any open release PRs superseded by this merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --author "github-actions[bot]" \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/")) | .number' \
+          | xargs -r -I{} \
+            gh pr close {} \
+              --repo "${{ github.repository }}" \
+              --comment "Closing — a non-release PR (#${PR_NUMBER} from \`${PR_HEAD}\`) was merged to main, making this release branch stale. Re-run the Release Initiate workflow to create a fresh release." \
+          || true

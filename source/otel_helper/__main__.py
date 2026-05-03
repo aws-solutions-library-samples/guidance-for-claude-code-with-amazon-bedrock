@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# ABOUTME: OTEL helper script that extracts user attributes from JWT tokens
+# ABOUTME: OTEL helper script that extracts user attributes from JWT tokens or AWS caller identity
 # ABOUTME: Outputs HTTP headers for OpenTelemetry collector to enable user attribution
+# ABOUTME: Supports anonymous mode when authentication is disabled
 """
 OTEL Headers Helper Script for Claude Code
 
@@ -8,6 +9,13 @@ This script retrieves authentication tokens from the storage method chosen by th
 (system keyring or session file) and formats them as HTTP headers for use with the OTEL collector.
 It extracts user information from JWT tokens and provides properly formatted headers
 that the OTEL collector's attributes processor converts to resource attributes.
+
+When authentication is disabled, identity is determined from the AWS caller:
+- AWS IAM Identity Center (SSO) users: real username/email extracted from the
+  assumed-role ARN session name (e.g. daniel.wirjo@company.com)
+- IAM users: username extracted from the user ARN
+- Non-SSO assumed roles: anonymous tracking via hashed ARN (consistent per principal)
+- No AWS credentials: falls back to a generic anonymous identifier
 """
 
 import argparse
@@ -21,9 +29,23 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import boto3
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    logger = logging.getLogger("claude-otel-headers")
+    logger.warning("boto3 not available, anonymous mode will not work")
+
+# Module-level cache for STS GetCallerIdentity to avoid repeated API calls.
+# Each entry stores {"identity": <dict>, "cached_at": <float>}.
+_sts_identity_cache = {}
+_STS_CACHE_TTL_SECONDS = 300  # 5 minutes
+
 # Configure debug mode if requested
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ("true", "1", "yes", "y")
 TEST_MODE = False  # Will be set by command line argument
+ANONYMOUS_MODE = False  # Will be set by command line argument
 
 # Configure logging
 logging.basicConfig(
@@ -42,10 +64,28 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate OTEL headers from authentication token")
     parser.add_argument("--test", action="store_true", help="Run in test mode with verbose output")
     parser.add_argument("--verbose", action="store_true", help="Show verbose output")
+    parser.add_argument(
+        "--anonymous",
+        action="store_true",
+        help="Force anonymous mode using AWS caller identity instead of JWT auth",
+    )
+    parser.add_argument(
+        "--proxy",
+        metavar="TARGET_URL",
+        help="Run as a local OTLP proxy on port 4318, forwarding to TARGET_URL with user headers injected",
+    )
+    parser.add_argument(
+        "--proxy-port",
+        type=int,
+        default=4318,
+        metavar="PORT",
+        help="Port for the local OTLP proxy (default: 4318)",
+    )
     args = parser.parse_args()
 
-    global TEST_MODE
+    global TEST_MODE, ANONYMOUS_MODE
     TEST_MODE = args.test
+    ANONYMOUS_MODE = args.anonymous
 
     # Set debug mode if verbose is specified
     if args.verbose or args.test:
@@ -202,20 +242,23 @@ def get_cache_path():
 
 
 def read_cached_headers():
-    """Read cached OTEL headers if they exist and the token hasn't expired."""
+    """Read cached OTEL headers if they exist.
+
+    User attributes (email, team, etc.) don't change between sessions,
+    so cached headers are served regardless of token expiry. Headers are
+    refreshed opportunistically when a valid token is available.
+    """
     try:
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
         with open(cache_path) as f:
             cached = json.load(f)
-        # Check if token expires in more than 10 minutes
-        now = int(time.time())
-        if cached.get("token_exp", 0) - now > 600:
-            logger.debug("Using cached OTEL headers (token still valid)")
-            return cached["headers"]
-        logger.debug("Cached OTEL headers expired or expiring soon")
-        return None
+        headers = cached.get("headers")
+        if not headers:
+            return None
+        logger.debug("Using cached OTEL headers")
+        return headers
     except Exception as e:
         logger.debug(f"Failed to read cached headers: {e}")
         return None
@@ -299,9 +342,380 @@ def get_token_via_credential_process():
         return None
 
 
+def get_aws_caller_identity():
+    """Get AWS caller identity using STS GetCallerIdentity API.
+
+    Results are cached for _STS_CACHE_TTL_SECONDS (default 5 min) to avoid
+    redundant API calls when OTEL headers are regenerated frequently.
+    """
+    if not BOTO3_AVAILABLE:
+        logger.warning("boto3 not available, cannot get AWS caller identity")
+        return None
+
+    # Check module-level cache
+    cache_key = "default"
+    cached = _sts_identity_cache.get(cache_key)
+    if cached and (time.time() - cached["cached_at"]) < _STS_CACHE_TTL_SECONDS:
+        logger.debug("Using cached STS GetCallerIdentity result")
+        return cached["identity"]
+
+    try:
+        sts_client = boto3.client('sts')
+        identity = sts_client.get_caller_identity()
+
+        # Store in cache
+        _sts_identity_cache[cache_key] = {
+            "identity": identity,
+            "cached_at": time.time(),
+        }
+
+        logger.info(f"Retrieved AWS caller identity: {identity.get('Arn', 'unknown')}")
+        return identity
+    except Exception as e:
+        logger.warning(f"Failed to get AWS caller identity: {e}")
+        return None
+
+
+def _parse_arn_identity(arn):
+    """Extract identity information from an AWS ARN.
+
+    Detects AWS IAM Identity Center (SSO) ARNs and extracts the username/email
+    from the session name. SSO assumed-role ARNs follow the pattern:
+        arn:aws:sts::<account>:assumed-role/AWSReservedSSO_<PermissionSet>_<hash>/<username>
+
+    For regular IAM users, extracts the username from:
+        arn:aws:iam::<account>:user/<username>
+        arn:aws:iam::<account>:user/<path>/<username>
+
+    For non-SSO assumed roles, returns None (identity cannot be determined).
+
+    Returns:
+        dict with 'username', 'email', 'role', 'issuer' keys, or None if
+        identity cannot be extracted from the ARN.
+    """
+    if not arn:
+        return None
+
+    try:
+        parts = arn.split(":")
+        if len(parts) < 6:
+            return None
+
+        resource = parts[5]  # e.g. "assumed-role/AWSReservedSSO_.../user@email.com"
+
+        # Case 1: SSO assumed role
+        # Pattern: assumed-role/AWSReservedSSO_<PermissionSet>_<hash>/<session-name>
+        if resource.startswith("assumed-role/AWSReservedSSO_"):
+            role_and_session = resource[len("assumed-role/"):]
+            slash_idx = role_and_session.find("/")
+            if slash_idx == -1:
+                return None
+
+            role_name = role_and_session[:slash_idx]
+            session_name = role_and_session[slash_idx + 1:]
+
+            # Extract permission set name from role: AWSReservedSSO_<Name>_<hash>
+            # Remove "AWSReservedSSO_" prefix and trailing "_<hash>" (12 hex chars)
+            perm_set = role_name[len("AWSReservedSSO_"):]
+            # The hash suffix is the last segment after underscore
+            last_underscore = perm_set.rfind("_")
+            if last_underscore > 0:
+                perm_set = perm_set[:last_underscore]
+
+            # Session name is typically the SSO username (often an email)
+            username = session_name
+            email = session_name if "@" in session_name else f"{session_name}@anonymous"
+
+            logger.info(f"Detected AWS SSO identity: {username} (permission set: {perm_set})")
+            return {
+                "username": username,
+                "email": email,
+                "role": perm_set,
+                "issuer": "aws-sso",
+            }
+
+        # Case 2: IAM user
+        # Pattern: user/<username> or user/<path>/<username>
+        if resource.startswith("user/"):
+            user_path = resource[len("user/"):]
+            # Take the last segment as username (handles path-based users)
+            username = user_path.rsplit("/", 1)[-1]
+            return {
+                "username": username,
+                "email": f"{username}@anonymous",
+                "role": "iam-user",
+                "issuer": "aws-iam",
+            }
+
+        # Case 3: Non-SSO assumed role — cannot determine individual identity
+        return None
+
+    except Exception as e:
+        logger.debug(f"Failed to parse ARN identity: {e}")
+        return None
+
+
+def _parse_assumed_role_arn(arn):
+    """Extract role name and session name from a non-SSO assumed-role ARN.
+
+    Pattern: arn:aws:sts::<account>:assumed-role/<RoleName>/<SessionName>
+
+    Returns:
+        dict with 'role_name' and 'session_name', or None if not an assumed-role ARN.
+    """
+    if not arn:
+        return None
+
+    try:
+        parts = arn.split(":")
+        if len(parts) < 6:
+            return None
+
+        resource = parts[5]
+
+        if not resource.startswith("assumed-role/"):
+            return None
+
+        role_and_session = resource[len("assumed-role/"):]
+        slash_idx = role_and_session.find("/")
+        if slash_idx == -1:
+            return None
+
+        role_name = role_and_session[:slash_idx]
+        session_name = role_and_session[slash_idx + 1:]
+
+        return {
+            "role_name": role_name,
+            "session_name": session_name,
+        }
+    except Exception as e:
+        logger.debug(f"Failed to parse assumed role ARN: {e}")
+        return None
+
+
+def create_anonymous_user_info(caller_identity=None):
+    """Create user information for metrics when auth is disabled.
+
+    If the caller is using AWS IAM Identity Center (SSO), real identity
+    information (username/email) is extracted from the assumed-role ARN.
+    For IAM users, the username is extracted from the user ARN.
+    For non-SSO assumed roles, a hashed anonymous identifier is generated.
+    """
+    if caller_identity and caller_identity.get('Arn'):
+        arn = caller_identity['Arn']
+        account_id = caller_identity.get('Account', 'unknown')
+        # SECURITY NOTE: 'aws-{account_id}' exposes the AWS account ID in metrics.
+        # This is acceptable for internal observability but should be reviewed if
+        # metrics are exported to external or third-party monitoring systems.
+        org_id = f"aws-{account_id}"
+
+        # Try to extract real identity from ARN (works for SSO and IAM users)
+        arn_identity = _parse_arn_identity(arn)
+
+        if arn_identity:
+            # Real identity extracted from ARN — use username directly as user_id
+            logger.info(f"Created identified user from ARN: {arn_identity['username']}")
+            return {
+                "email": arn_identity["email"],
+                "user_id": arn_identity["username"],
+                "username": arn_identity["username"],
+                "organization_id": org_id,
+                "department": "unspecified",
+                "team": "default-team",
+                "cost_center": "general",
+                "manager": "unassigned",
+                "location": "remote",
+                "role": arn_identity["role"],
+                "account_uuid": "",
+                "issuer": arn_identity["issuer"],
+                "subject": arn,
+            }
+        else:
+            # Non-SSO assumed role: extract role name and session name for tracking.
+            # Session names can be set by the caller (e.g. a CI pipeline name or
+            # username), so they provide useful attribution even without SSO.
+            role_info = _parse_assumed_role_arn(arn)
+            if role_info:
+                logger.info(f"Tracking assumed role: {role_info['role_name']}/{role_info['session_name']}")
+                return {
+                    "email": f"{role_info['session_name']}@anonymous",
+                    "user_id": role_info["session_name"],
+                    "username": role_info["session_name"],
+                    "organization_id": org_id,
+                    "department": "unspecified",
+                    "team": "default-team",
+                    "cost_center": "general",
+                    "manager": "unassigned",
+                    "location": "remote",
+                    "role": role_info["role_name"],
+                    "account_uuid": "",
+                    "issuer": "aws-iam",
+                    "subject": arn,
+                }
+
+            # Fallback: unrecognised ARN format — hash for anonymous tracking
+            arn_hash = hashlib.sha256(arn.encode()).hexdigest()[:36]
+            user_id = f"anon-{arn_hash[:8]}-{arn_hash[8:12]}-{arn_hash[12:16]}-{arn_hash[16:20]}-{arn_hash[20:32]}"
+            logger.info(f"Created anonymous user ID from ARN: {user_id}")
+
+            return {
+                "email": "anonymous@example.com",
+                "user_id": user_id,
+                "username": "anonymous",
+                "organization_id": org_id,
+                "department": "anonymous",
+                "team": "anonymous",
+                "cost_center": "anonymous",
+                "manager": "anonymous",
+                "location": "anonymous",
+                "role": "anonymous",
+                "account_uuid": "",
+                "issuer": "anonymous-mode",
+                "subject": arn,
+            }
+    else:
+        # No AWS identity at all
+        logger.warning("No AWS caller identity available, using fallback anonymous ID")
+        return {
+            "email": "anonymous@example.com",
+            "user_id": "anon-unknown",
+            "username": "anonymous",
+            "organization_id": "unknown",
+            "department": "anonymous",
+            "team": "anonymous",
+            "cost_center": "anonymous",
+            "manager": "anonymous",
+            "location": "anonymous",
+            "role": "anonymous",
+            "account_uuid": "",
+            "issuer": "anonymous-mode",
+            "subject": "anon-unknown",
+        }
+
+
+def run_proxy(target_url: str, port: int = 4318):
+    """Run a local OTLP proxy that injects user identity headers before forwarding.
+
+    CoWork sends OTLP directly to the collector without user headers. This proxy
+    sits at localhost:PORT, reads the cached user email from the monitoring token,
+    adds x-user-email (and related) headers to every request, then forwards to the
+    real ECS collector endpoint. The metrics_aggregator can then correlate CoWork
+    token events to user emails just like it does for Claude Code CLI sessions.
+    """
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    target_url = target_url.rstrip("/")
+    logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
+
+    def get_user_headers():
+        """Return enrichment headers derived from the cached monitoring token."""
+        token = None
+        if not ANONYMOUS_MODE:
+            token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+
+        if token:
+            payload = decode_jwt_payload(token)
+            user_info = extract_user_info(payload)
+        else:
+            caller_identity = get_aws_caller_identity()
+            user_info = create_anonymous_user_info(caller_identity)
+
+        return format_as_headers_dict(user_info)
+
+    # Pre-fetch headers once at startup; refresh on each request so token
+    # rotations are picked up without restarting the proxy.
+    _header_cache = {"headers": {}, "fetched_at": 0}
+    _HEADER_REFRESH_SECONDS = 300
+
+    def fresh_user_headers():
+        now = time.time()
+        if now - _header_cache["fetched_at"] > _HEADER_REFRESH_SECONDS:
+            try:
+                _header_cache["headers"] = get_user_headers()
+                _header_cache["fetched_at"] = now
+            except Exception as e:
+                logger.warning(f"Could not refresh user headers: {e}")
+        return _header_cache["headers"]
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self._proxy()
+
+        def do_GET(self):
+            # Health-check endpoint — CoWork polls / before starting telemetry
+            if self.path in ("/", "/health"):
+                self.send_response(200)
+                self.end_headers()
+            else:
+                self._proxy()
+
+        def _proxy(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+
+            forward_url = f"{target_url}{self.path}"
+
+            # Validate URL scheme to prevent file:// or other dangerous schemes
+            if not forward_url.startswith(("http://", "https://")):
+                logger.warning(f"Rejected proxy request with invalid scheme: {forward_url}")
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            req = urllib.request.Request(forward_url, data=body, method=self.command)
+
+            # Copy original headers
+            for key, value in self.headers.items():
+                lower = key.lower()
+                if lower in ("host", "content-length", "transfer-encoding"):
+                    continue
+                req.add_header(key, value)
+
+            # Inject user identity headers (override any client-supplied values)
+            for header_name, header_value in fresh_user_headers().items():
+                req.add_header(header_name, header_value)
+
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    self.send_response(resp.status)
+                    for key, value in resp.getheaders():
+                        if key.lower() != "transfer-encoding":
+                            self.send_header(key, value)
+                    self.end_headers()
+                    self.wfile.write(resp.read())
+            except Exception as e:
+                logger.warning(f"Proxy forward error: {e}")
+                self.send_response(502)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            logger.debug(f"proxy: {fmt % args}")
+
+    server = HTTPServer(("127.0.0.1", port), ProxyHandler)
+    print(f"OTLP proxy listening on 127.0.0.1:{port} → {target_url}", flush=True)
+
+    def shutdown_on_signal(signum, frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    import signal
+    import threading as _threading
+    if _threading.current_thread() is _threading.main_thread():
+        signal.signal(signal.SIGTERM, shutdown_on_signal)
+        signal.signal(signal.SIGINT, shutdown_on_signal)
+
+    server.serve_forever()
+
+
 def main():
     """Main function to generate OTEL headers"""
-    parse_args()
+    args = parse_args()
+
+    # Proxy mode: long-running local OTLP forwarder with user header injection
+    if args.proxy:
+        run_proxy(args.proxy, port=args.proxy_port)
+        return 0
 
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:
@@ -311,32 +725,41 @@ def main():
             return 0
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
-    token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
-    if token:
-        logger.info("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
+    token = None
+    if not ANONYMOUS_MODE:
+        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+        if token:
+            logger.info("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
+        else:
+            # Use credential-process to get token (handles auth if needed)
+            # This avoids direct keychain access from OTEL helper
+            token = get_token_via_credential_process()
     else:
-        # Use credential-process to get token (handles auth if needed)
-        # This avoids direct keychain access from OTEL helper
-        token = get_token_via_credential_process()
-
-        if not token:
-            logger.warning("Could not obtain authentication token")
-            # Return failure to indicate we couldn't get user attributes
-            # Claude Code should handle this gracefully
-            return 1
+        logger.info("Anonymous mode forced via --anonymous flag")
 
     # Decode token and extract user info
     try:
-        payload = decode_jwt_payload(token)
-        user_info = extract_user_info(payload)
+        if token:
+            # Auth mode: Extract user info from JWT token
+            payload = decode_jwt_payload(token)
+            user_info = extract_user_info(payload)
+            logger.info("Using authenticated user information from JWT token")
+        else:
+            # Anonymous mode: Use AWS caller identity for unique tracking
+            logger.info("No authentication token available, using anonymous mode")
+            caller_identity = get_aws_caller_identity()
+            user_info = create_anonymous_user_info(caller_identity)
 
         # Generate headers dictionary
         headers_dict = format_as_headers_dict(user_info)
-
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")
-            print("Generated HTTP Headers:")
+            if token:
+                print("Mode: Authenticated (JWT Token)")
+            else:
+                print("Mode: Anonymous (AWS Caller Identity)")
+            print("\nGenerated HTTP Headers:")
             for header_name, header_value in headers_dict.items():
                 # Display in uppercase for readability but actual values are lowercase
                 display_name = header_name.replace("x-", "X-").replace("-id", "-ID")
@@ -369,11 +792,15 @@ def main():
         else:
             # Normal mode: Output as JSON (flat object with string values)
             # Cache headers for future calls (avoids credential-process on next invocation)
-            token_exp = payload.get("exp")
-            if token_exp:
-                write_cached_headers(headers_dict, token_exp)
+            if token:
+                token_exp = payload.get("exp")
+                if token_exp:
+                    write_cached_headers(headers_dict, token_exp)
+                else:
+                    logger.debug("JWT has no exp claim, skipping cache write")
             else:
-                logger.debug("JWT has no exp claim, skipping cache write")
+                # Anonymous mode: cache with a synthetic TTL (5 minutes)
+                write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

@@ -142,7 +142,8 @@ Resources:
               commands:
                 - echo Installing build dependencies...
                 - C:\Python312\python.exe -m pip install --upgrade pip
-                - C:\Python312\python.exe -m pip install nuitka==2.7.12 ordered-set zstandard
+                - C:\Python312\python.exe -m pip install nuitka==2.7.12 ordered-set zstandard certifi
+                - Set-Content -Path 'C:\Python312\Lib\site-packages\sitecustomize.py' -Value 'import os; os.environ["SSL_CERT_FILE"]=r"C:\Python312\Lib\site-packages\certifi\cacert.pem"'
                 - echo Installing application dependencies...
                 - C:\Python312\python.exe -m pip install boto3 requests PyJWT cryptography
                 - C:\Python312\python.exe -m pip install keyring pywin32
