@@ -511,7 +511,7 @@ class DeployCommand(Command):
                         # Extract tenant ID (UUID) from domain
                         tenant_match = re.search(
                             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                            profile.distribution_idp_domain,
+                            profile.distribution_idp_domain or "",
                             re.IGNORECASE,
                         )
                         if not tenant_match:
