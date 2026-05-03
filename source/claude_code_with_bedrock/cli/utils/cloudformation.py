@@ -240,7 +240,11 @@ class CloudFormationManager:
             # Wait for deletion
             success = self._wait_for_stack(stack_name, "stack_delete_complete", timeout, on_event)
 
-            return StackDeletionResult(success=success)
+            if success:
+                return StackDeletionResult(success=True)
+            else:
+                error = self._get_stack_failure_reason(stack_name)
+                return StackDeletionResult(success=False, error=error)
 
         except ClientError as e:
             error_message = e.response["Error"]["Message"]
@@ -277,6 +281,56 @@ class CloudFormationManager:
             return []
         except Exception:
             return []
+
+    def pre_cleanup_stack(self, stack_name: str, on_event: Callable[[str], None] = None) -> None:
+        """Pre-clean resources that block CloudFormation deletion.
+
+        S3 buckets must be empty before CloudFormation can delete them.
+        Athena workgroups must have named queries removed first.
+        """
+        try:
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            for resource in response.get("StackResources", []):
+                physical_id = resource.get("PhysicalResourceId")
+                if not physical_id:
+                    continue
+                rtype = resource["ResourceType"]
+                if rtype == "AWS::S3::Bucket":
+                    if on_event:
+                        on_event(f"Emptying bucket {physical_id}...")
+                    self._empty_bucket(physical_id)
+                elif rtype == "AWS::Athena::WorkGroup":
+                    if on_event:
+                        on_event(f"Cleaning workgroup {physical_id}...")
+                    self._clean_athena_workgroup(physical_id)
+        except ClientError:
+            pass
+
+    def _empty_bucket(self, bucket_name: str) -> None:
+        """Delete all objects and versions from an S3 bucket."""
+        try:
+            paginator = self.s3_client.get_paginator("list_object_versions")
+            for page in paginator.paginate(Bucket=bucket_name):
+                objects = []
+                for v in page.get("Versions", []):
+                    objects.append({"Key": v["Key"], "VersionId": v["VersionId"]})
+                for dm in page.get("DeleteMarkers", []):
+                    objects.append({"Key": dm["Key"], "VersionId": dm["VersionId"]})
+                if objects:
+                    self.s3_client.delete_objects(
+                        Bucket=bucket_name,
+                        Delete={"Objects": objects, "Quiet": True},
+                    )
+        except ClientError:
+            pass
+
+    def _clean_athena_workgroup(self, workgroup_name: str) -> None:
+        """Force-delete an Athena workgroup and all its contents."""
+        try:
+            athena = self.session.client("athena")
+            athena.delete_work_group(WorkGroup=workgroup_name, RecursiveDeleteOption=True)
+        except ClientError:
+            pass
 
     def package_template(
         self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
@@ -485,8 +539,9 @@ class CloudFormationManager:
             True if successful, False otherwise
         """
         # Stream events while waiting
+        event_thread = None
         if on_event:
-            self._start_event_streaming(stack_name, on_event)
+            event_thread = self._start_event_streaming(stack_name, on_event)
 
         try:
             waiter = self.cf_client.get_waiter(waiter_name)
@@ -495,11 +550,72 @@ class CloudFormationManager:
         except WaiterError:
             # Check if it's a timeout or actual failure
             final_status = self.get_stack_status(stack_name)
+            # Stack no longer exists — successful deletion
+            if final_status is None and waiter_name == "stack_delete_complete":
+                return True
             if final_status and "FAILED" in final_status:
                 return False
             elif final_status and "ROLLBACK" in final_status:
                 return False
             # Might be timeout
+            return False
+        except Exception:
+            return False
+        finally:
+            if event_thread:
+                event_thread.join(timeout=5)
+
+    def _get_acm_validation_records(self, stack_name: str, logical_resource_id: str, max_wait: int = 180) -> list[dict]:
+        """Get ACM certificate DNS validation records for a resource in a stack.
+
+        Polls ACM until validation CNAME records are available or timeout.
+
+        Returns:
+            List of dicts with 'Name' and 'Value' for CNAME records, or empty list.
+        """
+        try:
+            response = self.cf_client.describe_stack_resource(
+                StackName=stack_name,
+                LogicalResourceId=logical_resource_id,
+            )
+            cert_arn = response["StackResourceDetail"].get("PhysicalResourceId")
+            if not cert_arn or not cert_arn.startswith("arn:"):
+                return []
+
+            acm_client = self.session.client("acm")
+
+            elapsed = 0
+            while elapsed < max_wait:
+                cert_response = acm_client.describe_certificate(CertificateArn=cert_arn)
+                domain_validations = cert_response["Certificate"].get("DomainValidationOptions", [])
+
+                records = []
+                for dv in domain_validations:
+                    resource_record = dv.get("ResourceRecord")
+                    if resource_record and resource_record.get("Type") == "CNAME":
+                        records.append({
+                            "Name": resource_record["Name"],
+                            "Value": resource_record["Value"],
+                        })
+
+                if records:
+                    return records
+
+                time.sleep(5)
+                elapsed += 5
+
+            return []
+        except Exception:
+            return []
+
+    def _has_route53_zone(self, stack_name: str) -> bool:
+        """Check if stack has a non-empty HostedZoneId parameter (Route53 manages DNS)."""
+        try:
+            response = self.cf_client.describe_stacks(StackName=stack_name)
+            for stack in response.get("Stacks", []):
+                for param in stack.get("Parameters", []):
+                    if param.get("ParameterKey") == "HostedZoneId":
+                        return bool(param.get("ParameterValue", "").strip())
             return False
         except Exception:
             return False
@@ -509,6 +625,8 @@ class CloudFormationManager:
         import threading
 
         seen_events = set()
+        acm_certs_notified = set()
+        uses_route53 = self._has_route53_zone(stack_name)
 
         def stream_events():
             while True:
@@ -529,6 +647,33 @@ class CloudFormationManager:
                             }
                             on_event(formatted_event)
 
+                            # Detect ACM certificate waiting for validation
+                            resource_type = event.get("ResourceType", "")
+                            resource_status = event.get("ResourceStatus", "")
+                            logical_id = event.get("LogicalResourceId", "")
+
+                            if (
+                                resource_type == "AWS::CertificateManager::Certificate"
+                                and resource_status == "CREATE_IN_PROGRESS"
+                                and logical_id not in acm_certs_notified
+                            ):
+                                # Skip notification when Route53 handles DNS validation automatically
+                                if uses_route53:
+                                    acm_certs_notified.add(logical_id)
+                                    continue
+
+                                records = self._get_acm_validation_records(stack_name, logical_id)
+                                if records:
+                                    acm_certs_notified.add(logical_id)
+                                    on_event({
+                                        "type": "acm_validation_required",
+                                        "LogicalResourceId": logical_id,
+                                        "ResourceType": resource_type,
+                                        "ResourceStatus": "WAITING_FOR_DNS_VALIDATION",
+                                        "validation_records": records,
+                                        "message": "ACM certificate requires DNS validation",
+                                    })
+
                     # Check if stack operation is complete
                     status = self.get_stack_status(stack_name)
                     if status and ("COMPLETE" in status or "FAILED" in status):
@@ -545,6 +690,9 @@ class CloudFormationManager:
     def _get_stack_failure_reason(self, stack_name: str) -> str:
         """Get the failure reason from stack events."""
         try:
+            # First check if stack still exists and its current status
+            current_status = self.get_stack_status(stack_name)
+
             response = self.cf_client.describe_stack_events(StackName=stack_name)
             events = response.get("StackEvents", [])
 
@@ -558,7 +706,20 @@ class CloudFormationManager:
                     logical_id = event.get("LogicalResourceId", "Unknown")
                     return f"{resource_type} ({logical_id}): {reason}"
 
-            return "Unknown failure reason"
+            # If no failure events found, provide context based on current status
+            if current_status:
+                if "IN_PROGRESS" in current_status:
+                    return f"Stack deletion timeout - still in progress (status: {current_status})"
+                elif "FAILED" in current_status:
+                    return f"Stack in failed state: {current_status}"
+                else:
+                    return f"Stack in unexpected state: {current_status}"
+
+            return "Stack not found or already deleted"
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ValidationError":
+                return "Stack not found or already deleted"
+            return f"Error fetching failure reason: {str(e)}"
         except Exception as e:
             return f"Error fetching failure reason: {str(e)}"
 
