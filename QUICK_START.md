@@ -309,10 +309,10 @@ Choose how the `credential-process` binary stores AWS temporary credentials on t
 
 | Option | What it does | When to use |
 |---|---|---|
-| **Keyring** | OS secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service) | Production — credentials survive reboots, most secure |
+| **Keyring** | OS secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service) | Production, and recommended for CoWork 3P |
 | **Session Files** | Temp files in `~/.aws/credentials` and `~/.claude-code-session/` | Dev/testing — simpler, wiped on logout |
 
-Default is **Session Files**. Either works. Keyring may show a one-time OS permission prompt on first use.
+Default is **Session Files**. Both modes work for Claude Code CLI. For **CoWork Desktop 3P**, Keyring is strongly recommended: CoWork resolves credentials through `inferenceBedrockProfile` → boto3's named-profile resolution, and boto3 reads `~/.aws/credentials` before the `credential_process` entry in `~/.aws/config`. In Session Files mode, that means boto3 uses whatever static credentials the last CLI invocation wrote to the file and will **not** auto-refresh them through `credential_process` once they expire — CoWork fails with `403 The security token included in the request is invalid` until the CLI is run again to repopulate the file. Keyring mode keeps `~/.aws/credentials` untouched, so boto3 falls through to `credential_process` and the binary handles refresh transparently. Keyring may show a one-time OS permission prompt on first use.
 
 ---
 
@@ -486,9 +486,11 @@ Deploys an AWS CodeBuild project to compile the Windows `.exe` binary using Nuit
 When **Yes**, every `ccwb package` run automatically produces MDM configuration files alongside the standard installer. These deploy Claude Desktop (Claude Cowork) pointing at Bedrock through the same credential infrastructure. No extra AWS resources required.
 
 Output files in `dist/cowork-3p/`:
-- `cowork-3p-ClaudeCode.mobileconfig` — deploy via Jamf/Kandji/Mosyle (macOS)
-- `cowork-3p-ClaudeCode.reg` — deploy via Intune/Group Policy (Windows)
-- `credential-helper-ClaudeCode` — wrapper script that must be on each user machine
+- `cowork-3p.mobileconfig` — deploy via Jamf/Kandji/Mosyle (macOS). Unsigned profiles cannot auto-install: after delivery (or when `install.sh` runs), the user must approve the profile in **System Settings → Privacy & Security → Profiles**.
+- `cowork-3p.reg` — deploy via Intune/Group Policy (Windows). Writes to `HKCU\SOFTWARE\Policies\Claude` (per-user, no admin elevation); do not redirect to `HKLM`.
+- `cowork-3p-config.json` — raw MDM JSON for the Claude Desktop Setup UI / manual review
+
+Claude Desktop authenticates via the `inferenceBedrockProfile` MDM key, which points at the AWS named profile that `install.sh` / `install.bat` writes to `~/.aws/config`. No per-user wrapper script is required. Users must run the installer **before** opening Claude Desktop — otherwise the named profile won't exist and Bedrock mode won't activate.
 
 See [COWORK_3P.md](assets/docs/COWORK_3P.md) for MDM deployment instructions.
 
@@ -850,6 +852,8 @@ Force re-authentication after deployment:
 ```bash
 ~/claude-code-with-bedrock/credential-process --clear-cache
 ```
+
+If CoWork Desktop 3P fails with `403 The security token included in the request is invalid` and the user was previously on a session-files build, `~/.aws/credentials` may contain a stale `[<profile-name>]` stanza with literal `EXPIRED` values that shadows the current `credential_process` entry in `~/.aws/config`. Re-run `install.sh` / `install.bat` — it purges any such stanza before writing the new profile. Alternatively, remove the block by hand.
 
 ### Port Conflicts
 
