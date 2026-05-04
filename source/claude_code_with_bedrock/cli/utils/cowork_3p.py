@@ -34,28 +34,28 @@ def build_mdm_config(
     bedrock_region: str,
     model_aliases: list[str],
     profile_name: str = "ClaudeCode",
-    credential_helper_ttl: int = 3600,
 ) -> dict:
     """Build the base CoWork 3P MDM configuration dictionary.
+
+    Uses inferenceBedrockProfile, which points Claude Desktop at an AWS named
+    profile in ~/.aws/config. The installer already configures that profile with
+    credential_process = credential-process --profile <name>, so CoWork reuses
+    the same auth pipeline as Claude Code with zero extra artifacts to ship.
+
+    Ref: https://claude.com/docs/cowork/3p/bedrock
 
     Args:
         bedrock_region: AWS region for Bedrock API calls.
         model_aliases: List of model aliases (e.g., ["opus", "sonnet", "opusplan"]).
-        profile_name: Credential process profile name (used to locate the helper script).
-        credential_helper_ttl: Cache TTL in seconds for the credential helper.
+        profile_name: AWS named profile (matches ~/.aws/config stanza).
 
     Returns:
         Dictionary of MDM configuration key-value pairs.
     """
-    credential_helper_path = str(
-        Path(f"~/claude-code-with-bedrock/credential-helper-{profile_name}").expanduser()
-    )
-
     return {
         "inferenceProvider": "bedrock",
         "inferenceBedrockRegion": bedrock_region,
-        "inferenceCredentialHelper": credential_helper_path,
-        "inferenceCredentialHelperTtlSec": credential_helper_ttl,
+        "inferenceBedrockProfile": profile_name,
         "inferenceModels": model_aliases,
         "isClaudeCodeForDesktopEnabled": True,
         "isDesktopExtensionEnabled": True,
@@ -64,62 +64,6 @@ def build_mdm_config(
         "isLocalDevMcpEnabled": True,
     }
 
-
-def generate_credential_helper_wrapper(profile_name: str, bedrock_region: str) -> Path:
-    """Generate a bearer-token credential helper script for CoWork.
-
-    CoWork requires inferenceCredentialHelper to be an absolute path to an executable
-    that takes no arguments and outputs {"token": "bedrock-api-key-..."} JSON.
-    This script calls credential-process, signs a Bedrock bearer token, and outputs
-    the correct JSON format.
-
-    Returns the absolute path to the generated script.
-    """
-    base_dir = Path("~/claude-code-with-bedrock").expanduser()
-    credential_process = base_dir / "credential-process"
-    wrapper_path = base_dir / f"credential-helper-{profile_name}"
-
-    script = f'''#!/usr/bin/env python3
-"""Auto-generated CoWork credential helper — outputs {{"token": "bedrock-api-key-..."}}."""
-
-import base64
-import json
-import subprocess
-import sys
-
-from botocore.auth import SigV4QueryAuth
-from botocore.awsrequest import AWSRequest
-from botocore.credentials import Credentials
-
-try:
-    raw = subprocess.check_output(
-        ["{credential_process}", "--profile", "{profile_name}"],
-        stderr=subprocess.DEVNULL,
-    )
-    creds = json.loads(raw)
-except Exception as e:
-    print(json.dumps({{"error": str(e)}}), file=sys.stderr)
-    sys.exit(1)
-
-try:
-    credentials = Credentials(creds["AccessKeyId"], creds["SecretAccessKey"], creds["SessionToken"])
-    request = AWSRequest(
-        method="POST",
-        url="https://bedrock.amazonaws.com/",
-        headers={{"host": "bedrock.amazonaws.com"}},
-        params={{"Action": "CallWithBearerToken"}},
-    )
-    SigV4QueryAuth(credentials, "bedrock", "{bedrock_region}", expires=43200).add_auth(request)
-    presigned = request.url.replace("https://", "") + "&Version=1"
-    token = "bedrock-api-key-" + base64.b64encode(presigned.encode()).decode()
-    print(json.dumps({{"token": token}}))
-except Exception as e:
-    print(json.dumps({{"error": str(e)}}), file=sys.stderr)
-    sys.exit(1)
-'''
-    wrapper_path.write_text(script)
-    wrapper_path.chmod(0o755)
-    return wrapper_path
 
 
 def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
@@ -226,26 +170,25 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
 def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     """Generate a Windows .reg file for Claude Cowork 3P.
 
+    All values are stored as REG_SZ strings — booleans, integers, and arrays
+    included — matching what Claude Desktop reads from the registry.
+
     Returns the path to the generated file.
     """
-    reg_key = r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Anthropic\Claude Desktop"
+    reg_key = r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude"
 
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
     for key, value in _mdm_keys(mdm_config).items():
         if isinstance(value, bool):
-            dword_val = 1 if value else 0
-            lines.append(f'"{key}"=dword:{dword_val:08x}')
-        elif isinstance(value, int):
-            lines.append(f'"{key}"=dword:{value:08x}')
-        elif isinstance(value, list):
-            # Store arrays as JSON-encoded string with escaped inner quotes
-            json_str = json.dumps(value).replace('"', '\\"')
-            lines.append(f'"{key}"="{json_str}"')
+            string_value = "true" if value else "false"
+        elif isinstance(value, (list, dict)):
+            string_value = json.dumps(value)
         else:
-            # Escape backslashes for .reg format
-            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-            lines.append(f'"{key}"="{escaped}"')
+            string_value = str(value)
+        # Escape backslashes and quotes for .reg REG_SZ format
+        escaped = string_value.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'"{key}"="{escaped}"')
 
     lines.append("")  # Trailing newline
 

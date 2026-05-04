@@ -497,6 +497,8 @@ class DistributeCommand(Command):
                 ("install.bat", "install.bat"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p.reg", "cowork-3p.reg"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
@@ -506,6 +508,7 @@ class DistributeCommand(Command):
                 ("install.sh", "install.sh"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
             "mac": [
                 ("credential-process-macos-arm64", "credential-process-macos-arm64"),
@@ -515,6 +518,8 @@ class DistributeCommand(Command):
                 ("install.sh", "install.sh"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p.mobileconfig", "cowork-3p.mobileconfig"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
         }
 
@@ -1116,6 +1121,10 @@ class DistributeCommand(Command):
             # Configuration
             "config.json",
             "README.md",
+            # CoWork 3P MDM configs (optional — only present when CoWork is enabled)
+            "cowork-3p.reg",
+            "cowork-3p.mobileconfig",
+            "cowork-3p-config.json",
         ]
 
         # Also include claude-settings directory if it exists
