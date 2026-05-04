@@ -62,6 +62,11 @@ if (Test-Path 'otel-helper-windows.exe') {
     Copy-Item -Force 'otel-helper-windows.exe' (Join-Path $installDir 'otel-helper.exe')
 }
 
+# Remove Mark-of-the-Web so Windows doesn't block execution.
+# Binaries downloaded via browser/S3 carry a Zone.Identifier ADS that
+# triggers SmartScreen on first run. Unblock-File strips it silently.
+Get-ChildItem -Path $installDir -Filter '*.exe' | Unblock-File
+
 # Copy configuration
 Write-Host 'Copying configuration...'
 Copy-Item -Force 'config.json' $installDir
