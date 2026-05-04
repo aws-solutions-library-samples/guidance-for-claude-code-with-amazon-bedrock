@@ -151,8 +151,9 @@ class CleanupCommand(Command):
                 console.print(f"[red]✗ Failed to remove Claude settings: {e}[/red]")
 
         # Remove the ccwb claude wrapper block from shell rc files and from the
-        # PowerShell profile, if any installer ever appended one. Safe no-op
-        # when the marker-delimited block isn't present.
+        # PowerShell profile. These are only present when the user installed a
+        # bundle with enforce_project_isolation=True; absent from vanilla
+        # installs so the strip call is a no-op.
         self._strip_shell_wrapper_block(console)
 
         console.print("\n[green]Cleanup completed![/green]")
@@ -167,10 +168,12 @@ class CleanupCommand(Command):
     def _strip_shell_wrapper_block(self, console) -> None:
         """Strip the `>>> ccwb claude wrapper >>>` block from shell rc files.
 
-        Removes a marker-delimited block from ``~/.zshrc`` / ``~/.bashrc``
-        (and ``$PROFILE`` on Windows) so users don't keep a broken
-        ``claude()`` function after uninstall. No-op when the block isn't
-        present.
+        The installer appends a marker-delimited block to ``~/.zshrc`` /
+        ``~/.bashrc`` (and ``$PROFILE`` on Windows) when the bundle was
+        packaged with ``enforce_project_isolation=True``. This removes the
+        block in place so users don't accidentally keep a broken
+        ``claude()`` function after uninstall. Safe to call when the block
+        isn't present — it's a no-op.
         """
         start_marker = "# >>> ccwb claude wrapper >>>"
         end_marker = "# <<< ccwb claude wrapper <<<"

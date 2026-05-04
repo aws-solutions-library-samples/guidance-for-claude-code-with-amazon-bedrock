@@ -500,6 +500,10 @@ class DeployCommand(Command):
                         f"IdentityPoolName={profile.identity_pool_name}",
                         f"AllowedBedrockRegions={','.join(bedrock_regions)}",
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                        # GDPR per-zone isolation. Default 'false' — existing deployments
+                        # see no behavior change unless the admin explicitly opts in via
+                        # profile.enforce_project_isolation=True (set by the init wizard).
+                        f"EnforceProjectIsolation={str(getattr(profile, 'enforce_project_isolation', False)).lower()}",
                     ]
                 )
 
