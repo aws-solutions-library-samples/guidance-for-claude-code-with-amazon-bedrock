@@ -70,7 +70,7 @@ Resources:
           Mutable: true
         - Name: preferred_username
           AttributeDataType: String
-          Required: true
+          Required: false
           Mutable: true
         - Name: given_name
           AttributeDataType: String

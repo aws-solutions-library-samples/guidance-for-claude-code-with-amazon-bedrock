@@ -150,6 +150,11 @@ class CleanupCommand(Command):
             except Exception as e:
                 console.print(f"[red]✗ Failed to remove Claude settings: {e}[/red]")
 
+        # Remove the ccwb claude wrapper block from shell rc files and from the
+        # PowerShell profile, if any installer ever appended one. Safe no-op
+        # when the marker-delimited block isn't present.
+        self._strip_shell_wrapper_block(console)
+
         console.print("\n[green]Cleanup completed![/green]")
 
         # Show next steps
@@ -158,6 +163,59 @@ class CleanupCommand(Command):
         console.print("• Run 'ccwb test' to reinstall and test")
 
         return 0
+
+    def _strip_shell_wrapper_block(self, console) -> None:
+        """Strip the `>>> ccwb claude wrapper >>>` block from shell rc files.
+
+        Removes a marker-delimited block from ``~/.zshrc`` / ``~/.bashrc``
+        (and ``$PROFILE`` on Windows) so users don't keep a broken
+        ``claude()`` function after uninstall. No-op when the block isn't
+        present.
+        """
+        start_marker = "# >>> ccwb claude wrapper >>>"
+        end_marker = "# <<< ccwb claude wrapper <<<"
+
+        candidates: list[Path] = [
+            Path.home() / ".zshrc",
+            Path.home() / ".bashrc",
+        ]
+        # PowerShell profile path isn't known on non-Windows, but we can
+        # still check the usual location if the user ran both installers.
+        ps_profile = Path.home() / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+        if ps_profile.exists():
+            candidates.append(ps_profile)
+
+        for rc in candidates:
+            if not rc.exists():
+                continue
+            try:
+                text = rc.read_text()
+            except Exception as e:
+                console.print(f"[yellow]Could not read {rc}: {e}[/yellow]")
+                continue
+            if start_marker not in text or end_marker not in text:
+                continue
+
+            new_lines: list[str] = []
+            in_block = False
+            for line in text.splitlines():
+                if start_marker in line:
+                    in_block = True
+                    # Drop the trailing blank line immediately before the block
+                    if new_lines and new_lines[-1].strip() == "":
+                        new_lines.pop()
+                    continue
+                if end_marker in line:
+                    in_block = False
+                    continue
+                if not in_block:
+                    new_lines.append(line)
+
+            try:
+                rc.write_text("\n".join(new_lines).rstrip() + "\n")
+                console.print(f"✓ Stripped ccwb claude wrapper block from {rc}")
+            except Exception as e:
+                console.print(f"[yellow]Could not update {rc}: {e}[/yellow]")
 
     def _clear_credentials_only(self, console, profile_name, force):
         """Clear only cached credentials without removing other components."""

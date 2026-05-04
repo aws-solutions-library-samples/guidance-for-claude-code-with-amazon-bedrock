@@ -6,7 +6,6 @@
 import hashlib
 import json
 import shutil
-import tempfile
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -58,6 +57,17 @@ class DistributeCommand(Command):
     name = "distribute"
     description = "Distribute packages via secure presigned URLs"
 
+    # High multipart threshold to avoid temp file creation on Windows.
+    # Corporate security tools (Zscaler, etc.) can lock temp files during scanning,
+    # causing "access denied" errors. Typical packages are ~150MB, so 256MB threshold
+    # ensures single PUT upload with no temp files.
+    S3_TRANSFER_CONFIG = TransferConfig(
+        multipart_threshold=1024 * 1024 * 256,  # 256MB
+        max_concurrency=4,
+        multipart_chunksize=1024 * 1024 * 64,  # 64MB chunks if multipart is needed
+        use_threads=True,
+    )
+
     options = [
         option("expires-hours", description="URL expiration time in hours (1-168)", flag=False, default="48"),
         option("get-latest", description="Retrieve the latest distribution URL", flag=True),
@@ -68,6 +78,7 @@ class DistributeCommand(Command):
         option("build-profile", description="Select build by profile name", flag=False),
         option("timestamp", description="Select build by timestamp (YYYY-MM-DD-HHMMSS)", flag=False),
         option("latest", description="Auto-select latest build without wizard", flag=True),
+        option("per-os", description="Create separate packages per OS (smaller downloads)", flag=True),
     ]
 
     def _check_old_flat_structure(self, dist_dir: Path) -> bool:
@@ -211,6 +222,62 @@ class DistributeCommand(Command):
 
         return build_map[selected]
 
+    @staticmethod
+    def _check_ssl_proxy_environment(console: Console) -> None:
+        """Warn if corporate SSL inspection (Zscaler, Netskope, etc.) may interfere with S3 uploads.
+
+        Zscaler Client Connector and similar tools run locally on the laptop,
+        intercept HTTPS traffic transparently (no proxy env vars), and re-sign
+        it with their own CA. Python/boto3 uses the certifi CA bundle (not the
+        OS cert store), so it doesn't trust the corporate CA → SSL/access errors.
+        """
+        import os
+        import platform as platform_mod
+
+        ca_bundle = os.environ.get("AWS_CA_BUNDLE") or os.environ.get("REQUESTS_CA_BUNDLE")
+        if ca_bundle:
+            return  # User has already configured a custom CA bundle
+
+        corporate_proxy_detected = False
+        proxy_name = "corporate proxy"
+
+        # Check for proxy environment variables
+        proxy_vars = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        if any(os.environ.get(v) for v in proxy_vars):
+            corporate_proxy_detected = True
+
+        # On Windows, check for Zscaler/Netskope processes (common corporate SSL interceptors)
+        if platform_mod.system() == "Windows" and not corporate_proxy_detected:
+            try:
+                import subprocess
+
+                result = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq ZSATunnel.exe", "/NH"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "ZSATunnel" in result.stdout:
+                    corporate_proxy_detected = True
+                    proxy_name = "Zscaler"
+                else:
+                    result = subprocess.run(
+                        ["tasklist", "/FI", "IMAGENAME eq nscommon.exe", "/NH"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if "nscommon" in result.stdout:
+                        corporate_proxy_detected = True
+                        proxy_name = "Netskope"
+            except Exception:
+                pass
+
+        if corporate_proxy_detected:
+            console.print(
+                f"\n[yellow]Note: {proxy_name} detected. If S3 uploads fail with 'Access Denied' or SSL errors, "
+                f"use one of these fixes:[/yellow]"
+            )
+            console.print(f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)")
+            console.print(f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)")
+            console.print()
+
     def handle(self) -> int:
         """Execute the distribute command."""
         console = Console()
@@ -223,6 +290,9 @@ class DistributeCommand(Command):
                 padding=(1, 2),
             )
         )
+
+        # Check for SSL proxy issues (Zscaler, etc.)
+        self._check_ssl_proxy_environment(console)
 
         # Check for old flat structure and fail with clear message
         dist_dir = Path(self.option("package-path"))
@@ -391,7 +461,7 @@ class DistributeCommand(Command):
             # Use regular print to avoid Rich console line wrapping
             print(f'   curl -L -o "{filename}" "{data["url"]}"')
             console.print("2. Extract and install:")
-            console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
+            console.print(f"   unzip {filename} && cd claude-code-package && chmod +x install.sh && ./install.sh")
 
             console.print("\n[cyan]For Windows PowerShell:[/cyan]")
             console.print("1. Download (copy entire line):")
@@ -495,6 +565,7 @@ class DistributeCommand(Command):
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
                 ("install.bat", "install.bat"),
+                ("ccwb-install.ps1", "ccwb-install.ps1"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
             ],
@@ -547,9 +618,6 @@ class DistributeCommand(Command):
         all_files = list(set(all_files))
         available_platforms["all-platforms"] = all_files
 
-        # Create temp directory for package ZIPs
-        temp_dir = Path(tempfile.mkdtemp())
-
         # Extract profile name and timestamp from package_path
         # Path format: dist/3p-claude-code/2025-11-11-144312
         profile_name = package_path.parent.name
@@ -591,16 +659,18 @@ class DistributeCommand(Command):
         ) as progress:
             task = progress.add_task("Uploading packages to S3...", total=len(available_platforms))
 
+            zip_files_to_clean = []
             for platform, files in available_platforms.items():
-                # Create platform-specific ZIP
-                zip_path = temp_dir / f"{platform}.zip"
+                # Create platform-specific ZIP in package directory (avoids Windows temp path issues)
+                zip_path = package_path / f"{platform}.zip"
+                zip_files_to_clean.append(zip_path)
 
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                    # Create claude-code-package directory in the ZIP
+                    # Add files directly using writestr to avoid file locking issues
                     for source_file, archive_name in files:
                         source_path = package_path / source_file
                         if source_path.exists():
-                            zipf.write(source_path, f"claude-code-package/{archive_name}")
+                            zipf.writestr(f"claude-code-package/{archive_name}", self._read_file_with_retry(source_path))
 
                     # Include claude-settings if it exists
                     settings_dir = package_path / "claude-settings"
@@ -608,16 +678,17 @@ class DistributeCommand(Command):
                         for file in settings_dir.rglob("*"):
                             if file.is_file():
                                 rel_path = file.relative_to(package_path)
-                                zipf.write(file, f"claude-code-package/{rel_path}")
+                                zipf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file))
 
                 # Upload to S3 at packages/{platform}/latest.zip
                 s3_key = f"packages/{platform}/latest.zip"
                 try:
-                    s3.upload_file(
+                    self._upload_file_with_retry(
+                        s3,
                         str(zip_path),
                         bucket_name,
                         s3_key,
-                        ExtraArgs={
+                        extra_args={
                             "Metadata": {
                                 "profile": profile_name,
                                 "timestamp": build_timestamp,
@@ -625,15 +696,21 @@ class DistributeCommand(Command):
                                 "release_datetime": release_datetime,
                             }
                         },
+                        config=self.S3_TRANSFER_CONFIG,
                     )
                     uploaded_count += 1
                     progress.update(task, advance=1, description=f"Uploaded {platform} package")
-                except ClientError as e:
+                except Exception as e:
                     console.print(f"[red]Failed to upload {platform} package: {e}[/red]")
+                    self._print_upload_error_guidance(e, console)
                     continue
 
-        # Clean up temp directory
-        shutil.rmtree(temp_dir)
+        # Clean up temporary ZIP files
+        for zip_path in zip_files_to_clean:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
 
         # Show success message
         if uploaded_count > 0:
@@ -823,6 +900,8 @@ class DistributeCommand(Command):
             console.print("  ✓ Unix installer script")
         if (package_path / "install.bat").exists():
             console.print("  ✓ Windows installer script")
+        if (package_path / "ccwb-install.ps1").exists():
+            console.print("  ✓ Windows PowerShell installer")
         if (package_path / "config.json").exists():
             console.print("  ✓ Configuration file")
 
@@ -855,6 +934,10 @@ class DistributeCommand(Command):
         except ValueError:
             console.print("[red]Invalid expiration hours.[/red]")
             return 1
+
+        # Per-OS distribution: create separate packages per platform
+        if self.option("per-os"):
+            return self._distribute_per_os(package_path, profile, found_platforms, expires_hours, console)
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
@@ -891,16 +974,20 @@ class DistributeCommand(Command):
                 progress.update(task, description="Preparing upload...")
                 package_key = f"packages/{timestamp}/{filename}"
 
-                # Get file size for progress tracking
-                file_size = archive_path.stat().st_size
+                # Get file size for progress tracking (retry for Defender locks on Windows)
+                import time as _time
 
-                # Configure multipart upload for better performance
-                config = TransferConfig(
-                    multipart_threshold=1024 * 25,  # 25MB
-                    max_concurrency=10,
-                    multipart_chunksize=1024 * 25,
-                    use_threads=True,
-                )
+                for _attempt in range(5):
+                    try:
+                        file_size = archive_path.stat().st_size
+                        break
+                    except (PermissionError, OSError):
+                        if _attempt < 4:
+                            _time.sleep(2)
+                        else:
+                            raise
+
+                config = self.S3_TRANSFER_CONFIG
 
                 # Create S3 client
                 s3 = boto3.client("s3", region_name=profile.aws_region)
@@ -926,22 +1013,24 @@ class DistributeCommand(Command):
                     callback.set_task_id(upload_task)
 
                     try:
-                        s3.upload_file(
+                        self._upload_file_with_retry(
+                            s3,
                             str(archive_path),
                             bucket_name,
                             package_key,
-                            ExtraArgs={
+                            extra_args={
                                 "Metadata": {
                                     "checksum": checksum,
                                     "created": datetime.now().isoformat(),
                                     "profile": profile.name,
                                 }
                             },
-                            Config=config,
-                            Callback=callback,
+                            config=config,
+                            callback=callback,
                         )
-                    except ClientError as e:
+                    except Exception as e:
                         console.print(f"[red]Failed to upload package: {e}[/red]")
+                        self._print_upload_error_guidance(e, console)
                         return 1
 
                 # Restart the spinner progress for remaining tasks
@@ -1009,8 +1098,18 @@ class DistributeCommand(Command):
                 # Get file size
                 file_size = archive_path.stat().st_size if archive_path.exists() else 0
 
-            # Clean up temp file
-            archive_path.unlink()
+            # Clean up temp file (retry for Defender locks on Windows)
+            for _attempt in range(5):
+                try:
+                    archive_path.unlink()
+                    break
+                except (PermissionError, OSError):
+                    if _attempt < 4:
+                        import time as _time
+
+                        _time.sleep(2)
+                    else:
+                        pass  # Ignore cleanup failure, file will be overwritten next time
 
             # Stop progress if it's still running
             if "progress" in locals() and hasattr(progress, "stop"):
@@ -1051,7 +1150,7 @@ class DistributeCommand(Command):
             # Use regular print to avoid Rich console line wrapping
             print(f'   curl -L -o "{filename}" "{url}"')
             console.print("2. Extract and install:")
-            console.print(f"   unzip {filename} && cd claude-code-package && ./install.sh")
+            console.print(f"   unzip {filename} && cd claude-code-package && chmod +x install.sh && ./install.sh")
 
             console.print("\n[cyan]For Windows PowerShell:[/cyan]")
             console.print("1. Download (copy entire line):")
@@ -1074,7 +1173,7 @@ class DistributeCommand(Command):
             console.print(f"   unzip dist/{filename}")
             console.print("2. Install:")
             console.print("   cd claude-code-package")
-            console.print("   ./install.sh  (macOS/Linux)")
+            console.print("   chmod +x install.sh && ./install.sh  (macOS/Linux)")
             console.print("   .\\install.bat  (Windows)")
 
             console.print("\n[dim]To enable distribution features:[/dim]")
@@ -1084,17 +1183,195 @@ class DistributeCommand(Command):
 
         return 0
 
+    def _distribute_per_os(
+        self, package_path: Path, profile: object, found_platforms: list, expires_hours: int, console: Console
+    ) -> int:
+        """Create and distribute separate packages per OS platform."""
+        console.print("\n[cyan]Creating per-OS distribution packages...[/cyan]\n")
+
+        archives = self._create_per_os_archives(package_path)
+        if not archives:
+            console.print("[red]No platform binaries found to package.[/red]")
+            return 1
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        # Get S3 bucket if distribution is enabled
+        s3 = None
+        bucket_name = None
+        if profile.enable_distribution:
+            dist_stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+            try:
+                stack_outputs = get_stack_outputs(dist_stack_name, profile.aws_region)
+                bucket_name = stack_outputs.get("DistributionBucket")
+                s3 = boto3.client("s3", region_name=profile.aws_region)
+            except Exception as e:
+                console.print(f"[red]Error getting distribution stack: {e}[/red]")
+                return 1
+
+        results = []
+        for platform, label, archive_path in archives:
+            try:
+                size = archive_path.stat().st_size
+            except (PermissionError, OSError):
+                import time as _time
+
+                _time.sleep(2)
+                size = archive_path.stat().st_size
+            size_mb = size / (1024 * 1024)
+            filename = f"claude-code-{platform}-{timestamp}.zip"
+
+            if s3 and bucket_name:
+                package_key = f"packages/{timestamp}/{filename}"
+                try:
+                    self._upload_file_with_retry(s3, str(archive_path), bucket_name, package_key, config=self.S3_TRANSFER_CONFIG)
+                    url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": bucket_name, "Key": package_key},
+                        ExpiresIn=expires_hours * 3600,
+                    )
+                    results.append((platform, label, filename, size_mb, url))
+                    console.print(f"  [green]OK[/green]  {label} ({size_mb:.1f} MB)")
+                except Exception as e:
+                    console.print(f"  [red]FAIL[/red] {label}: {e}")
+                    self._print_upload_error_guidance(e, console)
+            else:
+                local_dir = Path("dist")
+                local_dir.mkdir(exist_ok=True)
+                shutil.copy2(archive_path, local_dir / filename)
+                results.append((platform, label, filename, size_mb, None))
+                console.print(f"  [green]OK[/green]  {label} ({size_mb:.1f} MB) -> dist/{filename}")
+
+            try:
+                archive_path.unlink()
+            except (PermissionError, OSError):
+                pass  # Ignore cleanup failure
+
+        if not results:
+            console.print("\n[red]No packages were created.[/red]")
+            return 1
+
+        # Display results
+        expiration = datetime.now() + timedelta(hours=expires_hours)
+        console.print(f"\n[bold green]{len(results)} per-OS packages created.[/bold green]")
+        if s3:
+            console.print(f"[dim]URLs expire: {expiration.strftime('%Y-%m-%d %H:%M')}[/dim]")
+
+        for platform, label, filename, size_mb, url in results:
+            console.print(f"\n[bold]{label}[/bold] ({size_mb:.1f} MB)")
+            if url:
+                if "windows" in platform:
+                    console.print("  PowerShell: $ProgressPreference = 'SilentlyContinue'")
+                    print(f'  Invoke-WebRequest -Uri "{url}" -OutFile "{filename}"')
+                else:
+                    print(f'  curl -L -o "{filename}" "{url}"')
+
+        console.print("\n[bold]After downloading, extract and run the installer:[/bold]")
+        console.print("  Windows:    Expand-Archive <file>.zip . && cd claude-code-package && .\\install.bat")
+        console.print("  Linux/Mac:  unzip <file>.zip && cd claude-code-package && chmod +x install.sh && ./install.sh")
+
+        return 0
+
+    @staticmethod
+    def _print_upload_error_guidance(error: Exception, console: Console) -> None:
+        """Print actionable guidance based on the type of upload error."""
+        error_str = str(error).lower()
+
+        if "ssl" in error_str or "certificate" in error_str or "cert" in error_str:
+            console.print(
+                "\n[yellow]This looks like an SSL/certificate error, commonly caused by corporate "
+                "security tools (Zscaler, Netskope, etc.) that intercept HTTPS traffic.[/yellow]"
+            )
+            console.print("[yellow]Fixes:[/yellow]")
+            console.print("  1. [cyan]pip install truststore[/cyan]  (makes Python trust your corporate CA)")
+            console.print("  2. [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/cyan]  (ask IT for the .pem file)")
+        elif "access denied" in error_str or "accessdenied" in error_str or isinstance(error, PermissionError):
+            console.print(
+                "\n[yellow]This may be caused by:[/yellow]"
+            )
+            console.print("  1. Corporate security tool (Zscaler, Netskope) intercepting S3 traffic")
+            console.print("  2. Insufficient S3 permissions")
+            console.print("  3. Antivirus scanning the ZIP file")
+            console.print("\n[yellow]If you use a corporate security tool, try:[/yellow]")
+            console.print("  [cyan]pip install truststore[/cyan]  (makes Python trust your corporate CA)")
+            console.print("  [dim]Or: set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/dim]")
+        elif "connect" in error_str or "timeout" in error_str or "unreachable" in error_str:
+            console.print(
+                "\n[yellow]Network connectivity issue. Check your proxy/VPN settings and "
+                "ensure S3 endpoints are reachable.[/yellow]"
+            )
+
+    @staticmethod
+    def _read_file_with_retry(file_path: Path, max_attempts: int = 5) -> bytes:
+        """Read a file with retry for Windows Defender scan locks.
+
+        On Windows, Defender scans .exe files and ZIPs containing .exe files
+        immediately after creation, holding a file lock that causes PermissionError.
+        """
+        import time
+
+        for attempt in range(max_attempts):
+            try:
+                return file_path.read_bytes()
+            except (PermissionError, OSError) as e:
+                if attempt < max_attempts - 1:
+                    time.sleep(2)
+                else:
+                    raise PermissionError(
+                        f"Cannot read '{file_path}' after {max_attempts} attempts. "
+                        f"This may be caused by antivirus software scanning the file. "
+                        f"Original error: {e}"
+                    ) from e
+
+    @staticmethod
+    def _upload_file_with_retry(s3_client, file_path: str, bucket: str, key: str, extra_args=None, config=None, callback=None, max_attempts: int = 5):
+        """Upload a file to S3 with retry for Windows Defender scan locks.
+
+        boto3.upload_file internally opens the file for reading. On Windows,
+        if Defender is scanning a newly created ZIP (containing .exe files),
+        the open() call fails with PermissionError.
+        """
+        import time
+
+        for attempt in range(max_attempts):
+            try:
+                kwargs = {"Filename": file_path, "Bucket": bucket, "Key": key}
+                if extra_args:
+                    kwargs["ExtraArgs"] = extra_args
+                if config:
+                    kwargs["Config"] = config
+                if callback:
+                    kwargs["Callback"] = callback
+                s3_client.upload_file(**kwargs)
+                return
+            except (PermissionError, OSError) as e:
+                # File system lock from antivirus scanning
+                if attempt < max_attempts - 1:
+                    time.sleep(2)
+                    continue
+                raise PermissionError(
+                    f"Cannot upload '{file_path}' after {max_attempts} attempts. "
+                    f"This may be caused by antivirus software scanning the file. "
+                    f"Original error: {e}"
+                ) from e
+            except Exception as e:
+                # Check if boto3 wrapped the PermissionError in another exception
+                if isinstance(e.__cause__, (PermissionError, OSError)) or "denied" in str(e).lower():
+                    if attempt < max_attempts - 1:
+                        time.sleep(2)
+                        continue
+                raise
+
     def _create_archive(self, package_path: Path) -> Path:
-        """Create a zip archive of the package directory."""
+        """Create a zip archive of the package directory.
+
+        Builds the ZIP directly from source files using writestr() to avoid
+        temp directory operations that fail on Windows with spaces in paths
+        or when antivirus locks newly-written files.
+        """
         import zipfile
 
-        # Create temp directory for archive
-        temp_dir = Path(tempfile.mkdtemp())
-        archive_path = temp_dir / "claude-code-package.zip"
-
-        # Create a clean package directory with only necessary files
-        package_temp_dir = temp_dir / "claude-code-package"
-        package_temp_dir.mkdir(exist_ok=True)
+        archive_path = package_path / "claude-code-package.zip"
 
         # Files to include in the package
         required_files = [
@@ -1113,45 +1390,130 @@ class DistributeCommand(Command):
             # Installation scripts
             "install.sh",
             "install.bat",
+            "ccwb-install.ps1",
             # Configuration
             "config.json",
             "README.md",
         ]
 
-        # Also include claude-settings directory if it exists
-        settings_dir = package_path / "claude-settings"
-        if settings_dir.exists() and settings_dir.is_dir():
-            shutil.copytree(settings_dir, package_temp_dir / "claude-settings")
-
-        # Copy only the required files
-        for filename in required_files:
-            source_file = package_path / filename
-            if source_file.exists():
-                shutil.copy2(source_file, package_temp_dir / filename)
-
-        # Create zip archive with contents at root level
-        # When extracted, it will create claude-code-package/ with files directly inside
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Add all files from the package directory
-            for file in package_temp_dir.rglob("*"):
-                if file.is_file():
-                    # Get relative path from package_temp_dir (not temp_dir) to avoid nested directories
-                    # This creates paths like "config.json", "install.sh" instead of "claude-code-package/config.json"
-                    arcname = f"claude-code-package/{file.relative_to(package_temp_dir)}"
-                    zf.write(file, arcname)
+            # Add required files directly from source
+            for filename in required_files:
+                source_file = package_path / filename
+                if source_file.exists():
+                    zf.writestr(f"claude-code-package/{filename}", self._read_file_with_retry(source_file))
 
-        # Clean up temp package directory
-        shutil.rmtree(package_temp_dir)
+            # Include claude-settings directory if it exists
+            settings_dir = package_path / "claude-settings"
+            if settings_dir.exists() and settings_dir.is_dir():
+                for f in settings_dir.rglob("*"):
+                    if f.is_file():
+                        rel_path = f.relative_to(package_path)
+                        zf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(f))
 
         return archive_path
 
+    # Platform-to-files mapping for per-OS packages
+    PLATFORM_FILES = {
+        "windows": {
+            "binaries": ["credential-process-windows.exe", "otel-helper-windows.exe"],
+            "installer": ["install.bat", "ccwb-install.ps1"],
+            "label": "Windows",
+        },
+        "linux-x64": {
+            "binaries": ["credential-process-linux-x64", "otel-helper-linux-x64"],
+            "installer": "install.sh",
+            "label": "Linux x64",
+        },
+        "linux-arm64": {
+            "binaries": ["credential-process-linux-arm64", "otel-helper-linux-arm64"],
+            "installer": "install.sh",
+            "label": "Linux ARM64",
+        },
+        "macos-arm64": {
+            "binaries": ["credential-process-macos-arm64", "otel-helper-macos-arm64"],
+            "installer": "install.sh",
+            "label": "macOS ARM64",
+        },
+        "macos-intel": {
+            "binaries": ["credential-process-macos-intel", "otel-helper-macos-intel"],
+            "installer": "install.sh",
+            "label": "macOS Intel",
+        },
+    }
+
+    def _create_per_os_archives(self, package_path: Path) -> list[tuple[str, Path]]:
+        """Create separate zip archives per OS platform. Returns list of (platform_label, archive_path).
+
+        Builds ZIPs directly from source files using writestr() to avoid
+        temp directory operations that fail on Windows with spaces in paths.
+        """
+        import zipfile
+
+        archives = []
+        shared_files = ["config.json", "README.md"]
+
+        for platform, pconfig in self.PLATFORM_FILES.items():
+            # Check if the primary binary exists
+            primary_binary = pconfig["binaries"][0]
+            if not (package_path / primary_binary).exists():
+                continue
+
+            archive_path = package_path / f"claude-code-{platform}.zip"
+
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                # Add platform binaries
+                for binary in pconfig["binaries"]:
+                    src = package_path / binary
+                    if src.exists():
+                        zf.writestr(f"claude-code-package/{binary}", self._read_file_with_retry(src))
+
+                # Add installer(s)
+                installers = pconfig["installer"] if isinstance(pconfig["installer"], list) else [pconfig["installer"]]
+                for inst in installers:
+                    src = package_path / inst
+                    if src.exists():
+                        zf.writestr(f"claude-code-package/{inst}", self._read_file_with_retry(src))
+
+                # Add shared files
+                for sf in shared_files:
+                    src = package_path / sf
+                    if src.exists():
+                        zf.writestr(f"claude-code-package/{sf}", self._read_file_with_retry(src))
+
+                # Add claude-settings
+                settings_dir = package_path / "claude-settings"
+                if settings_dir.exists() and settings_dir.is_dir():
+                    for f in settings_dir.rglob("*"):
+                        if f.is_file():
+                            rel_path = f.relative_to(package_path)
+                            zf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(f))
+
+            archives.append((platform, pconfig["label"], archive_path))
+
+        return archives
+
     def _calculate_checksum(self, file_path: Path) -> str:
-        """Calculate SHA256 checksum of a file."""
+        """Calculate SHA256 checksum of a file.
+
+        Retries on Windows where Defender may lock newly created ZIP files
+        containing executables during real-time scanning.
+        """
+        import time
+
         sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        return sha256_hash.hexdigest()
+        for attempt in range(5):
+            try:
+                with open(file_path, "rb") as f:
+                    for byte_block in iter(lambda: f.read(4096), b""):
+                        sha256_hash.update(byte_block)
+                return sha256_hash.hexdigest()
+            except (PermissionError, OSError):
+                if attempt < 4:
+                    time.sleep(2)
+                    sha256_hash = hashlib.sha256()  # Reset for retry
+                else:
+                    raise
 
     def _generate_restricted_url(self, s3_client, bucket: str, key: str, allowed_ips: str, expires_hours: int) -> str:
         """Generate a presigned URL with IP restrictions."""
@@ -1247,9 +1609,30 @@ class DistributeCommand(Command):
             try:
                 s3.download_file(bucket_name, artifact_key, str(zip_path))
 
-                # Extract binaries
+                # Extract binaries one-by-one using read/write to avoid
+                # Windows Defender file locking issues with extractall()
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                    zip_ref.extractall(package_path)
+                    for member in zip_ref.namelist():
+                        # Skip directories
+                        if member.endswith("/"):
+                            continue
+                        # Extract just the filename (flatten any directory structure)
+                        filename = Path(member).name
+                        if not filename:
+                            continue
+                        target_path = package_path / filename
+                        data = zip_ref.read(member)
+                        # Write with retry for Windows Defender scan locks
+                        for attempt in range(3):
+                            try:
+                                target_path.write_bytes(data)
+                                break
+                            except PermissionError:
+                                if attempt < 2:
+                                    import time
+                                    time.sleep(1)
+                                else:
+                                    raise
 
                 # Clean up
                 zip_path.unlink()

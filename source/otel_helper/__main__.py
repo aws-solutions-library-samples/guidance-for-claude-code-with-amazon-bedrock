@@ -173,10 +173,15 @@ def extract_user_info(payload):
 
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
-                if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+                if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                     org_id = "okta"
                 elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
+                elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
+                    org_id = "cognito"
+                elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                    org_id = "cognito"
                 elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
         except Exception:

@@ -142,7 +142,14 @@ class TestPackageAsyncBuild:
 
 
 class TestBuildsCommand:
-    """Tests for builds list command."""
+    """Tests for builds list command (multi-platform)."""
+
+    MOCK_STACK_OUTPUTS = {
+        "ProjectName": "test-pool-windows-build",
+        "LinuxX64ProjectName": "test-pool-linux-x64-build",
+        "LinuxArm64ProjectName": "test-pool-linux-arm64-build",
+        "BuildBucket": "test-bucket",
+    }
 
     @pytest.fixture
     def mock_profile(self):
@@ -167,62 +174,39 @@ class TestBuildsCommand:
         return config
 
     def test_builds_list_recent_builds(self, mock_config, mock_profile):
-        """Test listing recent builds."""
+        """Test listing recent builds across all platforms."""
         command = BuildsCommand()
         tester = CommandTester(command)
 
         with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
-            with patch("boto3.client") as mock_boto:
-                # Mock CodeBuild client
-                mock_codebuild = MagicMock()
-                mock_boto.return_value = mock_codebuild
+            with patch(
+                "claude_code_with_bedrock.cli.commands.builds.get_stack_outputs",
+                return_value=self.MOCK_STACK_OUTPUTS,
+            ):
+                with patch("boto3.client") as mock_boto:
+                    mock_codebuild = MagicMock()
+                    mock_boto.return_value = mock_codebuild
 
-                # Mock list builds response
-                mock_codebuild.list_builds_for_project.return_value = {
-                    "ids": [
-                        "test-pool-windows-build:build-1",
-                        "test-pool-windows-build:build-2",
-                        "test-pool-windows-build:build-3",
-                    ]
-                }
+                    now = datetime.now(timezone.utc)
+                    mock_codebuild.list_builds_for_project.return_value = {
+                        "ids": ["test-pool-windows-build:build-1"]
+                    }
+                    mock_codebuild.batch_get_builds.return_value = {
+                        "builds": [
+                            {
+                                "id": "test-pool-windows-build:build-1",
+                                "buildStatus": "SUCCEEDED",
+                                "startTime": now,
+                                "endTime": now,
+                            },
+                        ]
+                    }
 
-                # Mock batch get builds response
-                now = datetime.now(timezone.utc)
-                mock_codebuild.batch_get_builds.return_value = {
-                    "builds": [
-                        {
-                            "id": "test-pool-windows-build:build-1",
-                            "buildStatus": "SUCCEEDED",
-                            "startTime": now,
-                            "endTime": now,
-                            "currentPhase": "COMPLETED",
-                        },
-                        {
-                            "id": "test-pool-windows-build:build-2",
-                            "buildStatus": "IN_PROGRESS",
-                            "startTime": now,
-                            "currentPhase": "BUILD",
-                        },
-                        {
-                            "id": "test-pool-windows-build:build-3",
-                            "buildStatus": "FAILED",
-                            "startTime": now,
-                            "endTime": now,
-                            "currentPhase": "COMPLETED",
-                        },
-                    ]
-                }
+                    tester.execute("")
 
-                # Run command
-                tester.execute("")
-
-                # Verify CodeBuild was called
-                mock_codebuild.list_builds_for_project.assert_called_once_with(
-                    projectName="test-pool-windows-build", sortOrder="DESCENDING"
-                )
-
-                # Verify command completed successfully
-                assert tester.status_code == 0
+                    # Called once per platform (3 projects discovered)
+                    assert mock_codebuild.list_builds_for_project.call_count == 3
+                    assert tester.status_code == 0
 
     def test_builds_list_with_limit(self, mock_config, mock_profile):
         """Test listing builds with custom limit."""
@@ -230,22 +214,23 @@ class TestBuildsCommand:
         tester = CommandTester(command)
 
         with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
-            with patch("boto3.client") as mock_boto:
-                # Mock CodeBuild client
-                mock_codebuild = MagicMock()
-                mock_boto.return_value = mock_codebuild
+            with patch(
+                "claude_code_with_bedrock.cli.commands.builds.get_stack_outputs",
+                return_value=self.MOCK_STACK_OUTPUTS,
+            ):
+                with patch("boto3.client") as mock_boto:
+                    mock_codebuild = MagicMock()
+                    mock_boto.return_value = mock_codebuild
 
-                # Mock responses
-                build_ids = [f"test-pool-windows-build:build-{i}" for i in range(20)]
-                mock_codebuild.list_builds_for_project.return_value = {"ids": build_ids}
-                mock_codebuild.batch_get_builds.return_value = {"builds": []}
+                    build_ids = [f"test-pool-windows-build:build-{i}" for i in range(20)]
+                    mock_codebuild.list_builds_for_project.return_value = {"ids": build_ids}
+                    mock_codebuild.batch_get_builds.return_value = {"builds": []}
 
-                # Run command with limit
-                tester.execute("--limit 5")
+                    tester.execute("--limit 5")
 
-                # Verify only 5 builds were requested
-                called_ids = mock_codebuild.batch_get_builds.call_args[1]["ids"]
-                assert len(called_ids) == 5
+                    # Verify only 5 builds were requested per platform call
+                    for call in mock_codebuild.batch_get_builds.call_args_list:
+                        assert len(call[1]["ids"]) <= 5
 
     def test_builds_list_no_builds(self, mock_config, mock_profile):
         """Test listing when no builds exist."""
@@ -253,30 +238,96 @@ class TestBuildsCommand:
         tester = CommandTester(command)
 
         with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
-            with patch("boto3.client") as mock_boto:
-                # Mock CodeBuild client with no builds
-                mock_codebuild = MagicMock()
-                mock_boto.return_value = mock_codebuild
-                mock_codebuild.list_builds_for_project.return_value = {"ids": []}
+            with patch(
+                "claude_code_with_bedrock.cli.commands.builds.get_stack_outputs",
+                return_value=self.MOCK_STACK_OUTPUTS,
+            ):
+                with patch("boto3.client") as mock_boto:
+                    mock_codebuild = MagicMock()
+                    mock_boto.return_value = mock_codebuild
+                    mock_codebuild.list_builds_for_project.return_value = {"ids": []}
 
-                # Run command
-                tester.execute("")
+                    tester.execute("")
 
-                # Verify command completed successfully
-                assert tester.status_code == 0
+                    assert tester.status_code == 0
 
-    def test_builds_list_error_handling(self, mock_config):
-        """Test error handling in builds list."""
+    def test_builds_list_no_codebuild_stack(self, mock_config):
+        """Test when no CodeBuild stack is deployed."""
         command = BuildsCommand()
         tester = CommandTester(command)
 
         with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
-            with patch("boto3.client") as mock_boto:
-                # Mock CodeBuild client that raises error
-                mock_boto.side_effect = Exception("AWS connection failed")
-
-                # Run command - should handle error gracefully
+            with patch(
+                "claude_code_with_bedrock.cli.commands.builds.get_stack_outputs",
+                side_effect=Exception("Stack not found"),
+            ):
                 result = tester.execute("")
-
-                # Verify error handling - command should fail
                 assert result == 1
+
+    def test_builds_status_latest_all_succeeded(self, mock_config, mock_profile):
+        """Test --status latest when all 3 builds succeeded."""
+        command = BuildsCommand()
+        tester = CommandTester(command)
+
+        now = datetime.now(timezone.utc)
+        build_info = {
+            "all_builds": {
+                "windows": "test-pool-windows-build:win-123",
+                "linux-x64": "test-pool-linux-x64-build:lx64-456",
+                "linux-arm64": "test-pool-linux-arm64-build:larm-789",
+            }
+        }
+
+        with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
+            with patch("builtins.open", mock_open(read_data=json.dumps(build_info))):
+                with patch("pathlib.Path.exists", return_value=True):
+                    with patch("boto3.client") as mock_boto:
+                        mock_codebuild = MagicMock()
+                        mock_boto.return_value = mock_codebuild
+
+                        mock_codebuild.batch_get_builds.return_value = {
+                            "builds": [
+                                {
+                                    "id": "some-build",
+                                    "buildStatus": "SUCCEEDED",
+                                    "startTime": now,
+                                    "endTime": now,
+                                }
+                            ]
+                        }
+
+                        tester.execute("--status latest")
+
+                        assert mock_codebuild.batch_get_builds.call_count == 3
+                        assert tester.status_code == 0
+
+    def test_builds_status_latest_mixed_results(self, mock_config, mock_profile):
+        """Test --status latest with mixed build results."""
+        command = BuildsCommand()
+        tester = CommandTester(command)
+
+        now = datetime.now(timezone.utc)
+        build_info = {
+            "all_builds": {
+                "windows": "test-pool-windows-build:win-123",
+                "linux-x64": "test-pool-linux-x64-build:lx64-456",
+            }
+        }
+
+        responses = [
+            {"builds": [{"id": "win", "buildStatus": "SUCCEEDED", "startTime": now, "endTime": now}]},
+            {"builds": [{"id": "lx64", "buildStatus": "FAILED", "startTime": now, "endTime": now,
+                         "phases": [{"phaseType": "BUILD", "phaseStatus": "FAILED"}]}]},
+        ]
+
+        with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):
+            with patch("builtins.open", mock_open(read_data=json.dumps(build_info))):
+                with patch("pathlib.Path.exists", return_value=True):
+                    with patch("boto3.client") as mock_boto:
+                        mock_codebuild = MagicMock()
+                        mock_boto.return_value = mock_codebuild
+                        mock_codebuild.batch_get_builds.side_effect = responses
+
+                        tester.execute("--status latest")
+
+                        assert tester.status_code == 0
