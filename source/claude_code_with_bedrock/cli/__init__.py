@@ -20,8 +20,14 @@ from .commands.context import (
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
+from .commands.inference_zone import (
+    InferenceZoneCreateCommand,
+    InferenceZoneDeleteCommand,
+    InferenceZoneListCommand,
+)
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
+from .commands.package_cb import PackageCbCommand
 from .commands.quota import (
     QuotaDeleteCommand,
     QuotaExportCommand,
@@ -50,6 +56,7 @@ def create_application() -> Application:
     application.add(StatusCommand())
     application.add(TestCommand())
     application.add(PackageCommand())
+    application.add(PackageCbCommand())
     application.add(BuildsCommand())
     application.add(DistributeCommand())
     application.add(DestroyCommand())
@@ -68,6 +75,11 @@ def create_application() -> Application:
     application.add(ConfigExportCommand())
     application.add(ConfigImportCommand())
 
+    # Inference zone management (GDPR per-zone isolation)
+    application.add(InferenceZoneCreateCommand())
+    application.add(InferenceZoneListCommand())
+    application.add(InferenceZoneDeleteCommand())
+
     # Quota management commands
     application.add(QuotaSetUserCommand())
     application.add(QuotaSetGroupCommand())
@@ -85,6 +97,16 @@ def create_application() -> Application:
 
 def main():
     """Main entry point for the CLI."""
+    # Use OS certificate store if truststore is available.
+    # Fixes SSL errors with corporate proxies (Zscaler, Netskope, etc.)
+    # that intercept HTTPS and re-sign with their own CA.
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+
     application = create_application()
     application.run()
 

@@ -126,7 +126,12 @@ class PackageCommand(Command):
             flag=False,
             default=None,
         ),
+        option("build-local", description="Build binaries locally instead of downloading pre-built", flag=True),
+        option("no-cache", description="Force re-download of pre-built binaries", flag=True),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
+        option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
+        option("go", description="Build binaries using Go cross-compilation (native binaries, no AV false positives)", flag=True),
+        option("prebuilt", description="Use pre-built Go binaries from source/go/prebuilt/ (no build tools needed, recommended)", flag=True),
     ]
 
     def handle(self) -> int:
@@ -156,6 +161,14 @@ class PackageCommand(Command):
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
+        # Regenerate installers from existing binaries (no rebuild needed)
+        if self.option("regenerate-installers"):
+            return self._regenerate_installers(profile, profile_name, console)
+
+        # Go build mode: all platforms always available via cross-compilation
+        use_go = self.option("go")
+        use_prebuilt = self.option("prebuilt")
+
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
         if target_platform == "all":  # Default value, prompt user
@@ -169,8 +182,10 @@ class PackageCommand(Command):
                 "linux-arm64",
             ]
 
-            # Only include Windows if CodeBuild is enabled
-            if hasattr(profile, "enable_codebuild") and profile.enable_codebuild:
+            # With Go or prebuilt, Windows is always available
+            if use_go or use_prebuilt:
+                platform_choices.append("windows")
+            elif hasattr(profile, "enable_codebuild") and profile.enable_codebuild:
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
@@ -189,6 +204,28 @@ class PackageCommand(Command):
             default=False,
         ).ask()
 
+        # Prompt for custom OTel resource attributes (only when monitoring is enabled)
+        otel_resource_attributes = None
+        if profile.monitoring_enabled:
+            customize_otel = questionary.confirm(
+                "Customize telemetry resource attributes? (department, team, cost center)",
+                default=False,
+            ).ask()
+
+            if customize_otel:
+                console.print(
+                    "[dim]Example: department=platform, team.id=infra-core, "
+                    "cost_center=CC-4521, organization=acme-corp[/dim]"
+                )
+                department = questionary.text("Department:", default="engineering").ask()
+                team_id = questionary.text("Team ID:", default="default").ask()
+                cost_center = questionary.text("Cost center:", default="default").ask()
+                organization = questionary.text("Organization:", default="default").ask()
+                otel_resource_attributes = (
+                    f"department={department},team.id={team_id},"
+                    f"cost_center={cost_center},organization={organization}"
+                )
+
         # Validate platform
         valid_platforms = ["macos", "macos-arm64", "macos-intel", "linux", "linux-x64", "linux-arm64", "windows", "all"]
         if isinstance(target_platform, list):
@@ -204,35 +241,42 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get actual Identity Pool ID or Role ARN from stack outputs
-        console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
-
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
-
-        # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        # Get federation identifier — try profile first, fall back to CloudFormation
+        federation_type = profile.federation_type
         identity_pool_id = None
         federated_role_arn = None
 
-        if federation_type == "direct":
-            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
-            # Then fallback to FederatedRoleArn (new templates)
-            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                federated_role_arn = stack_outputs.get("FederatedRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                return 1
+        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+            federated_role_arn = profile.federated_role_arn
+            console.print(f"[dim]Using role ARN from profile: {federated_role_arn}[/dim]")
+        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
+            identity_pool_id = profile.identity_pool_name
+            console.print(f"[dim]Using identity pool from profile: {identity_pool_id}[/dim]")
         else:
-            identity_pool_id = stack_outputs.get("IdentityPoolId")
-            if not identity_pool_id:
-                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            # Fall back to CloudFormation stack outputs
+            console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
                 return 1
+
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+            if federation_type == "direct":
+                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                    return 1
+            else:
+                identity_pool_id = stack_outputs.get("IdentityPoolId")
+                if not identity_pool_id:
+                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                    return 1
 
         # Welcome
         console.print(
@@ -244,9 +288,14 @@ class PackageCommand(Command):
             )
         )
 
-        # Create timestamped output directory under profile name
+        # Create timestamped output directory under profile name.
+        # Resolve to absolute immediately: subsequent Go / CodeBuild builds run
+        # subprocesses with cwd=<elsewhere>, and a relative path here would be
+        # interpreted relative to THAT cwd (binaries would land in source/go/
+        # dist/... while the config files stay in source/dist/...). Absolute
+        # path keeps binaries and config co-located.
         timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        output_dir = Path("./dist") / profile_name / timestamp
+        output_dir = (Path.cwd() / "dist" / profile_name / timestamp).resolve()
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -279,9 +328,13 @@ class PackageCommand(Command):
         # Detect once here so both the platforms_to_build assembly and _build_macos_pyinstaller share the same result.
         _universal2_python = _find_universal2_python() if platform.system().lower() == "darwin" else None
 
-        # Build executable(s) using PyInstaller/Docker
-        # Handle both list and single platform selection
-        if isinstance(target_platform, list):
+        # Build executable(s)
+        # With Go or prebuilt, all platforms available from any machine
+        if (use_go or use_prebuilt) and not isinstance(target_platform, list) and target_platform == "all":
+            platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif (use_go or use_prebuilt) and isinstance(target_platform, list) and "all" in target_platform:
+            platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif isinstance(target_platform, list):
             # User selected multiple platforms via checkbox
             platforms_to_build = []
             for platform_choice in target_platform:
@@ -364,34 +417,56 @@ class PackageCommand(Command):
         built_otel_helpers = []
 
         console.print()
-        for platform_name in platforms_to_build:
-            # Build credential process
-            console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
-            try:
-                executable_path = self._build_executable(output_dir, platform_name)
-                # Check if this was an async Windows build
-                if executable_path is None:
-                    # Windows build started in CodeBuild, continue without local binary
-                    console.print("[dim]Windows binaries will be built in CodeBuild[/dim]")
-                else:
-                    built_executables.append((platform_name, executable_path))
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
 
-            # Build OTEL helper if monitoring is enabled
-            if profile.monitoring_enabled:
-                # Skip OTEL helper for Windows if being built in CodeBuild
-                if platform_name == "windows" and executable_path is None:
-                    console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
-                else:
-                    console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
-                    try:
-                        otel_helper_path = self._build_otel_helper(output_dir, platform_name)
-                        # Only add to list if build was successful (not None)
-                        if otel_helper_path is not None:
-                            built_otel_helpers.append((platform_name, otel_helper_path))
-                    except Exception as e:
-                        console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
+        if use_prebuilt:
+            # Use pre-built binaries: no build tools needed
+            console.print("[cyan]Using pre-built Go binaries...[/cyan]")
+            try:
+                go_results = self._use_prebuilt_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
+                built_executables = go_results["executables"]
+                built_otel_helpers = go_results["otel_helpers"]
+            except Exception as e:
+                console.print(f"[red]Pre-built binaries not available: {e}[/red]")
+                return 1
+        elif use_go:
+            # Go cross-compilation: build all selected platforms at once
+            console.print("[cyan]Building Go binaries (cross-compilation)...[/cyan]")
+            try:
+                go_results = self._build_go_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
+                built_executables = go_results["executables"]
+                built_otel_helpers = go_results["otel_helpers"]
+            except Exception as e:
+                console.print(f"[red]Go build failed: {e}[/red]")
+                return 1
+        else:
+            for platform_name in platforms_to_build:
+                # Build credential process
+                console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
+                try:
+                    executable_path = self._build_executable(output_dir, platform_name)
+                    # Check if this was an async Windows build
+                    if executable_path is None:
+                        # Windows build started in CodeBuild, continue without local binary
+                        console.print("[dim]Windows binaries will be built in CodeBuild[/dim]")
+                    else:
+                        built_executables.append((platform_name, executable_path))
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
+
+                # Build OTEL helper if monitoring is enabled
+                if profile.monitoring_enabled:
+                    # Skip OTEL helper for Windows if being built in CodeBuild
+                    if platform_name == "windows" and executable_path is None:
+                        console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
+                    else:
+                        console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
+                        try:
+                            otel_helper_path = self._build_otel_helper(output_dir, platform_name)
+                            # Only add to list if build was successful (not None)
+                            if otel_helper_path is not None:
+                                built_otel_helpers.append((platform_name, otel_helper_path))
+                        except Exception as e:
+                            console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
         # Check if any binaries were built
         if not built_executables:
@@ -409,24 +484,13 @@ class PackageCommand(Command):
         console.print("[cyan]Creating installer script...[/cyan]")
         self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
 
-        # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
-        if built_otel_helpers:
-            import shutil as _shutil
-
-            shell_wrapper_src = Path(__file__).parent.parent.parent.parent / "otel_helper" / "otel-helper.sh"
-            if shell_wrapper_src.exists():
-                shell_wrapper_dst = output_dir / "otel-helper.sh"
-                _shutil.copy2(shell_wrapper_src, shell_wrapper_dst)
-                shell_wrapper_dst.chmod(0o755)
-                console.print("[green]✓ OTEL helper shell wrapper included[/green]")
-
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
         self._create_documentation(output_dir, profile, timestamp)
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name)
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
@@ -448,6 +512,7 @@ class PackageCommand(Command):
         # Check if Windows installer exists (created when Windows binaries are present)
         if (output_dir / "install.bat").exists():
             console.print("  • install.bat - Installation script for Windows")
+            console.print("  • ccwb-install.ps1 - PowerShell installer (called by install.bat)")
         console.print("  • README.md - Installation instructions")
         if profile.monitoring_enabled and (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
@@ -464,12 +529,12 @@ class PackageCommand(Command):
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
         console.print("1. Send users the entire dist folder")
-        console.print("2. Users run: ./install.sh")
+        console.print("2. Users run: chmod +x install.sh && ./install.sh")
         console.print("3. Authentication is configured automatically")
 
         console.print("\n[bold]To test locally:[/bold]")
         console.print(f"cd {output_dir}")
-        console.print("./install.sh")
+        console.print("chmod +x install.sh && ./install.sh")
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
@@ -557,6 +622,156 @@ class PackageCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
+
+    def _use_prebuilt_binaries(self, output_dir: Path, platforms: list, monitoring_enabled: bool) -> dict:
+        """Copy pre-built Go binaries from source/go/prebuilt/ instead of compiling.
+
+        No Go, Docker, or AWS access required. The prebuilt directory contains
+        generic binaries that work for all customers.
+        """
+        import shutil
+
+        prebuilt_dir = Path(__file__).parents[3] / "go" / "prebuilt" / "latest"
+        if not prebuilt_dir.exists():
+            raise FileNotFoundError(
+                f"Pre-built binaries not found at {prebuilt_dir}. "
+                "Run 'make prebuilt' from source/go/ or use --go to compile locally."
+            )
+
+        executables = []
+        otel_helpers = []
+
+        for plat in platforms:
+            # Copy credential-process
+            if plat == "windows":
+                src_name = "credential-process-windows.exe"
+            else:
+                src_name = f"credential-process-{plat}"
+
+            src = prebuilt_dir / src_name
+            if not src.exists():
+                raise FileNotFoundError(f"Pre-built binary not found: {src}")
+            dst = output_dir / src_name
+            shutil.copy2(src, dst)
+            executables.append((plat, dst))
+
+            self.line(f"  Copied <comment>{src_name}</comment>")
+
+            # Copy otel-helper
+            if monitoring_enabled:
+                if plat == "windows":
+                    src_name = "otel-helper-windows.exe"
+                else:
+                    src_name = f"otel-helper-{plat}"
+
+                src = prebuilt_dir / src_name
+                if not src.exists():
+                    raise FileNotFoundError(f"Pre-built binary not found: {src}")
+                dst = output_dir / src_name
+                shutil.copy2(src, dst)
+                otel_helpers.append((plat, dst))
+
+                self.line(f"  Copied <comment>{src_name}</comment>")
+
+        # Copy generic install scripts. install.sh must be written with Unix
+        # line endings regardless of the host OS that runs `ccwb package`:
+        # end users on Linux/macOS will see `/bin/bash^M: bad interpreter`
+        # if the file carries CR characters (which happens when the repo is
+        # cloned on Windows with core.autocrlf=true or edited in a tool that
+        # saves CRLF). Normalize explicitly so the bundle is always correct.
+        for script in ["install.sh", "install.bat", "ccwb-install.ps1"]:
+            src = prebuilt_dir / script
+            if not src.exists():
+                continue
+            dst = output_dir / script
+            if script == "install.sh":
+                # Read bytes, strip CRs, write back with LF-only line endings.
+                dst.write_bytes(src.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+                dst.chmod(0o755)
+            else:
+                shutil.copy2(src, dst)
+
+        self.line(f"  <info>Copied {len(executables) + len(otel_helpers)} binaries + install scripts</info>")
+        return {"executables": executables, "otel_helpers": otel_helpers}
+
+    def _build_go_binaries(self, output_dir: Path, platforms: list, monitoring_enabled: bool) -> dict:
+        """Build binaries using Go cross-compilation.
+
+        Produces native statically-linked binaries for all platforms from a single machine.
+        No Docker, CodeBuild, or per-platform toolchains needed.
+
+        Returns dict with 'executables' and 'otel_helpers' lists of (platform, Path) tuples.
+        """
+        go_src = Path(__file__).parents[3] / "go"
+        if not go_src.exists():
+            raise FileNotFoundError(f"Go source directory not found at {go_src}")
+
+        # Verify Go is installed
+        try:
+            result = subprocess.run(["go", "version"], capture_output=True, text=True, check=True)
+            self.line(f"  <info>{result.stdout.strip()}</info>")
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise RuntimeError(
+                "Go is not installed or not in PATH. Install from https://go.dev/dl/ "
+                "or run: brew install go"
+            )
+
+        platform_map = {
+            "macos-arm64": ("darwin", "arm64"),
+            "macos-intel": ("darwin", "amd64"),
+            "macos": ("darwin", "arm64"),  # Default to arm64 for generic macos
+            "linux-x64": ("linux", "amd64"),
+            "linux-arm64": ("linux", "arm64"),
+            "linux": ("linux", "amd64"),  # Default to amd64 for generic linux
+            "windows": ("windows", "amd64"),
+        }
+
+        executables = []
+        otel_helpers = []
+
+        binaries_to_build = ["credential-process"]
+        if monitoring_enabled:
+            binaries_to_build.append("otel-helper")
+
+        for plat in platforms:
+            if plat not in platform_map:
+                raise ValueError(f"Unsupported platform for Go build: {plat}")
+
+            goos, goarch = platform_map[plat]
+
+            for binary in binaries_to_build:
+                if plat == "windows":
+                    suffix = "-windows.exe"
+                else:
+                    suffix = f"-{plat}"
+
+                output_name = f"{binary}{suffix}"
+                output_path = output_dir / output_name
+
+                self.line(f"  Building <comment>{output_name}</comment>...")
+
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                cmd = [
+                    "go", "build",
+                    # -trimpath strips the builder's absolute module/source
+                    # paths from the resulting binary. Without it, `strings`
+                    # on the shipped binary reveals the builder's HOME path.
+                    "-trimpath",
+                    "-ldflags", "-s -w",
+                    "-o", str(output_path),
+                    f"./cmd/{binary}/",
+                ]
+                result = subprocess.run(cmd, cwd=str(go_src), env=env, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(f"Go build failed for {output_name}:\n{result.stderr}")
+
+                if binary == "credential-process":
+                    executables.append((plat, output_path))
+                else:
+                    otel_helpers.append((plat, output_path))
+
+        self.line(f"  <info>Built {len(executables) + len(otel_helpers)} binaries</info>")
+        return {"executables": executables, "otel_helpers": otel_helpers}
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for target platform using appropriate tool."""
@@ -650,7 +865,7 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux"
         elif target_platform == "windows":
             platform_variant = "x86_64"
-            # binary_name already set above
+            binary_name = "credential-process-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -686,7 +901,7 @@ class PackageCommand(Command):
         # Check if Nuitka is available (through Poetry)
         source_dir = Path(__file__).parent.parent.parent.parent
         nuitka_check = subprocess.run(
-            ["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir
+            ["poetry", "run", "python", "-m", "nuitka", "--version"], capture_output=True, text=True, cwd=source_dir
         )
         if nuitka_check.returncode != 0:
             raise RuntimeError(
@@ -828,6 +1043,7 @@ class PackageCommand(Command):
                 "--hidden-import=keyring.backends.SecretService",
                 "--hidden-import=keyring.backends.Windows",
                 "--hidden-import=keyring.backends.chainer",
+                "--hidden-import=charset_normalizer",
                 str(src_file),
             ]
         else:
@@ -845,6 +1061,7 @@ class PackageCommand(Command):
                 "--hidden-import=keyring.backends.SecretService",
                 "--hidden-import=keyring.backends.Windows",
                 "--hidden-import=keyring.backends.chainer",
+                "--hidden-import=charset_normalizer",
                 str(src_file),
             ]
 
@@ -904,6 +1121,7 @@ class PackageCommand(Command):
             # Hidden imports for our dependencies
             "--hidden-import=keyring.backends.SecretService",
             "--hidden-import=keyring.backends.chainer",
+            "--hidden-import=charset_normalizer",
             "--hidden-import=six",
             "--hidden-import=six.moves",
             "--hidden-import=six.moves._thread",
@@ -1034,6 +1252,7 @@ RUN pyinstaller \
     --log-level WARN \
     --hidden-import keyring.backends.SecretService \
     --hidden-import keyring.backends.chainer \
+    --hidden-import charset_normalizer \
     --hidden-import six \
     --hidden-import six.moves \
     --hidden-import six.moves._thread \
@@ -1473,7 +1692,8 @@ RUN pyinstaller \
         with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             # Add all Python files from source directory
             for py_file in source_dir.rglob("*.py"):
-                arcname = str(py_file.relative_to(source_dir.parent))
+                # Use forward slashes in zip (POSIX format) for CodeBuild compatibility
+                arcname = py_file.relative_to(source_dir.parent).as_posix()
                 zf.write(py_file, arcname)
 
             # Add pyproject.toml for dependencies
@@ -1485,14 +1705,18 @@ RUN pyinstaller \
 
     def _build_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for OTEL helper script."""
-        # Windows uses Nuitka via CodeBuild
+        import platform as platform_mod
+
+        # Windows builds
         if target_platform == "windows":
-            # Check if the Windows binary already exists (built by _build_executable)
+            if platform_mod.system().lower() == "windows":
+                # Native Windows build with Nuitka
+                return self._build_native_otel_helper(output_dir, "windows")
+            # Check if the Windows binary already exists (built via CodeBuild)
             windows_binary = output_dir / "otel-helper-windows.exe"
             if windows_binary.exists():
                 return windows_binary
             else:
-                # If not, we need to build via CodeBuild (but this should have been done already)
                 raise RuntimeError("Windows otel-helper should have been built with credential-process")
 
         # macOS builds use PyInstaller
@@ -1642,6 +1866,9 @@ RUN pyinstaller \
         elif target_platform == "linux":
             platform_variant = "x86_64"
             binary_name = "otel-helper-linux"
+        elif target_platform == "windows":
+            platform_variant = "x86_64"
+            binary_name = "otel-helper-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -1650,6 +1877,8 @@ RUN pyinstaller \
             raise RuntimeError(f"Cannot build macOS binary on {current_system}. Nuitka requires native builds.")
         elif target_platform == "linux" and current_system != "linux":
             raise RuntimeError(f"Cannot build Linux binary on {current_system}. Nuitka requires native builds.")
+        elif target_platform == "windows" and current_system != "windows":
+            raise RuntimeError(f"Cannot build Windows binary on {current_system}. Nuitka requires native builds.")
 
         # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent / "otel_helper" / "__main__.py"
@@ -1720,6 +1949,158 @@ RUN pyinstaller \
 
         return output_dir / binary_name
 
+    def _regenerate_installers(self, profile, profile_name: str, console: Console) -> int:
+        """Regenerate installer scripts using existing binaries from the latest dist folder."""
+        import shutil
+
+        # Find latest dist folder for this profile
+        dist_base = Path("./dist") / profile_name
+        if not dist_base.exists():
+            console.print(f"[red]No dist folder found for profile '{profile_name}'.[/red]")
+            console.print("Run 'ccwb package' first to build binaries.")
+            return 1
+
+        # Find the latest timestamped directory
+        timestamp_dirs = sorted(
+            [d for d in dist_base.iterdir() if d.is_dir()],
+            key=lambda d: d.name,
+            reverse=True,
+        )
+        if not timestamp_dirs:
+            console.print(f"[red]No builds found in {dist_base}.[/red]")
+            return 1
+
+        source_dir = timestamp_dirs[0]
+        console.print(f"[cyan]Using existing binaries from: {source_dir}[/cyan]")
+
+        # Detect existing binaries and otel helpers
+        binary_patterns = {
+            "macos-arm64": "credential-process-macos-arm64",
+            "macos-intel": "credential-process-macos-intel",
+            "linux-x64": "credential-process-linux-x64",
+            "linux-arm64": "credential-process-linux-arm64",
+            "windows": "credential-process-windows.exe",
+        }
+        otel_patterns = {
+            "macos-arm64": "otel-helper-macos-arm64",
+            "macos-intel": "otel-helper-macos-intel",
+            "linux-x64": "otel-helper-linux-x64",
+            "linux-arm64": "otel-helper-linux-arm64",
+            "windows": "otel-helper-windows.exe",
+        }
+
+        built_executables = []
+        built_otel_helpers = []
+        for plat, binary_name in binary_patterns.items():
+            binary_path = source_dir / binary_name
+            if binary_path.exists():
+                built_executables.append((plat, binary_path))
+        for plat, helper_name in otel_patterns.items():
+            helper_path = source_dir / helper_name
+            if helper_path.exists():
+                built_otel_helpers.append((plat, helper_path))
+
+        if not built_executables:
+            console.print("[red]No binaries found in the dist folder.[/red]")
+            return 1
+
+        console.print(f"[green]Found {len(built_executables)} binaries, {len(built_otel_helpers)} OTEL helpers[/green]")
+        for plat, path in built_executables:
+            console.print(f"  • {path.name}")
+
+        # Create new timestamped output directory
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        output_dir = Path("./dist") / profile_name / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy existing binaries to new output dir
+        console.print("\n[cyan]Copying binaries...[/cyan]")
+        for plat, binary_path in built_executables:
+            shutil.copy2(binary_path, output_dir / binary_path.name)
+        for plat, helper_path in built_otel_helpers:
+            shutil.copy2(helper_path, output_dir / helper_path.name)
+
+        # Get federation info — try profile first, fall back to CloudFormation
+        federation_type = profile.federation_type
+        federation_identifier = None
+
+        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+            federation_identifier = profile.federated_role_arn
+            console.print(f"[dim]Using role ARN from profile: {federation_identifier}[/dim]")
+        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
+            federation_identifier = profile.identity_pool_name
+            console.print(f"[dim]Using identity pool from profile: {federation_identifier}[/dim]")
+        else:
+            console.print("[cyan]Fetching deployment information from CloudFormation...[/cyan]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+                return 1
+
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+            if federation_type == "direct":
+                federation_identifier = stack_outputs.get("DirectSTSRoleArn") or stack_outputs.get("FederatedRoleArn")
+            else:
+                federation_identifier = stack_outputs.get("IdentityPoolId")
+
+        if not federation_identifier or federation_identifier == "N/A":
+            console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
+            return 1
+
+        # Prompt for co-authorship and OTEL attributes
+        include_coauthored_by = questionary.confirm(
+            "Include 'Co-Authored-By: Claude' in git commits?", default=False
+        ).ask()
+
+        otel_resource_attributes = None
+        if profile.monitoring_enabled:
+            customize_otel = questionary.confirm(
+                "Customize telemetry resource attributes?", default=False
+            ).ask()
+            if customize_otel:
+                department = questionary.text("Department:", default="engineering").ask()
+                team_id = questionary.text("Team ID:", default="default").ask()
+                cost_center = questionary.text("Cost center:", default="default").ask()
+                organization = questionary.text("Organization:", default="default").ask()
+                otel_resource_attributes = (
+                    f"department={department},team.id={team_id},"
+                    f"cost_center={cost_center},organization={organization}"
+                )
+
+        # Regenerate config.json
+        console.print("[cyan]Generating configuration...[/cyan]")
+        self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name)
+
+        # Regenerate installer scripts
+        console.print("[cyan]Generating installer scripts...[/cyan]")
+        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+
+        # Regenerate documentation
+        console.print("[cyan]Generating documentation...[/cyan]")
+        self._create_documentation(output_dir, profile, timestamp)
+
+        # Regenerate Claude Code settings
+        console.print("[cyan]Generating Claude Code settings...[/cyan]")
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+
+        # Summary
+        console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
+        console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
+        console.print("\nRegenerated files:")
+        console.print("  • config.json")
+        console.print("  • install.sh")
+        if (output_dir / "install.bat").exists():
+            console.print("  • install.bat")
+            console.print("  • ccwb-install.ps1")
+        console.print("  • README.md")
+        if (output_dir / "claude-settings" / "settings.json").exists():
+            console.print("  • claude-settings/settings.json")
+        console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
+        console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
+        return 0
+
     def _create_config(
         self,
         output_dir: Path,
@@ -1789,11 +2170,64 @@ RUN pyinstaller \
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
-        # Add quota settings so the credential provider can enforce limits
+        # Add quota enforcement settings if configured
         if getattr(profile, "quota_api_endpoint", None):
             config[profile_name]["quota_api_endpoint"] = profile.quota_api_endpoint
             config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
+
+        # Okta Custom Authorization Server id — only emit when non-default so
+        # existing config.json files generated by older ccwb versions are
+        # bit-for-bit unchanged. The Go binary treats absent / empty / "default"
+        # identically.
+        # okta_auth_server_id controls whether the Go credential-process hits
+        # Okta's Org AS (endpoints /oauth2/v1/..., iss=https://<domain>) or a
+        # Custom AS (endpoints /oauth2/<cas-id>/v1/..., iss=https://<domain>/oauth2/<cas-id>).
+        # The JWT iss must match the CFN-registered OIDC provider URL.
+        #
+        # Emit the field only when the deployment needs CAS -- i.e. zone
+        # isolation or project attribution is on (both require admin-defined
+        # claims that only a CAS can carry), OR the operator explicitly set a
+        # non-default CAS id. Omit it otherwise so end-user configs stay
+        # byte-compatible with upstream's Org AS shape.
+        okta_cas_id = getattr(profile, "okta_auth_server_id", "default") or "default"
+        needs_cas = (
+            getattr(profile, "enforce_project_isolation", False)
+            or getattr(profile, "project_attribution_enabled", False)
+            or okta_cas_id != "default"
+        )
+        if config[profile_name].get("provider_type") == "okta" and needs_cas:
+            config[profile_name]["okta_auth_server_id"] = okta_cas_id
+
+        # Project-attribution opt-in flag. Only emitted when true so that
+        # unchanged deployments keep their current config.json verbatim.
+        if getattr(profile, "project_attribution_enabled", False):
+            config[profile_name]["project_attribution_enabled"] = True
+            # Only emit the tag-key override when it differs from the default
+            # "Project". This keeps every bundle produced for a default-key
+            # customer byte-identical to what ccwb produced before this field
+            # existed, and lets older Go binaries ignore the field safely.
+            cost_tag_key = getattr(profile, "cost_attribution_tag_key", None) or "Project"
+            if cost_tag_key != "Project":
+                config[profile_name]["cost_attribution_tag_key"] = cost_tag_key
+
+        # GDPR per-zone isolation metadata. Emitted only when enforced --
+        # the installer's shell-function block reads this dict to generate
+        # the `case`/`switch` arms that route Claude Code to the right
+        # application inference profile based on the user's Zone session tag.
+        if getattr(profile, "enforce_project_isolation", False):
+            mapping = getattr(profile, "zone_inference_profiles", {}) or {}
+            if not mapping:
+                raise RuntimeError(
+                    "enforce_project_isolation=True but no zone_inference_profiles are "
+                    "recorded in the profile. Run `ccwb inference-profile create "
+                    "--zone <z> --model opus-4-6` once per zone, then retry `ccwb package`."
+                )
+            config[profile_name]["enforce_project_isolation"] = True
+            config[profile_name]["zone_inference_profiles"] = mapping
+            config[profile_name]["model_short_name"] = getattr(
+                profile, "model_short_name", "opus-4-6"
+            )
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -1825,7 +2259,8 @@ RUN pyinstaller \
 
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
-            if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+            okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+            if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                 return "okta"
             elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
@@ -1835,13 +2270,30 @@ RUN pyinstaller \
                 return "azure"
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 return "cognito"
+            elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                return "cognito"
             else:
-                return "oidc"  # Default to generic OIDC
+                return "auto"  # Let credential_provider auto-detect from domain at runtime
         except Exception:
-            return "oidc"  # Default to generic OIDC on parsing error
+            return "auto"  # Let credential_provider auto-detect from domain at runtime
 
     def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
-        """Create simple installer script."""
+        """Create simple installer script.
+
+        When the bundle was built via --prebuilt, both install.sh and
+        ccwb-install.ps1 have already been copied from source/go/prebuilt/
+        latest/. Those prebuilt scripts are the source of truth going
+        forward (they include all features such as per-zone isolation
+        wrapper generation). The inline templates below are a legacy
+        fallback for non-prebuilt builds (--go, PyInstaller, CodeBuild)
+        that don't copy installer scripts; we skip them whenever the
+        prebuilt pair is already in place.
+        """
+        installer_path = output_dir / "install.sh"
+        prebuilt_ps1 = output_dir / "ccwb-install.ps1"
+        if installer_path.exists() and prebuilt_ps1.exists():
+            self.line("  <info>Using prebuilt installer scripts (install.sh, ccwb-install.ps1)</info>")
+            return installer_path
 
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
@@ -1864,6 +2316,7 @@ echo
 
 # Check prerequisites
 echo "Checking prerequisites..."
+HAS_ERRORS=false
 
 if command -v aws &> /dev/null; then
     echo "✓ AWS CLI found (optional)"
@@ -1871,7 +2324,35 @@ else
     echo "ℹ  AWS CLI not found — not required. The credential process binary handles authentication directly."
 fi
 
-echo "✓ Prerequisites found"
+if [ ! -f "config.json" ]; then
+    echo "ERROR: config.json not found in current directory"
+    echo "       Make sure you are running this from the extracted package folder"
+    HAS_ERRORS=true
+fi
+
+# Find a Python interpreter (needed for config parsing)
+PYTHON=""
+if command -v python3 &> /dev/null; then
+    PYTHON="python3"
+elif command -v python &> /dev/null; then
+    PYTHON="python"
+else
+    echo "ERROR: Python is not installed (python3 or python)"
+    echo "       Python is needed to parse configuration files"
+    HAS_ERRORS=true
+fi
+
+if [ "$HAS_ERRORS" = "true" ]; then
+    exit 1
+fi
+
+if [ ! -f "claude-settings/settings.json" ]; then
+    echo "WARNING: claude-settings/settings.json not found"
+    echo "         Claude Code IDE settings will not be configured automatically"
+    echo ""
+fi
+
+echo "OK Prerequisites validated"
 
 # Detect platform and architecture
 echo
@@ -1949,6 +2430,10 @@ if [ -d "claude-settings" ]; then
         # Check if settings file already exists
         if [ -f ~/.claude/settings.json ]; then
             echo "Existing Claude Code settings found"
+            # Backup existing settings
+            BACKUP_NAME="settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+            cp ~/.claude/settings.json ~/.claude/$BACKUP_NAME
+            echo "  Backed up to: ~/.claude/$BACKUP_NAME"
             read -p "Overwrite with new settings? (Y/n): " -n 1 -r
             echo
             # Default to Yes if user just presses enter (empty REPLY)
@@ -1966,28 +2451,24 @@ if [ -d "claude-settings" ]; then
             sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
                 -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
-            echo "✓ Claude Code settings configured"
+
+            # Verify placeholders were replaced
+            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' ~/.claude/settings.json 2>/dev/null; then
+                echo "WARNING: Some path placeholders were not replaced in settings.json"
+                echo "         You may need to edit the file manually: ~/.claude/settings.json"
+            else
+                echo "OK Claude Code settings configured: ~/.claude/settings.json"
+            fi
         fi
     fi
 fi
 
-# Copy OTEL helper executable and shell wrapper if present
+# Copy OTEL helper executable if present
 if [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    # Install PyInstaller binary as otel-helper-bin (fallback for cache miss)
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper-bin
-    chmod +x ~/claude-code-with-bedrock/otel-helper-bin
-    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper-bin 2>/dev/null || true
-    # Install shell wrapper as otel-helper (fast cache check, avoids PyInstaller startup)
-    if [ -f "otel-helper.sh" ]; then
-        cp "otel-helper.sh" ~/claude-code-with-bedrock/otel-helper
-        chmod +x ~/claude-code-with-bedrock/otel-helper
-    else
-        # Fallback: if shell wrapper not in package, point directly to binary
-        cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
-        chmod +x ~/claude-code-with-bedrock/otel-helper
-    fi
+    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
+    chmod +x ~/claude-code-with-bedrock/otel-helper
     echo "✓ OTEL helper installed"
 fi
 
@@ -1995,7 +2476,7 @@ fi
 if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
     echo "and include them in metrics. To test the helper, run:"
-    echo "  ~/claude-code-with-bedrock/otel-helper-bin --test"
+    echo "  ~/claude-code-with-bedrock/otel-helper --test"
 fi
 
 # Update AWS config
@@ -2004,7 +2485,7 @@ echo "Configuring AWS profiles..."
 mkdir -p ~/.aws
 
 # Read all profiles from config.json
-PROFILES=$(python3 -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
+PROFILES=$($PYTHON -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
 
 if [ -z "$PROFILES" ]; then
     echo "❌ No profiles found in config.json"
@@ -2016,8 +2497,10 @@ echo
 
 # Get region from package settings (for Bedrock calls, not infrastructure)
 if [ -f "claude-settings/settings.json" ]; then
-    DEFAULT_REGION=$(python3 -c "import json; print(json.load(open('claude-settings/settings.json'))[
-    'env']['AWS_REGION'])" 2>/dev/null || echo "{profile.aws_region}")
+    DEFAULT_REGION=$($PYTHON -c "
+import json
+print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])
+" 2>/dev/null || echo "{profile.aws_region}")
 else
     DEFAULT_REGION="{profile.aws_region}"
 fi
@@ -2030,8 +2513,10 @@ for PROFILE_NAME in $PROFILES; do
     sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
 
     # Get profile-specific region from config.json
-    PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
-    {{}}).get('aws_region', '$DEFAULT_REGION'))")
+    PROFILE_REGION=$($PYTHON -c "
+import json
+print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region', '$DEFAULT_REGION'))
+")
 
     # Add new profile with --profile flag (cross-platform, no shell required)
     cat >> ~/.aws/config << EOF
@@ -2042,9 +2527,23 @@ EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
+# Post-install validation
+echo
+echo "Validating installation..."
+if [ -f ~/claude-code-with-bedrock/credential-process ]; then
+    echo "  OK credential-process: ~/claude-code-with-bedrock/credential-process"
+else
+    echo "  FAIL credential-process not found at: ~/claude-code-with-bedrock/credential-process"
+fi
+if [ -f ~/.claude/settings.json ]; then
+    echo "  OK settings.json: ~/.claude/settings.json"
+else
+    echo "  WARN settings.json not found at: ~/.claude/settings.json"
+fi
+
 echo
 echo "======================================"
-echo "✓ Installation complete!"
+echo "Installation complete!"
 echo "======================================"
 echo
 echo "Available profiles:"
@@ -2066,7 +2565,7 @@ echo
 """
 
         installer_path = output_dir / "install.sh"
-        with open(installer_path, "w") as f:
+        with open(installer_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
 
@@ -2227,7 +2726,7 @@ pause
 
 2. Run the installer:
    ```bash
-   ./install.sh
+   chmod +x install.sh && ./install.sh
    ```
 
 3. Use the AWS profile:
@@ -2375,12 +2874,17 @@ Available metrics include:
 
         readme_content += "\n" ""
 
-        with open(output_dir / "README.md", "w") as f:
+        with open(output_dir / "README.md", "w", encoding="utf-8") as f:
             f.write(readme_content)
 
     def _create_claude_settings(
-        self, output_dir: Path, profile, include_coauthored_by: bool = True, profile_name: str = "ClaudeCode"
-    ):
+        self,
+        output_dir: Path,
+        profile: object,
+        include_coauthored_by: bool = True,
+        profile_name: str = "ClaudeCode",
+        otel_resource_attributes: str | None = None,
+    ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
 
@@ -2389,21 +2893,30 @@ Available metrics include:
             claude_dir = output_dir / "claude-settings"
             claude_dir.mkdir(exist_ok=True)
 
-            # Start with basic settings required for Bedrock
-            settings = {
-                "env": {
-                    # Set AWS_REGION based on cross-region profile for correct Bedrock endpoint
-                    "AWS_REGION": self._get_bedrock_region_for_profile(profile),
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    # AWS_PROFILE is used by both AWS SDK and otel-helper
-                    "AWS_PROFILE": profile_name,
-                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
-                    # directly without requiring the AWS CLI or ~/.aws/config.
-                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
-                    # install.sh/install.bat with the actual binary path at install time.
-                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
-                }
+            # Start with basic settings required for Bedrock. Under per-zone
+            # isolation, we deliberately OMIT AWS_REGION from settings.json.
+            # Reason: users pick their zone's inference-profile ARN at
+            # runtime via `/model <arn>`, and the ARN's region is specific
+            # to their zone (eu-west-3 for France, us-east-1 for US, etc.).
+            # Pinning AWS_REGION to the ccwb init-time default (commonly
+            # us-west-2) forces the AWS SDK to route EU ARN calls to a US
+            # endpoint, returning "invalid ARN" / region-mismatch errors.
+            # Without AWS_REGION pinned, the SDK reads it from the user's
+            # shell env, which admins can pair with ANTHROPIC_MODEL per zone.
+            isolation_on_for_settings = bool(getattr(profile, "enforce_project_isolation", False))
+            settings_env: dict[str, str] = {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                # AWS_PROFILE is used by both AWS SDK and otel-helper
+                "AWS_PROFILE": profile_name,
+                # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
+                # directly without requiring the AWS CLI or ~/.aws/config.
+                # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                # install.sh/install.bat with the actual binary path at install time.
+                "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
             }
+            if not isolation_on_for_settings:
+                settings_env["AWS_REGION"] = self._get_bedrock_region_for_profile(profile)
+            settings = {"env": settings_env}
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
             # Only add the field if the user wants it disabled
@@ -2414,8 +2927,19 @@ Available metrics include:
             if profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
-            # Add selected model as environment variable if available
-            if hasattr(profile, "selected_model") and profile.selected_model:
+            # Model selection. Two modes:
+            #
+            # * isolation OFF (default): pin ANTHROPIC_MODEL in settings.json
+            #   so Claude Code uses the cross-region id without further user
+            #   configuration — identical to upstream behavior.
+            # * isolation ON (GDPR): leave ANTHROPIC_MODEL OUT of settings.json.
+            #   The user must explicitly set it to the application-inference-profile
+            #   ARN for their zone (the installer prints the per-zone ARN table).
+            #   IAM is the actual security boundary: a cross-region foundation-model
+            #   ARN does not carry a Zone tag, so invocation is denied under
+            #   isolation regardless of what the user sets in ANTHROPIC_MODEL.
+            isolation_on = bool(getattr(profile, "enforce_project_isolation", False))
+            if not isolation_on and hasattr(profile, "selected_model") and profile.selected_model:
                 settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
 
                 # Set all model tier env vars using the CRIS prefix from init.
@@ -2440,61 +2964,114 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Get monitoring stack outputs
-                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
-                cmd = [
-                    "aws",
-                    "cloudformation",
-                    "describe-stacks",
-                    "--stack-name",
-                    monitoring_stack,
-                    "--region",
-                    profile.aws_region,
-                    "--query",
-                    "Stacks[0].Outputs",
-                    "--output",
-                    "json",
-                ]
+                # Try profile first (saved by ccwb deploy), fall back to CloudFormation query
+                endpoint = getattr(profile, "otel_collector_endpoint", None)
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    outputs = json.loads(result.stdout)
-                    endpoint = None
+                if not endpoint:
+                    # Fall back to reading from CloudFormation stack outputs
+                    # Try multiple possible stack name patterns
+                    possible_stacks = [
+                        profile.stack_names.get("monitoring"),
+                        f"{profile.identity_pool_name}-otel-collector" if hasattr(profile, "identity_pool_name") and profile.identity_pool_name else None,
+                        f"{profile.stack_names.get('auth', '')}-otel-collector" if profile.stack_names.get("auth") else None,
+                    ]
+                    # Remove None/empty entries
+                    possible_stacks = [s for s in possible_stacks if s]
 
-                    for output in outputs:
-                        if output["OutputKey"] == "CollectorEndpoint":
-                            endpoint = output["OutputValue"]
+                    for monitoring_stack in possible_stacks:
+                        cmd = [
+                            "aws",
+                            "cloudformation",
+                            "describe-stacks",
+                            "--stack-name",
+                            monitoring_stack,
+                            "--region",
+                            profile.aws_region,
+                            "--query",
+                            "Stacks[0].Outputs",
+                            "--output",
+                            "json",
+                        ]
+
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            try:
+                                outputs = json.loads(result.stdout)
+                                for output in outputs:
+                                    if output["OutputKey"] == "CollectorEndpoint":
+                                        endpoint = output["OutputValue"]
+                                        break
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                        if endpoint:
+                            # Save to profile for next time
+                            profile.otel_collector_endpoint = endpoint
+                            try:
+                                from claude_code_with_bedrock.config import Config
+                                config = Config.load()
+                                config.save_profile(profile)
+                                console.print(f"[dim]Found endpoint from stack '{monitoring_stack}', saved to profile[/dim]")
+                            except Exception:
+                                pass
                             break
 
-                    if endpoint:
-                        # Add monitoring configuration
-                        settings["env"].update(
-                            {
-                                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-                                "OTEL_METRICS_EXPORTER": "otlp",
-                                "OTEL_LOGS_EXPORTER": "otlp",
-                                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-                                "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
-                            }
+                if not endpoint:
+                    # Monitoring stack not deployed or endpoint not found
+                    console.print("[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]")
+                    console.print("[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]")
+                    try:
+                        import questionary
+                        endpoint = questionary.text(
+                            "OTel collector endpoint URL (leave blank to skip telemetry):",
+                            default="",
+                        ).ask()
+                        if endpoint:
+                            endpoint = endpoint.strip()
+                        if endpoint:
+                            # Save to profile so this is never asked again
+                            profile.otel_collector_endpoint = endpoint
+                            try:
+                                from claude_code_with_bedrock.config import Config
+                                config = Config.load()
+                                config.save_profile(profile)
+                                console.print(f"[dim]Saved endpoint to profile[/dim]")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                if endpoint:
+                    # Add monitoring configuration
+                    resource_attrs = otel_resource_attributes or (
+                        "department=engineering,team.id=default,"
+                        "cost_center=default,organization=default,"
+                        "project=default"
+                    )
+                    settings["env"].update(
+                        {
+                            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                            "OTEL_METRICS_EXPORTER": "otlp",
+                            "OTEL_LOGS_EXPORTER": "otlp",
+                            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                            "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+                            "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
+                        }
+                    )
+
+                    # Add the helper executable for generating OTEL headers with user attributes
+                    # Use a placeholder that will be replaced by the installer script based on platform
+                    settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+
+                    is_https = endpoint.startswith("https://")
+                    console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
+                    if not is_https:
+                        console.print(
+                            "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
                         )
-
-                        # Add the helper executable for generating OTEL headers with user attributes
-                        # Use a placeholder that will be replaced by the installer script based on platform
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
-
-                        is_https = endpoint.startswith("https://")
-                        console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
-                        if not is_https:
-                            console.print(
-                                "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
-                            )
-                    else:
-                        console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
                 else:
-                    console.print("[yellow]Warning: Could not fetch monitoring stack outputs[/yellow]")
+                    console.print("[red]ERROR: Monitoring enabled but no OTel endpoint configured.[/red]")
+                    console.print("[red]Run 'ccwb deploy' first or set otel_collector_endpoint in the profile.[/red]")
 
             # Save settings.json
             settings_path = claude_dir / "settings.json"

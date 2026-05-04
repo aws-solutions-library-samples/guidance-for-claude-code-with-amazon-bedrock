@@ -12,15 +12,27 @@ Parameters:
 
   OktaDomain:
     Type: String
-    Description: Your Okta domain (e.g., company.okta.com)
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(-emea)?\.com$'
-    ConstraintDescription: Must be a valid Okta domain
+    Description: Your Okta domain (e.g., company.okta.com or dev-123456.oktapreview.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(preview|-emea)?\.com$'
+    ConstraintDescription: Must be a valid Okta domain (okta.com, oktapreview.com, or okta-emea.com)
 
   OktaClientId:
     Type: String
     Description: Okta application client ID
     AllowedPattern: '^[a-zA-Z0-9]{20}$'
     ConstraintDescription: Must be a valid Okta client ID
+
+  OktaAuthServerId:
+    Type: String
+    Default: default
+    Description: >-
+      Okta Custom Authorization Server ID. Integrator / Developer tenants and most
+      Workforce Identity deployments ship a CAS literally named "default" — leave
+      this parameter alone unless your Okta admin created a differently-named CAS.
+      Changing this value on an existing stack replaces the OIDC provider (URL is
+      immutable); only set it at initial deploy time.
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9-]*$'
+    ConstraintDescription: Must be a valid Okta authorization server id (letters, digits, hyphens)
 
   IdentityPoolName:
     Type: String
@@ -49,10 +61,27 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
+  EnforceProjectIsolation:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      When 'true', tightens the Bedrock access policy to enforce GDPR per-zone
+      isolation: InvokeModel* / Converse* are denied unless the caller's STS
+      session has both Project and Zone tags, AND the invoked application
+      inference profile carries a Zone tag matching the caller's Zone.
+      Foundation-model and cross-region system-profile invocations are blocked;
+      all traffic must go through tagged application inference profiles.
+      Pair with `ccwb inference-profile create` and the shell-function wrapper
+      emitted by the installer. Default 'false' preserves today's behavior.
+
 Conditions:
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  IsolationEnforced: !Equals [!Ref EnforceProjectIsolation, 'true']
   # Partition-aware conditions for Cognito Identity service principals
   IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
   IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
@@ -66,7 +95,30 @@ Resources:
   OktaOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
-      Url: !Sub 'https://${OktaDomain}'
+      # Two OIDC issuer shapes. Which one we register depends on whether
+      # GDPR zone isolation is enabled:
+      #
+      #   - isolation OFF (default, matches upstream): register the Okta
+      #     Org AS -- `https://<domain>`. This is the historical shape and
+      #     does not trigger a resource replacement when an existing
+      #     upstream stack is updated to this template.
+      #
+      #   - isolation ON: register the Okta Custom Authorization Server --
+      #     `https://<domain>/oauth2/<cas-id>`. Zone isolation requires
+      #     the `https://aws.amazon.com/tags` claim to carry the Zone
+      #     session tag, and only the CAS (not the Org AS) can emit
+      #     admin-defined custom claims. IAM's InvalidIdentityToken check
+      #     compares the JWT iss against this URL character-for-character,
+      #     so the provider URL must match the CAS token's iss exactly.
+      #
+      # NOTE: AWS::IAM::OIDCProvider.Url is immutable -- toggling
+      # EnforceProjectIsolation on an already-deployed stack replaces the
+      # provider (delete + create). Pin the choice at initial deploy, or
+      # accept a brief window during stack update when no provider exists.
+      Url: !If
+        - IsolationEnforced
+        - !Sub 'https://${OktaDomain}/oauth2/${OktaAuthServerId}'
+        - !Sub 'https://${OktaDomain}'
       ClientIdList:
         - !Ref OktaClientId
       ThumbprintList:
@@ -88,59 +140,200 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowBedrockInvokeRegional
-            Effect: Allow
-            Action:
-              - 'bedrock:InvokeModel'
-              - 'bedrock:InvokeModelWithResponseStream'
-              - 'bedrock:CallWithBearerToken'
-              - 'bedrock:ListFoundationModels'
-              - 'bedrock:ListInferenceProfiles'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
-            Resource:
-              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
-              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
-            Condition:
-              StringEquals:
-                'aws:RequestedRegion': !Ref AllowedBedrockRegions
-          - Sid: AllowBedrockInvokeGlobal
-            Effect: Allow
-            Action:
-              - 'bedrock:InvokeModel'
-              - 'bedrock:InvokeModelWithResponseStream'
-              - 'bedrock:CallWithBearerToken'
-              - 'bedrock:ListFoundationModels'
-              - 'bedrock:ListInferenceProfiles'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
-            Resource:
-              - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
-          - Sid: AllowBedrockListRegional
-            Effect: Allow
-            Action:
-              - 'bedrock:ListFoundationModels'
-              - 'bedrock:GetFoundationModel'
-              - 'bedrock:GetFoundationModelAvailability'
-              - 'bedrock:ListInferenceProfiles'
-              - 'bedrock:GetInferenceProfile'
+          # Defense in depth: explicit Deny for any request to a region
+          # outside the approved list. Applies to every action on the role;
+          # stricter than relying on positive region conditions in the
+          # Allow statements, and survives future edits to those Allows.
+          - Sid: DenyBedrockOutsideApprovedRegions
+            Effect: Deny
+            Action: '*'
             Resource: '*'
             Condition:
-              StringEquals:
+              StringNotEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
-          - Sid: AllowBedrockListGlobal
-            Effect: Allow
-            Action:
-              - 'bedrock:ListFoundationModels'
-              - 'bedrock:GetFoundationModel'
-              - 'bedrock:GetFoundationModelAvailability'
-              - 'bedrock:ListInferenceProfiles'
-              - 'bedrock:GetInferenceProfile'
-            Resource: '*'
+
+          # --- Permissive Invoke statements (isolation OFF — today's behavior) ---
+          - !If
+            - IsolationEnforced
+            - !Ref 'AWS::NoValue'
+            - Sid: AllowBedrockInvokeRegional
+              Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock:CallWithBearerToken'
+                - 'bedrock:ListFoundationModels'
+                - 'bedrock:ListInferenceProfiles'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:ConverseStream'
+                - 'bedrock-runtime:Converse'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+              Condition:
+                StringEquals:
+                  'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - !If
+            - IsolationEnforced
+            - !Ref 'AWS::NoValue'
+            - Sid: AllowBedrockInvokeGlobal
+              Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock:CallWithBearerToken'
+                - 'bedrock:ListFoundationModels'
+                - 'bedrock:ListInferenceProfiles'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:ConverseStream'
+                - 'bedrock-runtime:Converse'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
+
+          # --- GDPR isolation statements (isolation ON) ---
+          # Two independent Deny statements — either missing session tag
+          # triggers AccessDenied. Split from a single Null-with-two-keys
+          # statement because IAM combines multiple keys under one operator
+          # with AND, not OR (see AWS IAM docs on multi-key conditions).
+          # NOTE: __CCWB_COST_TAG_KEY__ is replaced at deploy time by
+          # ccwb (source/claude_code_with_bedrock/cli/commands/deploy.py)
+          # with the profile's cost_attribution_tag_key (default "Project").
+          # YAML map keys cannot be dynamic via CF intrinsic functions,
+          # so we do the substitution in Python before submitting the
+          # template. The value "Project" keeps the rendered policy
+          # byte-identical for existing deployments.
+          - !If
+            - IsolationEnforced
+            - Sid: DenyBedrockInvokeWithoutCostAttribution
+              Effect: Deny
+              Action:
+                - 'bedrock:InvokeModel*'
+                - 'bedrock-runtime:InvokeModel*'
+                - 'bedrock-runtime:Converse*'
+              Resource: '*'
+              Condition:
+                'Null':
+                  'aws:PrincipalTag/__CCWB_COST_TAG_KEY__': 'true'
+            - !Ref 'AWS::NoValue'
+          - !If
+            - IsolationEnforced
+            - Sid: DenyBedrockInvokeWithoutZone
+              Effect: Deny
+              Action:
+                - 'bedrock:InvokeModel*'
+                - 'bedrock-runtime:InvokeModel*'
+                - 'bedrock-runtime:Converse*'
+              Resource: '*'
+              Condition:
+                'Null':
+                  'aws:PrincipalTag/Zone': 'true'
+            - !Ref 'AWS::NoValue'
+          # Allow only application-inference-profile invocations whose Zone
+          # resource tag matches the caller's Zone session tag. The
+          # ${!aws:PrincipalTag/Zone} escape keeps CFN from substituting --
+          # AWS evaluates the policy variable at request time.
+          # Allow application-inference-profile invocations only when:
+          #   1. the invoked profile's Zone resource tag matches the caller's
+          #      Zone session tag (primary GDPR boundary), AND
+          #   2. the invoked profile's ccwb:Region resource tag matches the
+          #      request's aws:RequestedRegion (data-residency lock). The
+          #      ccwb:Region tag is set at profile creation time by
+          #      `ccwb inference-zone create --region <r>` and cannot be
+          #      changed without full audit trail on the resource.
+          #
+          # Together these two conditions enforce arbitrary zone naming —
+          # admins can name zones "france", "mco", "restricted", anything —
+          # without the policy needing to know AWS region prefixes.
+          - !If
+            - IsolationEnforced
+            - Sid: AllowBedrockInvokeInZone
+              Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:ConverseStream'
+                - 'bedrock-runtime:Converse'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+              Condition:
+                StringEquals:
+                  'aws:ResourceTag/Zone': '${aws:PrincipalTag/Zone}'
+                  'aws:ResourceTag/ccwb:Region': '${aws:RequestedRegion}'
+            - !Ref 'AWS::NoValue'
+          # Application inference profiles resolve to an underlying foundation
+          # model at invocation time, and IAM evaluates permissions on BOTH the
+          # profile ARN and the foundation-model ARN. This allow covers the
+          # backend leg of the routing, scoped to the approved Anthropic
+          # families (Opus / Sonnet / Haiku). Other model providers
+          # (Meta, Mistral, etc.) are implicitly denied. The split Deny
+          # statements above gate access before this allow can fire.
+          - !If
+            - IsolationEnforced
+            - Sid: AllowBedrockInvokeFoundationModelBackend
+              Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:ConverseStream'
+                - 'bedrock-runtime:Converse'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-opus-*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-sonnet-*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-haiku-*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.claude-opus-*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.claude-sonnet-*'
+                - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.claude-haiku-*'
+            - !Ref 'AWS::NoValue'
+
+          # --- List / discovery permissions ---
+          # Read-only catalog enumeration. Under isolation, we permit any
+          # authenticated caller to list foundation models and inference
+          # profiles from any region — cross-zone catalog visibility is
+          # not a data-egress boundary, and the tag-match conditions above
+          # still prevent cross-zone invocation. Under the permissive
+          # default, we keep the upstream policy's region-bounded list +
+          # global fallback pair.
+          - !If
+            - IsolationEnforced
+            - Sid: AllowBedrockList
+              Effect: Allow
+              Action:
+                - 'bedrock:ListFoundationModels'
+                - 'bedrock:GetFoundationModel'
+                - 'bedrock:GetFoundationModelAvailability'
+                - 'bedrock:ListInferenceProfiles'
+                - 'bedrock:GetInferenceProfile'
+              Resource: '*'
+            - Sid: AllowBedrockListRegional
+              Effect: Allow
+              Action:
+                - 'bedrock:ListFoundationModels'
+                - 'bedrock:GetFoundationModel'
+                - 'bedrock:GetFoundationModelAvailability'
+                - 'bedrock:ListInferenceProfiles'
+                - 'bedrock:GetInferenceProfile'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - !If
+            - IsolationEnforced
+            - !Ref 'AWS::NoValue'
+            - Sid: AllowBedrockListGlobal
+              Effect: Allow
+              Action:
+                - 'bedrock:ListFoundationModels'
+                - 'bedrock:GetFoundationModel'
+                - 'bedrock:GetFoundationModelAvailability'
+                - 'bedrock:ListInferenceProfiles'
+                - 'bedrock:GetInferenceProfile'
+              Resource: '*'
           - !If
             - MonitoringEnabled
             - Sid: AllowCloudWatchMetrics

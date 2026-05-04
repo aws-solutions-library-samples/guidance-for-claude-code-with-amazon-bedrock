@@ -104,7 +104,7 @@ class InitCommand(Command):
 
         # If user explicitly chose "Update existing profile", skip the second prompt
         if existing_config and user_action == "update":
-            config = self._gather_configuration(progress, existing_config, profile_name)
+            config = self._gather_configuration(progress, existing_config, profile_name=profile_name)
             if not config:
                 return 1
             if not self._review_configuration(config):
@@ -115,6 +115,17 @@ class InitCommand(Command):
             console.print("• Deploy infrastructure: [cyan]poetry run ccwb deploy[/cyan]")
             console.print("• Create package: [cyan]poetry run ccwb package[/cyan]")
             console.print("• Test authentication: [cyan]poetry run ccwb test[/cyan]")
+            if config.get("project_attribution_enabled"):
+                self._print_cost_attribution_setup_hint(
+                    console,
+                    profile_name,
+                    provider_type=config.get("provider_type") or "",
+                    okta_cas_id=config.get("okta_auth_server_id") or "default",
+                    isolation_enabled=bool(config.get("enforce_project_isolation")),
+                    zones=config.get("zones") or [],
+                    okta_group_prefix=config.get("okta_group_prefix") or profile_name,
+                    cost_tag_key=config.get("cost_attribution_tag_key") or "Project",
+                )
             return 0
 
         # Otherwise, show the configuration summary and ask what to do
@@ -145,7 +156,7 @@ class InitCommand(Command):
                 self._review_configuration(existing_config)
                 return 0
             elif action == "Update configuration":
-                config = self._gather_configuration(progress, existing_config, profile_name)
+                config = self._gather_configuration(progress, existing_config, profile_name=profile_name)
                 if not config:
                     return 1
                 if not self._review_configuration(config):
@@ -221,7 +232,213 @@ class InitCommand(Command):
         )
         console.print("\n", success_panel)
 
+        # Print per-tenant IdP-setup guidance ONLY when the admin opted in.
+        # Customers who said "no" above see zero mention of identity-provider
+        # configuration — we respect their choice and stay out of the way.
+        if config.get("project_attribution_enabled"):
+            self._print_cost_attribution_setup_hint(
+                console,
+                profile_name,
+                provider_type=config.get("provider_type") or "",
+                okta_cas_id=config.get("okta_auth_server_id") or "default",
+                isolation_enabled=bool(config.get("enforce_project_isolation")),
+                zones=config.get("zones") or [],
+                okta_group_prefix=config.get("okta_group_prefix") or profile_name,
+                cost_tag_key=config.get("cost_attribution_tag_key") or "Project",
+            )
+
         return 0
+
+    def _print_cost_attribution_setup_hint(
+        self,
+        console: Console,
+        profile_name: str,
+        provider_type: str,
+        okta_cas_id: str,
+        isolation_enabled: bool = False,
+        zones: list[str] | None = None,
+        okta_group_prefix: str | None = None,
+        cost_tag_key: str = "Project",
+    ) -> None:
+        """Print the IdP-side setup recipe the admin needs to run to start
+        emitting the Project session tag. Dispatches on provider_type:
+        Okta gets the detailed expression + Access Policy reminder; other
+        providers get a concise pointer to the docs, because their setup
+        (Auth0 Actions, Azure claim transforms, Cognito Pre-Token Lambda)
+        lives entirely in assets/docs/COST_ATTRIBUTION.md.
+
+        When isolation_enabled is True, the Okta branch additionally prints
+        the Zone claim block and adjusts the Project claim to use the
+        index-based expression matching the <prefix>-<zone>-<project>
+        group-name convention.
+        """
+        if provider_type == "okta":
+            self._print_okta_cost_attribution_hint(
+                console,
+                profile_name,
+                okta_cas_id,
+                isolation_enabled=isolation_enabled,
+                zones=zones or [],
+                okta_group_prefix=okta_group_prefix or profile_name,
+                cost_tag_key=cost_tag_key,
+            )
+        else:
+            generic_panel = Panel.fit(
+                "[bold cyan]Per-project cost attribution — next steps[/bold cyan]\n\n"
+                f"You opted in for profile [white]{profile_name}[/white]. The binaries will\n"
+                f"route a [white]{cost_tag_key}[/white] session tag through STS and OTel automatically — but\n"
+                "only once your identity provider is emitting it.\n\n"
+                "Follow the recipe for your IdP in section 3 of\n"
+                "[cyan]assets/docs/COST_ATTRIBUTION.md[/cyan]:\n"
+                "  • Auth0  — Actions (Post-Login) to emit the tags claim\n"
+                "  • Azure AD / Entra ID  — optional claim + transformation\n"
+                "  • Cognito User Pool  — Pre-Token-Generation Lambda\n\n"
+                "If you skip the IdP step, Claude Code still works; spend simply\n"
+                "shows up untagged in Cost Explorer (and the OTel dashboard\n"
+                "'project' dimension stays on [white]default[/white]).",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+            console.print("\n", generic_panel)
+
+    def _print_okta_cost_attribution_hint(
+        self,
+        console: Console,
+        profile_name: str,
+        cas_id: str,
+        isolation_enabled: bool = False,
+        zones: list[str] | None = None,
+        okta_group_prefix: str | None = None,
+        cost_tag_key: str = "Project",
+    ) -> None:
+        """Show the admin the exact Okta claim config for this profile.
+
+        Two output modes:
+
+        * attribution only — single Project claim using substringAfter on the
+          profile-name prefix. Group convention: ``<prefix>-<project>``.
+        * attribution + isolation — Project claim (index [2]) plus Zone
+          claim (index [1]) using an index-based split that assumes the
+          ``<prefix>-<zone>-<project>`` convention. When the prefix itself
+          contains hyphens (e.g. ``ccwb-okta-demo``), the substringAfter
+          variant is emitted so the admin doesn't have to count dashes.
+        """
+        zones = zones or []
+        prefix_bare = (okta_group_prefix or profile_name).strip() or profile_name
+        prefix = f"{prefix_bare}-"
+
+        # Okta Expression Language does NOT support bracket array indexing on
+        # String.split results (`arr[0]` silently returns null). The correct
+        # pattern is the substringAfter / substringBefore chain, which works
+        # uniformly regardless of how many hyphens the prefix itself contains
+        # because we strip the full prefix first and then slice the remainder.
+        group_head = f'Groups.startsWith("OKTA", "{prefix}", 10).get(0)'
+        remainder = f'String.substringAfter({group_head}, "{prefix}")'
+
+        # Project claim value — different shape per mode
+        if isolation_enabled:
+            # <prefix>-<zone>-<project>. After stripping prefix, remainder is
+            # "<zone>-<project>"; take before/after the first "-" in remainder.
+            zone_expr = f'String.substringBefore({remainder}, "-")'
+            project_expr = f'String.substringAfter({remainder}, "-")'
+        else:
+            # <prefix>-<project> (no zone token). Whole remainder is the project.
+            project_expr = remainder
+            zone_expr = None
+
+        group_example_project = (
+            f"{prefix}{zones[0]}-alpha" if isolation_enabled and zones else f"{prefix}Alpha"
+        )
+        group_example_ws = (
+            f"{prefix}{zones[0]}-widgets" if isolation_enabled and zones else f"{prefix}WidgetProject"
+        )
+
+        # Compose the panel body piece by piece so the optional Zone block
+        # drops cleanly in/out without cluttering the attribution-only path.
+        body_lines = [
+            "[bold cyan]Per-project cost attribution — Okta setup[/bold cyan]\n",
+            f"Configure the following on your [white]{cas_id}[/white] Custom Authorization Server.\n",
+            "[bold]1. Access Policy[/bold] (required — Integrator / fresh Developer\n"
+            "tenants ship the CAS without one, and authentication fails with a\n"
+            "silent [yellow]400 Policy evaluation failed[/yellow] until this is added):\n",
+            f"  [dim]Path[/dim]:  Security → API → Authorization Servers → [white]{cas_id}[/white]\n"
+            "         → Access Policies → Add Policy",
+            "  [dim]Assign to[/dim]:  The Claude Code OIDC application",
+            "  [dim]Rule[/dim]:  Allow grant type [white]authorization_code[/white]",
+            "         + scopes [white]openid profile email[/white]\n",
+            f"[bold]2. {cost_tag_key} claim[/bold] (emits the {cost_tag_key} session tag):\n",
+            f"  [dim]Path[/dim]:  Security → API → Authorization Servers → [white]{cas_id}[/white]\n"
+            "         → Claims → Add Claim",
+            f"  [dim]Name[/dim]:         [white]https://aws.amazon.com/tags/principal_tags/{cost_tag_key}[/white]",
+            "  [dim]Token type[/dim]:   ID Token, Always",
+            "  [dim]Value type[/dim]:   Expression",
+            f"  [dim]Value[/dim]:        [yellow]{project_expr}[/yellow]",
+            "  [dim]Disable if[/dim]:   Empty string",
+            "  [dim]Scopes[/dim]:       openid\n",
+        ]
+
+        if isolation_enabled and zone_expr is not None:
+            body_lines.extend(
+                [
+                    "[bold]3. Zone claim[/bold] (GDPR — routes to the per-zone inference profile):\n",
+                    "  [dim]Name[/dim]:         [white]https://aws.amazon.com/tags/principal_tags/Zone[/white]",
+                    "  [dim]Token type[/dim]:   ID Token, Always",
+                    "  [dim]Value type[/dim]:   Expression",
+                    f"  [dim]Value[/dim]:        [yellow]{zone_expr}[/yellow]",
+                    "  [dim]Disable if[/dim]:   Empty string",
+                    "  [dim]Scopes[/dim]:       openid\n",
+                ]
+            )
+
+        body_lines.append("[bold]Group-naming convention for your customer team:[/bold]")
+        if isolation_enabled:
+            body_lines.extend(
+                [
+                    f"  Create Okta groups named [white]{prefix}<zone>-<project>[/white]",
+                    f"    (e.g. [white]{group_example_project}[/white], [white]{group_example_ws}[/white])",
+                    f"  Supported zones for this profile: "
+                    f"[white]{' '.join(zones) if zones else '<set via ccwb init>'}[/white]",
+                    "  Assign those groups to your Okta OIDC application.",
+                    "",
+                    "[bold]One-time AWS setup (per zone × model):[/bold]",
+                    "  [cyan]ccwb inference-profile create --zone <z> --model opus-4-6[/cyan]",
+                    "  Stores the resulting ARN in this profile; re-run [cyan]ccwb package[/cyan]\n"
+                    "  to emit it into the bundle for the installer's shell wrapper.",
+                    "",
+                    "[dim]Case note:[/dim] IAM compares tag values case-sensitively. Keep zone\n"
+                    "values consistent — lowercase recommended — across Okta groups,\n"
+                    "[cyan]ccwb inference-profile create --zone[/cyan] (auto-lowercased), and your\n"
+                    "compliance-zone naming.\n",
+                ]
+            )
+        else:
+            body_lines.extend(
+                [
+                    f"  Create Okta groups named [white]{prefix}<ProjectName>[/white]",
+                    f"    (e.g. [white]{prefix}Alpha[/white], [white]{prefix}WidgetProject[/white])",
+                    "  Assign those groups to your Okta OIDC application.\n",
+                ]
+            )
+
+        body_lines.append(
+            f"After the first Bedrock call, activate [white]iamPrincipal/{cost_tag_key}[/white] as a\n"
+            "cost allocation tag in AWS Billing → Cost Allocation Tags."
+        )
+        if isolation_enabled:
+            body_lines.append(
+                "Full walkthrough: [cyan]assets/docs/INFERENCE_PROFILE_ISOLATION.md[/cyan]"
+            )
+        else:
+            body_lines.append(
+                "Full walkthrough: [cyan]assets/docs/COST_ATTRIBUTION.md[/cyan]"
+            )
+
+        okta_panel = Panel.fit(
+            "\n".join(body_lines),
+            border_style="cyan",
+            padding=(1, 2),
+        )
+        console.print("\n", okta_panel)
 
     def _check_prerequisites(self) -> bool:
         """Check system prerequisites."""
@@ -279,8 +496,18 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None) -> dict[str, Any]:
-        """Gather configuration from user."""
+    def _gather_configuration(
+        self,
+        progress: WizardProgress,
+        existing_config: dict[str, Any] = None,
+        profile_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Gather configuration from user.
+
+        ``profile_name`` is the active ccwb profile name as selected at the
+        top of ``handle()``; the isolation prompts below use it as the
+        default for the Okta group-name prefix.
+        """
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
         if existing_config:
@@ -371,7 +598,8 @@ class InitCommand(Command):
 
                     # Check for exact domain match or subdomain match
                     # Using endswith with leading dot prevents bypass attacks
-                    if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                    okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+                    if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                         provider_type = "okta"
                     elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                         provider_type = "auth0"
@@ -571,6 +799,132 @@ class InitCommand(Command):
 
             config["federation_type"] = federation_type
             config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
+
+            # Per-project cost attribution opt-in. Only offered for direct STS
+            # federation (the session-tag path described in COST_ATTRIBUTION.md);
+            # Cognito Identity-Pool customers skip this entirely and see no
+            # mention of identity-provider-side configuration.
+            if federation_type == "direct":
+                attribution_enabled = questionary.confirm(
+                    "Enable per-project cost attribution?",
+                    default=config.get("project_attribution_enabled", False),
+                    instruction=(
+                        "(Optional. Tags Bedrock spend with the user's project via IdP group, "
+                        "so costs can be grouped by project in Cost Explorer and the OTel "
+                        "dashboards. Safe to skip — it can be enabled later by re-running init.)"
+                    ),
+                ).ask()
+
+                if attribution_enabled is None:
+                    return None
+
+                config["project_attribution_enabled"] = bool(attribution_enabled)
+
+                # Cost-attribution session-tag key. Default "Project" matches
+                # every upstream doc and existing deployment. Customers whose
+                # finance/security teams standardize on a different name
+                # (CostCenter, BillingCode, etc.) override here so the Okta
+                # claim URL, the IAM Deny condition, and the otel-helper
+                # extraction all key on the same string.
+                if attribution_enabled:
+                    cost_tag_key = questionary.text(
+                        "Cost-attribution session-tag key:",
+                        default=config.get("cost_attribution_tag_key", "Project"),
+                        instruction=(
+                            "(Press Enter for 'Project' — matches upstream and historical docs. "
+                            "Override to 'CostCenter', 'BillingCode', or any other alphanumeric key "
+                            "your security team configured in the IdP.)"
+                        ),
+                    ).ask()
+                    if cost_tag_key is None:
+                        return None
+                    cost_tag_key = (cost_tag_key or "").strip() or "Project"
+                    if not re.fullmatch(r"[A-Za-z0-9_-]+", cost_tag_key):
+                        console.print(
+                            f"[red]Invalid tag key {cost_tag_key!r}. "
+                            f"Must match [A-Za-z0-9_-]+ (no spaces or special chars).[/red]"
+                        )
+                        return None
+                    config["cost_attribution_tag_key"] = cost_tag_key
+
+                # CAS ID only applies to Okta. Auth0/Azure/Cognito have their
+                # own claim-emission paths that don't use a CAS id.
+                if attribution_enabled and provider_type == "okta":
+                    cas_id = questionary.text(
+                        "Okta Custom Authorization Server ID:",
+                        default=config.get("okta_auth_server_id", "default"),
+                        instruction=(
+                            "(Press Enter for 'default' — correct for Integrator/Developer tenants "
+                            "and most Workforce Identity customers. Override only if your admin "
+                            "created a named CAS.)"
+                        ),
+                    ).ask()
+                    if cas_id is None:
+                        return None
+                    config["okta_auth_server_id"] = cas_id.strip() or "default"
+
+                # GDPR per-zone inference-profile isolation. Only meaningful
+                # when attribution is already on (we need the principal tag
+                # path to deliver Zone alongside Project). Optional; default
+                # off so existing wizards see no behavior change.
+                if attribution_enabled:
+                    isolation_enabled = questionary.confirm(
+                        "Enforce per-zone inference-profile isolation (GDPR)?",
+                        default=config.get("enforce_project_isolation", False),
+                        instruction=(
+                            "(Optional. Each Okta group is routed to a separate Bedrock "
+                            "application inference profile; IAM denies cross-zone invocation "
+                            "and denies any user without a project assignment. Requires one "
+                            "'ccwb inference-profile create --zone <z>' per compliance zone. "
+                            "Safe to skip.)"
+                        ),
+                    ).ask()
+                    if isolation_enabled is None:
+                        return None
+                    config["enforce_project_isolation"] = bool(isolation_enabled)
+
+                    if isolation_enabled:
+                        zones_raw = questionary.text(
+                            "Compliance zones (space-separated, lowercase recommended):",
+                            default=" ".join(config.get("zones") or []),
+                            instruction=(
+                                "(e.g. 'eu us' — these become the Zone session-tag values "
+                                "admins assign via Okta group names.)"
+                            ),
+                        ).ask()
+                        if zones_raw is None:
+                            return None
+                        config["zones"] = [z.strip() for z in zones_raw.split() if z.strip()]
+
+                        prefix_default = config.get("okta_group_prefix") or profile_name
+                        prefix = questionary.text(
+                            "Okta group-name prefix (used to build the claim expression):",
+                            default=prefix_default,
+                            instruction=(
+                                "(We'll print the matching Okta claim expression at the end. "
+                                "Convention: <prefix>-<zone>-<project>, e.g. acmeprod-eu-alpha. "
+                                "Hyphen-free prefix is simpler but not required.)"
+                            ),
+                        ).ask()
+                        if prefix is None:
+                            return None
+                        config["okta_group_prefix"] = prefix.strip() or prefix_default
+                    else:
+                        config.setdefault("zones", [])
+                        config.setdefault("okta_group_prefix", profile_name)
+                else:
+                    config.setdefault("enforce_project_isolation", False)
+                    config.setdefault("zones", [])
+                    config.setdefault("okta_group_prefix", profile_name)
+            else:
+                # Preserve any previously-saved values on re-run but do not
+                # prompt — cognito customers get zero noise about this feature.
+                config.setdefault("project_attribution_enabled", False)
+                config.setdefault("cost_attribution_tag_key", "Project")
+                config.setdefault("okta_auth_server_id", "default")
+                config.setdefault("enforce_project_isolation", False)
+                config.setdefault("zones", [])
+                config.setdefault("okta_group_prefix", profile_name)
 
             # Save progress
             progress.save_step("oidc_complete", config)
@@ -1630,6 +1984,11 @@ class InitCommand(Command):
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
+            project_attribution_enabled=config_data.get("project_attribution_enabled", False),
+            cost_attribution_tag_key=config_data.get("cost_attribution_tag_key", "Project"),
+            okta_auth_server_id=config_data.get("okta_auth_server_id", "default"),
+            enforce_project_isolation=config_data.get("enforce_project_isolation", False),
+            zones=config_data.get("zones", []) or [],
             sso_enabled=config_data.get("sso_enabled", True),
             azure_auth_mode=config_data.get("azure_auth_mode"),
             client_certificate_path=config_data.get("client_certificate_path"),
@@ -2272,22 +2631,29 @@ class InitCommand(Command):
         """
         console.print("\n[bold cyan]Profile Name[/bold cyan]")
         console.print("Choose a descriptive name for this deployment profile.")
-        console.print("[dim]Suggested format: {project}-{environment}-{region}[/dim]")
-        console.print("[dim]Examples: acme-prod-us-east-1, internal-dev-us-west-2[/dim]\n")
+        console.print("[dim]The name becomes your Okta group-naming prefix for per-project[/dim]")
+        console.print("[dim]cost attribution (e.g. profile 'acme-prod' -> Okta group 'acme-prod-Alpha').[/dim]")
+        console.print("[dim]Rules: start with a letter, 2-63 chars, letters/digits/hyphens only.[/dim]")
+        console.print("[dim]Examples: acme-prod, internal-dev, demo-us-west[/dim]\n")
 
         while True:
             profile_name = questionary.text(
                 "Profile name:",
-                validate=lambda x: bool(x) or "Profile name cannot be empty",
+                validate=lambda x: (
+                    True if Config._is_valid_profile_name(x) else
+                    "Must start with a letter; 2-63 chars; letters, digits, hyphens only."
+                ),
             ).ask()
 
             if profile_name is None:  # User cancelled
                 return None
 
-            # Validate profile name
+            # Defense-in-depth: the questionary validator already enforces this,
+            # but keep the check so programmatic callers can't bypass it.
             if not Config._is_valid_profile_name(profile_name):
                 console.print(
-                    "[red]Invalid profile name.[/red] " "Must be alphanumeric with hyphens only, max 64 characters.\n"
+                    "[red]Invalid profile name.[/red] "
+                    "Must start with a letter; 2-63 chars; letters, digits, and hyphens only.\n"
                 )
                 continue
 

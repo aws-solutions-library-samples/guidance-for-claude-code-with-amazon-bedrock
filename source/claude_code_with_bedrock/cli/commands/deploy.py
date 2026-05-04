@@ -164,20 +164,37 @@ class DeployCommand(Command):
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
                 return 1
         else:
-            # Deploy all configured stacks in dependency order
-            # Only deploy auth stack if SSO is enabled (default: True for backward compatibility)
+            # Deploy all configured stacks in dependency order.
+            #
+            # Ordering constraints:
+            # - auth always comes first (produces the IAM role + OIDC provider
+            #   every other stack may reference). Skipped when sso_enabled=False
+            #   (anonymous mode).
+            # - networking must precede any stack that needs VPC/subnet
+            #   outputs: monitoring (OTel ECS ALB) and landing-page
+            #   distribution (distribution ALB).
+            # - distribution comes after networking to satisfy the
+            #   landing-page variant; the presigned-s3 variant doesn't need
+            #   networking but scheduling it here is harmless.
+            # - dashboard / analytics / quota all follow monitoring.
+            # - codebuild is independent and can trail.
             if getattr(profile, "sso_enabled", True):
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
-            if profile.enable_distribution:
-                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
-
-            # Deploy remaining monitoring stacks
-            if profile.monitoring_enabled:
+            # Networking first so any downstream stack can read its outputs.
+            need_networking = profile.monitoring_enabled or profile.enable_distribution
+            if need_networking:
                 vpc_config = profile.monitoring_config or {}
                 if vpc_config.get("create_vpc", True):
                     stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+
+            # Distribution (landing-page reads networking outputs; presigned-s3
+            # doesn't, but the scheduling order is a no-op either way).
+            if profile.enable_distribution:
+                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+            # Monitoring and its dependents.
+            if profile.monitoring_enabled:
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
@@ -371,6 +388,41 @@ class DeployCommand(Command):
                     console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
                     return 1
 
+                # Cost-attribution tag-key substitution.
+                #
+                # The isolation-enabled Deny statement keys IAM on
+                # `aws:PrincipalTag/<key>`, where <key> is the Okta claim name
+                # the customer's security team chose (Project, CostCenter, etc.).
+                # CloudFormation's `!Sub` intrinsic function cannot be used as a
+                # YAML map key (cfn-lint surfaces E0000 "Unhashable type"), so
+                # instead the four auth templates carry the sentinel
+                # `__CCWB_COST_TAG_KEY__` in that position and we swap it for
+                # the profile's value before submitting the template body.
+                # Default "Project" keeps the rendered policy byte-identical
+                # for existing deployments.
+                cost_tag_key = getattr(profile, "cost_attribution_tag_key", None) or "Project"
+                # Defensive: the Profile validator already constrains this to
+                # alphanumeric + _ + - via CloudFormation's AllowedPattern on
+                # sibling params. Re-check here so a bad value can't sneak in
+                # via a hand-edited profile JSON.
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", cost_tag_key):
+                    console.print(
+                        f"[red]Invalid cost_attribution_tag_key {cost_tag_key!r}. "
+                        f"Must match [A-Za-z0-9_-]+.[/red]"
+                    )
+                    return 1
+                # Force UTF-8: Python on Windows defaults to cp1252 for text
+                # reads, which fails on the em-dashes used in template comments.
+                template_body = template.read_text(encoding="utf-8")
+                if "__CCWB_COST_TAG_KEY__" in template_body:
+                    rendered = template_body.replace("__CCWB_COST_TAG_KEY__", cost_tag_key)
+                    tmp = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+                    )
+                    tmp.write(rendered)
+                    tmp.close()
+                    template = Path(tmp.name)
+
                 stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
                 # Build parameters
@@ -382,6 +434,11 @@ class DeployCommand(Command):
                         [
                             f"OktaDomain={profile.provider_domain}",
                             f"OktaClientId={profile.client_id}",
+                            # Defaults to "default" when the profile hasn't been
+                            # explicitly configured — matches the CF parameter's
+                            # own default so first-time adoption of this change
+                            # produces zero template diff.
+                            f"OktaAuthServerId={getattr(profile, 'okta_auth_server_id', None) or 'default'}",
                         ]
                     )
                 elif provider_type == "auth0":
@@ -443,6 +500,10 @@ class DeployCommand(Command):
                         f"IdentityPoolName={profile.identity_pool_name}",
                         f"AllowedBedrockRegions={','.join(bedrock_regions)}",
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                        # GDPR per-zone isolation. Default 'false' — existing deployments
+                        # see no behavior change unless the admin explicitly opts in via
+                        # profile.enforce_project_isolation=True (set by the init wizard).
+                        f"EnforceProjectIsolation={str(getattr(profile, 'enforce_project_isolation', False)).lower()}",
                     ]
                 )
 
@@ -668,9 +729,24 @@ class DeployCommand(Command):
                             params.append(f"OidcClientId={profile.client_id}")
 
                 console.print(f"[dim]Using parameters: {params}[/dim]")
-                return deploy_with_cf(
+                result = deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."
                 )
+
+                # Save OTel collector endpoint to profile immediately after deploy
+                if result == 0:
+                    monitoring_outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    if monitoring_outputs:
+                        endpoint = monitoring_outputs.get("CollectorEndpoint")
+                        if endpoint and endpoint != "N/A":
+                            profile.otel_collector_endpoint = endpoint
+                            try:
+                                Config.load().save_profile(profile)
+                                console.print(f"[dim]Saved OTel endpoint to profile: {endpoint}[/dim]")
+                            except Exception:
+                                pass
+
+                return result
 
             elif stack_type == "dashboard":
                 template = project_root / "deployment" / "infrastructure" / "claude-code-dashboard.yaml"
@@ -886,6 +962,7 @@ class DeployCommand(Command):
                     # Update metrics aggregator Lambda environment if successful
                     if result == 0:
                         self._update_metrics_aggregator_env(profile, stack_name, console)
+                        self._create_default_quota_policy(profile, stack_name, console)
 
                     return result
 
@@ -1162,6 +1239,12 @@ class DeployCommand(Command):
                 endpoint = monitoring_outputs.get("CollectorEndpoint", "N/A")
                 console.print(f"• OTLP Endpoint: [cyan]{endpoint}[/cyan]")
 
+                # Save endpoint to profile so ccwb package doesn't need to read CF outputs
+                if endpoint and endpoint != "N/A":
+                    profile.otel_collector_endpoint = endpoint
+                    config.save_profile(profile)
+                    console.print("[dim]  Saved to profile for package generation[/dim]")
+
             dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             dashboard_outputs = get_stack_outputs(dashboard_stack, profile.aws_region)
 
@@ -1248,6 +1331,46 @@ class DeployCommand(Command):
 
         except Exception as e:
             console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
+
+    def _create_default_quota_policy(self, profile, quota_stack_name: str, console: Console) -> None:
+        """Auto-create default quota policy in DynamoDB after quota stack deployment."""
+        try:
+            from claude_code_with_bedrock.models import EnforcementMode, PolicyType
+            from claude_code_with_bedrock.quota_policies import PolicyAlreadyExistsError, QuotaPolicyManager
+
+            # Get the policies table name from stack outputs
+            quota_outputs = get_stack_outputs(quota_stack_name, profile.aws_region)
+            if not quota_outputs or not quota_outputs.get("PoliciesTableName"):
+                console.print("[yellow]Warning: Could not get policies table name from stack outputs[/yellow]")
+                return
+
+            table_name = quota_outputs["PoliciesTableName"]
+            manager = QuotaPolicyManager(table_name, profile.aws_region)
+
+            monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
+            daily_limit = getattr(profile, "daily_token_limit", None)
+            monthly_enforcement = getattr(profile, "monthly_enforcement_mode", "block")
+
+            enforcement_mode = EnforcementMode.BLOCK if monthly_enforcement == "block" else EnforcementMode.ALERT
+
+            try:
+                manager.create_policy(
+                    policy_type=PolicyType.DEFAULT,
+                    identifier="default",
+                    monthly_token_limit=monthly_limit,
+                    daily_token_limit=daily_limit,
+                    enforcement_mode=enforcement_mode,
+                )
+                console.print(
+                    f"[green]Created default quota policy "
+                    f"(monthly: {monthly_limit:,} tokens, enforcement: {monthly_enforcement})[/green]"
+                )
+            except PolicyAlreadyExistsError:
+                console.print("[dim]Default quota policy already exists (skipping)[/dim]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create default quota policy: {str(e)}[/yellow]")
+            console.print("[dim]Run 'ccwb quota set-default' manually to configure quota limits[/dim]")
 
     def _check_orphaned_stacks(self, stacks_to_deploy, profile, cf_manager, console: Console) -> list:
         """Check for stacks that exist but are disabled in config.

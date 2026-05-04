@@ -1,0 +1,20 @@
+{
+  "ClaudeCode": {
+    "provider_domain": "dev-12345.okta.com",
+    "client_id": "0oa123abc456",
+    "provider_type": "okta",
+    "aws_region": "us-east-1",
+    "credential_storage": "session",
+    "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockFederatedRole",
+    "federation_type": "direct",
+    "max_session_duration": 43200,
+    "project_attribution_enabled": true,
+    "cost_attribution_tag_key": "CostCenter",
+    "okta_auth_server_id": "aus127q2jw1fp1ZkM698",
+    "enforce_project_isolation": true,
+    "azure_auth_mode": "public",
+    "quota_api_endpoint": "https://quota.example.com",
+    "quota_fail_mode": "open",
+    "quota_check_interval": 30
+  }
+}
