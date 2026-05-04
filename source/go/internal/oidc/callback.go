@@ -3,9 +3,9 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -85,20 +85,12 @@ func WaitForCallback(resultCh chan CallbackResult, srv *http.Server, timeout tim
 func sendHTML(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(code)
-	html := fmt.Sprintf(`<html>
+	page := fmt.Sprintf(`<html>
 <head><title>Authentication</title></head>
 <body style="font-family: sans-serif; text-align: center; padding: 50px;">
     <h1>%s</h1>
     <p>Return to your terminal to continue.</p>
 </body>
-</html>`, url.QueryEscape(message))
-	// Use the un-escaped message in HTML - it's our own string, not user input
-	html = fmt.Sprintf(`<html>
-<head><title>Authentication</title></head>
-<body style="font-family: sans-serif; text-align: center; padding: 50px;">
-    <h1>%s</h1>
-    <p>Return to your terminal to continue.</p>
-</body>
-</html>`, message)
-	w.Write([]byte(html))
+</html>`, html.EscapeString(message))
+	w.Write([]byte(page)) //nolint:errcheck
 }

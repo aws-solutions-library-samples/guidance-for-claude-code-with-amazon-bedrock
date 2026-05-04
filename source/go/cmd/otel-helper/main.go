@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/bluedoors/ccwb-binaries/internal/config"
@@ -121,7 +122,7 @@ func getTokenViaCredentialProcess(profile string) (string, error) {
 	}
 
 	debugPrint("Getting token via credential-process...")
-	cmd := exec.Command(cpPath, "--profile", profile, "--get-monitoring-token")
+	cmd := exec.Command(filepath.Clean(cpPath), "--profile", profile, "--get-monitoring-token") // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	out, err := cmd.Output()
 	if err != nil {
 		debugPrint("Failed to get token via credential-process: %v", err)

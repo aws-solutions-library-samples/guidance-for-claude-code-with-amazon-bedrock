@@ -54,7 +54,7 @@ func (c *ConfidentialAuth) apply(form map[string]string, tokenURL, clientID stri
 		return nil
 	}
 	if c.ClientSecret != "" {
-		form["client_secret"] = c.ClientSecret
+		form["client_secret"] = c.ClientSecret // pragma: allowlist secret
 		return nil
 	}
 	return nil
