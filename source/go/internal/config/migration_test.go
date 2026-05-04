@@ -15,18 +15,21 @@ import (
 // Each fixture has ClaudeCode as the sole profile name.
 func TestHistoricalConfigFixtures(t *testing.T) {
 	tests := []struct {
-		fixture      string
-		wantRegion   string
-		wantProvider string // "" means any provider_type is acceptable
-		wantFedType  string
+		fixture       string
+		wantRegion    string
+		wantProvider  string // "" means any provider_type is acceptable
+		wantFedType   string
+		wantCostKey   string // default "Project" when absent
 	}{
 		// Pre-Direct-IAM fixture has no provider_type -> defaults to "auto";
 		// runtime resolveProviderType() in main.go does the okta.com detection.
-		{"upstream_pre_direct_iam.json", "us-east-1", "auto", "cognito"},
-		{"upstream_post_direct_iam.json", "us-east-1", "okta", "direct"},
-		{"upstream_current.json", "us-east-1", "okta", "direct"},
-		{"old_format_no_profiles_key.json", "us-east-1", "", "cognito"},
-		{"new_format_with_profiles_key.json", "us-east-1", "okta", "direct"},
+		{"upstream_pre_direct_iam.json", "us-east-1", "auto", "cognito", "Project"},
+		{"upstream_post_direct_iam.json", "us-east-1", "okta", "direct", "Project"},
+		{"upstream_current.json", "us-east-1", "okta", "direct", "Project"},
+		{"fork_early.json", "us-east-1", "okta", "direct", "Project"},
+		{"fork_current.json", "us-east-1", "okta", "direct", "CostCenter"},
+		{"old_format_no_profiles_key.json", "us-east-1", "", "cognito", "Project"},
+		{"new_format_with_profiles_key.json", "us-east-1", "okta", "direct", "Project"},
 	}
 
 	for _, tc := range tests {
@@ -44,6 +47,17 @@ func TestHistoricalConfigFixtures(t *testing.T) {
 			}
 			if cfg.FederationType != tc.wantFedType {
 				t.Errorf("FederationType = %q, want %q", cfg.FederationType, tc.wantFedType)
+			}
+			// cost_attribution_tag_key is omitted from older configs. The
+			// credential-process binary's runtime callers (getTag,
+			// showTags, otel-helper) all treat empty as "Project" --
+			// so an empty value here is fine for everything except the
+			// fork_current fixture that explicitly sets "CostCenter".
+			if tc.wantCostKey == "CostCenter" && cfg.CostAttributionTagKey != "CostCenter" {
+				t.Errorf("CostAttributionTagKey = %q, want CostCenter (explicit)", cfg.CostAttributionTagKey)
+			}
+			if tc.wantCostKey == "Project" && cfg.CostAttributionTagKey != "" && cfg.CostAttributionTagKey != "Project" {
+				t.Errorf("CostAttributionTagKey = %q, want empty or 'Project' (default)", cfg.CostAttributionTagKey)
 			}
 		})
 	}

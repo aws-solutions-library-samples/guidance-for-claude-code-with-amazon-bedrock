@@ -12,15 +12,27 @@ Parameters:
 
   OktaDomain:
     Type: String
-    Description: Your Okta domain (e.g., company.okta.com)
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(-emea)?\.com$'
-    ConstraintDescription: Must be a valid Okta domain
+    Description: Your Okta domain (e.g., company.okta.com or dev-123456.oktapreview.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(preview|-emea)?\.com$'
+    ConstraintDescription: Must be a valid Okta domain (okta.com, oktapreview.com, or okta-emea.com)
 
   OktaClientId:
     Type: String
     Description: Okta application client ID
     AllowedPattern: '^[a-zA-Z0-9]{20}$'
     ConstraintDescription: Must be a valid Okta client ID
+
+  OktaAuthServerId:
+    Type: String
+    Default: default
+    Description: >-
+      Okta Custom Authorization Server ID. Integrator / Developer tenants and most
+      Workforce Identity deployments ship a CAS literally named "default" — leave
+      this parameter alone unless your Okta admin created a differently-named CAS.
+      Changing this value on an existing stack replaces the OIDC provider (URL is
+      immutable); only set it at initial deploy time.
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9-]*$'
+    ConstraintDescription: Must be a valid Okta authorization server id (letters, digits, hyphens)
 
   IdentityPoolName:
     Type: String

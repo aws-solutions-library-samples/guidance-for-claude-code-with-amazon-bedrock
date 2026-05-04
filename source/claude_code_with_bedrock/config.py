@@ -85,6 +85,30 @@ class Profile:
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
+    # Per-project cost attribution (opt-in; off by default so existing profiles
+    # are unchanged on load). When True, the init wizard prints the IdP-side
+    # setup guidance and emits the AWS session-tag claim as the Project tag.
+    # If False, the binaries still run; the OTel "project" dimension falls
+    # back to the default literal string and no Cost Explorer tag appears.
+    project_attribution_enabled: bool = False
+
+    # AWS session-tag key used for cost attribution. Default "Project" matches
+    # the historical behavior and all upstream guidance. Customers whose
+    # finance/security teams standardize on a different convention (e.g.
+    # "CostCenter", "BillingCode") override this so the Okta claim URL, the
+    # IAM Deny condition, and the otel-helper extraction all agree on the
+    # same key. The activation step in AWS Billing becomes
+    # `aws:iamPrincipal/<cost_attribution_tag_key>`.
+    cost_attribution_tag_key: str = "Project"
+
+    # Okta Custom Authorization Server id. Integrator / Developer tenants and
+    # most Workforce Identity deployments ship a CAS literally named "default".
+    # Customers who run a differently-named CAS override this at init time;
+    # the value is threaded through CloudFormation (OIDC Provider URL) and
+    # into config.json (Go OIDC endpoints) so nothing is hardcoded.
+    # Ignored when provider_type != "okta".
+    okta_auth_server_id: str = "default"
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
@@ -381,6 +405,18 @@ class Config:
     def _is_valid_profile_name(name: str) -> bool:
         """Validate profile name.
 
+        The name is used as:
+        - A file name under ~/.ccwb/profiles/<name>.json
+        - A CloudFormation stack-name prefix (CFN: must start with a letter,
+          letters/digits/hyphens only, <=128 chars)
+        - An IAM role-name prefix (similar rules)
+        - The Okta group-name prefix for per-project cost attribution
+          (Okta + AWS tag value rules are permissive enough that any
+          CFN-safe name works).
+
+        CFN is the binding constraint. We allow 2-63 chars so the profile
+        name plus any suffix fits under the 64-char IAM role-name cap.
+
         Args:
             name: Profile name to validate.
 
@@ -389,11 +425,13 @@ class Config:
         """
         import re
 
-        if not name or len(name) > 64:
+        if not name:
             return False
 
-        # Allow alphanumeric and hyphens only
-        return bool(re.match(r"^[a-zA-Z0-9\-]+$", name))
+        # Must start with a letter (CFN/IAM), then letters/digits/hyphens only.
+        # 2-63 chars leaves headroom for derived suffixes without breaking
+        # downstream length caps (IAM role = 64, CFN stack = 128).
+        return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9\-]{1,62}$", name))
 
     # Compatibility methods for legacy code
     def add_profile(self, profile: Profile) -> None:

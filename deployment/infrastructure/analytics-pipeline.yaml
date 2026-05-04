@@ -273,7 +273,8 @@ Resources:
                                           'organization_id': message.get('organization.id', ''),
                                           'otel_lib': message.get('OTelLib', ''),
                                           'user_email': message.get('user.email', ''),
-                                          'user_account_uuid': message.get('user.account_uuid', '')
+                                          'user_account_uuid': message.get('user.account_uuid', ''),
+                                          'project': message.get('project', '')
                                       }
                                       metrics_found.append(transformed)
                                       metrics_found_total += 1
@@ -321,7 +322,8 @@ Resources:
                                           'organization_id': message.get('organization.id', ''),
                                           'otel_lib': message.get('OTelLib', ''),
                                           'user_email': message.get('user.email', ''),
-                                          'user_account_uuid': message.get('user.account_uuid', '')
+                                          'user_account_uuid': message.get('user.account_uuid', ''),
+                                          'project': message.get('project', '')
                                       }
                                       metrics_found.append(transformed)
                                       metrics_found_total += 1
@@ -465,6 +467,8 @@ Resources:
             - Name: user_email
               Type: string
             - Name: user_account_uuid
+              Type: string
+            - Name: project
               Type: string
           Location: !Sub 's3://${AnalyticsBucket}/data/'
           InputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'
@@ -1099,6 +1103,74 @@ Resources:
   # real-world users. If IdP-segmented usage is needed, prefer adding an
   # explicit identity_provider column at ingest time.
 
+  ProjectUsageQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
+      Name: Token Usage by Project
+      Description: Token usage and estimated cost grouped by project (set via OTEL_RESOURCE_ATTRIBUTES per repo)
+      QueryString: !Sub |
+        SELECT
+          COALESCE(NULLIF(project, ''), 'unassigned') AS project,
+          COUNT(DISTINCT user_id) AS unique_users,
+          COUNT(DISTINCT session_id) AS session_count,
+          SUM(CASE WHEN type = 'input' THEN token_usage ELSE 0 END) AS input_tokens,
+          SUM(CASE WHEN type = 'output' THEN token_usage ELSE 0 END) AS output_tokens,
+          SUM(CASE WHEN type = 'cacheRead' THEN token_usage ELSE 0 END) AS cache_read_tokens,
+          SUM(CASE WHEN type = 'cacheCreation' THEN token_usage ELSE 0 END) AS cache_creation_tokens,
+          SUM(token_usage) AS total_tokens,
+          ROUND(SUM(token_usage) * 0.000015, 2) AS estimated_cost_usd
+        FROM "${GlueDatabase}".metrics
+        WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+          AND month = LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0')
+        GROUP BY COALESCE(NULLIF(project, ''), 'unassigned')
+        ORDER BY total_tokens DESC;
+
+  ProjectModelBreakdownQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
+      Name: Monthly Cost by Project and Model
+      Description: Monthly cost per project broken down by model with accurate per-token-type pricing
+      QueryString: !Sub |
+        WITH monthly_costs AS (
+          SELECT
+            DATE_FORMAT(from_unixtime(timestamp/1000), '%Y-%m') AS month,
+            COALESCE(NULLIF(project, ''), 'unassigned') AS project,
+            model,
+            type AS token_type,
+            SUM(token_usage) AS tokens,
+            CASE
+              WHEN model LIKE '%opus%' AND type = 'input' THEN 15.00
+              WHEN model LIKE '%opus%' AND type = 'output' THEN 75.00
+              WHEN model LIKE '%opus%' AND type = 'cacheCreation' THEN 18.75
+              WHEN model LIKE '%opus%' AND type = 'cacheRead' THEN 1.50
+              WHEN model LIKE '%sonnet%' AND type = 'input' THEN 3.00
+              WHEN model LIKE '%sonnet%' AND type = 'output' THEN 15.00
+              WHEN model LIKE '%sonnet%' AND type = 'cacheCreation' THEN 3.75
+              WHEN model LIKE '%sonnet%' AND type = 'cacheRead' THEN 0.30
+              WHEN model LIKE '%haiku%' AND type = 'input' THEN 0.80
+              WHEN model LIKE '%haiku%' AND type = 'output' THEN 4.00
+              WHEN model LIKE '%haiku%' AND type = 'cacheCreation' THEN 1.00
+              WHEN model LIKE '%haiku%' AND type = 'cacheRead' THEN 0.08
+              ELSE 0
+            END AS price_per_million
+          FROM "${GlueDatabase}".metrics
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+          GROUP BY 1, 2, 3, 4
+        )
+        SELECT
+          month,
+          project,
+          model,
+          token_type,
+          tokens,
+          ROUND(tokens * price_per_million / 1000000, 4) AS cost_usd
+        FROM monthly_costs
+        ORDER BY month DESC, project, cost_usd DESC;
+
 Outputs:
   AnalyticsBucketName:
     Description: S3 bucket for analytics data
@@ -1130,4 +1202,4 @@ Outputs:
 
   SampleQueriesInfo:
     Description: Categories of the provisioned Athena named queries
-    Value: 'Real-time: TPM/RPM, Peak-rate-limit. User: Top-users, Session-analysis, Email-domain. Cost: Detailed-cost, Monthly-per-user, Monthly-detail-for-user, Org. Quota: Users-vs-limits. Patterns: By-model-and-type, Activity-pattern.'
+    Value: 'Real-time: TPM/RPM, Peak-rate-limit. User: Top-users, Session-analysis, Email-domain. Cost: Detailed-cost, Monthly-per-user, Monthly-detail-for-user, Org. Quota: Users-vs-limits. Patterns: By-model-and-type, Activity-pattern. Project: By-project, Monthly-by-project-and-model.'
