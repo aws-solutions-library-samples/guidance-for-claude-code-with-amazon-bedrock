@@ -1854,6 +1854,9 @@ RUN pyinstaller \
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo "======================================"
 echo "Claude Code Authentication Installer"
 echo "======================================"
@@ -2094,6 +2097,8 @@ echo
 
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
+SET "SCRIPT_DIR=%~dp0"
+CD /D "%SCRIPT_DIR%"
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
