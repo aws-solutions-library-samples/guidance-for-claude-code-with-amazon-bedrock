@@ -1,6 +1,37 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Authenticated distribution landing page with ALB + Lambda + OIDC + S3'
 
+# ELB access-log service account IDs per region. Older regions require the
+# regional account ID on the bucket policy; newer regions (opt-in, launched
+# Aug 2022+) and GovCloud use the `logdelivery.elasticloadbalancing.amazonaws.com`
+# service principal. The bucket policy below covers both forms so the
+# template works in any commercial region.
+# Source: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html#attach-bucket-policy
+Mappings:
+  ELBServiceAccounts:
+    us-east-1:      { AccountId: '127311923021' }
+    us-east-2:      { AccountId: '033677994240' }
+    us-west-1:      { AccountId: '027434742980' }
+    us-west-2:      { AccountId: '797873946194' }
+    af-south-1:     { AccountId: '098369216593' }
+    ca-central-1:   { AccountId: '985666609251' }
+    eu-central-1:   { AccountId: '054676820928' }
+    eu-west-1:      { AccountId: '156460612806' }
+    eu-west-2:      { AccountId: '652711504416' }
+    eu-west-3:      { AccountId: '009996457667' }
+    eu-south-1:     { AccountId: '635631232127' }
+    eu-north-1:     { AccountId: '897822967062' }
+    ap-east-1:      { AccountId: '754344448648' }
+    ap-northeast-1: { AccountId: '582318560864' }
+    ap-northeast-2: { AccountId: '600734575887' }
+    ap-northeast-3: { AccountId: '383597477331' }
+    ap-southeast-1: { AccountId: '114774131450' }
+    ap-southeast-2: { AccountId: '783225319266' }
+    ap-southeast-3: { AccountId: '589379963580' }
+    ap-south-1:     { AccountId: '718504428378' }
+    me-south-1:     { AccountId: '076674570225' }
+    sa-east-1:      { AccountId: '507241528517' }
+
 Parameters:
   IdentityPoolName:
     Type: String
@@ -164,7 +195,13 @@ Resources:
         - Key: Purpose
           Value: ALBAccessLogs
 
-  # ALB Logs Bucket Policy
+  # ALB Logs Bucket Policy.
+  #
+  # Older commercial regions (launched before Aug 2022) require the regional
+  # ELB service account as the AWS principal on PutObject. Newer opt-in
+  # regions and GovCloud use the logdelivery service principal instead. We
+  # grant both so the template is region-portable; S3 simply evaluates
+  # whichever the caller happens to match.
   ALBLogsBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -172,12 +209,23 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AWSLogDeliveryWrite
+          - Sid: AWSLogDeliveryWriteRegionalAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub
+                - 'arn:${AWS::Partition}:iam::${AccountId}:root'
+                - AccountId: !FindInMap [ELBServiceAccounts, !Ref 'AWS::Region', AccountId]
+            Action: s3:PutObject
+            Resource: !Sub '${ALBLogsBucket.Arn}/*'
+          - Sid: AWSLogDeliveryWriteServicePrincipal
             Effect: Allow
             Principal:
               Service: logdelivery.elasticloadbalancing.amazonaws.com
             Action: s3:PutObject
             Resource: !Sub '${ALBLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
           - Sid: AWSLogDeliveryAclCheck
             Effect: Allow
             Principal:

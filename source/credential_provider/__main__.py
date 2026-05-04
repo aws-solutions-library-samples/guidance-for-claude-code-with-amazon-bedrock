@@ -283,9 +283,9 @@ class MultiProviderAuth:
         """Determine provider type from domain"""
         domain = self.config["provider_domain"].lower()
 
-        # If provider_type is explicitly set and it's NOT 'auto', use it
+        # If provider_type is explicitly set and is a known provider, use it
         provider_type = self.config.get("provider_type", "auto")
-        if provider_type != "auto":
+        if provider_type in PROVIDER_CONFIGS:
             return provider_type
 
         # Secure provider detection using proper URL parsing
@@ -316,7 +316,8 @@ class MultiProviderAuth:
 
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
-            if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+            okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+            if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                 return "okta"
             elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
@@ -326,6 +327,9 @@ class MultiProviderAuth:
                 return "azure"
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
+                return "cognito"
+            elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                # Cognito User Pool IdP format: cognito-idp.{region}.amazonaws.com
                 return "cognito"
             else:
                 # Fail with clear error for unknown providers

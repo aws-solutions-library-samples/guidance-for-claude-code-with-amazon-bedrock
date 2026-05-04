@@ -741,7 +741,7 @@ Resources:
       Database: !Ref GlueDatabase
       WorkGroup: !Ref AthenaWorkgroup
       Name: Detailed Cost Attribution
-      Description: Calculate costs by user, organization, and model with hourly breakdown
+      Description: Calculate costs by user, organization, and model with hourly breakdown and per-token-type pricing
       QueryString: !Sub |
         WITH hourly_costs AS (
           SELECT
@@ -752,15 +752,49 @@ Resources:
             model,
             type as token_type,
             SUM(token_usage) as tokens,
-            -- Approximate pricing per million tokens
+            -- Bedrock pricing per million tokens (input/output/cache priced separately)
             CASE
-              WHEN model LIKE '%opus-4-6%' THEN 15.00
-              WHEN model LIKE '%opus-4-1%' THEN 15.00
-              WHEN model LIKE '%opus-4%' THEN 15.00
-              WHEN model LIKE '%sonnet-4%' THEN 3.00
-              WHEN model LIKE '%sonnet-3-7%' THEN 3.00
-              WHEN model LIKE '%haiku-3-5%' THEN 0.25
-              ELSE 3.00
+              WHEN type = 'input' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 15.00
+                  WHEN model LIKE '%opus-4-1%' THEN 15.00
+                  WHEN model LIKE '%opus-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-4%' THEN 3.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.80
+                  ELSE 3.00
+                END
+              WHEN type = 'output' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 75.00
+                  WHEN model LIKE '%opus-4-1%' THEN 75.00
+                  WHEN model LIKE '%opus-4%' THEN 75.00
+                  WHEN model LIKE '%sonnet-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 15.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 4.00
+                  ELSE 15.00
+                END
+              WHEN type = 'cacheCreation' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 18.75
+                  WHEN model LIKE '%opus-4-1%' THEN 18.75
+                  WHEN model LIKE '%opus-4%' THEN 18.75
+                  WHEN model LIKE '%sonnet-4%' THEN 3.75
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.75
+                  WHEN model LIKE '%haiku-3-5%' THEN 1.00
+                  ELSE 3.75
+                END
+              WHEN type = 'cacheRead' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 1.50
+                  WHEN model LIKE '%opus-4-1%' THEN 1.50
+                  WHEN model LIKE '%opus-4%' THEN 1.50
+                  WHEN model LIKE '%sonnet-4%' THEN 0.30
+                  WHEN model LIKE '%sonnet-3-7%' THEN 0.30
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.08
+                  ELSE 0.30
+                END
+              ELSE 0
             END as price_per_million
           FROM "${GlueDatabase}".metrics
           WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
@@ -789,6 +823,209 @@ Resources:
           SUM(ROUND(tokens * price_per_million / 1000000, 4)) OVER (PARTITION BY user_email ORDER BY hour) as cumulative_cost_usd
         FROM hourly_costs
         ORDER BY hour DESC, cost_usd DESC;
+
+  MonthlyCostPerUserQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
+      Name: Monthly Cost Per User
+      Description: Monthly cost summary per user with correct input/output/cache pricing
+      QueryString: !Sub |
+        SELECT
+          user_email,
+          DATE_FORMAT(date_trunc('month', from_unixtime(timestamp/1000)), '%Y-%m') as month,
+          SUM(CASE WHEN type = 'input' THEN token_usage ELSE 0 END) as input_tokens,
+          SUM(CASE WHEN type = 'output' THEN token_usage ELSE 0 END) as output_tokens,
+          SUM(CASE WHEN type = 'cacheCreation' THEN token_usage ELSE 0 END) as cache_write_tokens,
+          SUM(CASE WHEN type = 'cacheRead' THEN token_usage ELSE 0 END) as cache_read_tokens,
+          SUM(token_usage) as total_tokens,
+          ROUND(SUM(
+            token_usage *
+            CASE
+              WHEN type = 'input' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 15.00
+                  WHEN model LIKE '%opus-4-1%' THEN 15.00
+                  WHEN model LIKE '%opus-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-4%' THEN 3.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.80
+                  ELSE 3.00
+                END
+              WHEN type = 'output' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 75.00
+                  WHEN model LIKE '%opus-4-1%' THEN 75.00
+                  WHEN model LIKE '%opus-4%' THEN 75.00
+                  WHEN model LIKE '%sonnet-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 15.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 4.00
+                  ELSE 15.00
+                END
+              WHEN type = 'cacheCreation' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 18.75
+                  WHEN model LIKE '%opus-4-1%' THEN 18.75
+                  WHEN model LIKE '%opus-4%' THEN 18.75
+                  WHEN model LIKE '%sonnet-4%' THEN 3.75
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.75
+                  WHEN model LIKE '%haiku-3-5%' THEN 1.00
+                  ELSE 3.75
+                END
+              WHEN type = 'cacheRead' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 1.50
+                  WHEN model LIKE '%opus-4-1%' THEN 1.50
+                  WHEN model LIKE '%opus-4%' THEN 1.50
+                  WHEN model LIKE '%sonnet-4%' THEN 0.30
+                  WHEN model LIKE '%sonnet-3-7%' THEN 0.30
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.08
+                  ELSE 0.30
+                END
+              ELSE 0
+            END / 1000000
+          ), 4) as cost_usd
+        FROM "${GlueDatabase}".metrics
+        WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+        GROUP BY
+          user_email,
+          DATE_FORMAT(date_trunc('month', from_unixtime(timestamp/1000)), '%Y-%m')
+        ORDER BY month DESC, cost_usd DESC;
+
+  MonthlyUserCostDetailQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
+      Name: Monthly Cost Detail for User
+      Description: Monthly cost breakdown by model and token type for a specific user (replace user@example.com)
+      QueryString: !Sub |
+        WITH monthly_costs AS (
+          SELECT
+            DATE_FORMAT(date_trunc('month', from_unixtime(timestamp/1000)), '%Y-%m') as month,
+            user_email,
+            organization_id,
+            model,
+            type as token_type,
+            SUM(token_usage) as tokens,
+            CASE
+              WHEN type = 'input' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 15.00
+                  WHEN model LIKE '%opus-4-1%' THEN 15.00
+                  WHEN model LIKE '%opus-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-4%' THEN 3.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.80
+                  ELSE 3.00
+                END
+              WHEN type = 'output' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 75.00
+                  WHEN model LIKE '%opus-4-1%' THEN 75.00
+                  WHEN model LIKE '%opus-4%' THEN 75.00
+                  WHEN model LIKE '%sonnet-4%' THEN 15.00
+                  WHEN model LIKE '%sonnet-3-7%' THEN 15.00
+                  WHEN model LIKE '%haiku-3-5%' THEN 4.00
+                  ELSE 15.00
+                END
+              WHEN type = 'cacheCreation' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 18.75
+                  WHEN model LIKE '%opus-4-1%' THEN 18.75
+                  WHEN model LIKE '%opus-4%' THEN 18.75
+                  WHEN model LIKE '%sonnet-4%' THEN 3.75
+                  WHEN model LIKE '%sonnet-3-7%' THEN 3.75
+                  WHEN model LIKE '%haiku-3-5%' THEN 1.00
+                  ELSE 3.75
+                END
+              WHEN type = 'cacheRead' THEN
+                CASE
+                  WHEN model LIKE '%opus-4-6%' THEN 1.50
+                  WHEN model LIKE '%opus-4-1%' THEN 1.50
+                  WHEN model LIKE '%opus-4%' THEN 1.50
+                  WHEN model LIKE '%sonnet-4%' THEN 0.30
+                  WHEN model LIKE '%sonnet-3-7%' THEN 0.30
+                  WHEN model LIKE '%haiku-3-5%' THEN 0.08
+                  ELSE 0.30
+                END
+              ELSE 0
+            END as price_per_million
+          FROM "${GlueDatabase}".metrics
+          WHERE user_email = 'user@example.com'  -- Replace with actual email
+            AND year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+          GROUP BY
+            DATE_FORMAT(date_trunc('month', from_unixtime(timestamp/1000)), '%Y-%m'),
+            user_email,
+            organization_id,
+            model,
+            type
+        )
+        SELECT
+          month,
+          user_email,
+          organization_id,
+          model,
+          token_type,
+          tokens,
+          price_per_million,
+          ROUND(tokens * price_per_million / 1000000, 4) as cost_usd,
+          SUM(tokens) OVER (PARTITION BY month ORDER BY model, token_type) as month_cumulative_tokens,
+          SUM(ROUND(tokens * price_per_million / 1000000, 4)) OVER (PARTITION BY month ORDER BY model, token_type) as month_cumulative_cost_usd
+        FROM monthly_costs
+        ORDER BY month DESC, cost_usd DESC;
+
+  QuotaTrackingQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueDatabase
+      WorkGroup: !Ref AthenaWorkgroup
+      Name: Quota Tracking - Users vs Limits
+      Description: Shows all users ranked by quota usage percentage with daily, weekly, and monthly tracking
+      QueryString: !Sub |
+        WITH daily_usage AS (
+          SELECT
+            user_email,
+            DATE_FORMAT(date_trunc('day', from_unixtime(timestamp/1000)), '%Y-%m-%d') as day,
+            SUM(token_usage) as tokens
+          FROM "${GlueDatabase}".metrics
+          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
+            AND month = LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0')
+          GROUP BY
+            user_email,
+            DATE_FORMAT(date_trunc('day', from_unixtime(timestamp/1000)), '%Y-%m-%d')
+        ),
+        user_summary AS (
+          SELECT
+            user_email,
+            SUM(tokens) as monthly_tokens,
+            SUM(CASE WHEN day = DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') THEN tokens ELSE 0 END) as daily_tokens,
+            SUM(CASE WHEN CAST(day AS DATE) >= CURRENT_DATE - INTERVAL '7' DAY THEN tokens ELSE 0 END) as weekly_tokens
+          FROM daily_usage
+          GROUP BY user_email
+        )
+        SELECT
+          user_email,
+          daily_tokens,
+          7500000 as daily_limit,
+          ROUND(daily_tokens * 100.0 / 7500000, 1) as daily_pct,
+          weekly_tokens,
+          52500000 as weekly_limit,
+          ROUND(weekly_tokens * 100.0 / 52500000, 1) as weekly_pct,
+          monthly_tokens,
+          225000000 as monthly_limit,
+          ROUND(monthly_tokens * 100.0 / 225000000, 1) as monthly_pct,
+          CASE
+            WHEN daily_tokens >= 7500000 THEN 'DAILY EXCEEDED'
+            WHEN weekly_tokens >= 52500000 THEN 'WEEKLY EXCEEDED'
+            WHEN monthly_tokens >= 225000000 THEN 'MONTHLY EXCEEDED'
+            WHEN monthly_tokens >= 202500000 THEN 'CRITICAL'
+            WHEN monthly_tokens >= 180000000 THEN 'WARNING'
+            ELSE 'OK'
+          END as status
+        FROM user_summary
+        ORDER BY monthly_pct DESC;
 
   PeakUsageAnalysisQuery:
     Type: AWS::Athena::NamedQuery
@@ -857,45 +1094,10 @@ Resources:
         ORDER BY greatest(tpm_utilization_pct, rpm_utilization_pct) DESC
         LIMIT 100;
 
-  IdentityProviderUsageQuery:
-    Type: AWS::Athena::NamedQuery
-    Properties:
-      Database: !Ref GlueDatabase
-      WorkGroup: !Ref AthenaWorkgroup
-      Name: Usage Analysis by Identity Provider
-      Description: Compare usage patterns across different identity providers
-      QueryString: !Sub |
-        WITH user_providers AS (
-          SELECT
-            user_id,
-            user_email,
-            -- Simple heuristic to guess IdP from email patterns or org structure
-            CASE
-              WHEN user_email LIKE '%okta%' THEN 'Okta'
-              WHEN user_email LIKE '%auth0%' THEN 'Auth0'
-              WHEN user_email LIKE '%amazonaws.com' THEN 'Cognito'
-              WHEN organization_id = 'amazon-internal' THEN 'Cognito'
-              ELSE 'Unknown'
-            END as identity_provider,
-            token_usage,
-            type
-          FROM "${GlueDatabase}".metrics
-          WHERE year = CAST(YEAR(CURRENT_DATE) AS VARCHAR)
-            AND month IN (LPAD(CAST(MONTH(CURRENT_DATE) AS VARCHAR), 2, '0'),
-                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '1' MONTH) AS VARCHAR), 2, '0'),
-                          LPAD(CAST(MONTH(CURRENT_DATE - INTERVAL '2' MONTH) AS VARCHAR), 2, '0'))
-            AND from_unixtime(timestamp/1000) >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
-        )
-        SELECT
-          identity_provider,
-          COUNT(DISTINCT user_id) as unique_users,
-          SUM(CASE WHEN type = 'input' THEN token_usage ELSE 0 END) as input_tokens,
-          SUM(CASE WHEN type = 'output' THEN token_usage ELSE 0 END) as output_tokens,
-          SUM(token_usage) as total_tokens,
-          ROUND(SUM(token_usage) * 0.000015, 2) as estimated_cost_usd
-        FROM user_providers
-        GROUP BY identity_provider
-        ORDER BY total_tokens DESC;
+  # IdentityProviderUsageQuery removed: the classifier relied on brittle
+  # email-pattern heuristics (LIKE '%okta%' etc.) that misattribute most
+  # real-world users. If IdP-segmented usage is needed, prefer adding an
+  # explicit identity_provider column at ingest time.
 
 Outputs:
   AnalyticsBucketName:
@@ -927,30 +1129,5 @@ Outputs:
     Value: !Sub 'https://console.aws.amazon.com/athena/home?region=${AWS::Region}#/query-editor?db=${GlueDatabase}&workgroup=${AthenaWorkgroup}'
 
   SampleQueriesInfo:
-    Description: Information about sample queries
-    Value: !Sub |
-      Enhanced queries have been created for comprehensive usage analysis:
-
-      **Real-Time Metrics:**
-      1. "Detailed TPM and RPM Analysis" - Calculate tokens per minute and requests per minute by user and model
-      2. "Peak Usage and Rate Limit Analysis" - Identify when you're approaching rate limits
-
-      **User Analytics:**
-      3. "Top Users by Token Usage" - Find top 10 users in last 7 days with email and org attribution
-      4. "User Session Analysis" - Analyze session duration, intensity, and cost metrics
-      5. "Token Usage by Email Domain" - Analyze usage patterns by email domain
-
-      **Cost & Attribution:**
-      6. "Detailed Cost Attribution" - Calculate precise costs by user, org, and model with cumulative tracking
-      7. "Token Usage by Organization" - Track token usage across organizations
-
-      **Usage Patterns:**
-      8. "Token Usage by Model and Type" - Analyze usage by model and token type with org context
-      9. "User Activity Pattern" - Show activity patterns by hour of day
-      10. "Usage Analysis by Identity Provider" - Compare usage between Okta, Auth0, and Cognito
-
-      These queries help you:
-      - Track real-time TPM/RPM for rate limit monitoring
-      - Identify heavy users and usage spikes
-      - Calculate accurate cost attribution
-      - Debug metric collection issues
+    Description: Categories of the provisioned Athena named queries
+    Value: 'Real-time: TPM/RPM, Peak-rate-limit. User: Top-users, Session-analysis, Email-domain. Cost: Detailed-cost, Monthly-per-user, Monthly-detail-for-user, Org. Quota: Users-vs-limits. Patterns: By-model-and-type, Activity-pattern.'

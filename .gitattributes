@@ -1,0 +1,24 @@
+# Force Unix line endings on shell scripts regardless of platform git
+# configuration (e.g. Windows clones with core.autocrlf=true).
+# Without this, Windows-cloned repos convert these files to CRLF on
+# checkout, which breaks execution on Linux/macOS with errors like
+# "/bin/bash^M: bad interpreter: No such file or directory".
+
+*.sh             text eol=lf
+install.sh       text eol=lf
+ccwb-install.ps1 text eol=crlf
+
+# Binaries — never touch line endings.
+*.exe   binary
+*.syso  binary
+*.zip   binary
+*.tar   binary
+*.tgz   binary
+*.gz    binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+
+# Prebuilt Go binaries have no extension. Mark them explicitly.
+source/go/prebuilt/*/credential-process-*  binary
+source/go/prebuilt/*/otel-helper-*         binary

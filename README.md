@@ -154,7 +154,7 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
 
 **Software Requirements:**
 
-- Python 3.10-3.13
+- Python 3.10-3.12
 - Poetry (dependency management)
 - AWS CLI v2
 - Git
@@ -222,7 +222,7 @@ The authentication tools support all major platforms:
 
 | Platform | Architecture          | Build Method                | Installation |
 | -------- | --------------------- | --------------------------- | ------------ |
-| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat  |
+| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat + ccwb-install.ps1 |
 | macOS    | ARM64 (Apple Silicon) | Native (PyInstaller)        | install.sh   |
 | macOS    | Intel (x86_64)        | Cross-compile (PyInstaller) | install.sh   |
 | macOS    | Universal (both)      | Universal2 (PyInstaller)    | install.sh   |
