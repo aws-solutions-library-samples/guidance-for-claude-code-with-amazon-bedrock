@@ -58,9 +58,7 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub '${FederatedRoleName}-BedrockPolicy'
-      Description: >
-        Policy for accessing Bedrock services via IAM Identity Center.
-        Attach this to your IDC Permission Set or use with the BedrockIDCRole.
+      Description: 'Policy for accessing Bedrock services via IAM Identity Center. Attach this to your IDC Permission Set or use with the BedrockIDCRole.'
       PolicyDocument:
         Version: '2012-10-17'
         Statement:

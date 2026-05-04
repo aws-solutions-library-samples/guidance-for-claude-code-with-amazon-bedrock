@@ -132,6 +132,10 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
+                _auth_type_quota = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+                if _auth_type_quota == "idc":
+                    console.print("[yellow]Quota monitoring is not supported with IAM Identity Center (no OIDC issuer for JWT authorization).[/yellow]")
+                    return 1
                 if profile.monitoring_enabled:
                     if getattr(profile, "quota_monitoring_enabled", False):
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
@@ -187,9 +191,12 @@ class DeployCommand(Command):
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
-                # Check if quota monitoring is enabled
+                # Check if quota monitoring is enabled (not supported for IDC auth)
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                    if _auth_type_all == "idc":
+                        console.print("[yellow]Skipping quota monitoring — not supported with IAM Identity Center (no OIDC issuer).[/yellow]")
+                    else:
+                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
