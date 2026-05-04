@@ -2098,6 +2098,23 @@ REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
 
+REM Copy CoWork credential helper if present
+if exist "credential-helper-{profile.name}.exe" (
+    echo Copying CoWork credential helper...
+    copy /Y "credential-helper-{profile.name}.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-helper-{profile.name}.exe" >nul
+)
+
+REM Apply CoWork registry settings if present
+if exist "cowork-3p.reg" (
+    echo Applying CoWork registry settings...
+    regedit /s "cowork-3p.reg"
+    if %errorlevel% neq 0 (
+        echo WARNING: Failed to apply CoWork registry settings
+    ) else (
+        echo OK CoWork registry settings applied
+    )
+)
+
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...

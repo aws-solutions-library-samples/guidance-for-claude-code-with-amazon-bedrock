@@ -226,26 +226,30 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
 def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     """Generate a Windows .reg file for Claude Cowork 3P.
 
+    All values are stored as REG_SZ strings — booleans, integers, and arrays
+    included — matching what Claude Desktop reads from the registry.
+
     Returns the path to the generated file.
     """
-    reg_key = r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Anthropic\Claude Desktop"
+    reg_key = r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude"
 
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
     for key, value in _mdm_keys(mdm_config).items():
         if isinstance(value, bool):
-            dword_val = 1 if value else 0
-            lines.append(f'"{key}"=dword:{dword_val:08x}')
-        elif isinstance(value, int):
-            lines.append(f'"{key}"=dword:{value:08x}')
-        elif isinstance(value, list):
-            # Store arrays as JSON-encoded string with escaped inner quotes
-            json_str = json.dumps(value).replace('"', '\\"')
-            lines.append(f'"{key}"="{json_str}"')
+            string_value = "true" if value else "false"
+        elif isinstance(value, (list, dict)):
+            string_value = json.dumps(value)
         else:
-            # Escape backslashes for .reg format
-            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-            lines.append(f'"{key}"="{escaped}"')
+            string_value = str(value)
+        # Windows credential helper path: use %USERPROFILE%, backslashes, .exe suffix
+        if key == "inferenceCredentialHelper":
+            string_value = string_value.replace(str(Path.home()), "%USERPROFILE%").replace("/", "\\")
+            if not string_value.endswith(".exe"):
+                string_value += ".exe"
+        # Escape backslashes and quotes for .reg REG_SZ format
+        escaped = string_value.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'"{key}"="{escaped}"')
 
     lines.append("")  # Trailing newline
 
