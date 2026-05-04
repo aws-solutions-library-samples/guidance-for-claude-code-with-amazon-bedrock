@@ -210,7 +210,7 @@ function Save-Credentials($creds) {
 
 function Clear-CachedCredentials {
     $expired = @{
-        AccessKeyId = "EXPIRED"; SecretAccessKey = "EXPIRED"
+        AccessKeyId = "EXPIRED"; SecretAccessKey = "EXPIRED"  # pragma: allowlist secret
         SessionToken = "EXPIRED"; Expiration = "2000-01-01T00:00:00Z"
     }
     Save-Credentials $expired
