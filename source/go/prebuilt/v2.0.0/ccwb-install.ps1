@@ -65,7 +65,18 @@ if (Test-Path 'otel-helper-windows.exe') {
 # Remove Mark-of-the-Web so Windows doesn't block execution.
 # Binaries downloaded via browser/S3 carry a Zone.Identifier ADS that
 # triggers SmartScreen on first run. Unblock-File strips it silently.
-Get-ChildItem -Path $installDir -Filter '*.exe' | Unblock-File
+Get-ChildItem -Path $installDir -Filter '*.exe' | ForEach-Object {
+    try { Unblock-File -Path $_.FullName } catch {}
+}
+
+# Warm Defender's "Block at First Sight" cloud cache. Defender silently
+# blocks unknown binaries in subprocess/non-interactive contexts until it
+# has seen them run interactively once. Running --version here (in the
+# user's interactive terminal) triggers the cloud verdict and caches it,
+# so subsequent subprocess calls from AWS CLI / Claude Code succeed.
+Write-Host 'Warming Defender cache...'
+& (Join-Path $installDir 'credential-process.exe') --version 2>$null | Out-Null
+& (Join-Path $installDir 'otel-helper.exe') --version 2>$null | Out-Null
 
 # Copy configuration
 Write-Host 'Copying configuration...'
