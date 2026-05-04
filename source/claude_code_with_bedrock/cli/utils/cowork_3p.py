@@ -47,9 +47,7 @@ def build_mdm_config(
     Returns:
         Dictionary of MDM configuration key-value pairs.
     """
-    credential_helper_path = str(
-        Path(f"~/claude-code-with-bedrock/credential-helper-{profile_name}").expanduser()
-    )
+    credential_helper_path = f"~/claude-code-with-bedrock/credential-helper-{profile_name}"
 
     return {
         "inferenceProvider": "bedrock",
@@ -64,62 +62,6 @@ def build_mdm_config(
         "isLocalDevMcpEnabled": True,
     }
 
-
-def generate_credential_helper_wrapper(profile_name: str, bedrock_region: str) -> Path:
-    """Generate a bearer-token credential helper script for CoWork.
-
-    CoWork requires inferenceCredentialHelper to be an absolute path to an executable
-    that takes no arguments and outputs {"token": "bedrock-api-key-..."} JSON.
-    This script calls credential-process, signs a Bedrock bearer token, and outputs
-    the correct JSON format.
-
-    Returns the absolute path to the generated script.
-    """
-    base_dir = Path("~/claude-code-with-bedrock").expanduser()
-    credential_process = base_dir / "credential-process"
-    wrapper_path = base_dir / f"credential-helper-{profile_name}"
-
-    script = f'''#!/usr/bin/env python3
-"""Auto-generated CoWork credential helper — outputs {{"token": "bedrock-api-key-..."}}."""
-
-import base64
-import json
-import subprocess
-import sys
-
-from botocore.auth import SigV4QueryAuth
-from botocore.awsrequest import AWSRequest
-from botocore.credentials import Credentials
-
-try:
-    raw = subprocess.check_output(
-        ["{credential_process}", "--profile", "{profile_name}"],
-        stderr=subprocess.DEVNULL,
-    )
-    creds = json.loads(raw)
-except Exception as e:
-    print(json.dumps({{"error": str(e)}}), file=sys.stderr)
-    sys.exit(1)
-
-try:
-    credentials = Credentials(creds["AccessKeyId"], creds["SecretAccessKey"], creds["SessionToken"])
-    request = AWSRequest(
-        method="POST",
-        url="https://bedrock.amazonaws.com/",
-        headers={{"host": "bedrock.amazonaws.com"}},
-        params={{"Action": "CallWithBearerToken"}},
-    )
-    SigV4QueryAuth(credentials, "bedrock", "{bedrock_region}", expires=43200).add_auth(request)
-    presigned = request.url.replace("https://", "") + "&Version=1"
-    token = "bedrock-api-key-" + base64.b64encode(presigned.encode()).decode()
-    print(json.dumps({{"token": token}}))
-except Exception as e:
-    print(json.dumps({{"error": str(e)}}), file=sys.stderr)
-    sys.exit(1)
-'''
-    wrapper_path.write_text(script)
-    wrapper_path.chmod(0o755)
-    return wrapper_path
 
 
 def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
@@ -242,11 +184,11 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
             string_value = json.dumps(value)
         else:
             string_value = str(value)
-        # Windows credential helper path: use %USERPROFILE%, backslashes, .exe suffix
+        # Windows credential helper path: use %USERPROFILE%, backslashes, .bat suffix
         if key == "inferenceCredentialHelper":
-            string_value = string_value.replace(str(Path.home()), "%USERPROFILE%").replace("/", "\\")
-            if not string_value.endswith(".exe"):
-                string_value += ".exe"
+            string_value = string_value.replace("~", "%USERPROFILE%").replace("/", "\\")
+            if not string_value.endswith(".bat"):
+                string_value += ".bat"
         # Escape backslashes and quotes for .reg REG_SZ format
         escaped = string_value.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'"{key}"="{escaped}"')

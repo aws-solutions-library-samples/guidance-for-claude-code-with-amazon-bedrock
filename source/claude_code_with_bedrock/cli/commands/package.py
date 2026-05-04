@@ -1896,6 +1896,16 @@ cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
 cp config.json ~/claude-code-with-bedrock/
 chmod +x ~/claude-code-with-bedrock/credential-process
 
+# Write per-profile CoWork credential helper wrappers
+PROFILES=$(python3 -c "import json; print(' '.join(json.load(open('config.json')).keys()))" 2>/dev/null || echo "")
+for PROFILE_NAME in $PROFILES; do
+    WRAPPER="$HOME/claude-code-with-bedrock/credential-helper-$PROFILE_NAME"
+    printf '#!/bin/bash\nexec "$HOME/claude-code-with-bedrock/credential-process" --profile "%s"\n' "$PROFILE_NAME" > "$WRAPPER"
+    chmod +x "$WRAPPER"
+    xattr -d com.apple.quarantine "$WRAPPER" 2>/dev/null || true
+    echo "  ✓ Created CoWork credential helper for profile '$PROFILE_NAME'"
+done
+
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
@@ -2098,10 +2108,11 @@ REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
 
-REM Copy CoWork credential helper if present
-if exist "credential-helper-{profile.name}.exe" (
-    echo Copying CoWork credential helper...
-    copy /Y "credential-helper-{profile.name}.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-helper-{profile.name}.exe" >nul
+REM Write per-profile CoWork credential helper wrappers
+for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name"') do (
+    set "WRAPPER=%USERPROFILE%\\claude-code-with-bedrock\\credential-helper-%%p.bat"
+    (echo @echo off & echo "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile %%p) > "!WRAPPER!"
+    echo   OK Created CoWork credential helper for profile '%%p'
 )
 
 REM Apply CoWork registry settings if present
@@ -2510,7 +2521,6 @@ Available metrics include:
             build_mdm_config,
             derive_model_aliases,
             generate_all,
-            generate_credential_helper_wrapper,
         )
 
         console = Console()
@@ -2525,7 +2535,6 @@ Available metrics include:
                 profile_name=profile_name,
             )
 
-            generate_credential_helper_wrapper(profile_name, bedrock_region)
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 
