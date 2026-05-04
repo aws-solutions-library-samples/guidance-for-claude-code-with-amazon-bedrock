@@ -197,11 +197,47 @@ Resources:
         | parse @message /"user.email":"(?<user_email>[^"]*)"/
         | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
         | parse @message /"type":"(?<token_type>[^"]*)"/
-        | stats 
+        | stats
             sum(tokens) as total_tokens,
             count() as total_requests
         by org
         | sort total_tokens desc
+
+  ProjectUsageQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Token Usage by Project
+      LogGroupNames:
+        - /aws/claude-code/metrics
+      QueryString: |
+        filter @message like /claude_code.token.usage/
+        | parse @message /"project":"(?<project>[^"]*)"/
+        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+        | parse @message /"type":"(?<token_type>[^"]*)"/
+        | parse @message /"model":"(?<model>[^"]*)"/
+        | stats
+            sum(tokens) as total_tokens,
+            count() as total_requests,
+            count_distinct(user_email) as unique_users
+        by coalesce(project, "unassigned") as project
+        | sort total_tokens desc
+
+  ProjectTimelineQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Project Usage Timeline (Hourly)
+      LogGroupNames:
+        - /aws/claude-code/metrics
+      QueryString: |
+        filter @message like /claude_code.token.usage/
+        | parse @message /"project":"(?<project>[^"]*)"/
+        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+        | parse @message /"model":"(?<model>[^"]*)"/
+        | stats
+            sum(tokens) as hourly_tokens,
+            count() as hourly_requests
+        by bin(1h) as hour, coalesce(project, "unassigned") as project, model
+        | sort hour desc, hourly_tokens desc
 
   # ==========================================
   # Debugging & Analysis Queries
@@ -426,6 +462,8 @@ Outputs:
       - Claude Code - Cost Analysis by User
       - Claude Code - Cost Analysis by Model
       - Claude Code - Organization Usage Analysis
+      - Claude Code - Token Usage by Project
+      - Claude Code - Project Usage Timeline (Hourly)
       
       Debugging & Analysis:
       - Claude Code - Model Efficiency Analysis

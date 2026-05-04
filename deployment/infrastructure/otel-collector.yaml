@@ -387,6 +387,13 @@ Resources:
               - key: manager
                 from_context: metadata.x-manager
                 action: upsert
+              # Project — populated by otel-helper from the AWS session-tag
+              # claim in the IdP-signed JWT (flat or nested form). Customers
+              # who don't configure that claim fall back to the resource
+              # attribute `project=default` from OTEL_RESOURCE_ATTRIBUTES.
+              - key: project
+                from_context: metadata.x-project
+                action: upsert
           # Add AWS account ID to all metrics
           resource:
             attributes:
@@ -426,6 +433,14 @@ Resources:
 
               # Cost center tracking
               - dimensions: [[cost_center, OTelLib]]
+                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+
+              # Project tracking (set via OTEL_RESOURCE_ATTRIBUTES in per-repo .claude/settings.json)
+              - dimensions: [[project, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[project, cost_center, OTelLib]]
+                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+              - dimensions: [[project, model, OTelLib]]
                 metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
 
               # Token and line types

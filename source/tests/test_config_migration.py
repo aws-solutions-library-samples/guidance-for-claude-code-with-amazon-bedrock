@@ -67,6 +67,36 @@ def test_provider_type_autodetected_from_okta_domain() -> None:
     assert profile.provider_type == "okta"
 
 
+def test_fork_current_fields_preserved() -> None:
+    """Our fork's new fields (cost_attribution_tag_key, enforce_project_isolation,
+    zones) must round-trip through from_dict + kwargs-expansion.
+    """
+    data = json.loads((FIXTURE_DIR / "fork_current.json").read_text())
+    profile = Profile.from_dict(data)
+
+    assert profile.cost_attribution_tag_key == "CostCenter"
+    assert profile.enforce_project_isolation is True
+    assert profile.zones == ["usa", "europe"]
+    assert profile.project_attribution_enabled is True
+    assert profile.okta_auth_server_id == "aus127q2jw1fp1ZkM698"
+    assert profile.azure_auth_mode == "public"
+
+
+def test_fork_early_partial_feature_set() -> None:
+    """A profile from early fork days has project_attribution_enabled but no
+    cost_attribution_tag_key or enforce_project_isolation. Defaults apply.
+    """
+    data = json.loads((FIXTURE_DIR / "fork_early.json").read_text())
+    profile = Profile.from_dict(data)
+
+    assert profile.project_attribution_enabled is True
+    # Defaults from the dataclass
+    assert profile.cost_attribution_tag_key == "Project"
+    assert profile.enforce_project_isolation is False
+    assert profile.zones == []
+    assert profile.okta_auth_server_id == "default"
+
+
 def test_upstream_current_azure_fields_nullable() -> None:
     """Upstream's current config has null Azure confidential-client fields.
     They must deserialize as None, not fail.

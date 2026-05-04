@@ -388,6 +388,41 @@ class DeployCommand(Command):
                     console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
                     return 1
 
+                # Cost-attribution tag-key substitution.
+                #
+                # The isolation-enabled Deny statement keys IAM on
+                # `aws:PrincipalTag/<key>`, where <key> is the Okta claim name
+                # the customer's security team chose (Project, CostCenter, etc.).
+                # CloudFormation's `!Sub` intrinsic function cannot be used as a
+                # YAML map key (cfn-lint surfaces E0000 "Unhashable type"), so
+                # instead the four auth templates carry the sentinel
+                # `__CCWB_COST_TAG_KEY__` in that position and we swap it for
+                # the profile's value before submitting the template body.
+                # Default "Project" keeps the rendered policy byte-identical
+                # for existing deployments.
+                cost_tag_key = getattr(profile, "cost_attribution_tag_key", None) or "Project"
+                # Defensive: the Profile validator already constrains this to
+                # alphanumeric + _ + - via CloudFormation's AllowedPattern on
+                # sibling params. Re-check here so a bad value can't sneak in
+                # via a hand-edited profile JSON.
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", cost_tag_key):
+                    console.print(
+                        f"[red]Invalid cost_attribution_tag_key {cost_tag_key!r}. "
+                        f"Must match [A-Za-z0-9_-]+.[/red]"
+                    )
+                    return 1
+                # Force UTF-8: Python on Windows defaults to cp1252 for text
+                # reads, which fails on the em-dashes used in template comments.
+                template_body = template.read_text(encoding="utf-8")
+                if "__CCWB_COST_TAG_KEY__" in template_body:
+                    rendered = template_body.replace("__CCWB_COST_TAG_KEY__", cost_tag_key)
+                    tmp = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+                    )
+                    tmp.write(rendered)
+                    tmp.close()
+                    template = Path(tmp.name)
+
                 stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
                 # Build parameters
@@ -399,6 +434,11 @@ class DeployCommand(Command):
                         [
                             f"OktaDomain={profile.provider_domain}",
                             f"OktaClientId={profile.client_id}",
+                            # Defaults to "default" when the profile hasn't been
+                            # explicitly configured — matches the CF parameter's
+                            # own default so first-time adoption of this change
+                            # produces zero template diff.
+                            f"OktaAuthServerId={getattr(profile, 'okta_auth_server_id', None) or 'default'}",
                         ]
                     )
                 elif provider_type == "auth0":
