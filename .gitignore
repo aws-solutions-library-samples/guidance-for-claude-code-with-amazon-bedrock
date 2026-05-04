@@ -51,7 +51,8 @@ FEEDBACK.md
 # Temporary test files
 output.json
 *.bak
-test_*.py
+# Local POC test scripts at repo root only -- not source/tests/test_*.py
+/test_*.py
 
 CLAUDE.md
 

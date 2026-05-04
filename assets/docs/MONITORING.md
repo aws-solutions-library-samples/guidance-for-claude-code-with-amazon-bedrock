@@ -80,13 +80,29 @@ The package command generates a `claude-settings/settings.json` file in the dist
     "OTEL_LOGS_EXPORTER": "otlp",
     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-collector-alb-xxxxx.us-east-1.elb.amazonaws.com",
-    "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default"
+    "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default,project=default"
   },
   "otelHeadersHelper": "~/claude-code-with-bedrock/otel-helper"
 }
 ```
 
 The configuration enables Bedrock usage and sets the AWS profile for authentication. It activates telemetry collection and configures the OTLP exporter to send metrics to your deployed collector endpoint. The OTEL resource attributes provide default organizational tags that can be overridden by environment variables.
+
+### Per-project attribution (zero developer effort)
+
+To attribute usage to a specific project without any per-session action from developers, commit a `.claude/settings.json` at the root of each repository:
+
+```json
+{
+  "env": {
+    "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default,project=billing-api"
+  }
+}
+```
+
+Claude Code's project-scope settings override the user-scope `OTEL_RESOURCE_ATTRIBUTES` for that repo, so every metric and event emitted while working in the repo carries `project=billing-api`. All organizational tags must be repeated in the project-scope value because Claude Code replaces (not merges) the variable. The `project` dimension is available in CloudWatch Metrics (namespace `ClaudeCode`), the `Token Usage by Project` / `Monthly Cost by Project and Model` Athena named queries, and the `Claude Code - Token Usage by Project` / `Project Usage Timeline (Hourly)` saved Logs Insights queries.
+
+Repositories without a project-scope settings file fall through to the user-scope default (`project=default`).
 
 The `otelHeadersHelper` points to the installed OTEL helper binary. This helper extracts user information from the JWT token stored by the authentication process and sends it as HTTP headers with each metric. The OTEL Collector then converts these headers into CloudWatch dimensions for user attribution.
 

@@ -1,0 +1,12 @@
+{
+  "ClaudeCode": {
+    "provider_domain": "dev-12345.okta.com",
+    "client_id": "0oa123abc456",
+    "provider_type": "okta",
+    "aws_region": "us-east-1",
+    "credential_storage": "session",
+    "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockFederatedRole",
+    "federation_type": "direct",
+    "max_session_duration": 43200
+  }
+}

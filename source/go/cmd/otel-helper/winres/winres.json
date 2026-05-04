@@ -1,0 +1,49 @@
+{
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "com.bluedoors.otel-helper",
+          "version": "2.0.0.0"
+        },
+        "description": "OpenTelemetry Helper for Claude Code with Amazon Bedrock",
+        "minimum-os": "vista",
+        "execution-level": "asInvoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "unaware",
+        "disable-theming": false,
+        "disable-window-filtering": false,
+        "high-resolution-scrolling-aware": false,
+        "ultra-high-resolution-scrolling-aware": false,
+        "long-path-aware": true,
+        "printer-driver-isolation": false,
+        "gdi-scaling": false,
+        "segment-heap": false,
+        "use-common-controls-v6": false
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "2.0.0.0",
+          "product_version": "2.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "Bluedoors",
+            "FileDescription": "OpenTelemetry Helper for Claude Code with Amazon Bedrock",
+            "FileVersion": "2.0.0.0",
+            "InternalName": "otel-helper",
+            "LegalCopyright": "Copyright 2024-2026 Bluedoors",
+            "OriginalFilename": "otel-helper.exe",
+            "ProductName": "Claude Code with Amazon Bedrock",
+            "ProductVersion": "2.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}
