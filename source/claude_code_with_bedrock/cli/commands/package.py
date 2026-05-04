@@ -2185,14 +2185,15 @@ RUN pyinstaller \
         # Custom AS (endpoints /oauth2/<cas-id>/v1/..., iss=https://<domain>/oauth2/<cas-id>).
         # The JWT iss must match the CFN-registered OIDC provider URL.
         #
-        # Emit the field only when the deployment needs CAS -- i.e. project
-        # attribution is on (it requires admin-defined claims that only a CAS
-        # can carry), OR the operator explicitly set a non-default CAS id.
-        # Omit it otherwise so end-user configs stay byte-compatible with
-        # upstream's Org AS shape.
+        # Emit the field only when the deployment needs CAS -- i.e. zone
+        # isolation or project attribution is on (both require admin-defined
+        # claims that only a CAS can carry), OR the operator explicitly set a
+        # non-default CAS id. Omit it otherwise so end-user configs stay
+        # byte-compatible with upstream's Org AS shape.
         okta_cas_id = getattr(profile, "okta_auth_server_id", "default") or "default"
         needs_cas = (
-            getattr(profile, "project_attribution_enabled", False)
+            getattr(profile, "enforce_project_isolation", False)
+            or getattr(profile, "project_attribution_enabled", False)
             or okta_cas_id != "default"
         )
         if config[profile_name].get("provider_type") == "okta" and needs_cas:
@@ -2209,6 +2210,24 @@ RUN pyinstaller \
             cost_tag_key = getattr(profile, "cost_attribution_tag_key", None) or "Project"
             if cost_tag_key != "Project":
                 config[profile_name]["cost_attribution_tag_key"] = cost_tag_key
+
+        # GDPR per-zone isolation metadata. Emitted only when enforced --
+        # the installer's shell-function block reads this dict to generate
+        # the `case`/`switch` arms that route Claude Code to the right
+        # application inference profile based on the user's Zone session tag.
+        if getattr(profile, "enforce_project_isolation", False):
+            mapping = getattr(profile, "zone_inference_profiles", {}) or {}
+            if not mapping:
+                raise RuntimeError(
+                    "enforce_project_isolation=True but no zone_inference_profiles are "
+                    "recorded in the profile. Run `ccwb inference-profile create "
+                    "--zone <z> --model opus-4-6` once per zone, then retry `ccwb package`."
+                )
+            config[profile_name]["enforce_project_isolation"] = True
+            config[profile_name]["zone_inference_profiles"] = mapping
+            config[profile_name]["model_short_name"] = getattr(
+                profile, "model_short_name", "opus-4-6"
+            )
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -2263,10 +2282,12 @@ RUN pyinstaller \
 
         When the bundle was built via --prebuilt, both install.sh and
         ccwb-install.ps1 have already been copied from source/go/prebuilt/
-        latest/. Those prebuilt scripts are the source of truth. The inline
-        templates below are a legacy fallback for non-prebuilt builds
-        (--go, PyInstaller, CodeBuild) that don't copy installer scripts;
-        we skip them whenever the prebuilt pair is already in place.
+        latest/. Those prebuilt scripts are the source of truth going
+        forward (they include all features such as per-zone isolation
+        wrapper generation). The inline templates below are a legacy
+        fallback for non-prebuilt builds (--go, PyInstaller, CodeBuild)
+        that don't copy installer scripts; we skip them whenever the
+        prebuilt pair is already in place.
         """
         installer_path = output_dir / "install.sh"
         prebuilt_ps1 = output_dir / "ccwb-install.ps1"
@@ -2872,21 +2893,30 @@ Available metrics include:
             claude_dir = output_dir / "claude-settings"
             claude_dir.mkdir(exist_ok=True)
 
-            # Start with basic settings required for Bedrock
-            settings = {
-                "env": {
-                    "CLAUDE_CODE_USE_BEDROCK": "1",
-                    # AWS_REGION determines which regional Bedrock endpoint the SDK uses.
-                    "AWS_REGION": self._get_bedrock_region_for_profile(profile),
-                    # AWS_PROFILE is used by both AWS SDK and otel-helper
-                    "AWS_PROFILE": profile_name,
-                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
-                    # directly without requiring the AWS CLI or ~/.aws/config.
-                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
-                    # install.sh/install.bat with the actual binary path at install time.
-                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
-                }
+            # Start with basic settings required for Bedrock. Under per-zone
+            # isolation, we deliberately OMIT AWS_REGION from settings.json.
+            # Reason: users pick their zone's inference-profile ARN at
+            # runtime via `/model <arn>`, and the ARN's region is specific
+            # to their zone (eu-west-3 for France, us-east-1 for US, etc.).
+            # Pinning AWS_REGION to the ccwb init-time default (commonly
+            # us-west-2) forces the AWS SDK to route EU ARN calls to a US
+            # endpoint, returning "invalid ARN" / region-mismatch errors.
+            # Without AWS_REGION pinned, the SDK reads it from the user's
+            # shell env, which admins can pair with ANTHROPIC_MODEL per zone.
+            isolation_on_for_settings = bool(getattr(profile, "enforce_project_isolation", False))
+            settings_env: dict[str, str] = {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                # AWS_PROFILE is used by both AWS SDK and otel-helper
+                "AWS_PROFILE": profile_name,
+                # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
+                # directly without requiring the AWS CLI or ~/.aws/config.
+                # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                # install.sh/install.bat with the actual binary path at install time.
+                "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
             }
+            if not isolation_on_for_settings:
+                settings_env["AWS_REGION"] = self._get_bedrock_region_for_profile(profile)
+            settings = {"env": settings_env}
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
             # Only add the field if the user wants it disabled
@@ -2897,8 +2927,19 @@ Available metrics include:
             if profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
-            # Add ANTHROPIC_MODEL if user selected a model during init
-            if hasattr(profile, "selected_model") and profile.selected_model:
+            # Model selection. Two modes:
+            #
+            # * isolation OFF (default): pin ANTHROPIC_MODEL in settings.json
+            #   so Claude Code uses the cross-region id without further user
+            #   configuration — identical to upstream behavior.
+            # * isolation ON (GDPR): leave ANTHROPIC_MODEL OUT of settings.json.
+            #   The user must explicitly set it to the application-inference-profile
+            #   ARN for their zone (the installer prints the per-zone ARN table).
+            #   IAM is the actual security boundary: a cross-region foundation-model
+            #   ARN does not carry a Zone tag, so invocation is denied under
+            #   isolation regardless of what the user sets in ANTHROPIC_MODEL.
+            isolation_on = bool(getattr(profile, "enforce_project_isolation", False))
+            if not isolation_on and hasattr(profile, "selected_model") and profile.selected_model:
                 settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
 
                 # Set all model tier env vars using the CRIS prefix from init.

@@ -109,6 +109,31 @@ class Profile:
     # Ignored when provider_type != "okta".
     okta_auth_server_id: str = "default"
 
+    # GDPR per-zone inference-profile isolation. When True, the deployed IAM
+    # policy denies bedrock:InvokeModel* unless the caller's session tags
+    # Project and Zone are both present AND the invoked resource's Zone tag
+    # matches the caller's Zone tag. Off by default so existing deployments
+    # are undisturbed.
+    enforce_project_isolation: bool = False
+
+    # Informational list of compliance zones the admin intends to use
+    # (e.g. ["eu", "us"]). Used by the wizard to print reminders; not
+    # load-bearing at runtime.
+    zones: list[str] = field(default_factory=list)
+
+    # Bedrock cross-region model short-name used when suggesting a default
+    # inference-profile name in `ccwb inference-profile create` output.
+    # Not used at runtime; purely a convenience default.
+    model_short_name: str = "opus-4-6"
+
+    # Map of zone -> model-short -> application-inference-profile ARN,
+    # populated by `ccwb inference-profile create`. Emitted into config.json
+    # by `ccwb package` and consumed by the installer to generate the
+    # shell-function `case`/`switch` arms that route Claude Code to the
+    # right profile based on the user's Zone session tag.
+    # Shape: {"eu": {"opus-4-6": "arn:aws:bedrock:..."}, "us": {...}}
+    zone_inference_profiles: dict[str, dict[str, str]] = field(default_factory=dict)
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
