@@ -36,7 +36,6 @@ class TestModelConfiguration:
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
             "opus-4-7",
-            "opus-4-7-1m",
             "opus-4-6",
             "opus-4-1",
             "opus-4",
@@ -95,9 +94,6 @@ class TestModelConfiguration:
         opus_4_7_profiles = get_available_profiles_for_model("opus-4-7")
         assert set(opus_4_7_profiles) == {"us", "eu", "au", "japan", "global"}  # Opus 4.7 has JP + global and regional
 
-        opus_4_7_1m_profiles = get_available_profiles_for_model("opus-4-7-1m")
-        assert set(opus_4_7_1m_profiles) == {"us", "eu", "au", "japan", "global"}  # Same profiles as Opus 4.7
-
         opus_4_6_profiles = get_available_profiles_for_model("opus-4-6")
         assert set(opus_4_6_profiles) == {"us", "eu", "au", "global"}  # Opus 4.6 has global and regional profiles
 
@@ -128,7 +124,6 @@ class TestModelConfiguration:
     def test_get_model_id_for_profile(self):
         """Test getting model IDs for specific profiles."""
         # Test US profiles
-        assert get_model_id_for_profile("opus-4-7-1m", "us") == "us.anthropic.claude-opus-4-7[1m]"
         assert get_model_id_for_profile("opus-4-7", "us") == "us.anthropic.claude-opus-4-7"
         assert get_model_id_for_profile("opus-4-6", "us") == "us.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("opus-4-1", "us") == "us.anthropic.claude-opus-4-1-20250805-v1:0"
