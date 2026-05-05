@@ -28,7 +28,26 @@ jobs:
             console.log('PR Body Length:', prBody.length);
 
             // ──────────────────────────────────────────────────────────
-            // 1. Determine if this PR affects code (skip for docs-only)
+            // 1. Check if this PR modifies the validation workflow itself
+            // ──────────────────────────────────────────────────────────
+            const { data: prFiles } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const modifiesValidation = prFiles.some(file =>
+              file.filename === '.github/workflows/pr-testing-validation.yml' ||
+              file.filename === '.github/PULL_REQUEST_TEMPLATE.md'
+            );
+
+            if (modifiesValidation) {
+              console.log('✅ PR modifies validation workflow — skipping validation');
+              return;
+            }
+
+            // ──────────────────────────────────────────────────────────
+            // 2. Determine if this PR affects code (skip for docs-only)
             // ──────────────────────────────────────────────────────────
             const isDocumentationOnly =
               prBody.toLowerCase().includes('[x] documentation update') &&
