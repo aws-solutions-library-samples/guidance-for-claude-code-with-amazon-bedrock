@@ -1,0 +1,52 @@
+name: Build macOS ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'ccwb profile name'
+        required: true
+        default: 'allcode-dev-us-east-1'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: source
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.BUILD_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Build macOS ARM64 package
+        working-directory: source
+        run: |
+          poetry run ccwb package --target-platform macos-arm64 --profile ${{ github.event.inputs.profile }} <<EOF
+          n
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccwb-macos-arm64-${{ github.run_id }}
+          path: source/dist/${{ github.event.inputs.profile }}/*/
+          retention-days: 30
