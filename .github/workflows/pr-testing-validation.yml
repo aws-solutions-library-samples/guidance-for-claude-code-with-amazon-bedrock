@@ -1,0 +1,245 @@
+name: PR Testing Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  validate-testing-evidence:
+    name: Validate Testing Evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check PR Description for Testing Evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            console.log('PR Number:', prNumber);
+            console.log('PR Author:', prAuthor);
+            console.log('PR Body Length:', prBody.length);
+
+            // ──────────────────────────────────────────────────────────
+            // 1. Determine if this PR affects code (skip for docs-only)
+            // ──────────────────────────────────────────────────────────
+            const isDocumentationOnly =
+              prBody.toLowerCase().includes('[x] documentation update') &&
+              !prBody.toLowerCase().includes('[x] bug fix') &&
+              !prBody.toLowerCase().includes('[x] new feature') &&
+              !prBody.toLowerCase().includes('[x] breaking change') &&
+              !prBody.toLowerCase().includes('[x] infrastructure/deployment change') &&
+              !prBody.toLowerCase().includes('[x] dependency update');
+
+            if (isDocumentationOnly) {
+              console.log('✅ Documentation-only PR — skipping testing validation');
+              return;
+            }
+
+            // ──────────────────────────────────────────────────────────
+            // 2. Check for testing evidence sections
+            // ──────────────────────────────────────────────────────────
+            const hasTestingEvidence = prBody.includes('## Testing Evidence');
+            const hasTestEnvironment = prBody.includes('### Test Environment');
+            const hasTestResults = prBody.includes('### Test Results');
+
+            // Check for filled-in test environment
+            const testEnvRegex = /\*\*AWS Region\*\*:\s*<!--.+?-->(.+?)$/m;
+            const pythonVersionRegex = /\*\*Python Version\*\*:\s*<!--.+?-->(.+?)$/m;
+            const osRegex = /\*\*Operating System\*\*:\s*<!--.+?-->(.+?)$/m;
+
+            const awsRegionFilled = testEnvRegex.test(prBody) &&
+              testEnvRegex.exec(prBody)?.[1]?.trim().length > 0;
+            const pythonVersionFilled = pythonVersionRegex.test(prBody) &&
+              pythonVersionRegex.exec(prBody)?.[1]?.trim().length > 0;
+            const osFilled = osRegex.test(prBody) &&
+              osRegex.exec(prBody)?.[1]?.trim().length > 0;
+
+            // Check for at least one checked testing item
+            const cliTestingChecked = /- \[x\] \*\*`ccwb/i.test(prBody) ||
+                                      /- \[x\] \*\*Binary Installation/i.test(prBody) ||
+                                      /- \[x\] \*\*End-to-End/i.test(prBody);
+
+            const unitTestsChecked = /- \[x\] All existing tests pass locally/i.test(prBody);
+
+            // Check for non-empty Test Results section
+            const testResultsRegex = /### Test Results[\s\S]*?```([\s\S]*?)```/;
+            const testResultsMatch = testResultsRegex.exec(prBody);
+            const hasNonEmptyTestResults = testResultsMatch &&
+              testResultsMatch[1].trim().length > 20 && // More than just placeholder
+              !testResultsMatch[1].includes('[Paste terminal output');
+
+            // ──────────────────────────────────────────────────────────
+            // 3. Validate completeness
+            // ──────────────────────────────────────────────────────────
+            const validationResults = {
+              hasTestingEvidence,
+              hasTestEnvironment,
+              hasTestResults,
+              awsRegionFilled,
+              pythonVersionFilled,
+              osFilled,
+              cliTestingChecked,
+              unitTestsChecked,
+              hasNonEmptyTestResults
+            };
+
+            console.log('Validation Results:', validationResults);
+
+            const isValid =
+              hasTestingEvidence &&
+              (cliTestingChecked || unitTestsChecked) &&
+              (hasNonEmptyTestResults || cliTestingChecked);
+
+            // ──────────────────────────────────────────────────────────
+            // 4. Post comment with validation results
+            // ──────────────────────────────────────────────────────────
+            if (!isValid) {
+              const missingItems = [];
+
+              if (!hasTestingEvidence) {
+                missingItems.push('❌ Missing "Testing Evidence" section');
+              }
+              if (!cliTestingChecked && !unitTestsChecked) {
+                missingItems.push('❌ No testing checkboxes marked (check at least one: unit tests, ccwb commands, or binary installation)');
+              }
+              if (!hasNonEmptyTestResults && !cliTestingChecked) {
+                missingItems.push('❌ "Test Results" section is empty — please paste terminal output, logs, or attach screenshots');
+              }
+
+              const warningItems = [];
+              if (!awsRegionFilled) warningItems.push('⚠️  AWS Region not specified');
+              if (!pythonVersionFilled) warningItems.push('⚠️  Python version not specified');
+              if (!osFilled) warningItems.push('⚠️  Operating system not specified');
+
+              const commentBody = `
+            ## ⚠️  Testing Evidence Required
+
+            Thank you for your contribution! To prevent breaking changes, all PRs affecting code must include testing evidence.
+
+            **What's Missing:**
+            ${missingItems.map(item => `- ${item}`).join('\n')}
+
+            ${warningItems.length > 0 ? `**Additional Context Recommended:**\n${warningItems.map(item => `- ${item}`).join('\n')}\n` : ''}
+
+            **How to Fix:**
+
+            1. **Run the affected commands** — Test the changes locally:
+               \`\`\`bash
+               # For CLI changes:
+               ccwb init      # If initialization logic changed
+               ccwb deploy    # If deployment templates changed
+               ccwb build     # If build process changed
+               ccwb package   # If packaging changed
+               ccwb test      # If credential flow changed
+
+               # For binary changes:
+               ./install.sh   # Test installation script
+               \`\`\`
+
+            2. **Check the testing checkboxes** in the PR description for commands you tested
+
+            3. **Attach evidence** — One of the following:
+               - Screenshot showing successful command execution
+               - Terminal output pasted in the "Test Results" section
+               - Link to successful GitHub Actions run
+               - Comment with testing logs
+
+            4. **Fill in test environment** — Specify AWS region, Python version, and OS
+
+            ---
+
+            **Why this matters:** This repo controls authentication and deployment for enterprise Claude Code users. Untested changes can break production deployments, cause authentication failures, or introduce security vulnerabilities. Testing evidence helps reviewers verify that changes work as expected.
+
+            **Need help?** See [CONTRIBUTING.md](../CONTRIBUTING.md) for testing guidelines.
+
+            <sub>🤖 This check runs automatically on every PR. Once you update the PR description with testing evidence, this comment will be updated.</sub>
+              `;
+
+              // Post or update comment
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber
+              });
+
+              const botComment = comments.find(comment =>
+                comment.user.type === 'Bot' &&
+                comment.body.includes('Testing Evidence Required')
+              );
+
+              if (botComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: commentBody
+                });
+                console.log('Updated existing comment');
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: commentBody
+                });
+                console.log('Created new comment');
+              }
+
+              // Add label
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['needs-testing-evidence']
+              });
+
+              // Fail the check
+              core.setFailed('PR is missing required testing evidence. Please update the PR description with testing details.');
+
+            } else {
+              console.log('✅ Testing evidence validation passed');
+
+              // Remove label if it exists
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'needs-testing-evidence'
+                });
+              } catch (error) {
+                // Label might not exist, that's fine
+                console.log('Label removal skipped (may not exist)');
+              }
+
+              // Delete bot comment if it exists
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber
+              });
+
+              const botComment = comments.find(comment =>
+                comment.user.type === 'Bot' &&
+                comment.body.includes('Testing Evidence Required')
+              );
+
+              if (botComment) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id
+                });
+                console.log('Deleted validation warning comment');
+              }
+            }
