@@ -2,15 +2,9 @@ name: Build macOS ARM64
 
 on:
   workflow_dispatch:
-    inputs:
-      profile:
-        description: 'ccwb profile name'
-        required: true
-        default: 'allcode-dev-us-east-1'
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   build:
@@ -25,28 +19,30 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install PyInstaller and dependencies
+        run: |
+          pip install pyinstaller boto3 requests PyJWT cryptography keyring questionary rich cleo pydantic pyyaml
+
+      - name: Build ARM64 binary
         working-directory: source
         run: |
-          pip install poetry
-          poetry install
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.BUILD_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Build macOS ARM64 package
-        working-directory: source
-        run: |
-          poetry run ccwb package --target-platform macos-arm64 --profile ${{ github.event.inputs.profile }} <<EOF
-          n
-          EOF
+          pyinstaller \
+            --onefile \
+            --clean \
+            --noconfirm \
+            --target-arch=arm64 \
+            --name=credential-process-macos-arm64 \
+            --distpath=./dist-arm64 \
+            --log-level=WARN \
+            --hidden-import=keyring.backends.macOS \
+            --hidden-import=keyring.backends.SecretService \
+            --hidden-import=keyring.backends.Windows \
+            --hidden-import=keyring.backends.chainer \
+            credential_provider/__main__.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ccwb-macos-arm64-${{ github.run_id }}
-          path: source/dist/${{ github.event.inputs.profile }}/*/
+          name: credential-process-macos-arm64
+          path: source/dist-arm64/credential-process-macos-arm64
           retention-days: 30
