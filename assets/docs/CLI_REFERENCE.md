@@ -611,9 +611,6 @@ poetry run ccwb cowork generate -o ./my-mdm-configs/
 
 # Specific profile
 poetry run ccwb cowork generate --profile Production
-
-# Custom credential helper TTL
-poetry run ccwb cowork generate --credential-helper-ttl 7200
 ```
 
 **Options:**
@@ -624,7 +621,6 @@ poetry run ccwb cowork generate --credential-helper-ttl 7200
 | `--output`, `-o` | Output directory | `dist/cowork-3p/` |
 | `--format`, `-f` | Output format: `all`, `json`, `mobileconfig`, `reg` | `all` |
 | `--models`, `-m` | Comma-separated model aliases | Auto-detected from profile |
-| `--credential-helper-ttl` | Credential helper cache TTL (seconds) | `3600` |
 
 **Generated files:**
 
