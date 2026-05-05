@@ -24,10 +24,12 @@ jobs:
             const prBody = context.payload.pull_request.body || '';
             const prNumber = context.payload.pull_request.number;
             const prAuthor = context.payload.pull_request.user.login;
+            const isFork = context.payload.pull_request.head.repo.fork;
 
             console.log('PR Number:', prNumber);
             console.log('PR Author:', prAuthor);
             console.log('PR Body Length:', prBody.length);
+            console.log('Is Fork PR:', isFork);
 
             // ──────────────────────────────────────────────────────────
             // 1. Determine if this PR affects code (skip for docs-only)
@@ -101,7 +103,7 @@ jobs:
               (hasNonEmptyTestResults || cliTestingChecked);
 
             // ──────────────────────────────────────────────────────────
-            // 4. Post comment with validation results
+            // 4. Post comment with validation results (skip for forks)
             // ──────────────────────────────────────────────────────────
             if (!isValid) {
               const missingItems = [];
@@ -121,7 +123,9 @@ jobs:
               if (!pythonVersionFilled) warningItems.push('⚠️  Python version not specified');
               if (!osFilled) warningItems.push('⚠️  Operating system not specified');
 
-              const commentBody = `
+              // Only post comments/labels for non-fork PRs (fork PRs lack write permissions)
+              if (!isFork) {
+                const commentBody = `
             ## ⚠️  Testing Evidence Required
 
             Thank you for your contribution! To prevent breaking changes, all PRs affecting code must include testing evidence.
@@ -165,81 +169,100 @@ jobs:
             <sub>🤖 This check runs automatically on every PR. Once you update the PR description with testing evidence, this comment will be updated.</sub>
               `;
 
-              // Post or update comment
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber
-              });
+                try {
+                  // Post or update comment
+                  const { data: comments } = await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber
+                  });
 
-              const botComment = comments.find(comment =>
-                comment.user.type === 'Bot' &&
-                comment.body.includes('Testing Evidence Required')
-              );
+                  const botComment = comments.find(comment =>
+                    comment.user.type === 'Bot' &&
+                    comment.body.includes('Testing Evidence Required')
+                  );
 
-              if (botComment) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: botComment.id,
-                  body: commentBody
-                });
-                console.log('Updated existing comment');
+                  if (botComment) {
+                    await github.rest.issues.updateComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: botComment.id,
+                      body: commentBody
+                    });
+                    console.log('Updated existing comment');
+                  } else {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: prNumber,
+                      body: commentBody
+                    });
+                    console.log('Created new comment');
+                  }
+
+                  // Add label
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    labels: ['needs-testing-evidence']
+                  });
+                } catch (error) {
+                  console.log('⚠️  Could not post comment/label (permissions issue):', error.message);
+                }
               } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  body: commentBody
-                });
-                console.log('Created new comment');
+                console.log('⚠️  Fork PR detected - skipping comment/label (no write permissions)');
               }
 
-              // Add label
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                labels: ['needs-testing-evidence']
-              });
-
-              // Fail the check
-              core.setFailed('PR is missing required testing evidence. Please update the PR description with testing details.');
+              // Fail the check (works for both fork and non-fork PRs)
+              const failureMessage = isFork
+                ? 'PR is missing required testing evidence. Fork PRs cannot receive automated comments - please check the PR template for testing requirements.'
+                : 'PR is missing required testing evidence. Please update the PR description with testing details.';
+              core.setFailed(failureMessage);
 
             } else {
               console.log('✅ Testing evidence validation passed');
 
-              // Remove label if it exists
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  name: 'needs-testing-evidence'
-                });
-              } catch (error) {
-                // Label might not exist, that's fine
-                console.log('Label removal skipped (may not exist)');
-              }
+              // Clean up comments/labels (skip for forks due to permission restrictions)
+              if (!isFork) {
+                try {
+                  // Remove label if it exists
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    name: 'needs-testing-evidence'
+                  });
+                } catch (error) {
+                  // Label might not exist, that's fine
+                  console.log('Label removal skipped (may not exist)');
+                }
 
-              // Delete bot comment if it exists
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber
-              });
+                try {
+                  // Delete bot comment if it exists
+                  const { data: comments } = await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber
+                  });
 
-              const botComment = comments.find(comment =>
-                comment.user.type === 'Bot' &&
-                comment.body.includes('Testing Evidence Required')
-              );
+                  const botComment = comments.find(comment =>
+                    comment.user.type === 'Bot' &&
+                    comment.body.includes('Testing Evidence Required')
+                  );
 
-              if (botComment) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: botComment.id
-                });
-                console.log('Deleted validation warning comment');
+                  if (botComment) {
+                    await github.rest.issues.deleteComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: botComment.id
+                    });
+                    console.log('Deleted validation warning comment');
+                  }
+                } catch (error) {
+                  console.log('⚠️  Could not delete comment (permissions issue):', error.message);
+                }
+              } else {
+                console.log('✅ Fork PR validation passed - skipping cleanup (no write permissions)');
               }
             }
