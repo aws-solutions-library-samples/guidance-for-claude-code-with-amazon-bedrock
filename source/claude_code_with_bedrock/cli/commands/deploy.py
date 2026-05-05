@@ -133,8 +133,8 @@ class DeployCommand(Command):
                     return 1
             elif stack_arg == "quota":
                 _auth_type_quota = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
-                if _auth_type_quota == "idc":
-                    console.print("[yellow]Quota monitoring is not supported with IAM Identity Center (no OIDC issuer for JWT authorization).[/yellow]")
+                if _auth_type_quota in ("idc", "none"):
+                    console.print("[yellow]Quota monitoring is not supported without an OIDC provider (no issuer for JWT authorization).[/yellow]")
                     return 1
                 if profile.monitoring_enabled:
                     if getattr(profile, "quota_monitoring_enabled", False):
@@ -191,10 +191,10 @@ class DeployCommand(Command):
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
-                # Check if quota monitoring is enabled (not supported for IDC auth)
+                # Check if quota monitoring is enabled (requires OIDC provider for JWT auth)
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    if _auth_type_all == "idc":
-                        console.print("[yellow]Skipping quota monitoring — not supported with IAM Identity Center (no OIDC issuer).[/yellow]")
+                    if _auth_type_all in ("idc", "none"):
+                        console.print("[yellow]Skipping quota monitoring — not supported without an OIDC provider (no issuer for JWT authorization).[/yellow]")
                     else:
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
             # Check if CodeBuild is enabled
@@ -1155,27 +1155,32 @@ class DeployCommand(Command):
 
     def _show_stack_outputs(self, profile, console: Console, config: Config) -> None:
         """Show outputs from deployed stacks."""
-        # Get auth stack outputs
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        # Get auth stack outputs (skip for auth_type=none since no auth stack is deployed)
+        _auth_type_output = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+        if _auth_type_output == "none":
+            console.print("\n[bold]Authentication:[/bold]")
+            console.print("• No authentication stack (using existing AWS credentials)")
+        else:
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            outputs = get_stack_outputs(auth_stack, profile.aws_region)
 
-        if outputs:
-            console.print("\n[bold]Authentication Stack:[/bold]")
-            console.print(f"• Federation Type: [cyan]{outputs.get('FederationType', 'cognito')}[/cyan]")
-            if outputs.get("FederationType") == "direct" or outputs.get("DirectSTSRoleArn", "").startswith("arn:"):
-                console.print(f"• Direct STS Role ARN: [cyan]{outputs.get('DirectSTSRoleArn', 'N/A')}[/cyan]")
-            if outputs.get("IdentityPoolId"):
-                console.print(f"• Identity Pool ID: [cyan]{outputs.get('IdentityPoolId', 'N/A')}[/cyan]")
-            # FederatedRoleArn is the new output name from split templates
-            role_arn = outputs.get("FederatedRoleArn") or outputs.get("BedrockRoleArn", "N/A")
-            console.print(f"• Role ARN: [cyan]{role_arn}[/cyan]")
-            console.print(f"• OIDC Provider: [cyan]{outputs.get('OIDCProviderArn', 'N/A')}[/cyan]")
+            if outputs:
+                console.print("\n[bold]Authentication Stack:[/bold]")
+                console.print(f"• Federation Type: [cyan]{outputs.get('FederationType', 'cognito')}[/cyan]")
+                if outputs.get("FederationType") == "direct" or outputs.get("DirectSTSRoleArn", "").startswith("arn:"):
+                    console.print(f"• Direct STS Role ARN: [cyan]{outputs.get('DirectSTSRoleArn', 'N/A')}[/cyan]")
+                if outputs.get("IdentityPoolId"):
+                    console.print(f"• Identity Pool ID: [cyan]{outputs.get('IdentityPoolId', 'N/A')}[/cyan]")
+                # FederatedRoleArn is the new output name from split templates
+                role_arn = outputs.get("FederatedRoleArn") or outputs.get("BedrockRoleArn", "N/A")
+                console.print(f"• Role ARN: [cyan]{role_arn}[/cyan]")
+                console.print(f"• OIDC Provider: [cyan]{outputs.get('OIDCProviderArn', 'N/A')}[/cyan]")
 
-            # Save federated_role_arn to profile for direct STS federation
-            direct_sts_role = outputs.get("DirectSTSRoleArn")
-            if direct_sts_role and direct_sts_role != "N/A" and direct_sts_role.startswith("arn:"):
-                profile.federated_role_arn = direct_sts_role
-                config.save_profile(profile)
+                # Save federated_role_arn to profile for direct STS federation
+                direct_sts_role = outputs.get("DirectSTSRoleArn")
+                if direct_sts_role and direct_sts_role != "N/A" and direct_sts_role.startswith("arn:"):
+                    profile.federated_role_arn = direct_sts_role
+                    config.save_profile(profile)
 
         # Get networking outputs if enabled
         if profile.monitoring_enabled:
