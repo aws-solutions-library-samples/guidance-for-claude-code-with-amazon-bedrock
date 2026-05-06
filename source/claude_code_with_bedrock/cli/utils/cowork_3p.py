@@ -15,7 +15,7 @@ from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 # CoWork 3P model aliases — defined by Anthropic's Claude Desktop client.
 # These may differ from the model IDs used by Claude Code (ANTHROPIC_MODEL env var).
 # The ccwb cowork generate --models flag allows admins to override if needed.
-COWORK_DEFAULT_ALIASES = ["opus", "sonnet", "haiku", "opusplan"]
+COWORK_DEFAULT_ALIASES = ["opus", "sonnet", "haiku"]
 
 
 def derive_model_aliases() -> list[str]:
@@ -23,9 +23,9 @@ def derive_model_aliases() -> list[str]:
 
     Returns the standard alias list. Admins can override via the --models CLI flag.
 
-    Note: CoWork model aliases (opus, sonnet, haiku, opusplan) are resolved by
-    Claude Desktop internally and may differ from the CRIS model IDs configured
-    for Claude Code via ANTHROPIC_MODEL.
+    Note: CoWork model aliases (opus, sonnet, haiku) are resolved by Claude Desktop
+    internally and may differ from the CRIS model IDs configured for Claude Code via
+    ANTHROPIC_MODEL.
     """
     return list(COWORK_DEFAULT_ALIASES)
 
@@ -46,7 +46,7 @@ def build_mdm_config(
 
     Args:
         bedrock_region: AWS region for Bedrock API calls.
-        model_aliases: List of model aliases (e.g., ["opus", "sonnet", "opusplan"]).
+        model_aliases: List of model aliases (e.g., ["opus", "sonnet", "haiku"]).
         profile_name: AWS named profile (matches ~/.aws/config stanza).
 
     Returns:
