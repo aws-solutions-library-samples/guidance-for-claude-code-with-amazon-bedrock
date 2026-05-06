@@ -88,7 +88,7 @@ In the **Bedrock Credentials** section, configure:
 - **AWS profile**: The named profile the installer writes to `~/.aws/config` — `ClaudeCode` by default
 
 In the **Identity & Models** section:
-- **Model list**: Add the model aliases your organization has enabled (e.g., `opus`, `sonnet`, `opusplan`)
+- **Model list**: Add the model aliases your organization has enabled (e.g., `opus`, `sonnet`, `haiku`)
 
 Once configured, use **Export** to generate a `.mobileconfig` (macOS) or `.reg` (Windows) file for MDM distribution, or **Apply locally** for immediate testing.
 
@@ -107,7 +107,7 @@ For automated deployment at scale, create an MDM profile with the following esse
   "inferenceProvider": "bedrock",
   "inferenceBedrockRegion": "us-west-2",
   "inferenceBedrockProfile": "ClaudeCode",
-  "inferenceModels": ["opus", "sonnet", "haiku", "opusplan"]
+  "inferenceModels": ["opus", "sonnet", "haiku"]
 }
 ```
 
@@ -123,9 +123,9 @@ For automated deployment at scale, create an MDM profile with the following esse
 | `inferenceBedrockProfile` | Name of the AWS named profile in `~/.aws/config` that Claude Desktop should use for Bedrock calls. The installer configures this profile with `credential_process` pointing at the bundled `credential-process` binary |
 | `inferenceBedrockRegion` | AWS region for Bedrock API calls (e.g., `us-west-2`, `us-east-1`) |
 | `inferenceBedrockAwsDir` | Path to the directory containing AWS config/credentials files (default: `~/.aws`) |
-| `inferenceModels` | JSON array of model aliases available to users (`opus`, `sonnet`, `haiku`, `opusplan`). First entry is the default |
+| `inferenceModels` | JSON array of model aliases available to users (`opus`, `sonnet`, `haiku`). First entry is the default |
 
-> **Note:** The model aliases used by CoWork 3P (`opus`, `sonnet`, `haiku`, `opusplan`) are resolved internally by Claude Desktop and may differ from the CRIS model IDs configured for Claude Code via `ANTHROPIC_MODEL`. The `ccwb cowork generate` command includes all available aliases by default. Use `--models` to customize the list for your organization.
+> **Note:** The model aliases used by CoWork 3P (`opus`, `sonnet`, `haiku`) are resolved internally by Claude Desktop and may differ from the CRIS model IDs configured for Claude Code via `ANTHROPIC_MODEL`. The `ccwb cowork generate` command includes all available aliases by default. Use `--models` to customize the list for your organization.
 
 ### How Credentials Flow
 
@@ -178,7 +178,7 @@ The full set of MDM configuration keys is documented in the [official Anthropic 
 | `inferenceBedrockRegion` | string | AWS region for Bedrock |
 | `inferenceBedrockAwsDir` | string | Path to AWS config directory (default: `~/.aws`) |
 | `inferenceBedrockBaseUrl` | string | Override Bedrock endpoint (e.g., VPC interface endpoint) |
-| `inferenceModels` | string | JSON-encoded array of model aliases (e.g., `"[\"opus\", \"sonnet\", \"haiku\", \"opusplan\"]"`) |
+| `inferenceModels` | string | JSON-encoded array of model aliases (e.g., `"[\"opus\", \"sonnet\", \"haiku\"]"`) |
 | `inferenceBedrockProfile` | string | Named AWS profile (in `~/.aws/config`) that Claude Desktop uses for Bedrock authentication |
 
 > **Note:** Array-typed MDM keys (such as `inferenceModels`, `managedMcpServers`, `allowedWorkspaceFolders`) are delivered as **JSON-encoded strings** — the value is a string containing a JSON array, not a native array. For example, `inferenceModels` is set to `"[\"opus\", \"sonnet\"]"`, not `["opus", "sonnet"]`. The Claude Desktop Setup UI and the `.mobileconfig`/`.reg` export handle this encoding automatically.

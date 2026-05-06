@@ -2425,7 +2425,7 @@ Available metrics include:
                 # Claude Code uses these to resolve the correct CRIS-prefixed
                 # models for each tier (small/fast, default sonnet/opus/haiku).
                 # This ensures all tiers respect the admin's routing geography
-                # choice and works correctly with model aliases like 'opusplan'.
+                # choice and works correctly with model aliases like 'opus', 'sonnet', 'haiku'.
                 from claude_code_with_bedrock.models import resolve_model_for_tier
                 cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
 
