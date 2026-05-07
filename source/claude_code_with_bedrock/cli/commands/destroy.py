@@ -66,7 +66,7 @@ class DestroyCommand(Command):
         stacks_to_destroy = []
         if stack_arg:
             valid = [
-                "auth", "networking", "monitoring", "dashboard", "analytics",
+                "auth", "networking", "monitoring", "dashboard", "cowork-dashboard", "analytics",
                 "s3bucket", "distribution", "quota", "codebuild",
             ]
             if stack_arg in valid:
@@ -78,7 +78,7 @@ class DestroyCommand(Command):
         else:
             # Destroy all stacks in reverse order
             stacks_to_destroy = [
-                "codebuild", "quota", "analytics", "dashboard",
+                "codebuild", "quota", "analytics", "cowork-dashboard", "dashboard",
                 "distribution", "monitoring", "networking", "s3bucket", "auth",
             ]
 
@@ -117,6 +117,8 @@ class DestroyCommand(Command):
             if stack == "monitoring" and not profile.monitoring_enabled:
                 continue
             if stack == "dashboard" and not profile.monitoring_enabled:
+                continue
+            if stack == "cowork-dashboard" and not profile.monitoring_enabled:
                 continue
             if stack == "networking" and not profile.monitoring_enabled:
                 continue
