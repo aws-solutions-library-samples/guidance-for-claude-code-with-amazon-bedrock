@@ -714,6 +714,10 @@ class DeployCommand(Command):
                                 oidc_jwks = (
                                     f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
                                 )
+                        elif provider_type == "keycloak":
+                            domain = provider_domain.removeprefix("https://").removeprefix("http://").rstrip("/")
+                            oidc_issuer = f"https://{domain}"
+                            oidc_jwks = f"https://{domain}/protocol/openid-connect/certs"
                         if oidc_issuer and oidc_jwks:
                             params.append(f"OidcIssuerUrl={oidc_issuer}")
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
