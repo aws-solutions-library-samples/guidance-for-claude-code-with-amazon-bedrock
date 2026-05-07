@@ -360,6 +360,10 @@ class PackageCommand(Command):
             # Single platform specified
             platforms_to_build = [target_platform]
 
+        # Track requested platforms to distinguish between:
+        # 1. Async builds (Windows via CodeBuild) - should generate config files
+        # 2. Failed builds - should error out
+        requested_platforms = platforms_to_build.copy()
         built_executables = []
         built_otel_helpers = []
 
@@ -367,6 +371,7 @@ class PackageCommand(Command):
         for platform_name in platforms_to_build:
             # Build credential process
             console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
+            executable_path = None  # Initialize to avoid undefined variable error
             try:
                 executable_path = self._build_executable(output_dir, platform_name)
                 # Check if this was an async Windows build
@@ -393,11 +398,25 @@ class PackageCommand(Command):
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
-        # Check if any binaries were built
-        if not built_executables:
+        # Check if Windows is being built via CodeBuild (async, no local binary)
+        has_codebuild_windows = "windows" in requested_platforms and not any(
+            p == "windows" for p, _ in built_executables
+        )
+
+        # Check if any binaries were built OR if Windows is building in CodeBuild
+        if not built_executables and not has_codebuild_windows:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
+
+        # Inform user about CodeBuild status
+        if has_codebuild_windows and not built_executables:
+            console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
+            console.print("Local configuration files will be generated now for distribution.")
+            console.print("\nTo check build status:")
+            console.print("  [cyan]poetry run ccwb builds --status latest[/cyan]")
+            console.print("\nOnce complete, retrieve binaries with:")
+            console.print("  [cyan]poetry run ccwb distribute[/cyan]\n")
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
@@ -406,8 +425,12 @@ class PackageCommand(Command):
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Create installer
+        # For Windows-only CodeBuild builds, we still need to generate installer scripts
+        # even though we don't have local binaries yet
         console.print("[cyan]Creating installer script...[/cyan]")
-        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+        self._create_installer(
+            output_dir, profile, built_executables, built_otel_helpers, has_windows_codebuild=has_codebuild_windows
+        )
 
         # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
         if built_otel_helpers:
@@ -1451,8 +1474,12 @@ RUN pyinstaller \
             console.print("\n[dim]Note: Package will be saved locally in the dist/ folder[/dim]")
 
         console.print("\n[dim]View logs in AWS Console:[/dim]")
+        # Properly encode the build ID (contains colon) and include region
+        from urllib.parse import quote
+        encoded_build_id = quote(build_id, safe='')
+        aws_region = profile_obj.aws_region if profile_obj else "us-east-1"
         console.print(
-            f"  [dim]https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id.split(':')[1]}[/dim]"
+            f"  [dim]https://{aws_region}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{encoded_build_id}[/dim]"
         )
 
         # Return None since we don't have a local binary path
@@ -1840,8 +1867,18 @@ RUN pyinstaller \
         except Exception:
             return "oidc"  # Default to generic OIDC on parsing error
 
-    def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
-        """Create simple installer script."""
+    def _create_installer(
+        self, output_dir: Path, profile, built_executables, built_otel_helpers=None, has_windows_codebuild=False
+    ) -> Path:
+        """Create simple installer script.
+
+        Args:
+            output_dir: Directory to write installer scripts to
+            profile: Deployment profile configuration
+            built_executables: List of (platform, path) tuples for locally built binaries
+            built_otel_helpers: List of (platform, path) tuples for OTEL helper binaries
+            has_windows_codebuild: Whether Windows binaries are being built in CodeBuild (async)
+        """
 
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
@@ -2083,8 +2120,8 @@ echo
             f.write(installer_content)
         installer_path.chmod(0o755)
 
-        # Create Windows installer only if Windows builds are enabled (CodeBuild)
-        if "windows" in platforms_built or (hasattr(profile, "enable_codebuild") and profile.enable_codebuild):
+        # Create Windows installer if Windows binaries were built locally OR are being built in CodeBuild
+        if "windows" in platforms_built or has_windows_codebuild:
             self._create_windows_installer(output_dir, profile)
 
         return installer_path
