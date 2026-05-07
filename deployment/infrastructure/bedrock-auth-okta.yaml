@@ -66,7 +66,7 @@ Resources:
   OktaOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
-      Url: !Sub 'https://${OktaDomain}'
+      Url: !Sub 'https://${OktaDomain}/oauth2/default'
       ClientIdList:
         - !Ref OktaClientId
       ThumbprintList:
@@ -309,7 +309,7 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       IdentityPoolId: !Ref CognitoIdentityPool
-      IdentityProviderName: !Ref OktaDomain
+      IdentityProviderName: !Sub '${OktaDomain}/oauth2/default'
       UseDefaults: false
       PrincipalTags:
         UserEmail: email
