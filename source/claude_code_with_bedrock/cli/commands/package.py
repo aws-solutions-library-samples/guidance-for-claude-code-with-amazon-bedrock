@@ -2441,6 +2441,31 @@ Available metrics include:
                 if opus_model:
                     settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_model
 
+                # Override with Application Inference Profile ARNs when configured
+                opus_arn = getattr(profile, "inference_profile_opus_arn", None)
+                sonnet_arn = getattr(profile, "inference_profile_sonnet_arn", None)
+                haiku_arn = getattr(profile, "inference_profile_haiku_arn", None)
+
+                if opus_arn:
+                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_arn
+                if sonnet_arn:
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_arn
+                if haiku_arn:
+                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = haiku_arn
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_arn
+
+                # Override ANTHROPIC_MODEL with the primary inference profile ARN
+                # so Claude Code uses the inference profile for all code paths.
+                # Only override if the matching tier has an ARN configured —
+                # otherwise ANTHROPIC_MODEL stays on the CRIS model ID.
+                model_id = profile.selected_model
+                if "opus" in model_id and opus_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = opus_arn
+                elif "sonnet" in model_id and sonnet_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = sonnet_arn
+                elif "haiku" in model_id and haiku_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = haiku_arn
+
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
                 # Get monitoring stack outputs

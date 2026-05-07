@@ -82,6 +82,11 @@ class Profile:
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
+    # Application Inference Profile support (per-tier ARNs)
+    inference_profile_opus_arn: str | None = None  # Optional inference profile ARN for Opus tier
+    inference_profile_sonnet_arn: str | None = None  # Optional inference profile ARN for Sonnet tier
+    inference_profile_haiku_arn: str | None = None  # Optional inference profile ARN for Haiku tier
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
@@ -169,6 +174,12 @@ class Profile:
                 regions = data["allowed_bedrock_regions"]
                 if any(r.startswith("us-") for r in regions):
                     data["cross_region_profile"] = "us"
+
+        # Filter out any keys not in the Profile dataclass to prevent TypeError
+        import dataclasses
+
+        valid_fields = {f.name for f in dataclasses.fields(cls)}
+        data = {k: v for k, v in data.items() if k in valid_fields}
 
         return cls(**data)
 
