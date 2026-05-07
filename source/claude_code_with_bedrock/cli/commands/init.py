@@ -738,11 +738,14 @@ class InitCommand(Command):
 
                         # Extract zone ID or handle external DNS provider case
                         if selected_zone.startswith("Skip"):
-                            zone_id = "use external DNS provider"
+                            # User selected external DNS - don't pass HostedZoneId to CloudFormation
+                            config["monitoring"]["hosted_zone_id"] = None
+                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                            console.print("[yellow]Note: You'll need to create DNS records manually (instructions shown at deploy)[/yellow]")
                         else:
                             zone_id = selected_zone.split("(")[-1].rstrip(")")
-                        config["monitoring"]["hosted_zone_id"] = zone_id
-                        console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                            config["monitoring"]["hosted_zone_id"] = zone_id
+                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
                         if zones_error:
                             console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")

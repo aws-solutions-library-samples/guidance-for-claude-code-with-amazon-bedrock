@@ -680,9 +680,12 @@ class DeployCommand(Command):
                 monitoring_config = getattr(profile, "monitoring_config", {})
                 if monitoring_config.get("custom_domain"):
                     params.append(f"CustomDomainName={monitoring_config['custom_domain']}")
-                if monitoring_config.get("hosted_zone_id"):
-                    params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
-                    # Add OIDC JWT validation parameters for ALB (all IdP types)
+
+                    # Add Route53 hosted zone ID if provided (not required for external DNS)
+                    if monitoring_config.get("hosted_zone_id"):
+                        params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
+
+                    # Add OIDC JWT validation parameters for ALB (required for HTTPS, regardless of DNS provider)
                     provider_type = profile.provider_type or ""
                     provider_domain = profile.provider_domain
                     if provider_type and provider_domain:
