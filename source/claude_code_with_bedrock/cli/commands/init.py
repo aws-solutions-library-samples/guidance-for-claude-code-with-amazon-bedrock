@@ -716,7 +716,7 @@ class InitCommand(Command):
                         zone_choices = [
                             f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
                         ]
-                        zone_choices.append("Skip (use external DNS provider)")
+                        zone_choices.append("Skip (no Route53 managed domain)")
 
                         # Pre-select existing zone if available
                         default_zone = None
@@ -728,7 +728,7 @@ class InitCommand(Command):
 
                         # If HTTPS was previously configured without Route53 (Skip), restore that choice
                         if default_zone is None and existing_custom_domain and not existing_zone_id:
-                            default_zone = zone_choices[-1]  # "Skip (use external DNS provider)" is always last
+                            default_zone = zone_choices[-1]  # "Skip (no Route53 managed domain)" is always last
 
                         selected_zone = questionary.select(
                             "Select DNS management for the domain:",
@@ -736,8 +736,11 @@ class InitCommand(Command):
                             default=default_zone if default_zone else zone_choices[0],
                         ).ask()
 
-                        # Extract zone ID
-                        zone_id = selected_zone.split("(")[-1].rstrip(")")
+                        # Extract zone ID or handle external DNS provider case
+                        if selected_zone.startswith("Skip"):
+                            zone_id = "use external DNS provider"
+                        else:
+                            zone_id = selected_zone.split("(")[-1].rstrip(")")
                         config["monitoring"]["hosted_zone_id"] = zone_id
                         console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                     else:
