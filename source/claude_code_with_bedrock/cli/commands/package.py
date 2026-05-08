@@ -360,6 +360,10 @@ class PackageCommand(Command):
             # Single platform specified
             platforms_to_build = [target_platform]
 
+        # Track requested platforms to distinguish between:
+        # 1. Async builds (Windows via CodeBuild) - should generate config files
+        # 2. Failed builds - should error out
+        requested_platforms = platforms_to_build.copy()
         built_executables = []
         built_otel_helpers = []
 
@@ -367,6 +371,7 @@ class PackageCommand(Command):
         for platform_name in platforms_to_build:
             # Build credential process
             console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
+            executable_path = None  # Initialize to avoid undefined variable error
             try:
                 executable_path = self._build_executable(output_dir, platform_name)
                 # Check if this was an async Windows build
@@ -393,11 +398,25 @@ class PackageCommand(Command):
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
-        # Check if any binaries were built
-        if not built_executables:
+        # Check if Windows is being built via CodeBuild (async, no local binary)
+        has_codebuild_windows = "windows" in requested_platforms and not any(
+            p == "windows" for p, _ in built_executables
+        )
+
+        # Check if any binaries were built OR if Windows is building in CodeBuild
+        if not built_executables and not has_codebuild_windows:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
+
+        # Inform user about CodeBuild status
+        if has_codebuild_windows and not built_executables:
+            console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
+            console.print("Local configuration files will be generated now for distribution.")
+            console.print("\nTo check build status:")
+            console.print("  [cyan]poetry run ccwb builds --status latest[/cyan]")
+            console.print("\nOnce complete, retrieve binaries with:")
+            console.print("  [cyan]poetry run ccwb distribute[/cyan]\n")
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
@@ -406,8 +425,12 @@ class PackageCommand(Command):
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Create installer
+        # For Windows-only CodeBuild builds, we still need to generate installer scripts
+        # even though we don't have local binaries yet
         console.print("[cyan]Creating installer script...[/cyan]")
-        self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+        self._create_installer(
+            output_dir, profile, built_executables, built_otel_helpers, has_windows_codebuild=has_codebuild_windows
+        )
 
         # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
         if built_otel_helpers:
@@ -1451,8 +1474,12 @@ RUN pyinstaller \
             console.print("\n[dim]Note: Package will be saved locally in the dist/ folder[/dim]")
 
         console.print("\n[dim]View logs in AWS Console:[/dim]")
+        # Properly encode the build ID (contains colon) and include region
+        from urllib.parse import quote
+        encoded_build_id = quote(build_id, safe='')
+        aws_region = profile_obj.aws_region if profile_obj else "us-east-1"
         console.print(
-            f"  [dim]https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id.split(':')[1]}[/dim]"
+            f"  [dim]https://{aws_region}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{encoded_build_id}[/dim]"
         )
 
         # Return None since we don't have a local binary path
@@ -1840,8 +1867,18 @@ RUN pyinstaller \
         except Exception:
             return "oidc"  # Default to generic OIDC on parsing error
 
-    def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
-        """Create simple installer script."""
+    def _create_installer(
+        self, output_dir: Path, profile, built_executables, built_otel_helpers=None, has_windows_codebuild=False
+    ) -> Path:
+        """Create simple installer script.
+
+        Args:
+            output_dir: Directory to write installer scripts to
+            profile: Deployment profile configuration
+            built_executables: List of (platform, path) tuples for locally built binaries
+            built_otel_helpers: List of (platform, path) tuples for OTEL helper binaries
+            has_windows_codebuild: Whether Windows binaries are being built in CodeBuild (async)
+        """
 
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
@@ -1862,16 +1899,6 @@ echo "Organization: {profile.provider_domain}"
 echo
 
 
-# Check prerequisites
-echo "Checking prerequisites..."
-
-if command -v aws &> /dev/null; then
-    echo "✓ AWS CLI found (optional)"
-else
-    echo "ℹ  AWS CLI not found — not required. The credential process binary handles authentication directly."
-fi
-
-echo "✓ Prerequisites found"
 
 # Detect platform and architecture
 echo
@@ -2029,6 +2056,13 @@ for PROFILE_NAME in $PROFILES; do
     # Remove old profile if exists
     sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
 
+    # Purge any stale stanza from ~/.aws/credentials. The credential chain
+    # resolves that file before credential_process in ~/.aws/config, so a
+    # leftover [PROFILE_NAME] block (e.g. EXPIRED placeholder written by an
+    # older ccwb auth logout) would shadow credential_process and break
+    # Cowork Desktop with a 403 InvalidClientTokenId.
+    sed -i.bak "/\\[$PROFILE_NAME\\]/,/^$/d" ~/.aws/credentials 2>/dev/null || true
+
     # Get profile-specific region from config.json
     PROFILE_REGION=$(python3 -c "import json; print(json.load(open('config.json')).get('$PROFILE_NAME', \
     {{}}).get('aws_region', '$DEFAULT_REGION'))")
@@ -2042,6 +2076,22 @@ EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
+# Apply CoWork configuration profile on macOS if present
+if [[ "$OSTYPE" == "darwin"* ]] && [ -f "cowork-3p.mobileconfig" ]; then
+    echo
+    echo "Applying CoWork configuration profile..."
+    # `open` launches System Settings > Profiles so the user can review and
+    # click Install. macOS does not allow silent installation of unsigned
+    # configuration profiles without MDM enrollment.
+    if open "cowork-3p.mobileconfig" 2>/dev/null; then
+        echo "✓ CoWork configuration profile opened in System Settings"
+        echo "  → Click 'Install' to complete CoWork 3P setup"
+    else
+        echo "⚠️  Could not open cowork-3p.mobileconfig automatically"
+        echo "   Double-click the file to install it manually"
+    fi
+fi
+
 echo
 echo "======================================"
 echo "✓ Installation complete!"
@@ -2054,12 +2104,12 @@ done
 echo
 echo "To use Claude Code authentication:"
 echo "  export AWS_PROFILE=<profile-name>"
-echo "  aws sts get-caller-identity"
+echo "  claude"
 echo
 echo "Example:"
 FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
 echo "  export AWS_PROFILE=$FIRST_PROFILE"
-echo "  aws sts get-caller-identity"
+echo "  claude"
 echo
 echo "Note: Authentication will automatically open your browser when needed."
 echo
@@ -2070,8 +2120,8 @@ echo
             f.write(installer_content)
         installer_path.chmod(0o755)
 
-        # Create Windows installer only if Windows builds are enabled (CodeBuild)
-        if "windows" in platforms_built or (hasattr(profile, "enable_codebuild") and profile.enable_codebuild):
+        # Create Windows installer if Windows binaries were built locally OR are being built in CodeBuild
+        if "windows" in platforms_built or has_windows_codebuild:
             self._create_windows_installer(output_dir, profile)
 
         return installer_path
@@ -2090,19 +2140,6 @@ echo Claude Code Authentication Installer
 echo ======================================
 echo.
 echo Organization: {profile.provider_domain}
-echo.
-
-REM Check prerequisites
-echo Checking prerequisites...
-
-where aws >nul 2>&1
-if %errorlevel% neq 0 (
-    echo INFO: AWS CLI not found -- not required. The credential process binary handles authentication directly.
-) else (
-    echo OK AWS CLI found [optional]
-)
-
-echo OK Prerequisites found
 echo.
 
 REM Create directory
@@ -2127,6 +2164,20 @@ if exist "otel-helper-windows.exe" (
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+
+REM Apply CoWork registry settings if present
+if exist "cowork-3p.reg" (
+    echo Applying CoWork registry settings...
+    REM Remove the policy key first so stale values (e.g. old inferenceCredentialHelper)
+    REM don't linger alongside the new config — regedit /s only adds/updates, never deletes.
+    reg delete "HKCU\\SOFTWARE\\Policies\\Claude" /f >nul 2>&1
+    regedit /s "cowork-3p.reg"
+    if %errorlevel% neq 0 (
+        echo WARNING: Failed to apply CoWork registry settings
+    ) else (
+        echo OK CoWork registry settings applied
+    )
+)
 
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
@@ -2153,30 +2204,24 @@ if exist "claude-settings" (
     )
 )
 
-REM Configure AWS profiles
+REM Configure AWS profiles by writing ~/.aws/config directly (no AWS CLI dependency)
 echo.
 echo Configuring AWS profiles...
 
-REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name"') do (
-    echo Configuring AWS profile: %%p
+if not exist "%USERPROFILE%\\.aws" mkdir "%USERPROFILE%\\.aws"
 
-    REM Get profile-specific region
-    for /f %%r in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.'"'"'%%p'"'"'.aws_region"') do set PROFILE_REGION=%%r
+REM Purge any stale stanza from %USERPROFILE%\.aws\credentials. The credential
+REM chain resolves that file before credential_process in %USERPROFILE%\.aws\config,
+REM so a leftover [profile-name] block (e.g. EXPIRED placeholder written by an
+REM older ccwb auth logout) would shadow credential_process and break Cowork
+REM Desktop with a 403 InvalidClientTokenId.
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\[' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
 
-
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
-    )
-
-    echo   OK Created AWS profile '%%p'
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\[profile ' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza; Write-Host ('  OK Configured AWS profile ' + $p) }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to configure AWS profiles
+    pause
+    exit /b 1
 )
 
 echo.
@@ -2191,12 +2236,12 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
 echo.
 echo To use Claude Code authentication:
 echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
+echo   claude
 echo.
 echo Example:
 for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do (
     echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
+    echo   claude
 )
 echo.
 echo Note: Authentication will automatically open your browser when needed.
@@ -2233,7 +2278,7 @@ pause
 3. Use the AWS profile:
    ```bash
    export AWS_PROFILE=ClaudeCode
-   aws sts get-caller-identity
+   claude
    ```
 
 ### Windows
@@ -2278,39 +2323,34 @@ install.bat
 ```
 
 The installer will:
-- Check for AWS CLI installation
 - Copy authentication tools to `%USERPROFILE%\\claude-code-with-bedrock`
-- Configure the AWS profile "ClaudeCode"
-- Test the authentication
+- Configure the AWS profile "ClaudeCode" in `%USERPROFILE%\\.aws\\config`
+- Apply CoWork registry settings (if included)
 
 #### Step 4: Use Claude Code
 ```cmd
 # Set the AWS profile
 set AWS_PROFILE=ClaudeCode
 
-# Verify authentication works
-aws sts get-caller-identity
-
-# Your browser will open automatically for authentication if needed
+# Run Claude Code (authentication opens your browser on first use)
+claude
 ```
 
 For PowerShell users:
 ```powershell
 $env:AWS_PROFILE = "ClaudeCode"
-aws sts get-caller-identity
+claude
 ```
 
 ## What This Does
 
 - Installs the Claude Code authentication tools
-- Configures your AWS CLI to use {profile.provider_domain} for authentication
+- Configures an AWS named profile in `~/.aws/config` (or `%USERPROFILE%\\.aws\\config`) that points at the bundled `credential-process` binary
 - Sets up automatic credential refresh via your browser
 
 ## Requirements
 
-- Python 3.8 or later
-- AWS CLI v2
-- pip3
+- Claude Code CLI (`claude`)
 
 ## Troubleshooting
 
@@ -2422,7 +2462,7 @@ Available metrics include:
                 # Claude Code uses these to resolve the correct CRIS-prefixed
                 # models for each tier (small/fast, default sonnet/opus/haiku).
                 # This ensures all tiers respect the admin's routing geography
-                # choice and works correctly with model aliases like 'opusplan'.
+                # choice and works correctly with model aliases like 'opus', 'sonnet', 'haiku'.
                 from claude_code_with_bedrock.models import resolve_model_for_tier
                 cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
 
@@ -2437,6 +2477,31 @@ Available metrics include:
                     settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_model
                 if opus_model:
                     settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_model
+
+                # Override with Application Inference Profile ARNs when configured
+                opus_arn = getattr(profile, "inference_profile_opus_arn", None)
+                sonnet_arn = getattr(profile, "inference_profile_sonnet_arn", None)
+                haiku_arn = getattr(profile, "inference_profile_haiku_arn", None)
+
+                if opus_arn:
+                    settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_arn
+                if sonnet_arn:
+                    settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet_arn
+                if haiku_arn:
+                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = haiku_arn
+                    settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku_arn
+
+                # Override ANTHROPIC_MODEL with the primary inference profile ARN
+                # so Claude Code uses the inference profile for all code paths.
+                # Only override if the matching tier has an ARN configured —
+                # otherwise ANTHROPIC_MODEL stays on the CRIS model ID.
+                model_id = profile.selected_model
+                if "opus" in model_id and opus_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = opus_arn
+                elif "sonnet" in model_id and sonnet_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = sonnet_arn
+                elif "haiku" in model_id and haiku_arn:
+                    settings["env"]["ANTHROPIC_MODEL"] = haiku_arn
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
@@ -2523,7 +2588,6 @@ Available metrics include:
             build_mdm_config,
             derive_model_aliases,
             generate_all,
-            generate_credential_helper_wrapper,
         )
 
         console = Console()
@@ -2538,7 +2602,6 @@ Available metrics include:
                 profile_name=profile_name,
             )
 
-            generate_credential_helper_wrapper(profile_name, bedrock_region)
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 

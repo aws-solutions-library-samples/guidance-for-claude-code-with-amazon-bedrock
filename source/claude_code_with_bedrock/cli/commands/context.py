@@ -199,6 +199,10 @@ class ContextShowCommand(Command):
             console.print("\n[bold cyan]Bedrock Configuration:[/bold cyan]")
             if profile.selected_model:
                 console.print(f"  Selected Model:       {profile.selected_model}")
+            for tier, attr in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+                arn = getattr(profile, attr, None)
+                if arn:
+                    console.print(f"  {tier} Inference Profile: {arn}")
             if profile.selected_source_region:
                 console.print(f"  Source Region:        {profile.selected_source_region}")
             if profile.cross_region_profile:
