@@ -2514,12 +2514,13 @@ Available metrics include:
                 # Only override if the matching tier has an ARN configured —
                 # otherwise ANTHROPIC_MODEL stays on the CRIS model ID.
                 model_id = profile.selected_model
-                if "opus" in model_id and opus_arn:
-                    settings["env"]["ANTHROPIC_MODEL"] = opus_arn
-                elif "sonnet" in model_id and sonnet_arn:
-                    settings["env"]["ANTHROPIC_MODEL"] = sonnet_arn
-                elif "haiku" in model_id and haiku_arn:
-                    settings["env"]["ANTHROPIC_MODEL"] = haiku_arn
+                if model_id:
+                    if "opus" in model_id and opus_arn:
+                        settings["env"]["ANTHROPIC_MODEL"] = opus_arn
+                    elif "sonnet" in model_id and sonnet_arn:
+                        settings["env"]["ANTHROPIC_MODEL"] = sonnet_arn
+                    elif "haiku" in model_id and haiku_arn:
+                        settings["env"]["ANTHROPIC_MODEL"] = haiku_arn
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:

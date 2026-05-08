@@ -86,7 +86,8 @@ class TestQ3AutoSelectFallsThroughToTierQuestions:
         # questionary.confirm calls in execution order:
         # 1. Enable Windows builds? → False
         # 2. Enable CoWork MDM config? → False
-        confirm_values = [False, False]
+        # 3. Configure Application Inference Profiles? → False
+        confirm_values = [False, False, False]
 
         with patch("questionary.select", side_effect=_select_side_effect(select_values)), patch(
             "questionary.confirm", side_effect=_confirm_side_effect(confirm_values)
@@ -136,7 +137,10 @@ class TestQ3AutoSelectFallsThroughToTierQuestions:
 
         # Q3 = "sonnet-4-6" (explicit model)
         select_values = ["__disabled__", "eu-central-1", "eu", "sonnet-4-6", "__auto__", "sonnet-4-6", "haiku-4-5"]
-        confirm_values = [False, False]
+        # 1. Enable Windows builds? → False
+        # 2. Enable CoWork MDM config? → False
+        # 3. Configure Application Inference Profiles? → False
+        confirm_values = [False, False, False]
 
         with patch("questionary.select", side_effect=_select_side_effect(select_values)), patch(
             "questionary.confirm", side_effect=_confirm_side_effect(confirm_values)
