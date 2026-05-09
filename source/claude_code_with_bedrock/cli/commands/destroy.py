@@ -153,7 +153,16 @@ class DestroyCommand(Command):
                     )
                 console.print()
             else:
-                console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+                # Check for silently retained resources (DeletionPolicy: Retain)
+                retained = self._get_retained_resources(stack_name, region)
+                if retained:
+                    all_failed_resources.extend(retained)
+                    console.print(f"[yellow]⚠ {stack.capitalize()} stack — retained resources:[/yellow]")
+                    for r in retained:
+                        console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+                    console.print()
+                else:
+                    console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 
         # Clear cached credentials — they reference deleted IAM roles
         self._clear_cached_credentials(profile, console)
@@ -225,6 +234,11 @@ class DestroyCommand(Command):
         """Get list of resources that failed to delete from a stack."""
         cf_manager = CloudFormationManager(region=region)
         return cf_manager.get_failed_resources(stack_name)
+
+    def _get_retained_resources(self, stack_name: str, region: str) -> list[dict]:
+        """Get list of resources silently retained (DeletionPolicy: Retain) during stack deletion."""
+        cf_manager = CloudFormationManager(region=region)
+        return cf_manager.get_retained_resources(stack_name)
 
     def _clear_cached_credentials(self, profile, console: Console) -> None:
         """Clear cached credentials that reference deleted IAM roles."""

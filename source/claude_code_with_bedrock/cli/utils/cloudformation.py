@@ -282,6 +282,31 @@ class CloudFormationManager:
         except Exception:
             return []
 
+    def get_retained_resources(self, stack_name: str) -> list[dict[str, str]]:
+        """Get resources that were retained (DeletionPolicy: Retain) during stack deletion.
+
+        These resources are silently skipped by CloudFormation and won't appear in
+        get_failed_resources(). They still exist in the account and need manual cleanup.
+        """
+        try:
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            retained = []
+            for resource in response.get("StackResources", []):
+                if resource["ResourceStatus"] == "DELETE_SKIPPED":
+                    retained.append(
+                        {
+                            "logical_id": resource["LogicalResourceId"],
+                            "physical_id": resource.get("PhysicalResourceId", "N/A"),
+                            "resource_type": resource["ResourceType"],
+                            "status_reason": "DeletionPolicy: Retain",
+                        }
+                    )
+            return retained
+        except ClientError:
+            return []
+        except Exception:
+            return []
+
     def pre_cleanup_stack(self, stack_name: str, on_event: Callable[[str], None] = None) -> None:
         """Pre-clean resources that block CloudFormation deletion.
 
