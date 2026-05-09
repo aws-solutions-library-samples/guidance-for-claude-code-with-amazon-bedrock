@@ -205,34 +205,42 @@ class PackageCommand(Command):
             return 1
 
         # Get actual Identity Pool ID or Role ARN from stack outputs
-        console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
-
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
-
-        # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        # If identity_pool_id is already set in profile (e.g. imported config), skip stack query
         identity_pool_id = None
         federated_role_arn = None
+        federation_type = profile.federation_type
 
-        if federation_type == "direct":
-            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
-            # Then fallback to FederatedRoleArn (new templates)
-            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                federated_role_arn = stack_outputs.get("FederatedRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                return 1
+        if hasattr(profile, "identity_pool_id") and getattr(profile, "identity_pool_id", None):
+            identity_pool_id = profile.identity_pool_id
+            console.print(f"[green]Using identity pool ID from profile: {identity_pool_id}[/green]")
+        elif hasattr(profile, "federated_role_arn") and getattr(profile, "federated_role_arn", None):
+            federated_role_arn = profile.federated_role_arn
+            console.print(f"[green]Using federated role ARN from profile: {federated_role_arn}[/green]")
         else:
-            identity_pool_id = stack_outputs.get("IdentityPoolId")
-            if not identity_pool_id:
-                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            console.print("[yellow]Fetching deployment information...[/yellow]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
                 return 1
+
+            # Check federation type and get appropriate identifier
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+            if federation_type == "direct":
+                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                    return 1
+            else:
+                identity_pool_id = stack_outputs.get("IdentityPoolId")
+                if not identity_pool_id:
+                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                    return 1
 
         # Welcome
         console.print(
@@ -1865,13 +1873,68 @@ echo
 # Check prerequisites
 echo "Checking prerequisites..."
 
-if command -v aws &> /dev/null; then
-    echo "✓ AWS CLI found (optional)"
+# Auto-install Python 3 if missing
+if ! command -v python3 &> /dev/null; then
+    echo "⚠️  Python 3 not found. Installing..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install python@3.12
+        else
+            echo "Installing Homebrew first..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"
+            brew install python@3.12
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y python3
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y python3
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y python3
+        fi
+    fi
+    if command -v python3 &> /dev/null; then
+        echo "✓ Python 3 installed"
+    else
+        echo "❌ Failed to install Python 3. Please install manually."
+        exit 1
+    fi
 else
-    echo "ℹ  AWS CLI not found — not required. The credential process binary handles authentication directly."
+    echo "✓ Python 3 found"
 fi
 
-echo "✓ Prerequisites found"
+# Auto-install AWS CLI if missing
+if ! command -v aws &> /dev/null; then
+    echo "⚠️  AWS CLI not found. Installing..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install awscli
+        else
+            curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "/tmp/AWSCLIV2.pkg"
+            sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+            rm -f /tmp/AWSCLIV2.pkg
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        ARCH=$(uname -m)
+        if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "/tmp/awscliv2.zip"
+        else
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+        fi
+        unzip -q /tmp/awscliv2.zip -d /tmp/aws-install
+        sudo /tmp/aws-install/aws/install
+        rm -rf /tmp/awscliv2.zip /tmp/aws-install
+    fi
+    if command -v aws &> /dev/null; then
+        echo "✓ AWS CLI installed"
+    else
+        echo "❌ Failed to install AWS CLI. Please install from https://aws.amazon.com/cli/"
+        exit 1
+    fi
+else
+    echo "✓ AWS CLI found"
+fi
 
 # Detect platform and architecture
 echo
