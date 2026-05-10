@@ -312,12 +312,33 @@ class CloudFormationManager:
 
         S3 buckets must be empty before CloudFormation can delete them.
         Athena workgroups must have named queries removed first.
+        Skips resources with DeletionPolicy: Retain (they are kept intentionally).
         """
         try:
+            # Get the template to check DeletionPolicy for each resource
+            retained_logical_ids = set()
+            try:
+                template_resp = self.cf_client.get_template(StackName=stack_name)
+                import yaml
+
+                template_body = template_resp.get("TemplateBody", {})
+                if isinstance(template_body, str):
+                    template_body = yaml.safe_load(template_body)
+                resources = template_body.get("Resources", {})
+                for logical_id, resource_def in resources.items():
+                    if isinstance(resource_def, dict) and resource_def.get("DeletionPolicy") == "Retain":
+                        retained_logical_ids.add(logical_id)
+            except Exception:
+                pass  # If we can't read template, proceed with cleanup for all
+
             response = self.cf_client.describe_stack_resources(StackName=stack_name)
             for resource in response.get("StackResources", []):
                 physical_id = resource.get("PhysicalResourceId")
+                logical_id = resource.get("LogicalResourceId", "")
                 if not physical_id:
+                    continue
+                # Skip resources with DeletionPolicy: Retain
+                if logical_id in retained_logical_ids:
                     continue
                 rtype = resource["ResourceType"]
                 if rtype == "AWS::S3::Bucket":
