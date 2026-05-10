@@ -1249,7 +1249,8 @@ class InitCommand(Command):
             saved_model_key = None
             if _saved_model_id:
                 for _mk, _mi in CLAUDE_MODELS.items():
-                    for _pc in cast(dict[str, Any], _mi)["profiles"].values():
+                    model_info = cast(dict[str, Any], _mi)
+                    for _pc in model_info["profiles"].values():
                         if cast(dict[str, Any], _pc)["model_id"] == _saved_model_id:
                             saved_model_key = _mk
                             break
@@ -1258,7 +1259,8 @@ class InitCommand(Command):
 
             def _key_for_model_id(model_id: str) -> str | None:
                 for mk, mi in CLAUDE_MODELS.items():
-                    for pc in cast(dict[str, Any], mi)["profiles"].values():
+                    model_info = cast(dict[str, Any], mi)
+                    for pc in model_info["profiles"].values():
                         if cast(dict[str, Any], pc).get("model_id") == model_id:
                             return mk
                 return None
@@ -1368,7 +1370,9 @@ class InitCommand(Command):
                 config["aws"]["selected_model"] = None
                 # Profile is known; use its destination regions instead of wildcard
                 profile_dest_regions = get_all_destination_regions_for_profile(selected_profile)
-                config["aws"]["allowed_bedrock_regions"] = profile_dest_regions if profile_dest_regions else get_all_destination_regions()
+                config["aws"]["allowed_bedrock_regions"] = (
+                    profile_dest_regions if profile_dest_regions else get_all_destination_regions()
+                )
                 console.print("[green]✓[/green] Auto-select: Claude Code will choose the model automatically")
             else:
                 model_id = get_model_id_for_profile(selected_model_key, selected_profile)

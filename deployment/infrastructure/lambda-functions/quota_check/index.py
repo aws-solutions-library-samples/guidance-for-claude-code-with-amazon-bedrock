@@ -25,6 +25,7 @@ ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false")
 MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", "0"))
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "0"))
 MONTHLY_ENFORCEMENT_MODE = os.environ.get("MONTHLY_ENFORCEMENT_MODE", "block")
+DAILY_ENFORCEMENT_MODE = os.environ.get("DAILY_ENFORCEMENT_MODE", "alert")
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
 WARNING_THRESHOLD_90 = int(os.environ.get("WARNING_THRESHOLD_90", "270000000"))
 
@@ -111,15 +112,16 @@ def lambda_handler(event, context):
         usage = get_user_usage(email)
         usage_summary = build_usage_summary(usage, policy)
 
-        # 4. Check if enforcement mode is "block"
-        enforcement_mode = policy.get("enforcement_mode", "alert")
+        # 4. Resolve enforcement modes (monthly and daily may differ)
+        monthly_enforcement = policy.get("enforcement_mode", "alert")
+        daily_enforcement = policy.get("daily_enforcement_mode", monthly_enforcement)
 
-        if enforcement_mode != "block":
-            # Alert-only mode - always allow
+        # If both enforcement modes are alert-only, skip limit checks
+        if monthly_enforcement != "block" and daily_enforcement != "block":
             return build_response(200, {
                 "allowed": True,
                 "reason": "within_quota",
-                "enforcement_mode": enforcement_mode,
+                "enforcement_mode": monthly_enforcement,
                 "usage": usage_summary,
                 "policy": {
                     "type": policy.get("policy_type"),
@@ -136,12 +138,12 @@ def lambda_handler(event, context):
         monthly_limit = policy.get("monthly_token_limit", 0)
         daily_limit = policy.get("daily_token_limit")
 
-        # Check monthly token limit
-        if monthly_limit > 0 and monthly_tokens >= monthly_limit:
+        # Check monthly token limit (only block if monthly enforcement is "block")
+        if monthly_enforcement == "block" and monthly_limit > 0 and monthly_tokens >= monthly_limit:
             return build_response(200, {
                 "allowed": False,
                 "reason": "monthly_exceeded",
-                "enforcement_mode": enforcement_mode,
+                "enforcement_mode": monthly_enforcement,
                 "usage": usage_summary,
                 "policy": {
                     "type": policy.get("policy_type"),
@@ -151,12 +153,12 @@ def lambda_handler(event, context):
                 "message": f"Monthly quota exceeded: {int(monthly_tokens):,} / {int(monthly_limit):,} tokens ({monthly_tokens/monthly_limit*100:.1f}%). Contact your administrator for assistance."
             })
 
-        # Check daily token limit (if configured)
-        if daily_limit and daily_limit > 0 and daily_tokens >= daily_limit:
+        # Check daily token limit (only block if daily enforcement is "block")
+        if daily_enforcement == "block" and daily_limit and daily_limit > 0 and daily_tokens >= daily_limit:
             return build_response(200, {
                 "allowed": False,
                 "reason": "daily_exceeded",
-                "enforcement_mode": enforcement_mode,
+                "enforcement_mode": daily_enforcement,
                 "usage": usage_summary,
                 "policy": {
                     "type": policy.get("policy_type"),
@@ -170,7 +172,7 @@ def lambda_handler(event, context):
         return build_response(200, {
             "allowed": True,
             "reason": "within_quota",
-            "enforcement_mode": enforcement_mode,
+            "enforcement_mode": monthly_enforcement,
             "usage": usage_summary,
             "policy": {
                 "type": policy.get("policy_type"),
@@ -273,6 +275,7 @@ def resolve_quota_for_user(email: str, groups: list) -> dict | None:
             "warning_threshold_80": WARNING_THRESHOLD_80,
             "warning_threshold_90": WARNING_THRESHOLD_90,
             "enforcement_mode": MONTHLY_ENFORCEMENT_MODE,
+            "daily_enforcement_mode": DAILY_ENFORCEMENT_MODE,
             "enabled": True,
         }
 
@@ -321,6 +324,7 @@ def get_policy(policy_type: str, identifier: str) -> dict | None:
             "warning_threshold_80": int(item.get("warning_threshold_80", 0)),
             "warning_threshold_90": int(item.get("warning_threshold_90", 0)),
             "enforcement_mode": item.get("enforcement_mode", "alert"),
+            "daily_enforcement_mode": item.get("daily_enforcement_mode", item.get("enforcement_mode", "alert")),
             "enabled": item.get("enabled", True),
         }
     except Exception as e:

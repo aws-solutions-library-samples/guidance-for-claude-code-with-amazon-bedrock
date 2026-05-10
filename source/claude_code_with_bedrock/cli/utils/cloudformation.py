@@ -81,7 +81,7 @@ class CloudFormationManager:
         parameters: list[dict[str, str]] = None,
         capabilities: list[str] = None,
         tags: dict[str, str] = None,
-        on_event: Callable = None,
+        on_event: Callable | None = None,
         timeout: int = 3600,
         disable_rollback: bool = False,
     ) -> StackDeploymentResult:
@@ -196,7 +196,7 @@ class CloudFormationManager:
         stack_name: str,
         retain_resources: list[str] = None,
         force: bool = False,
-        on_event: Callable = None,
+        on_event: Callable | None = None,
         timeout: int = 600,
     ) -> StackDeletionResult:
         """
@@ -341,10 +341,12 @@ class CloudFormationManager:
                     objects.append({"Key": v["Key"], "VersionId": v["VersionId"]})
                 for dm in page.get("DeleteMarkers", []):
                     objects.append({"Key": dm["Key"], "VersionId": dm["VersionId"]})
-                if objects:
+                # delete_objects API has a hard limit of 1000 keys per call
+                for i in range(0, len(objects), 1000):
+                    batch = objects[i : i + 1000]
                     self.s3_client.delete_objects(
                         Bucket=bucket_name,
-                        Delete={"Objects": objects, "Quiet": True},
+                        Delete={"Objects": batch, "Quiet": True},
                     )
         except ClientError:
             pass
@@ -358,7 +360,7 @@ class CloudFormationManager:
             pass
 
     def package_template(
-        self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
+        self, template_path: str | Path, s3_bucket: str, s3_prefix: str | None = None, on_event: Callable | None = None
     ) -> str:
         """
         Package a CloudFormation template and upload artifacts to S3.
@@ -550,7 +552,9 @@ class CloudFormationManager:
                 return False, None
             raise
 
-    def _wait_for_stack(self, stack_name: str, waiter_name: str, timeout: int, on_event: Callable = None) -> bool:
+    def _wait_for_stack(
+        self, stack_name: str, waiter_name: str, timeout: int, on_event: Callable | None = None
+    ) -> bool:
         """
         Wait for stack operation to complete with event streaming.
 

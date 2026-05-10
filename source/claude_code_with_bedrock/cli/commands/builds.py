@@ -11,6 +11,8 @@ from cleo.helpers import option
 from rich.console import Console
 from rich.table import Table
 
+from claude_code_with_bedrock.cli.utils.aws import get_codebuild_region
+
 
 class BuildsCommand(Command):
     """
@@ -31,11 +33,8 @@ class BuildsCommand(Command):
     ]
 
     def _get_codebuild_region(self, profile):
-        windows_regions = {
-            "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
-            "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
-        }
-        return profile.aws_region if profile.aws_region in windows_regions else "us-east-1"
+        """Backward-compatible wrapper for shared utility."""
+        return get_codebuild_region(profile)
 
     def handle(self) -> int:
         """Execute the builds command."""

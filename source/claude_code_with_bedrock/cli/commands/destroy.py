@@ -241,7 +241,11 @@ class DestroyCommand(Command):
         return cf_manager.get_retained_resources(stack_name)
 
     def _clear_cached_credentials(self, profile, console: Console) -> None:
-        """Clear cached credentials that reference deleted IAM roles."""
+        """Clear cached credentials that reference deleted IAM roles.
+
+        Only removes the section if it was created by this tool (contains
+        credential_process referencing claude-code-with-bedrock or ccwb).
+        """
         try:
             import configparser
             from pathlib import Path
@@ -253,6 +257,14 @@ class DestroyCommand(Command):
             config = configparser.ConfigParser()
             config.read(cred_path)
             if profile.name in config:
+                # Only remove if it's a section created by this tool
+                section_items = dict(config.items(profile.name))
+                is_ours = any(
+                    "credential-process" in v or "claude-code-with-bedrock" in v or "ccwb" in v
+                    for v in section_items.values()
+                )
+                if not is_ours:
+                    return
                 config.remove_section(profile.name)
                 with open(cred_path, "w") as f:
                     config.write(f)

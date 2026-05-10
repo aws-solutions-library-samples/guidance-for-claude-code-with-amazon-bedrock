@@ -756,7 +756,6 @@ def main():
         if token:
             headers_dict["authorization"] = f"Bearer {token}"
 
-
         # In test mode, print detailed output
         if TEST_MODE:
             print("===== TEST MODE OUTPUT =====\n")

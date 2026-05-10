@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
-from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.aws import get_codebuild_region, get_stack_outputs
 from claude_code_with_bedrock.config import Config
 
 
@@ -1219,11 +1219,8 @@ class DistributeCommand(Command):
         return f"{size_bytes:.1f} TB"
 
     def _get_codebuild_region(self, profile):
-        windows_regions = {
-            "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
-            "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
-        }
-        return profile.aws_region if profile.aws_region in windows_regions else "us-east-1"
+        """Backward-compatible wrapper for shared utility."""
+        return get_codebuild_region(profile)
 
     def _download_windows_artifacts(self, profile, package_path: Path, console: Console) -> bool:
         """Download Windows build artifacts from S3."""

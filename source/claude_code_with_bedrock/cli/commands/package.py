@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.aws import get_codebuild_region, get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
@@ -1333,11 +1333,8 @@ RUN pyinstaller \
                 subprocess.run(["docker", "rmi", image_tag], capture_output=True)
 
     def _get_codebuild_region(self, profile):
-        windows_regions = {
-            "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
-            "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
-        }
-        return profile.aws_region if profile.aws_region in windows_regions else "us-east-1"
+        """Backward-compatible wrapper for shared utility."""
+        return get_codebuild_region(profile)
 
     def _build_windows_via_codebuild(self, output_dir: Path) -> Path:
         """Build Windows binaries using AWS CodeBuild."""
@@ -2229,23 +2226,25 @@ REM older ccwb auth logout) would shadow credential_process and break Cowork
 REM Desktop with a 403 InvalidClientTokenId.
 powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\[' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
 
+setlocal EnableDelayedExpansion
+for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"') do (
+    REM Get profile-specific region from config.json
+    for /f %%r in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).'%%p'.aws_region"') do set "PROFILE_REGION=%%r"
+    if not defined PROFILE_REGION set "PROFILE_REGION={profile.aws_region}"
 
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
+    REM Set credential process with --profile flag
     aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
 
-
     REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
-    ) else (
-        aws configure set region {profile.aws_region} --profile %%p
-    )
+    aws configure set region !PROFILE_REGION! --profile %%p
 
     echo   OK Created AWS profile '%%p'
 
     REM Clear stale cached credentials from previous deployments
     "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile %%p --clear-cache >nul 2>&1
+    set "PROFILE_REGION="
 )
+endlocal
 
 echo.
 echo ======================================

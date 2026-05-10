@@ -19,6 +19,7 @@ from claude_code_with_bedrock.models import (
     get_profile_description,
     get_profiles_for_region,
     get_source_regions_for_model_profile,
+    resolve_model_for_tier,
 )
 
 
@@ -447,3 +448,46 @@ class TestModelConfiguration:
         # "europe" alias should also work via resolve_profile_key
         model_id = get_model_id_for_profile("sonnet-3-7", "europe")
         assert model_id.startswith("eu.anthropic.")
+
+
+class TestResolveModelForTier:
+    """Test resolve_model_for_tier with real admin profile scenarios."""
+
+    def test_us_admin_gets_latest_models(self):
+        haiku = resolve_model_for_tier("haiku", "us")
+        sonnet = resolve_model_for_tier("sonnet", "us")
+        opus = resolve_model_for_tier("opus", "us")
+
+        assert haiku is not None
+        assert sonnet is not None
+        assert opus is not None
+        assert "us." in haiku
+        assert "us." in sonnet
+        assert "us." in opus
+
+    def test_europe_admin_gets_eu_models(self):
+        """Config stores 'europe' but newer models use 'eu' key."""
+        haiku = resolve_model_for_tier("haiku", "eu")
+        sonnet = resolve_model_for_tier("sonnet", "eu")
+        opus = resolve_model_for_tier("opus", "eu")
+        assert haiku is not None and "eu." in haiku
+        assert sonnet is not None and "eu." in sonnet
+        assert opus is not None and "eu." in opus
+
+    def test_global_admin_gets_global_prefix(self):
+        sonnet = resolve_model_for_tier("sonnet", "global")
+        opus = resolve_model_for_tier("opus", "global")
+        haiku = resolve_model_for_tier("haiku", "global")
+        assert "global." in sonnet
+        assert "global." in opus
+        assert "global." in haiku
+
+    def test_data_residency_prefixes_match_api(self):
+        """Every prefix from the live API should resolve to its own prefix (not global/us)."""
+        for prefix in ["us", "eu", "au", "global"]:
+            for tier in ["haiku", "sonnet", "opus"]:
+                result = resolve_model_for_tier(tier, prefix)
+                if result is not None:
+                    assert f"{prefix}." in result, (
+                        f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    )
