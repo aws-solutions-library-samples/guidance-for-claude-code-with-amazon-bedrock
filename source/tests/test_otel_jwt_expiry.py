@@ -86,8 +86,26 @@ def test_read_cached_headers_with_soon_to_expire_token(mock_cache_file):
     assert result is None
 
 
+def test_read_cached_headers_at_exact_boundary(mock_cache_file):
+    """Test that token expiring exactly at 60s boundary is rejected (boundary condition)."""
+    from otel_helper.__main__ import read_cached_headers
+
+    # Create cache with token expiring in exactly 60 seconds (at the boundary)
+    boundary_exp = int(time.time()) + 60
+    cache_data = {
+        "headers": {"x-user-email": "test@example.com", "authorization": "Bearer boundary.jwt.token"},
+        "token_exp": boundary_exp,
+        "cached_at": int(time.time()),
+    }
+    mock_cache_file.write_text(json.dumps(cache_data))
+
+    # Should reject cache (token_exp - now <= 60 means boundary is rejected)
+    result = read_cached_headers()
+    assert result is None
+
+
 def test_read_cached_headers_without_token_exp(mock_cache_file):
-    """Test that cached headers without token_exp are rejected (anonymous mode or old cache)."""
+    """Test that cached headers without token_exp are rejected (old cache format)."""
     from otel_helper.__main__ import read_cached_headers
 
     # Create cache without token_exp field

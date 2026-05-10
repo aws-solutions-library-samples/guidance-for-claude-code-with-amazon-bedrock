@@ -268,7 +268,7 @@ def read_cached_headers():
                 return None
             logger.debug(f"Cached JWT token still valid (expires in {token_exp - now}s)")
         else:
-            # No token_exp means anonymous mode or old cache format - refresh to be safe
+            # No token_exp means old cache format (pre-fix) - refresh to be safe
             logger.debug("Cache has no token_exp field, refreshing")
             return None
 
@@ -738,6 +738,7 @@ def main():
         if cached_headers:
             print(json.dumps(cached_headers))
             return 0
+        logger.info("Cache expired or missing, refreshing via credential-process")
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
     token = None
