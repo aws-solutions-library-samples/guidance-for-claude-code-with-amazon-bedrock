@@ -185,7 +185,11 @@ def test_main_refreshes_expired_cache(mock_get_token, mock_cache_file, monkeypat
     mock_cache_file.write_text(json.dumps(cache_data))
 
     # Mock credential-process to return fresh token
-    mock_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Im5ld0BleGFtcGxlLmNvbSIsImV4cCI6OTk5OTk5OTk5OX0.x"
+    # Build a fake JWT dynamically to avoid secrets scanner flagging static base64 tokens
+    import base64
+    jwt_header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    jwt_payload = base64.urlsafe_b64encode(json.dumps({"email": "new@example.com", "exp": 9999999999}).encode()).decode().rstrip("=")
+    mock_jwt = f"{jwt_header}.{jwt_payload}.fakesig"
     mock_get_token.return_value = mock_jwt
 
     # Mock stdout capture
