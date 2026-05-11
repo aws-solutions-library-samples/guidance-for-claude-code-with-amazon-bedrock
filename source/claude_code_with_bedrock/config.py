@@ -82,6 +82,8 @@ class Profile:
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
+    # Resource tagging
+    tags: dict[str, str] = field(default_factory=dict)  # Tags applied to all deployed CloudFormation stacks
     # Application Inference Profile support (per-tier ARNs)
     inference_profile_opus_arn: str | None = None  # Optional inference profile ARN for Opus tier
     inference_profile_sonnet_arn: str | None = None  # Optional inference profile ARN for Sonnet tier
