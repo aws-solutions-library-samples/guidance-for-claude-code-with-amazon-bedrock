@@ -114,6 +114,9 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetricsTableName}"
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetricsTableName}/index/*"
@@ -158,6 +161,9 @@ Resources:
           - "http://localhost:5173"
         AllowMethods:
           - GET
+          - POST
+          - PUT
+          - DELETE
           - OPTIONS
         AllowHeaders:
           - Authorization
@@ -228,6 +234,33 @@ Resources:
     Properties:
       ApiId: !Ref NexusApi
       RouteKey: "GET /api/config/models"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteCreateQuota:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "POST /api/quotas"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteUpdateQuota:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "PUT /api/quotas/{id}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteDeleteQuota:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "DELETE /api/quotas/{id}"
       AuthorizationType: JWT
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"

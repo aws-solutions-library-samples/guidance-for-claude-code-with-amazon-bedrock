@@ -82,3 +82,4 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+claude.json

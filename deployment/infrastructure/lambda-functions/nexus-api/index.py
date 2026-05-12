@@ -33,7 +33,7 @@ def response(status, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": CORS_ORIGIN,
             "Access-Control-Allow-Headers": "Authorization,Content-Type",
-            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
         },
         "body": json.dumps(body, cls=DecimalEncoder),
     }
@@ -172,11 +172,62 @@ def handle_models(event):
     })
 
 
+def handle_create_quota(event):
+    """POST /api/quotas - create quota policy."""
+    body = json.loads(event.get("body", "{}"))
+    policy_type = body.get("type", "default")
+    identifier = body.get("target", "")
+    pk = f"POLICY#{policy_type}#{identifier}" if identifier else f"POLICY#{policy_type}"
+
+    item = {
+        "pk": pk,
+        "sk": "CURRENT",
+        "policy_type": policy_type,
+        "identifier": identifier,
+        "monthly_limit": int(body.get("monthlyLimit", 225_000_000)),
+        "daily_limit": int(body.get("dailyLimit", 0)),
+        "enforcement_mode": body.get("enforcement", "block"),
+    }
+    policies_table.put_item(Item=item)
+    return response(201, {"id": pk, **body})
+
+
+def handle_update_quota(event):
+    """PUT /api/quotas/{id} - update quota policy."""
+    path = event.get("requestContext", {}).get("http", {}).get("path", "")
+    policy_id = path.split("/api/quotas/", 1)[-1]
+    body = json.loads(event.get("body", "{}"))
+
+    updates = {}
+    if "monthlyLimit" in body:
+        updates["monthly_limit"] = {"Value": int(body["monthlyLimit"]), "Action": "PUT"}
+    if "dailyLimit" in body:
+        updates["daily_limit"] = {"Value": int(body["dailyLimit"]), "Action": "PUT"}
+    if "enforcement" in body:
+        updates["enforcement_mode"] = {"Value": body["enforcement"], "Action": "PUT"}
+
+    if updates:
+        policies_table.update_item(
+            Key={"pk": policy_id, "sk": "CURRENT"},
+            AttributeUpdates=updates,
+        )
+    return response(200, {"id": policy_id, "updated": list(updates.keys())})
+
+
+def handle_delete_quota(event):
+    """DELETE /api/quotas/{id} - delete quota policy."""
+    path = event.get("requestContext", {}).get("http", {}).get("path", "")
+    policy_id = path.split("/api/quotas/", 1)[-1]
+    policies_table.delete_item(Key={"pk": policy_id, "sk": "CURRENT"})
+    return response(200, {"deleted": policy_id})
+
+
 ROUTES = {
     "GET /api/metrics/summary": handle_summary,
     "GET /api/users": handle_users,
     "GET /api/users/me": handle_user_me,
     "GET /api/quotas": handle_quotas,
+    "POST /api/quotas": handle_create_quota,
     "GET /api/config/models": handle_models,
 }
 
@@ -191,7 +242,16 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return response(200, {})
 
+    # Exact match first
     handler = ROUTES.get(route_key)
+
+    # Path-parameter routes for quotas
+    if not handler and path.startswith("/api/quotas/"):
+        if method == "PUT":
+            handler = handle_update_quota
+        elif method == "DELETE":
+            handler = handle_delete_quota
+
     if not handler:
         return response(404, {"error": "Not found", "route": route_key})
 
