@@ -242,11 +242,11 @@ def get_cache_path():
 
 
 def read_cached_headers():
-    """Read cached OTEL headers if they exist.
+    """Read cached OTEL headers if they exist and Bearer token is still valid.
 
-    User attributes (email, team, etc.) don't change between sessions,
-    so cached headers are served regardless of token expiry. Headers are
-    refreshed opportunistically when a valid token is available.
+    Returns cached headers only if the JWT Bearer token hasn't expired yet.
+    This ensures telemetry requests to the ALB don't get 401 errors while
+    preserving user attribution headers that don't change between sessions.
     """
     try:
         cache_path = get_cache_path()
@@ -257,6 +257,21 @@ def read_cached_headers():
         headers = cached.get("headers")
         if not headers:
             return None
+
+        # Check if Bearer token in headers is still valid
+        token_exp = cached.get("token_exp")
+        if token_exp:
+            now = int(time.time())
+            # Add 60-second buffer to avoid race conditions (same as credential-provider)
+            if token_exp - now <= 60:
+                logger.debug(f"Cached JWT token expired or expires soon (exp={token_exp}, now={now})")
+                return None
+            logger.debug(f"Cached JWT token still valid (expires in {token_exp - now}s)")
+        else:
+            # No token_exp means old cache format (pre-fix) - refresh to be safe
+            logger.debug("Cache has no token_exp field, refreshing")
+            return None
+
         logger.debug("Using cached OTEL headers")
         return headers
     except Exception as e:
@@ -723,6 +738,7 @@ def main():
         if cached_headers:
             print(json.dumps(cached_headers))
             return 0
+        logger.info("Cache expired or missing, refreshing via credential-process")
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
     token = None
