@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { Box, Card, CardContent, Typography, LinearProgress, Chip, Button } from '@mui/material'
+import { useNavigate } from 'react-router-dom'
 import { useToken } from '../hooks/useToken'
 import { useUserInfo } from '../hooks/useUserInfo'
 import { api } from '../api/client'
@@ -7,11 +8,17 @@ import { api } from '../api/client'
 export function Me() {
   const token = useToken()
   const { email } = useUserInfo()
+  const navigate = useNavigate()
 
   const { data } = useQuery({
     queryKey: ['me'],
     queryFn: () => api.getMe(token),
     enabled: !!token,
+  })
+
+  const downloadMutation = useMutation({
+    mutationFn: () => api.getDownloadUrl(token),
+    onSuccess: (data) => { window.open(data.url, '_blank') },
   })
 
   const monthly = data?.monthly ?? { used: 0, limit: 225_000_000 }
@@ -63,8 +70,10 @@ export function Me() {
       </Card>
 
       <Box sx={{ display: 'flex', gap: 2 }}>
-        <Button variant="contained">Download Installer</Button>
-        <Button variant="outlined">View Activity Log</Button>
+        <Button variant="contained" onClick={() => downloadMutation.mutate()} disabled={downloadMutation.isPending}>
+          {downloadMutation.isPending ? 'Generating...' : 'Download Installer'}
+        </Button>
+        <Button variant="outlined" onClick={() => navigate('/activity')}>View Activity Log</Button>
       </Box>
     </Box>
   )

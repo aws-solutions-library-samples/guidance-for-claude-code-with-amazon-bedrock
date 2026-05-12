@@ -13,6 +13,11 @@ export function Billing() {
     enabled: !!token,
   })
 
+  const handleExport = () => {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    window.open(`${apiUrl}/api/billing/report`, '_blank')
+  }
+
   const monthlyTokens = summary?.monthlyTokens ?? 0
   // Rough cost estimate: ~$3 per 1M input tokens, ~$15 per 1M output (blended ~$8/M)
   const estimatedCost = (monthlyTokens / 1_000_000) * 8
@@ -21,7 +26,7 @@ export function Billing() {
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h5">Billing & Cost Attribution</Typography>
-        <Button variant="outlined" startIcon={<Download />} disabled>Export CSV</Button>
+        <Button variant="outlined" startIcon={<Download />} onClick={handleExport}>Export CSV</Button>
       </Box>
 
       {monthlyTokens === 0 ? (

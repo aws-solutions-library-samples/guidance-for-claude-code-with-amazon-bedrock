@@ -124,6 +124,13 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${PoliciesTableName}/index/*"
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${QuotaTableName}"
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${QuotaTableName}/index/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - "arn:aws:s3:::claude-code-auth-distribution-916587687563"
+                  - "arn:aws:s3:::claude-code-auth-distribution-916587687563/*"
 
   # Lambda Function
   NexusApiFunction:
@@ -142,6 +149,7 @@ Resources:
           QUOTA_TABLE: !Ref QuotaTableName
           SELECTED_MODEL: !Ref SelectedModel
           CROSS_REGION_PROFILE: !Ref CrossRegionProfile
+          DISTRIBUTION_BUCKET: "claude-code-auth-distribution-916587687563"
           CORS_ORIGIN: !Sub "https://${NexusDistribution.DomainName}"
       Code:
         ZipFile: |
@@ -238,6 +246,15 @@ Resources:
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"
 
+  RouteUpdateModels:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "PUT /api/config/models"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
   RouteCreateQuota:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -261,6 +278,33 @@ Resources:
     Properties:
       ApiId: !Ref NexusApi
       RouteKey: "DELETE /api/quotas/{id}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteDownload:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/download"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteBillingReport:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/billing/report"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteActivity:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/users/me/activity"
       AuthorizationType: JWT
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"

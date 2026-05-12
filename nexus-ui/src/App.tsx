@@ -4,13 +4,13 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material'
 import { AuthGuard } from './components/AuthGuard'
 import { Layout } from './components/Layout'
-import { AdminRoute } from './components/AdminRoute'
 import { Dashboard } from './pages/Dashboard'
 import { Users } from './pages/Users'
 import { Quotas } from './pages/Quotas'
 import { Billing } from './pages/Billing'
 import { Models } from './pages/Models'
 import { Settings } from './pages/Settings'
+import { Activity } from './pages/Activity'
 import { Me } from './pages/Me'
 
 const theme = createTheme({
@@ -57,14 +57,15 @@ export default function App() {
     <BrowserRouter>
       <Layout>
         <Routes>
-          <Route path="/" element={<AdminRoute><Dashboard /></AdminRoute>} />
-          <Route path="/users" element={<AdminRoute><Users /></AdminRoute>} />
-          <Route path="/quotas" element={<AdminRoute><Quotas /></AdminRoute>} />
-          <Route path="/billing" element={<AdminRoute><Billing /></AdminRoute>} />
-          <Route path="/models" element={<AdminRoute><Models /></AdminRoute>} />
-          <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/users" element={<Users />} />
+          <Route path="/quotas" element={<Quotas />} />
+          <Route path="/billing" element={<Billing />} />
+          <Route path="/models" element={<Models />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/me" element={<Me />} />
-          <Route path="*" element={<Navigate to="/me" />} />
+          <Route path="/activity" element={<Activity />} />
+          <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </Layout>
     </BrowserRouter>
@@ -93,7 +94,11 @@ export default function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/users" element={<Users />} />
                   <Route path="/quotas" element={<Quotas />} />
+                  <Route path="/billing" element={<Billing />} />
+                  <Route path="/models" element={<Models />} />
+                  <Route path="/settings" element={<Settings />} />
                   <Route path="/me" element={<Me />} />
+                  <Route path="/activity" element={<Activity />} />
                   <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
               </Layout>

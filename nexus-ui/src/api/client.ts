@@ -18,6 +18,15 @@ export const api = {
   getUserMetrics: (token: string, id: string) => fetchWithAuth(`/api/metrics/users/${id}`, token),
   getModels: (token: string) => fetchWithAuth('/api/config/models', token),
 
+  updateModels: (token: string, data: { selectedModel: string; region?: string; crossRegionProfile?: string }) =>
+    fetchWithAuth('/api/config/models', token, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Download
+  getDownloadUrl: (token: string) => fetchWithAuth('/api/download', token),
+
+  // Activity
+  getActivity: (token: string) => fetchWithAuth('/api/users/me/activity', token),
+
   // Quota write operations
   createQuota: (token: string, data: { type: string; target: string; monthlyLimit: number; dailyLimit: number; enforcement: string }) =>
     fetchWithAuth('/api/quotas', token, { method: 'POST', body: JSON.stringify(data) }),

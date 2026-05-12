@@ -14,6 +14,9 @@ export function useUserInfo() {
   const auth = useAuth()
   return {
     email: (auth.user?.profile?.email as string) || (auth.user?.profile?.preferred_username as string) || 'User',
-    logout: () => auth.signoutRedirect(),
+    logout: () => {
+      auth.removeUser()
+      window.location.href = '/'
+    },
   }
 }

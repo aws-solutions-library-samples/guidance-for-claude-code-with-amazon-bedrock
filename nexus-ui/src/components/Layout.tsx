@@ -67,7 +67,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <Toolbar />
         <List>
           {navItems.map(({ path, label, icon }) => (
-            <ListItemButton key={path} selected={path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)} onClick={() => navigate(path)}>
+            <ListItemButton key={path} selected={location.pathname === path} onClick={() => navigate(path)}>
               <ListItemIcon>{icon}</ListItemIcon>
               <ListItemText primary={label} />
             </ListItemButton>
@@ -81,3 +81,4 @@ export function Layout({ children }: { children: ReactNode }) {
     </Box>
   )
 }
+// v2

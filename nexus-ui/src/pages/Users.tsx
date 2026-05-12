@@ -1,13 +1,13 @@
-import { useToken } from '../hooks/useToken'
 import { useQuery } from '@tanstack/react-query'
 import {
   Box, Typography, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Paper, Chip, Alert,
+  TableHead, TableRow, Paper, Chip,
 } from '@mui/material'
+import { PageWrapper } from '../components/PageWrapper'
+import { useToken } from '../hooks/useToken'
 import { api } from '../api/client'
 
 export function Users() {
-  
   const token = useToken()
 
   const { data, isLoading, error } = useQuery({
@@ -16,17 +16,12 @@ export function Users() {
     enabled: !!token,
   })
 
-  if (isLoading) return <Typography>Loading...</Typography>
-  if (error) return <Alert severity="info">✓ API connection works — currently no user data available.</Alert>
-
   const users = data?.users ?? []
 
   return (
     <Box>
       <Typography variant="h5" gutterBottom>Users</Typography>
-      {users.length === 0 ? (
-        <Alert severity="success">✓ API connection works — no users have used Claude Code yet. Usage will appear here once developers start using it.</Alert>
-      ) : (
+      <PageWrapper isLoading={isLoading} error={error} isEmpty={users.length === 0} emptyMessage="No users have used Claude Code yet. Usage will appear here once developers start using it.">
         <TableContainer component={Paper}>
           <Table>
             <TableHead>
@@ -51,7 +46,7 @@ export function Users() {
             </TableBody>
           </Table>
         </TableContainer>
-      )}
+      </PageWrapper>
     </Box>
   )
 }

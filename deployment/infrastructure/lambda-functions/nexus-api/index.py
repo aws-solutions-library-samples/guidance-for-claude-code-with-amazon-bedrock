@@ -165,11 +165,144 @@ def handle_quotas(event):
 
 def handle_models(event):
     """GET /api/config/models - available models."""
+    # Read current config from DynamoDB (or env defaults)
+    try:
+        result = policies_table.get_item(Key={"pk": "CONFIG#models", "sk": "CURRENT"})
+        config = result.get("Item", {})
+    except Exception:
+        config = {}
+
     return response(200, {
-        "selectedModel": os.environ.get("SELECTED_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
-        "region": os.environ.get("AWS_REGION", "us-east-1"),
-        "crossRegionProfile": os.environ.get("CROSS_REGION_PROFILE", "us"),
+        "selectedModel": config.get("selected_model", os.environ.get("SELECTED_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")),
+        "region": config.get("region", os.environ.get("AWS_REGION", "us-east-1")),
+        "crossRegionProfile": config.get("cross_region_profile", os.environ.get("CROSS_REGION_PROFILE", "us")),
+        "availableModels": [
+            "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "us.anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-opus-4-20250514-v1:0",
+            "us.anthropic.claude-opus-4-7",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        ],
     })
+
+
+def handle_update_models(event):
+    """PUT /api/config/models - update model configuration."""
+    body = json.loads(event.get("body", "{}"))
+
+    item = {
+        "pk": "CONFIG#models",
+        "sk": "CURRENT",
+        "selected_model": body.get("selectedModel", ""),
+        "region": body.get("region", "us-east-1"),
+        "cross_region_profile": body.get("crossRegionProfile", "us"),
+    }
+    policies_table.put_item(Item=item)
+    return response(200, {"updated": True, **item})
+
+
+def handle_activity(event):
+    """GET /api/users/me/activity - recent activity for current user."""
+    email = get_caller_email(event)
+    now = datetime.now(timezone.utc)
+    seven_days_ago = (now - timedelta(days=7)).isoformat()
+
+    # Query user's recent metrics
+    result = metrics_table.query(
+        IndexName="UserActivityIndex",
+        KeyConditionExpression=Key("gsi1pk").eq(f"USER#{email}") & Key("gsi1sk").gte(seven_days_ago),
+        Limit=50,
+        ScanIndexForward=False,
+    )
+    activities = []
+    for item in result.get("Items", []):
+        activities.append({
+            "timestamp": item.get("timestamp", item.get("gsi1sk", "")),
+            "tokens": int(item.get("tokens", 0)),
+            "model": item.get("model", ""),
+            "type": item.get("metric_type", "session"),
+        })
+
+    return response(200, {"activities": activities})
+
+
+def handle_billing_report(event):
+    """GET /api/billing/report - CSV export of usage by user."""
+    import csv
+    import io
+
+    now = datetime.now(timezone.utc)
+    thirty_days_ago = (now - timedelta(days=30)).isoformat()
+
+    # Query metrics for the period
+    result = metrics_table.query(
+        KeyConditionExpression=Key("pk").eq("METRICS") & Key("sk").gte(thirty_days_ago),
+        Limit=500,
+        ScanIndexForward=False,
+    )
+    items = result.get("Items", [])
+
+    # Aggregate by user from top_users
+    user_totals: dict = {}
+    for item in items:
+        for u in item.get("top_users", []):
+            if isinstance(u, dict):
+                email = u.get("user", "unknown")
+                tokens = int(u.get("tokens", 0))
+                user_totals[email] = user_totals.get(email, 0) + tokens
+
+    # Generate CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["User", "Tokens", "Estimated Cost ($)"])
+    for email, tokens in sorted(user_totals.items(), key=lambda x: -x[1]):
+        cost = (tokens / 1_000_000) * 8  # ~$8/M blended
+        writer.writerow([email, tokens, f"{cost:.2f}"])
+
+    csv_content = output.getvalue()
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "text/csv",
+            "Content-Disposition": f"attachment; filename=billing-report-{now.strftime('%Y-%m-%d')}.csv",
+            "Access-Control-Allow-Origin": CORS_ORIGIN,
+        },
+        "body": csv_content,
+    }
+
+
+def handle_download(event):
+    """GET /api/download - generate presigned URL for latest package."""
+    bucket = os.environ.get("DISTRIBUTION_BUCKET", "")
+    if not bucket:
+        return response(404, {"error": "Distribution bucket not configured"})
+
+    s3 = boto3.client("s3")
+
+    # Find the latest package
+    try:
+        result = s3.list_objects_v2(Bucket=bucket, Prefix="packages/", Delimiter="/")
+        prefixes = sorted([p["Prefix"] for p in result.get("CommonPrefixes", [])], reverse=True)
+        if not prefixes:
+            return response(404, {"error": "No packages found"})
+
+        # Get the zip file in the latest prefix
+        latest = prefixes[0]
+        objects = s3.list_objects_v2(Bucket=bucket, Prefix=latest)
+        zips = [o["Key"] for o in objects.get("Contents", []) if o["Key"].endswith(".zip")]
+        if not zips:
+            return response(404, {"error": "No zip file found in latest package"})
+
+        # Generate presigned URL (1 hour expiry)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": zips[0]},
+            ExpiresIn=3600,
+        )
+        return response(200, {"url": url, "filename": zips[0].split("/")[-1]})
+    except Exception as e:
+        return response(500, {"error": f"Failed to generate download URL: {str(e)}"})
 
 
 def handle_create_quota(event):
@@ -229,6 +362,9 @@ ROUTES = {
     "GET /api/quotas": handle_quotas,
     "POST /api/quotas": handle_create_quota,
     "GET /api/config/models": handle_models,
+    "GET /api/download": handle_download,
+    "GET /api/billing/report": handle_billing_report,
+    "GET /api/users/me/activity": handle_activity,
 }
 
 
@@ -251,6 +387,10 @@ def lambda_handler(event, context):
             handler = handle_update_quota
         elif method == "DELETE":
             handler = handle_delete_quota
+
+    # Model config update
+    if not handler and path == "/api/config/models" and method == "PUT":
+        handler = handle_update_models
 
     if not handler:
         return response(404, {"error": "Not found", "route": route_key})
