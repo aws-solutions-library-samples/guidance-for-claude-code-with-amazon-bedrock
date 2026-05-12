@@ -557,6 +557,58 @@ class MultiProviderAuth:
 
         return cleared_items
 
+    def _clear_sts_credentials(self):
+        """Clear only STS credentials cache, preserving monitoring token for silent refresh."""
+        try:
+            if self.credential_storage == "keyring":
+                if platform.system() == "Windows":
+                    for entry in [
+                        f"{self.profile}-keys",
+                        f"{self.profile}-token1",
+                        f"{self.profile}-token2",
+                        f"{self.profile}-meta",
+                    ]:
+                        if keyring.get_password("claude-code-with-bedrock", entry):
+                            if "keys" in entry:
+                                expired_data = json.dumps({"AccessKeyId": "EXPIRED", "SecretAccessKey": "EXPIRED"})
+                            elif "meta" in entry:
+                                expired_data = json.dumps({"Version": 1, "Expiration": "2000-01-01T00:00:00Z"})
+                            else:
+                                expired_data = "EXPIRED"
+                            keyring.set_password("claude-code-with-bedrock", entry, expired_data)
+                else:
+                    if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-credentials"):
+                        expired_credential = json.dumps({
+                            "Version": 1,
+                            "AccessKeyId": "EXPIRED",
+                            "SecretAccessKey": "EXPIRED",
+                            "SessionToken": "EXPIRED",
+                            "Expiration": "2000-01-01T00:00:00Z",
+                        })
+                        keyring.set_password(
+                            "claude-code-with-bedrock", f"{self.profile}-credentials", expired_credential
+                        )
+            # Clear session file credentials (but NOT monitoring token file)
+            session_dir = Path.home() / ".claude-code-session"
+            creds_file = session_dir / f"{self.profile}-credentials.json"
+            if creds_file.exists():
+                creds_file.unlink()
+
+            # For session storage mode, also clear ~/.aws/credentials
+            if self.credential_storage == "session":
+                expired_creds = {
+                    "Version": 1,
+                    "AccessKeyId": "EXPIRED",
+                    "SecretAccessKey": "EXPIRED",
+                    "SessionToken": "EXPIRED",
+                    "Expiration": "2000-01-01T00:00:00Z",
+                }
+                self.save_to_credentials_file(expired_creds, self.profile)
+
+            self._debug_print("Cleared STS credentials (monitoring token preserved)")
+        except Exception as e:
+            self._debug_print(f"Could not clear STS credentials: {e}")
+
     def save_monitoring_token(self, id_token, token_claims):
         """Save ID token for monitoring authentication"""
         try:
@@ -1565,6 +1617,10 @@ class MultiProviderAuth:
         # Show browser notification
         self._show_quota_browser_notification(quota_result, is_blocked=True)
 
+        # Clear cached STS credentials so next call goes through refresh path
+        # which always re-checks quota (no interval bypass)
+        self._clear_sts_credentials()
+
         return 1
 
     def _show_quota_browser_notification(self, quota_result: dict, is_blocked: bool = False):
@@ -1792,7 +1848,7 @@ class MultiProviderAuth:
         Args:
             quota_result: Result from quota check API
         """
-        usage = quota_result.get("usage", {})
+        usage = quota_result.get("usage") or {}
         monthly_percent = usage.get("monthly_percent", 0)
         daily_percent = usage.get("daily_percent", 0)
 
@@ -1922,12 +1978,17 @@ class MultiProviderAuth:
             # User cancelled - no output needed
             return 1
         except Exception as e:
+            import traceback
             error_msg = str(e)
             # Only print actual errors to stderr
             if "timeout" not in error_msg.lower():
                 print(f"Error: {error_msg}", file=sys.stderr)
+                if self.debug:
+                    traceback.print_exc(file=sys.stderr)
             else:
                 self._debug_print(f"Error: {error_msg}")
+                if self.debug:
+                    traceback.print_exc(file=sys.stderr)
 
             # Provide specific guidance for common errors
             if "NotAuthorizedException" in error_msg and "Token is not from a supported provider" in error_msg:
@@ -1949,6 +2010,7 @@ class MultiProviderAuth:
 def main():
     """CLI entry point"""
     import argparse
+    import traceback
 
     parser = argparse.ArgumentParser(description="AWS credential provider for OIDC + Cognito Identity Pool")
     # Check environment variable first, then use default
@@ -2080,4 +2142,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"Error: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
