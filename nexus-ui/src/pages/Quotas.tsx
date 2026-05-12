@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from 'react-oidc-context'
+import { useToken } from '../hooks/useToken'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Box, Typography, Table, TableBody, TableCell, TableContainer,
@@ -21,8 +21,8 @@ interface QuotaForm {
 const emptyForm: QuotaForm = { type: 'default', target: '', monthlyLimit: '225', dailyLimit: '', enforcement: 'block' }
 
 export function Quotas() {
-  const auth = useAuth()
-  const token = auth.user?.access_token || ''
+  
+  const token = useToken()
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)

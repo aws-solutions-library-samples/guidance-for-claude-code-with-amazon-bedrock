@@ -1,4 +1,4 @@
-import { useAuth } from 'react-oidc-context'
+import { useToken } from '../hooks/useToken'
 import { useQuery } from '@tanstack/react-query'
 import {
   Box, Typography, Table, TableBody, TableCell, TableContainer,
@@ -7,8 +7,8 @@ import {
 import { api } from '../api/client'
 
 export function Users() {
-  const auth = useAuth()
-  const token = auth.user?.access_token || ''
+  
+  const token = useToken()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['users'],
