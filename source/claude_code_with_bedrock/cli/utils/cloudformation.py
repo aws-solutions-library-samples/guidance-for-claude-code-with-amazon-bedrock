@@ -3,6 +3,7 @@
 
 """CloudFormation manager for boto3-based stack operations."""
 
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -328,8 +329,10 @@ class CloudFormationManager:
                 for logical_id, resource_def in resources.items():
                     if isinstance(resource_def, dict) and resource_def.get("DeletionPolicy") == "Retain":
                         retained_logical_ids.add(logical_id)
-            except Exception:
-                pass  # If we can't read template, proceed with cleanup for all
+            except Exception as e:
+                # If we can't read template, proceed with cleanup for all resources
+                # (better to over-clean than leave resources that block deletion)
+                logging.debug(f"Could not parse template for {stack_name}: {e}")
 
             response = self.cf_client.describe_stack_resources(StackName=stack_name)
             for resource in response.get("StackResources", []):
@@ -349,8 +352,10 @@ class CloudFormationManager:
                     if on_event:
                         on_event(f"Cleaning workgroup {physical_id}...")
                     self._clean_athena_workgroup(physical_id)
-        except ClientError:
-            pass
+        except ClientError as e:
+            # Stack might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not pre-clean stack {stack_name}: {e}")
 
     def _empty_bucket(self, bucket_name: str) -> None:
         """Delete all objects and versions from an S3 bucket."""
@@ -369,16 +374,20 @@ class CloudFormationManager:
                         Bucket=bucket_name,
                         Delete={"Objects": batch, "Quiet": True},
                     )
-        except ClientError:
-            pass
+        except ClientError as e:
+            # Bucket might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not empty bucket {bucket_name}: {e}")
 
     def _clean_athena_workgroup(self, workgroup_name: str) -> None:
         """Force-delete an Athena workgroup and all its contents."""
         try:
             athena = self.session.client("athena")
             athena.delete_work_group(WorkGroup=workgroup_name, RecursiveDeleteOption=True)
-        except ClientError:
-            pass
+        except ClientError as e:
+            # Workgroup might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not clean Athena workgroup {workgroup_name}: {e}")
 
     def package_template(
         self, template_path: str | Path, s3_bucket: str, s3_prefix: str | None = None, on_event: Callable | None = None
