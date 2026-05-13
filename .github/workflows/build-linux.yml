@@ -1,0 +1,47 @@
+name: Build Linux Binaries
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: source
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Build credential-process
+        working-directory: source
+        run: |
+          poetry run pyinstaller --onefile --name credential-process-linux-x64 \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.SecretService \
+            credential_provider/__main__.py
+
+      - name: Build otel-helper
+        working-directory: source
+        run: |
+          poetry run pyinstaller --onefile --name otel-helper-linux-x64 \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.SecretService \
+            otel_helper/__main__.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-binaries
+          path: |
+            source/dist/credential-process-linux-x64
+            source/dist/otel-helper-linux-x64
