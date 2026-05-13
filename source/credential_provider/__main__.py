@@ -70,6 +70,14 @@ PROVIDER_CONFIGS = {
         "response_type": "code",
         "response_mode": "query",
     },
+    "keycloak": {
+        "name": "Keycloak",
+        "authorize_endpoint": "/protocol/openid-connect/auth",
+        "token_endpoint": "/protocol/openid-connect/token",
+        "scopes": "openid profile email",
+        "response_type": "code",
+        "response_mode": "query",
+    },
 }
 
 
