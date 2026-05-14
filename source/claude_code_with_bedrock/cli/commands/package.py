@@ -127,6 +127,7 @@ class PackageCommand(Command):
             default=None,
         ),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
+        option("skip-tests", description="Skip unit tests before building", flag=True),
     ]
 
     def handle(self) -> int:
@@ -271,6 +272,26 @@ class PackageCommand(Command):
 
         # Show what will be packaged using shared display utility
         display_configuration_info(profile, identity_pool_id or federated_role_arn, format_type="simple")
+
+        # Run unit tests before building
+        if self.option("skip-tests"):
+            console.print("\n[yellow]Skipping unit tests (--skip-tests)[/yellow]")
+        else:
+            console.print("\n[bold]Running unit tests...[/bold]")
+            test_result = subprocess.run(
+                ["poetry", "run", "pytest", "--tb=short", "-q"],
+                cwd=Path(__file__).resolve().parents[3],
+                capture_output=True,
+                text=True,
+            )
+            if test_result.returncode != 0:
+                console.print("[red]Unit tests failed! Fix tests before packaging.[/red]")
+                console.print(test_result.stdout)
+                if test_result.stderr:
+                    console.print(test_result.stderr)
+                console.print("\n[dim]Use --skip-tests to bypass this check[/dim]")
+                return 1
+            console.print("[green]✓ All unit tests passed[/green]")
 
         # Build package
         console.print("\n[bold]Building package...[/bold]")
@@ -1761,6 +1782,10 @@ RUN pyinstaller \
         # Add cognito_user_pool_id if it's a Cognito provider
         if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
             config[profile_name]["cognito_user_pool_id"] = profile.cognito_user_pool_id
+
+        # Add Okta auth server if configured (e.g., "default" for developer/free plans)
+        if profile.provider_type == "okta" and getattr(profile, "okta_auth_server", ""):
+            config[profile_name]["okta_auth_server"] = profile.okta_auth_server
 
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:

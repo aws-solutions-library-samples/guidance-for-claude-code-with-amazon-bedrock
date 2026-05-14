@@ -27,7 +27,7 @@ class TestInitCommandSourceRegions:
     def test_source_region_selection_flow_europe(self):
         """Test source region selection for Europe models."""
         # Test that Europe models have source regions available
-        eu_regions = get_source_regions_for_model_profile("sonnet-4", "europe")
+        eu_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
         assert len(eu_regions) > 0
         assert all(region.startswith("eu-") for region in eu_regions)
         assert "eu-west-3" in eu_regions
@@ -104,7 +104,7 @@ class TestInitCommandSourceRegions:
         # Test for different model/profile combinations
         test_cases = [
             ("opus-4-1", "us", ["us-west-2", "us-east-2", "us-east-1"]),
-            ("sonnet-4", "europe", ["eu-west-3", "eu-west-1", "eu-central-1", "eu-north-1"]),
+            ("sonnet-4", "eu", ["eu-west-3", "eu-west-1", "eu-central-1", "eu-north-1"]),
             (
                 "sonnet-3-7",
                 "apac",
@@ -148,7 +148,7 @@ class TestInitCommandSourceRegions:
         eu_profile.aws_region = "us-east-1"
 
         result = get_source_region_for_profile(eu_profile)
-        assert result == "eu-west-3"  # Should use default Europe region
+        assert result == "eu-west-1"  # Should use default Europe region
 
     def test_source_region_priority_order(self):
         """Test that source region selection follows correct priority order."""
@@ -184,7 +184,7 @@ class TestInitCommandSourceRegions:
 
                 # Should not be available in other regions
                 with pytest.raises(ValueError):
-                    get_source_regions_for_model_profile(model_key, "europe")
+                    get_source_regions_for_model_profile(model_key, "eu")
 
     def test_configuration_review_includes_source_region(self):
         """Test that configuration review displays selected source region."""

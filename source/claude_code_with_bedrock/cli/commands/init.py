@@ -575,6 +575,17 @@ class InitCommand(Command):
             if not client_id:
                 return None
 
+            # Okta authorization server configuration
+            okta_auth_server = ""
+            if provider_type == "okta":
+                use_custom_auth_server = questionary.confirm(
+                    "Are you using an Okta developer/free account (Integrator Free Plan)?",
+                    default=False,
+                    instruction="(If yes, we'll use the 'default' authorization server)",
+                ).ask()
+                if use_custom_auth_server:
+                    okta_auth_server = "default"
+
             # Confidential client configuration (Azure AD / Entra ID only)
             client_secret = None
             client_certificate_path = None
@@ -670,6 +681,8 @@ class InitCommand(Command):
             config["okta"]["client_id"] = client_id
             config["credential_storage"] = credential_storage
             config["provider_type"] = provider_type
+            if okta_auth_server:
+                config["okta_auth_server"] = okta_auth_server
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
 
@@ -1777,6 +1790,7 @@ class InitCommand(Command):
             selected_model=config_data["aws"].get("selected_model"),
             selected_source_region=config_data["aws"].get("selected_source_region"),
             provider_type=config_data.get("provider_type"),
+            okta_auth_server=config_data.get("okta_auth_server", ""),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
@@ -2094,6 +2108,10 @@ class InitCommand(Command):
             # Add max session duration if present
             if hasattr(profile, "max_session_duration") and profile.max_session_duration:
                 existing_config["max_session_duration"] = profile.max_session_duration
+
+            # Add Okta auth server if configured
+            if hasattr(profile, "okta_auth_server") and profile.okta_auth_server:
+                existing_config["okta_auth_server"] = profile.okta_auth_server
 
             # Add Cognito User Pool ID if present
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:

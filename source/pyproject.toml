@@ -28,6 +28,10 @@ claude-code-with-bedrock = "claude_code_with_bedrock.cli:main"
 ccwb = "claude_code_with_bedrock.cli:main"
 credential-provider = "credential_provider:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
 boto3 = "^1.42.88"

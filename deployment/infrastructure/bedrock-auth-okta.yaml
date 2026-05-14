@@ -22,6 +22,11 @@ Parameters:
     AllowedPattern: '^[a-zA-Z0-9]{20}$'
     ConstraintDescription: Must be a valid Okta client ID
 
+  OktaAuthServer:
+    Type: String
+    Default: ''
+    Description: Okta authorization server ID (e.g., "default" for developer accounts, empty for Org auth server on paid plans)
+
   IdentityPoolName:
     Type: String
     Default: claude-code-okta
@@ -53,6 +58,7 @@ Conditions:
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  HasOktaAuthServer: !Not [!Equals [!Ref OktaAuthServer, '']]
   # Partition-aware conditions for Cognito Identity service principals
   IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
   IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
@@ -66,7 +72,10 @@ Resources:
   OktaOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
-      Url: !Sub 'https://${OktaDomain}/oauth2/default'
+      Url: !If
+        - HasOktaAuthServer
+        - !Sub 'https://${OktaDomain}/oauth2/${OktaAuthServer}'
+        - !Sub 'https://${OktaDomain}'
       ClientIdList:
         - !Ref OktaClientId
       ThumbprintList:
@@ -309,7 +318,10 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       IdentityPoolId: !Ref CognitoIdentityPool
-      IdentityProviderName: !Sub '${OktaDomain}/oauth2/default'
+      IdentityProviderName: !If
+        - HasOktaAuthServer
+        - !Sub '${OktaDomain}/oauth2/${OktaAuthServer}'
+        - !Ref OktaDomain
       UseDefaults: false
       PrincipalTags:
         UserEmail: email

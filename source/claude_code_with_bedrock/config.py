@@ -36,6 +36,7 @@ class Profile:
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)

@@ -419,6 +419,9 @@ class DeployCommand(Command):
                             f"OktaClientId={profile.client_id}",
                         ]
                     )
+                    okta_auth_server = getattr(profile, "okta_auth_server", "")
+                    if okta_auth_server:
+                        params.append(f"OktaAuthServer={okta_auth_server}")
                 elif provider_type == "auth0":
                     params.extend(
                         [
@@ -675,8 +678,13 @@ class DeployCommand(Command):
                         elif provider_type == "okta":
                             # provider_domain is e.g. "company.okta.com"
                             domain = provider_domain.rstrip("/")
-                            oidc_issuer = f"https://{domain}/oauth2/default"
-                            oidc_jwks = f"https://{domain}/oauth2/default/v1/keys"
+                            okta_auth_server = getattr(profile, "okta_auth_server", "")
+                            if okta_auth_server:
+                                oidc_issuer = f"https://{domain}/oauth2/{okta_auth_server}"
+                                oidc_jwks = f"https://{domain}/oauth2/{okta_auth_server}/v1/keys"
+                            else:
+                                oidc_issuer = f"https://{domain}"
+                                oidc_jwks = f"https://{domain}/oauth2/v1/keys"
                         elif provider_type == "auth0":
                             domain = provider_domain.rstrip("/")
                             oidc_issuer = f"https://{domain}/"
