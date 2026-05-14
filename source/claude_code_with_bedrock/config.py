@@ -42,7 +42,7 @@ class Profile:
 
     # Distribution platform configuration
     distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
-    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_provider: str | None = None  # "okta"|"azure"|"auth0"|"cognito" (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
@@ -88,6 +88,11 @@ class Profile:
     inference_profile_opus_arn: str | None = None  # Optional inference profile ARN for Opus tier
     inference_profile_sonnet_arn: str | None = None  # Optional inference profile ARN for Sonnet tier
     inference_profile_haiku_arn: str | None = None  # Optional inference profile ARN for Haiku tier
+
+    # Per-tier model defaults for /model switching in Claude Code
+    default_opus_model: str | None = None  # Bedrock model ID for /model opus
+    default_sonnet_model: str | None = None  # Bedrock model ID for /model sonnet
+    default_haiku_model: str | None = None  # Bedrock model ID for /model haiku
 
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
@@ -160,6 +165,7 @@ class Profile:
                             data["provider_type"] = "azure"
                         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                             data["provider_type"] = "cognito"
+
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 

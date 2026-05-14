@@ -767,9 +767,11 @@ Resources:
     Properties:
       DomainName: !Ref CustomDomainName
       ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref CustomDomainName
-          HostedZoneId: !If [HasRoute53Zone, !Ref HostedZoneId, !Ref AWS::NoValue]
+      DomainValidationOptions: !If
+        - HasRoute53Zone
+        - - DomainName: !Ref CustomDomainName
+            HostedZoneId: !Ref HostedZoneId
+        - !Ref 'AWS::NoValue'
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock
@@ -1036,3 +1038,9 @@ Outputs:
     Value: !GetAtt DistributionBucket.Arn
     Export:
       Name: !Sub '${AWS::StackName}-DistributionBucketArn'
+
+  ALBEndpoint:
+    Description: ALB DNS name (for CNAME record if using external DNS)
+    Value: !GetAtt DistributionALB.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-ALBEndpoint'

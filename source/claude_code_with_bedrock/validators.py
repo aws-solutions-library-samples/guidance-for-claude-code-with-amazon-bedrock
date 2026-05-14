@@ -192,7 +192,7 @@ class ProfileValidator:
                 errors.append("allowed_bedrock_regions must be a list")
             else:
                 for bedrock_region in allowed_regions:
-                    if bedrock_region not in AWS_REGIONS:
+                    if bedrock_region != "*" and bedrock_region not in AWS_REGIONS:
                         warnings.append(f"Unknown Bedrock region: {bedrock_region}")
 
         # Validate cross_region_profile

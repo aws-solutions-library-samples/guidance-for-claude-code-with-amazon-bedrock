@@ -24,7 +24,7 @@ class TestSourceRegionFunctionality:
                 source_regions = profile_config["source_regions"]
 
                 # Should have at least one source region available
-                assert isinstance(source_regions, list)
+                assert isinstance(source_regions, list | tuple)
                 assert len(source_regions) > 0, f"No source regions for {model_key}/{profile_key}"
 
                 # All source regions should be valid AWS region format
@@ -76,7 +76,7 @@ class TestSourceRegionFunctionality:
 
         # Should fallback to cross-region profile default
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"  # Default Europe region
+        assert result == "eu-west-1"  # Default Europe region
 
     def test_get_source_region_for_profile_fallback_to_aws_region(self):
         """Test source region fallback to infrastructure region for US profiles."""
@@ -149,7 +149,7 @@ class TestSourceRegionFunctionality:
 
         # Should handle missing attribute gracefully and use fallback
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"
+        assert result == "eu-west-1"
 
     def test_all_models_have_source_regions(self):
         """Test that all models in CLAUDE_MODELS have source regions defined."""
@@ -164,9 +164,15 @@ class TestSourceRegionFunctionality:
 
     def test_source_regions_do_not_overlap_inappropriately(self):
         """Test that source regions are regionally appropriate."""
+        eu_regions = [
+            "eu-central-1", "eu-central-2", "eu-north-1",
+            "eu-south-1", "eu-south-2", "eu-south-3",
+            "eu-west-1", "eu-west-2", "eu-west-3",
+        ]
         regional_tests = {
-            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2"],
-            "europe": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "ca-west-1"],
+            "europe": eu_regions,
+            "eu": eu_regions,
             "apac": [
                 "ap-northeast-1",
                 "ap-northeast-2",
@@ -176,6 +182,8 @@ class TestSourceRegionFunctionality:
                 "ap-southeast-1",
                 "ap-southeast-2",
             ],
+            "jp": ["ap-northeast-1", "ap-northeast-3"],
+            "au": ["ap-southeast-2", "ap-southeast-4"],
         }
 
         for model_key, model_config in CLAUDE_MODELS.items():

@@ -901,7 +901,8 @@ class TestCommand(Command):
             test_env.pop("AWS_SESSION_TOKEN", None)
 
             if not selected_model:
-                return {"success": False, "error": "No model configured - run 'ccwb init' to select a model"}
+                # Use fallback test model when no model is configured
+                selected_model = self._get_fallback_test_model()
 
             model_id = selected_model
 

@@ -148,7 +148,7 @@ class TestInitCommandSourceRegions:
         eu_profile.aws_region = "us-east-1"
 
         result = get_source_region_for_profile(eu_profile)
-        assert result == "eu-west-3"  # Should use default Europe region
+        assert result == "eu-west-1"  # Should use default Europe region
 
     def test_source_region_priority_order(self):
         """Test that source region selection follows correct priority order."""

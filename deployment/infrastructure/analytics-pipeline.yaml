@@ -493,6 +493,7 @@ Resources:
     Properties:
       Name: !Sub '${AWS::StackName}-workgroup'
       Description: Workgroup for Claude Code analytics queries
+      RecursiveDeleteOption: true
       WorkGroupConfiguration:
         ResultConfiguration:
           OutputLocation: !Sub 's3://${AthenaResultsBucket}/results/'

@@ -48,6 +48,10 @@ Parameters:
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasCustomDomainAndHostedZone: !And
+    - !Condition HasCustomDomain
+    - !Condition HasHostedZone
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
 
@@ -130,18 +134,20 @@ Resources:
     Condition: HasCustomDomain
     Properties:
       DomainName: !Ref CustomDomainName
-      DomainValidationOptions:
-        - DomainName: !Ref CustomDomainName
-          HostedZoneId: !Ref HostedZoneId
+      DomainValidationOptions: !If
+        - HasHostedZone
+        - - DomainName: !Ref CustomDomainName
+            HostedZoneId: !Ref HostedZoneId
+        - !Ref AWS::NoValue
       ValidationMethod: DNS
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-certificate'
 
-  # Route53 Record for custom domain
+  # Route53 Record for custom domain (only when Route53 is used, not external DNS)
   DNSRecord:
     Type: AWS::Route53::RecordSet
-    Condition: HasCustomDomain
+    Condition: HasCustomDomainAndHostedZone
     DependsOn: Certificate
     Properties:
       HostedZoneId: !Ref HostedZoneId
@@ -236,7 +242,7 @@ Resources:
               AdditionalClaims: !If
                 - HasOidcClientId
                 - - Name: aud
-                    Format: string-array
+                    Format: single-string
                     Values:
                       - !Ref OidcClientId
                 - !Ref AWS::NoValue

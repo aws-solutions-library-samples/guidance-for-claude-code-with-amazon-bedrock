@@ -3,6 +3,7 @@
 
 """CloudFormation manager for boto3-based stack operations."""
 
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -81,7 +82,7 @@ class CloudFormationManager:
         parameters: list[dict[str, str]] = None,
         capabilities: list[str] = None,
         tags: dict[str, str] = None,
-        on_event: Callable = None,
+        on_event: Callable | None = None,
         timeout: int = 3600,
         disable_rollback: bool = False,
     ) -> StackDeploymentResult:
@@ -196,7 +197,7 @@ class CloudFormationManager:
         stack_name: str,
         retain_resources: list[str] = None,
         force: bool = False,
-        on_event: Callable = None,
+        on_event: Callable | None = None,
         timeout: int = 600,
     ) -> StackDeletionResult:
         """
@@ -240,7 +241,11 @@ class CloudFormationManager:
             # Wait for deletion
             success = self._wait_for_stack(stack_name, "stack_delete_complete", timeout, on_event)
 
-            return StackDeletionResult(success=success)
+            if success:
+                return StackDeletionResult(success=True)
+            else:
+                error = self._get_stack_failure_reason(stack_name)
+                return StackDeletionResult(success=False, error=error)
 
         except ClientError as e:
             error_message = e.response["Error"]["Message"]
@@ -278,8 +283,114 @@ class CloudFormationManager:
         except Exception:
             return []
 
+    def get_retained_resources(self, stack_name: str) -> list[dict[str, str]]:
+        """Get resources that were retained (DeletionPolicy: Retain) during stack deletion.
+
+        These resources are silently skipped by CloudFormation and won't appear in
+        get_failed_resources(). They still exist in the account and need manual cleanup.
+        """
+        try:
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            retained = []
+            for resource in response.get("StackResources", []):
+                if resource["ResourceStatus"] == "DELETE_SKIPPED":
+                    retained.append(
+                        {
+                            "logical_id": resource["LogicalResourceId"],
+                            "physical_id": resource.get("PhysicalResourceId", "N/A"),
+                            "resource_type": resource["ResourceType"],
+                            "status_reason": "DeletionPolicy: Retain",
+                        }
+                    )
+            return retained
+        except ClientError:
+            return []
+        except Exception:
+            return []
+
+    def pre_cleanup_stack(self, stack_name: str, on_event: Callable[[str], None] = None) -> None:
+        """Pre-clean resources that block CloudFormation deletion.
+
+        S3 buckets must be empty before CloudFormation can delete them.
+        Athena workgroups must have named queries removed first.
+        Skips resources with DeletionPolicy: Retain (they are kept intentionally).
+        """
+        try:
+            # Get the template to check DeletionPolicy for each resource
+            retained_logical_ids = set()
+            try:
+                template_resp = self.cf_client.get_template(StackName=stack_name)
+                import yaml
+
+                template_body = template_resp.get("TemplateBody", {})
+                if isinstance(template_body, str):
+                    template_body = yaml.safe_load(template_body)
+                resources = template_body.get("Resources", {})
+                for logical_id, resource_def in resources.items():
+                    if isinstance(resource_def, dict) and resource_def.get("DeletionPolicy") == "Retain":
+                        retained_logical_ids.add(logical_id)
+            except Exception as e:
+                # If we can't read template, proceed with cleanup for all resources
+                # (better to over-clean than leave resources that block deletion)
+                logging.debug(f"Could not parse template for {stack_name}: {e}")
+
+            response = self.cf_client.describe_stack_resources(StackName=stack_name)
+            for resource in response.get("StackResources", []):
+                physical_id = resource.get("PhysicalResourceId")
+                logical_id = resource.get("LogicalResourceId", "")
+                if not physical_id:
+                    continue
+                # Skip resources with DeletionPolicy: Retain
+                if logical_id in retained_logical_ids:
+                    continue
+                rtype = resource["ResourceType"]
+                if rtype == "AWS::S3::Bucket":
+                    if on_event:
+                        on_event(f"Emptying bucket {physical_id}...")
+                    self._empty_bucket(physical_id)
+                elif rtype == "AWS::Athena::WorkGroup":
+                    if on_event:
+                        on_event(f"Cleaning workgroup {physical_id}...")
+                    self._clean_athena_workgroup(physical_id)
+        except ClientError as e:
+            # Stack might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not pre-clean stack {stack_name}: {e}")
+
+    def _empty_bucket(self, bucket_name: str) -> None:
+        """Delete all objects and versions from an S3 bucket."""
+        try:
+            paginator = self.s3_client.get_paginator("list_object_versions")
+            for page in paginator.paginate(Bucket=bucket_name):
+                objects = []
+                for v in page.get("Versions", []):
+                    objects.append({"Key": v["Key"], "VersionId": v["VersionId"]})
+                for dm in page.get("DeleteMarkers", []):
+                    objects.append({"Key": dm["Key"], "VersionId": dm["VersionId"]})
+                # delete_objects API has a hard limit of 1000 keys per call
+                for i in range(0, len(objects), 1000):
+                    batch = objects[i : i + 1000]
+                    self.s3_client.delete_objects(
+                        Bucket=bucket_name,
+                        Delete={"Objects": batch, "Quiet": True},
+                    )
+        except ClientError as e:
+            # Bucket might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not empty bucket {bucket_name}: {e}")
+
+    def _clean_athena_workgroup(self, workgroup_name: str) -> None:
+        """Force-delete an Athena workgroup and all its contents."""
+        try:
+            athena = self.session.client("athena")
+            athena.delete_work_group(WorkGroup=workgroup_name, RecursiveDeleteOption=True)
+        except ClientError as e:
+            # Workgroup might not exist or be inaccessible - this is expected during cleanup
+            import logging
+            logging.debug(f"Could not clean Athena workgroup {workgroup_name}: {e}")
+
     def package_template(
-        self, template_path: str | Path, s3_bucket: str, s3_prefix: str = None, on_event: Callable = None
+        self, template_path: str | Path, s3_bucket: str, s3_prefix: str | None = None, on_event: Callable | None = None
     ) -> str:
         """
         Package a CloudFormation template and upload artifacts to S3.
@@ -471,7 +582,9 @@ class CloudFormationManager:
                 return False, None
             raise
 
-    def _wait_for_stack(self, stack_name: str, waiter_name: str, timeout: int, on_event: Callable = None) -> bool:
+    def _wait_for_stack(
+        self, stack_name: str, waiter_name: str, timeout: int, on_event: Callable | None = None
+    ) -> bool:
         """
         Wait for stack operation to complete with event streaming.
 
@@ -485,8 +598,9 @@ class CloudFormationManager:
             True if successful, False otherwise
         """
         # Stream events while waiting
+        event_thread = None
         if on_event:
-            self._start_event_streaming(stack_name, on_event)
+            event_thread = self._start_event_streaming(stack_name, on_event)
 
         try:
             waiter = self.cf_client.get_waiter(waiter_name)
@@ -495,11 +609,72 @@ class CloudFormationManager:
         except WaiterError:
             # Check if it's a timeout or actual failure
             final_status = self.get_stack_status(stack_name)
+            # Stack no longer exists — successful deletion
+            if final_status is None and waiter_name == "stack_delete_complete":
+                return True
             if final_status and "FAILED" in final_status:
                 return False
             elif final_status and "ROLLBACK" in final_status:
                 return False
             # Might be timeout
+            return False
+        except Exception:
+            return False
+        finally:
+            if event_thread:
+                event_thread.join(timeout=5)
+
+    def _get_acm_validation_records(self, stack_name: str, logical_resource_id: str, max_wait: int = 180) -> list[dict]:
+        """Get ACM certificate DNS validation records for a resource in a stack.
+
+        Polls ACM until validation CNAME records are available or timeout.
+
+        Returns:
+            List of dicts with 'Name' and 'Value' for CNAME records, or empty list.
+        """
+        try:
+            response = self.cf_client.describe_stack_resource(
+                StackName=stack_name,
+                LogicalResourceId=logical_resource_id,
+            )
+            cert_arn = response["StackResourceDetail"].get("PhysicalResourceId")
+            if not cert_arn or not cert_arn.startswith("arn:"):
+                return []
+
+            acm_client = self.session.client("acm")
+
+            elapsed = 0
+            while elapsed < max_wait:
+                cert_response = acm_client.describe_certificate(CertificateArn=cert_arn)
+                domain_validations = cert_response["Certificate"].get("DomainValidationOptions", [])
+
+                records = []
+                for dv in domain_validations:
+                    resource_record = dv.get("ResourceRecord")
+                    if resource_record and resource_record.get("Type") == "CNAME":
+                        records.append({
+                            "Name": resource_record["Name"],
+                            "Value": resource_record["Value"],
+                        })
+
+                if records:
+                    return records
+
+                time.sleep(5)
+                elapsed += 5
+
+            return []
+        except Exception:
+            return []
+
+    def _has_route53_zone(self, stack_name: str) -> bool:
+        """Check if stack has a non-empty HostedZoneId parameter (Route53 manages DNS)."""
+        try:
+            response = self.cf_client.describe_stacks(StackName=stack_name)
+            for stack in response.get("Stacks", []):
+                for param in stack.get("Parameters", []):
+                    if param.get("ParameterKey") == "HostedZoneId":
+                        return bool(param.get("ParameterValue", "").strip())
             return False
         except Exception:
             return False
@@ -509,6 +684,8 @@ class CloudFormationManager:
         import threading
 
         seen_events = set()
+        acm_certs_notified = set()
+        uses_route53 = self._has_route53_zone(stack_name)
 
         def stream_events():
             while True:
@@ -529,6 +706,33 @@ class CloudFormationManager:
                             }
                             on_event(formatted_event)
 
+                            # Detect ACM certificate waiting for validation
+                            resource_type = event.get("ResourceType", "")
+                            resource_status = event.get("ResourceStatus", "")
+                            logical_id = event.get("LogicalResourceId", "")
+
+                            if (
+                                resource_type == "AWS::CertificateManager::Certificate"
+                                and resource_status == "CREATE_IN_PROGRESS"
+                                and logical_id not in acm_certs_notified
+                            ):
+                                # Skip notification when Route53 handles DNS validation automatically
+                                if uses_route53:
+                                    acm_certs_notified.add(logical_id)
+                                    continue
+
+                                records = self._get_acm_validation_records(stack_name, logical_id)
+                                if records:
+                                    acm_certs_notified.add(logical_id)
+                                    on_event({
+                                        "type": "acm_validation_required",
+                                        "LogicalResourceId": logical_id,
+                                        "ResourceType": resource_type,
+                                        "ResourceStatus": "WAITING_FOR_DNS_VALIDATION",
+                                        "validation_records": records,
+                                        "message": "ACM certificate requires DNS validation",
+                                    })
+
                     # Check if stack operation is complete
                     status = self.get_stack_status(stack_name)
                     if status and ("COMPLETE" in status or "FAILED" in status):
@@ -545,6 +749,9 @@ class CloudFormationManager:
     def _get_stack_failure_reason(self, stack_name: str) -> str:
         """Get the failure reason from stack events."""
         try:
+            # First check if stack still exists and its current status
+            current_status = self.get_stack_status(stack_name)
+
             response = self.cf_client.describe_stack_events(StackName=stack_name)
             events = response.get("StackEvents", [])
 
@@ -558,7 +765,20 @@ class CloudFormationManager:
                     logical_id = event.get("LogicalResourceId", "Unknown")
                     return f"{resource_type} ({logical_id}): {reason}"
 
-            return "Unknown failure reason"
+            # If no failure events found, provide context based on current status
+            if current_status:
+                if "IN_PROGRESS" in current_status:
+                    return f"Stack deletion timeout - still in progress (status: {current_status})"
+                elif "FAILED" in current_status:
+                    return f"Stack in failed state: {current_status}"
+                else:
+                    return f"Stack in unexpected state: {current_status}"
+
+            return "Stack not found or already deleted"
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ValidationError":
+                return "Stack not found or already deleted"
+            return f"Error fetching failure reason: {str(e)}"
         except Exception as e:
             return f"Error fetching failure reason: {str(e)}"
 

@@ -15,7 +15,6 @@ from enum import Enum
 from typing import Any
 
 # Default regions for AWS profile based on cross-region profile
-from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -97,7 +96,18 @@ def _build_model(data: dict) -> ClaudeModel:
     )
 
 
-DEFAULT_REGIONS = {"us": "us-east-1", "eu": "eu-west-1", "europe": "eu-west-1", "apac": "ap-northeast-1", "us-gov": "us-gov-west-1"}
+DEFAULT_REGIONS = {
+    "us": "us-east-1",
+    "eu": "eu-west-1",
+    "europe": "eu-west-1",
+    "apac": "ap-northeast-1",
+    "jp": "ap-northeast-1",
+    "japan": "ap-northeast-1",
+    "au": "ap-southeast-2",
+    "australia": "ap-southeast-2",
+    "global": "us-east-1",
+    "us-gov": "us-gov-west-1",
+}
 
 # Claude model configurations
 # Each model defines its availability across different cross-region profiles
@@ -831,6 +841,48 @@ _CLAUDE_MODELS_RAW = {
 CLAUDE_MODELS: dict[str, ClaudeModel] = {k: _build_model(v) for k, v in _CLAUDE_MODELS_RAW.items()}
 
 
+# Recognized model tiers, derived from CLAUDE_MODELS key prefixes.
+_TIER_PREFIXES = ("opus", "sonnet", "haiku")
+
+
+def _get_tier(model_key: str) -> str | None:
+    """Derive tier from a CLAUDE_MODELS key (e.g., 'opus-4-6' -> 'opus').
+
+    Returns None for GovCloud-specific entries (handled separately).
+    """
+    if model_key.endswith("-govcloud"):
+        return None
+    for prefix in _TIER_PREFIXES:
+        if model_key.startswith(prefix):
+            return prefix
+    return None
+
+
+# Alias mapping for cross-region profile keys.
+# Existing models use "apac", newer models use "eu"/"jp"/"au".
+_PROFILE_KEY_ALIASES: dict[str, str] = {
+    "europe": "eu",
+    "japan": "jp",
+    "australia": "au",
+}
+
+
+def resolve_profile_key(model_key: str, profile_key: str) -> str | None:
+    """Resolve a cross-region profile key for a model, trying aliases if needed.
+
+    Returns the actual key present in the model's profiles dict, or None.
+    """
+    if model_key not in CLAUDE_MODELS:
+        return None
+    profiles = CLAUDE_MODELS[model_key].get("profiles", {})
+    if profile_key in profiles:
+        return profile_key
+    alias = _PROFILE_KEY_ALIASES.get(profile_key)
+    if alias and alias in profiles:
+        return alias
+    return None
+
+
 def get_available_profiles_for_model(model_key: str) -> list[str]:
     """Get list of available cross-region profiles for a given model."""
     if model_key not in CLAUDE_MODELS:
@@ -844,10 +896,11 @@ def get_model_id_for_profile(model_key: str, profile_key: str) -> str:
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["model_id"]
+    return model_config["profiles"][resolved_key]["model_id"]
 
 
 def get_default_region_for_profile(profile_key: str) -> str:
@@ -864,10 +917,11 @@ def get_source_regions_for_model_profile(model_key: str, profile_key: str) -> li
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["source_regions"]
+    return list(model_config["profiles"][resolved_key]["source_regions"])
 
 
 def get_destination_regions_for_model_profile(model_key: str, profile_key: str) -> list[str]:
@@ -876,10 +930,11 @@ def get_destination_regions_for_model_profile(model_key: str, profile_key: str) 
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["destination_regions"]
+    return list(model_config["profiles"][resolved_key]["destination_regions"])
 
 
 def get_all_model_display_names() -> dict[str, str]:
@@ -900,16 +955,83 @@ def get_all_model_display_names() -> dict[str, str]:
     return display_names
 
 
+def get_models_for_tier(tier: str, profile_key: str) -> list[tuple[str, str, str]]:
+    """Return models available for a tier and cross-region profile.
+
+    Args:
+        tier: Model tier ("opus", "sonnet", or "haiku").
+        profile_key: Cross-region profile key (e.g., "global", "us", "eu").
+
+    Returns:
+        List of (model_key, display_name, model_id) tuples, ordered by position
+        in CLAUDE_MODELS (latest entries last in the dict appear last).
+    """
+    results = []
+    for model_key, model_info in CLAUDE_MODELS.items():
+        if _get_tier(model_key) != tier:
+            continue
+        resolved = resolve_profile_key(model_key, profile_key)
+        if resolved is None:
+            continue
+        model_id = model_info["profiles"][resolved]["model_id"]
+        results.append((model_key, model_info["name"], model_id))
+    return results
+
+
 def get_profile_description(model_key: str, profile_key: str) -> str:
     """Get the description for a specific model profile combination."""
     if model_key not in CLAUDE_MODELS:
         raise ValueError(f"Unknown model: {model_key}")
 
     model_config = CLAUDE_MODELS[model_key]
-    if profile_key not in model_config["profiles"]:
+    resolved_key = resolve_profile_key(model_key, profile_key)
+    if resolved_key is None:
         raise ValueError(f"Model {model_key} not available in profile {profile_key}")
 
-    return model_config["profiles"][profile_key]["description"]
+    return model_config["profiles"][resolved_key]["description"]
+
+
+def get_all_source_regions() -> list[str]:
+    """Return all unique source regions across all models and profiles."""
+    regions: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile_config in model_config["profiles"].values():
+            regions.update(profile_config.get("source_regions", []))
+    return sorted(regions)
+
+
+def get_profiles_for_region(region: str) -> list[str]:
+    """Return profile keys that include the given region as a source region."""
+    found: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile_key, profile_config in model_config["profiles"].items():
+            if region in profile_config.get("source_regions", []):
+                found.add(profile_key)
+    # Return in stable, user-friendly order
+    order = ["us", "eu", "jp", "au", "apac", "global", "us-gov"]
+    return [p for p in order if p in found]
+
+
+def get_all_destination_regions_for_profile(profile_key: str) -> list[str]:
+    """Return all unique destination regions across all models that support this profile."""
+    regions: set[str] = set()
+    for model_key, model_config in CLAUDE_MODELS.items():
+        resolved = resolve_profile_key(model_key, profile_key)
+        if resolved is None:
+            continue
+        regions.update(
+            model_config["profiles"][resolved].get("destination_regions", [])
+        )
+    return sorted(regions)
+
+
+def get_all_destination_regions() -> list[str]:
+    """Return all unique destination regions across all models and profiles."""
+    regions: set[str] = set()
+    for model_config in CLAUDE_MODELS.values():
+        for profile in model_config["profiles"].values():
+            regions.update(profile.get("destination_regions", []))
+    return sorted(regions)
 
 
 def get_source_region_for_profile(profile, model_key: str = None, profile_key: str = None) -> str:

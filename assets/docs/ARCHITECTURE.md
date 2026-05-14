@@ -135,4 +135,6 @@ Token storage on end-user machines requires careful consideration. We provide tw
 
 Privilege escalation attempts are contained through IAM policy design. The federated role grants only the minimum permissions required to invoke Bedrock models in specified regions. Session tags embedded in every credential set ensure that users cannot access resources beyond their authorization. These tags flow through to CloudTrail, creating an immutable audit trail.
 
+The credential provider performs full JWKS-based RSA signature verification on OIDC tokens before credential exchange. This includes validating the audience, issuer, expiry, and token freshness claims. A bypass is available via the `CLAUDE_CODE_BYPASS_JWT_VERIFICATION` environment variable for development and testing scenarios.
+
 Every API call to Amazon Bedrock includes the user's subject identifier. This means that CloudTrail captures these tags with every request, providing complete attribution. Authentication events through Cognito are similarly logged, creating a comprehensive security audit trail from login through API usage.

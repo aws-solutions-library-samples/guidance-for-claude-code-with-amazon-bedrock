@@ -8,6 +8,21 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
+# Regions where Windows Server containers are supported for CodeBuild
+CODEBUILD_WINDOWS_REGIONS = {
+    "us-east-1", "us-east-2", "us-west-2", "ap-southeast-2",
+    "ap-northeast-1", "eu-central-1", "eu-west-1", "sa-east-1",
+}
+
+
+def get_codebuild_region(profile) -> str:
+    """Get the appropriate region for CodeBuild Windows builds.
+
+    Returns the profile's region if it supports Windows containers,
+    otherwise falls back to us-east-1.
+    """
+    return profile.aws_region if profile.aws_region in CODEBUILD_WINDOWS_REGIONS else "us-east-1"
+
 
 def get_current_region() -> str | None:
     """Get the current AWS region from configuration."""

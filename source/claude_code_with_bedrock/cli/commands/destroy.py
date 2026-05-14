@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
+from claude_code_with_bedrock.cli.commands.deploy import _get_codebuild_region
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.config import Config
 
@@ -64,15 +65,22 @@ class DestroyCommand(Command):
 
         stacks_to_destroy = []
         if stack_arg:
-            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics", "s3bucket"]:
+            valid = [
+                "auth", "networking", "monitoring", "dashboard", "cowork-dashboard", "analytics",
+                "s3bucket", "distribution", "quota", "codebuild",
+            ]
+            if stack_arg in valid:
                 stacks_to_destroy.append(stack_arg)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, s3bucket")
+                console.print(f"Valid stacks: {', '.join(valid)}")
                 return 1
         else:
             # Destroy all stacks in reverse order
-            stacks_to_destroy = ["analytics", "dashboard", "monitoring", "networking", "s3bucket", "auth"]
+            stacks_to_destroy = [
+                "codebuild", "quota", "analytics", "cowork-dashboard", "dashboard",
+                "distribution", "monitoring", "networking", "s3bucket", "auth",
+            ]
 
         # Show what will be destroyed
         console.print(
@@ -103,6 +111,7 @@ class DestroyCommand(Command):
         console.print("\n[bold]Destroying stacks...[/bold]\n")
 
         all_failed_resources = []  # Collect failed resources from all stacks
+        all_retained_resources = []  # Collect intentionally retained resources
         stacks_with_failures = []
 
         for stack in stacks_to_destroy:
@@ -110,35 +119,61 @@ class DestroyCommand(Command):
                 continue
             if stack == "dashboard" and not profile.monitoring_enabled:
                 continue
+            if stack == "cowork-dashboard" and not profile.monitoring_enabled:
+                continue
             if stack == "networking" and not profile.monitoring_enabled:
                 continue
             if stack == "analytics" and not profile.monitoring_enabled:
                 continue
             if stack == "s3bucket" and not profile.monitoring_enabled:
                 continue
+            if stack == "distribution" and not profile.enable_distribution:
+                continue
+            if stack == "quota" and not getattr(profile, "quota_monitoring_enabled", False):
+                continue
+            if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
+                continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
+            region = _get_codebuild_region(profile) if stack == "codebuild" else profile.aws_region
             console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")
 
-            result = self._delete_stack(stack_name, profile.aws_region, console)
+            result = self._delete_stack(stack_name, region, console, stack)
             if result != 0:
                 # Don't break - collect failed resources and continue
-                failed = self._get_failed_resources(stack_name, profile.aws_region)
+                failed = self._get_failed_resources(stack_name, region)
                 if failed:
                     all_failed_resources.extend(failed)
                     stacks_with_failures.append(stack_name)
-                console.print(
-                    f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n"
-                )
+                    console.print(f"[yellow]⚠ {stack.capitalize()} stack — failed resources:[/yellow]")
+                    for r in failed:
+                        console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+                else:
+                    console.print(
+                        f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]"
+                    )
+                console.print()
             else:
-                console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+                # Check for silently retained resources (DeletionPolicy: Retain)
+                retained = self._get_retained_resources(stack_name, region)
+                if retained:
+                    all_retained_resources.extend(retained)
+                    console.print(f"[yellow]⚠ {stack.capitalize()} stack — retained resources:[/yellow]")
+                    for r in retained:
+                        console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+                    console.print()
+                else:
+                    console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+
+        # Clear cached credentials — they reference deleted IAM roles
+        self._clear_cached_credentials(profile, console)
 
         # Show cleanup summary at the end
-        self._show_cleanup_summary(all_failed_resources, stacks_with_failures, profile, console)
+        self._show_cleanup_summary(all_failed_resources, all_retained_resources, stacks_with_failures, profile, console)
 
         return 0
 
-    def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
+    def _delete_stack(self, stack_name: str, region: str, console: Console, stack_type: str = "") -> int:
         """Delete a CloudFormation stack using boto3.
 
         Returns:
@@ -154,10 +189,15 @@ class DestroyCommand(Command):
             console.print(f"[yellow]Stack {stack_name} not found or already deleted[/yellow]")
             return 0
 
-        # If already in DELETE_FAILED, report it (don't retry)
+        # If already in DELETE_FAILED, pre-clean and retry
         if status == "DELETE_FAILED":
-            console.print(f"[yellow]Stack {stack_name} is in DELETE_FAILED state[/yellow]")
-            return 1  # Signal that manual cleanup is needed
+            console.print(f"[yellow]Stack {stack_name} is in DELETE_FAILED state, retrying after cleanup...[/yellow]")
+
+        # Pre-clean resources that block deletion (non-empty S3 buckets, Athena workgroups)
+        cf_manager.pre_cleanup_stack(
+            stack_name,
+            on_event=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+        )
 
         # Use progress indicator
         with Progress(
@@ -166,13 +206,15 @@ class DestroyCommand(Command):
             task = progress.add_task(f"Deleting stack {stack_name}...", total=None)
 
             # Delete the stack with event tracking
+            # Use longer timeout for stacks with ECS services that need graceful shutdown
+            timeout = 900 if stack_type in ["monitoring", "dashboard"] else 300
             result = cf_manager.delete_stack(
                 stack_name=stack_name,
                 force=True,
                 on_event=lambda e: progress.update(
                     task, description=f"Deleting {e.get('LogicalResourceId', stack_name)}..."
                 ),
-                timeout=300,
+                timeout=timeout,
             )
 
             progress.update(task, completed=True)
@@ -194,87 +236,139 @@ class DestroyCommand(Command):
         cf_manager = CloudFormationManager(region=region)
         return cf_manager.get_failed_resources(stack_name)
 
+    def _get_retained_resources(self, stack_name: str, region: str) -> list[dict]:
+        """Get list of resources silently retained (DeletionPolicy: Retain) during stack deletion."""
+        cf_manager = CloudFormationManager(region=region)
+        return cf_manager.get_retained_resources(stack_name)
+
+    def _clear_cached_credentials(self, profile, console: Console) -> None:
+        """Clear cached credentials that reference deleted IAM roles.
+
+        Only removes the section if it was created by this tool (contains
+        credential_process referencing claude-code-with-bedrock or ccwb).
+        """
+        try:
+            import configparser
+            from pathlib import Path
+
+            cred_path = Path.home() / ".aws" / "credentials"
+            if not cred_path.exists():
+                return
+
+            config = configparser.ConfigParser()
+            config.read(cred_path)
+            if profile.name in config:
+                # Only remove if it's a section created by this tool
+                section_items = dict(config.items(profile.name))
+                is_ours = any(
+                    "credential-process" in v or "claude-code-with-bedrock" in v or "ccwb" in v
+                    for v in section_items.values()
+                )
+                if not is_ours:
+                    return
+                config.remove_section(profile.name)
+                with open(cred_path, "w") as f:
+                    config.write(f)
+                console.print("[dim]Cleared cached credentials[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not clear cached credentials: {e}[/yellow]")
+
     def _show_cleanup_summary(
         self,
         failed_resources: list[dict],
+        retained_resources: list[dict],
         stacks: list[str],
         profile,
         console: Console,
     ) -> None:
-        """Show cleanup instructions for failed resources."""
-        if not failed_resources and not stacks:
+        """Show cleanup instructions for failed and retained resources."""
+        if not failed_resources and not retained_resources and not stacks:
             console.print("\n[green]✓ All stacks destroyed successfully![/green]")
             return
 
-        console.print("\n[yellow]⚠ Manual cleanup required for the following resources:[/yellow]\n")
-
-        # Group by resource type for organized output
-        by_type: dict[str, list[dict]] = {}
-        for r in failed_resources:
-            rtype = r["resource_type"]
-            if rtype not in by_type:
-                by_type[rtype] = []
-            by_type[rtype].append(r)
-
         region = profile.aws_region
 
-        # S3 Buckets
-        if "AWS::S3::Bucket" in by_type:
-            console.print("[bold]S3 Buckets (must be emptied first):[/bold]")
-            for r in by_type["AWS::S3::Bucket"]:
-                bucket = r["physical_id"]
-                console.print(f"  • {bucket}")
-                console.print(f"    [cyan]aws s3 rm s3://{bucket} --recursive[/cyan]")
-                console.print(f"    [cyan]aws s3 rb s3://{bucket}[/cyan]")
-            console.print()
+        # Show failed resources (actual deletion failures)
+        if failed_resources or stacks:
+            console.print("\n[yellow]⚠ Manual cleanup required for the following resources:[/yellow]\n")
 
-        # CloudWatch Log Groups
-        if "AWS::Logs::LogGroup" in by_type:
-            console.print("[bold]CloudWatch Log Groups:[/bold]")
-            for r in by_type["AWS::Logs::LogGroup"]:
-                log_group = r["physical_id"]
-                console.print(f"  • {log_group}")
-                console.print(
-                    f"    [cyan]aws logs delete-log-group --log-group-name {log_group} --region {region}[/cyan]"
-                )
-            console.print()
+            by_type: dict[str, list[dict]] = {}
+            for r in failed_resources:
+                rtype = r["resource_type"]
+                if rtype not in by_type:
+                    by_type[rtype] = []
+                by_type[rtype].append(r)
 
-        # DynamoDB Tables
-        if "AWS::DynamoDB::Table" in by_type:
-            console.print("[bold]DynamoDB Tables:[/bold]")
-            for r in by_type["AWS::DynamoDB::Table"]:
-                table = r["physical_id"]
-                console.print(f"  • {table}")
-                console.print(f"    [cyan]aws dynamodb delete-table --table-name {table} --region {region}[/cyan]")
-            console.print()
+            if "AWS::S3::Bucket" in by_type:
+                console.print("[bold]S3 Buckets (must be emptied first):[/bold]")
+                for r in by_type["AWS::S3::Bucket"]:
+                    bucket = r["physical_id"]
+                    console.print(f"  • {bucket}")
+                    console.print(f"    [cyan]aws s3 rm s3://{bucket} --recursive[/cyan]")
+                    console.print(f"    [cyan]aws s3 rb s3://{bucket}[/cyan]")
+                console.print()
 
-        # ECR Repositories
-        if "AWS::ECR::Repository" in by_type:
-            console.print("[bold]ECR Repositories (must delete images first):[/bold]")
-            for r in by_type["AWS::ECR::Repository"]:
-                repo = r["physical_id"]
-                console.print(f"  • {repo}")
-                console.print(
-                    f"    [cyan]aws ecr delete-repository --repository-name {repo} --force --region {region}[/cyan]"
-                )
-            console.print()
+            if "AWS::Logs::LogGroup" in by_type:
+                console.print("[bold]CloudWatch Log Groups:[/bold]")
+                for r in by_type["AWS::Logs::LogGroup"]:
+                    log_group = r["physical_id"]
+                    console.print(f"  • {log_group}")
+                    console.print(
+                        f"    [cyan]aws logs delete-log-group --log-group-name {log_group} --region {region}[/cyan]"
+                    )
+                console.print()
 
-        # Other resources
-        known_types = ["AWS::S3::Bucket", "AWS::Logs::LogGroup", "AWS::DynamoDB::Table", "AWS::ECR::Repository"]
-        other_types = [t for t in by_type if t not in known_types]
-        if other_types:
-            console.print("[bold]Other Resources:[/bold]")
-            for rtype in other_types:
-                for r in by_type[rtype]:
-                    console.print(f"  • {r['logical_id']} ({rtype}): {r['physical_id']}")
-                    console.print(f"    Reason: {r['status_reason']}")
-            console.print()
+            if "AWS::DynamoDB::Table" in by_type:
+                console.print("[bold]DynamoDB Tables:[/bold]")
+                for r in by_type["AWS::DynamoDB::Table"]:
+                    table = r["physical_id"]
+                    console.print(f"  • {table}")
+                    console.print(
+                        f"    [cyan]aws dynamodb delete-table --table-name {table} --region {region}[/cyan]"
+                    )
+                console.print()
 
-        # Final instructions
-        if stacks:
-            console.print("[yellow]After manual cleanup, delete the failed stacks:[/yellow]")
-            for stack in stacks:
-                console.print(f"  [cyan]aws cloudformation delete-stack --stack-name {stack} --region {region}[/cyan]")
+            if "AWS::ECR::Repository" in by_type:
+                console.print("[bold]ECR Repositories (must delete images first):[/bold]")
+                for r in by_type["AWS::ECR::Repository"]:
+                    repo = r["physical_id"]
+                    console.print(f"  • {repo}")
+                    console.print(
+                        f"    [cyan]aws ecr delete-repository --repository-name {repo} --force"
+                        f" --region {region}[/cyan]"
+                    )
+                console.print()
+
+            known_types = ["AWS::S3::Bucket", "AWS::Logs::LogGroup", "AWS::DynamoDB::Table", "AWS::ECR::Repository"]
+            other_types = [t for t in by_type if t not in known_types]
+            if other_types:
+                console.print("[bold]Other Resources:[/bold]")
+                for rtype in other_types:
+                    for r in by_type[rtype]:
+                        console.print(f"  • {r['logical_id']} ({rtype}): {r['physical_id']}")
+                        console.print(f"    Reason: {r['status_reason']}")
+                console.print()
+
+            if stacks:
+                console.print("[yellow]After manual cleanup, delete the failed stacks:[/yellow]")
+                for stack in stacks:
+                    console.print(
+                        f"  [cyan]aws cloudformation delete-stack --stack-name {stack} --region {region}[/cyan]"
+                    )
+                console.print()
+
+        # Show retained resources (intentionally kept by DeletionPolicy: Retain)
+        if retained_resources:
+            console.print(
+                "\n[dim]ℹ The following resources were intentionally retained (DeletionPolicy: Retain):[/dim]"
+            )
+            console.print("[dim]  These contain data that may be needed for auditing or compliance.[/dim]")
+            console.print("[dim]  Delete manually only if you no longer need the data:[/dim]\n")
+            for r in retained_resources:
+                physical_id = r["physical_id"]
+                console.print(f"  • {r['logical_id']} ({r['resource_type']}): {physical_id}")
+                if r["resource_type"] == "AWS::S3::Bucket":
+                    console.print(f"    [dim]aws s3 rb s3://{physical_id} --force[/dim]")
             console.print()
 
         console.print("For more information, see: assets/docs/TROUBLESHOOTING.md")
