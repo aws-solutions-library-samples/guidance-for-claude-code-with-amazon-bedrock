@@ -1480,8 +1480,118 @@ class InitCommand(Command):
                 f"Cross-Region ({profile_description})"
             )
 
+            # Optional: Application Inference Profiles
+            has_saved_arns = any(
+                config.get("aws", {}).get(k)
+                for k in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]
+            )
+            use_inference_profiles = questionary.confirm(
+                "Configure Application Inference Profiles?",
+                default=has_saved_arns,
+            ).ask()
+
+            if use_inference_profiles:
+                from claude_code_with_bedrock.validators import ProfileValidator
+
+                console.print("[dim]Provide an inference profile ARN for each model tier (press Enter to skip).[/dim]")
+
+                for tier_name, config_key in [
+                    ("Opus", "inference_profile_opus_arn"),
+                    ("Sonnet", "inference_profile_sonnet_arn"),
+                    ("Haiku", "inference_profile_haiku_arn"),
+                ]:
+                    saved_arn = config.get("aws", {}).get(config_key)
+                    while True:
+                        arn = questionary.text(
+                            f"  {tier_name} inference profile ARN:",
+                            default=saved_arn or "",
+                        ).ask()
+
+                        if arn is None:  # User cancelled
+                            config["aws"][config_key] = None
+                            break
+
+                        if not arn.strip():
+                            config["aws"][config_key] = None
+                            break
+
+                        error = ProfileValidator.validate_application_inference_profile_arn(arn)
+                        if error:
+                            console.print(f"[red]{error}[/red]")
+                            continue
+
+                        config["aws"][config_key] = arn.strip()
+                        console.print(f"[green]✓[/green] {tier_name} inference profile configured")
+                        break
+            else:
+                config["aws"]["inference_profile_opus_arn"] = None
+                config["aws"]["inference_profile_sonnet_arn"] = None
+                config["aws"]["inference_profile_haiku_arn"] = None
+
             # Save progress
             progress.save_step("bedrock_complete", config)
+
+        # Resource Tags (optional)
+        console.print("\n[bold blue]Resource Tags (Optional)[/bold blue]")
+        console.print("─" * 30)
+        console.print("[dim]Tags are applied to all deployed CloudFormation stacks.[/dim]")
+
+        add_tags = questionary.confirm(
+            "Would you like to add resource tags?",
+            default=bool(config.get("tags")),
+        ).ask()
+
+        if add_tags:
+            existing_tags = dict(config.get("tags", {}))
+            tags = {}
+
+            # Let user confirm/edit existing tags first
+            if existing_tags:
+                console.print("[dim]Existing tags (edit value or leave empty to remove):[/dim]")
+                for key, value in existing_tags.items():
+                    tag_value = questionary.text(
+                        f"  {key}:",
+                        default=value,
+                    ).ask()
+                    if tag_value is None:
+                        return None
+                    if tag_value:
+                        tags[key] = tag_value
+                        console.print(f"[green]✓[/green] Tag: {key}={tag_value}")
+                    else:
+                        console.print(f"[yellow]✗[/yellow] Removed tag: {key}")
+
+            # Then allow adding new tags
+            while True:
+                tag_key = questionary.text(
+                    "New tag key (empty to finish):",
+                    default="",
+                ).ask()
+                tag_key = (tag_key or "").strip()
+                if not tag_key:
+                    break
+                if tag_key.lower().startswith("aws:"):
+                    console.print("[red]✗ Tag keys cannot start with 'aws:' (reserved by AWS)[/red]")
+                    continue
+                if len(tag_key) > 128:
+                    console.print("[red]✗ Tag key exceeds 128 character limit[/red]")
+                    continue
+                tag_value = questionary.text(
+                    f"Value for '{tag_key}':",
+                    default=tags.get(tag_key, ""),
+                ).ask()
+                if tag_value is None:
+                    break
+                if len(tag_value) > 256:
+                    console.print("[red]✗ Tag value exceeds 256 character limit[/red]")
+                    continue
+                tags[tag_key] = tag_value
+                console.print(f"[green]✓[/green] Tag: {tag_key}={tag_value}")
+            config["tags"] = tags
+        elif add_tags is None:
+            return None
+        else:
+            config["tags"] = config.get("tags", {})
 
         return config
 
@@ -1564,6 +1674,12 @@ class InitCommand(Command):
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
 
+        # Show application inference profiles if configured
+        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+            arn = config["aws"].get(key)
+            if arn:
+                table.add_row(f"{tier} Inference Profile", arn)
+
         # Show cross-region profile
         cross_region_profile = config["aws"].get("cross_region_profile", "us")
         profile_display = {
@@ -1579,6 +1695,10 @@ class InitCommand(Command):
             table.add_row("AWS Account", account_id)
         else:
             table.add_row("AWS Account", "[yellow]Unable to determine[/yellow]")
+
+        # Show resource tags
+        if config.get("tags"):
+            table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
         console.print(table)
 
@@ -1789,6 +1909,9 @@ class InitCommand(Command):
             cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
             selected_model=config_data["aws"].get("selected_model"),
             selected_source_region=config_data["aws"].get("selected_source_region"),
+            inference_profile_opus_arn=config_data["aws"].get("inference_profile_opus_arn"),
+            inference_profile_sonnet_arn=config_data["aws"].get("inference_profile_sonnet_arn"),
+            inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
             provider_type=config_data.get("provider_type"),
             okta_auth_server=config_data.get("okta_auth_server", ""),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
@@ -1826,6 +1949,7 @@ class InitCommand(Command):
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
+            tags=config_data.get("tags", {}),
         )
 
         config.add_profile(profile)
@@ -2125,6 +2249,11 @@ class InitCommand(Command):
             if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
                 existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
 
+            # Add application inference profile ARNs if present
+            for arn_key in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]:
+                if getattr(profile, arn_key, None):
+                    existing_config["aws"][arn_key] = getattr(profile, arn_key)
+
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
@@ -2170,6 +2299,10 @@ class InitCommand(Command):
             if hasattr(profile, "selected_source_region") and profile.selected_source_region:
                 existing_config["aws"]["selected_source_region"] = profile.selected_source_region
 
+            # Add resource tags if present
+            if hasattr(profile, "tags") and profile.tags:
+                existing_config["tags"] = profile.tags
+
             return existing_config
 
         except Exception:
@@ -2198,6 +2331,12 @@ class InitCommand(Command):
             from claude_code_with_bedrock.models import get_all_model_display_names
             model_names = get_all_model_display_names()
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
+
+        # Show application inference profiles if configured
+        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+            arn = config["aws"].get(key)
+            if arn:
+                console.print(f"• {tier} Inference Profile: [cyan]{arn}[/cyan]")
 
         # Show cross-region profile
         cross_region_profile = config["aws"].get("cross_region_profile", "us")
