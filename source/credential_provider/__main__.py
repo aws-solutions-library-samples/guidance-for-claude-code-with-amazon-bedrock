@@ -101,8 +101,9 @@ class MultiProviderAuth:
         if self.provider_type == "okta":
             auth_server = self.config.get("okta_auth_server", "")
             if auth_server:
-                self.provider_config["authorize_endpoint"] = self.provider_config["authorize_endpoint"].format(auth_server=auth_server)
-                self.provider_config["token_endpoint"] = self.provider_config["token_endpoint"].format(auth_server=auth_server)
+                fmt = {"auth_server": auth_server}
+                self.provider_config["authorize_endpoint"] = self.provider_config["authorize_endpoint"].format(**fmt)
+                self.provider_config["token_endpoint"] = self.provider_config["token_endpoint"].format(**fmt)
             else:
                 self.provider_config["authorize_endpoint"] = "/oauth2/v1/authorize"
                 self.provider_config["token_endpoint"] = "/oauth2/v1/token"
@@ -807,7 +808,6 @@ class MultiProviderAuth:
         """
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
 
         # Env vars take precedence over config.json so paths stay portable across
         # machines (self-install and admin-push scenarios).  This follows the

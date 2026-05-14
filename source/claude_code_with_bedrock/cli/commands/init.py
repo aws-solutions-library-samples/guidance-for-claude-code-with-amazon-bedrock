@@ -881,7 +881,7 @@ class InitCommand(Command):
                             config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
                             console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
                         else:
-                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                            console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                 else:
                     # User disabled HTTPS, clear any existing config
                     config["monitoring"]["custom_domain"] = None

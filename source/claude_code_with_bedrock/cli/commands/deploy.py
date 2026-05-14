@@ -963,7 +963,7 @@ class DeployCommand(Command):
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -1071,7 +1071,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1112,7 +1112,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [
