@@ -1471,26 +1471,31 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        # Only show SSO/OIDC info if SSO is enabled
+        if config.get("sso_enabled", True):
+            table.add_row("OIDC Provider", config["okta"]["domain"])
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    config["okta"]["client_id"][:20] + "..."
+                    if len(config["okta"]["client_id"]) > 20
+                    else config["okta"]["client_id"]
+                ),
+            )
+            table.add_row(
+                "Credential Storage",
+                (
+                    "Keyring (OS secure storage)"
+                    if config.get("credential_storage") == "keyring"
+                    else "Session Files (temporary)"
+                ),
+            )
+        else:
+            table.add_row("Authentication Mode", "IAM-based (SSO disabled)")
 
-        table.add_row(
-            "Credential Storage",
-            (
-                "Keyring (OS secure storage)"
-                if config.get("credential_storage") == "keyring"
-                else "Session Files (temporary)"
-            ),
-        )
-        table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
-        table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
+        table.add_row("Infrastructure Region", f"{config['aws']['region']} (IAM, Monitoring)")
+        if config.get("sso_enabled", True):
+            table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
             quota_config = config.get("quota", {})
@@ -1559,10 +1564,11 @@ class InitCommand(Command):
 
         # Show what will be created
         console.print("\n[bold yellow]Resources to be created:[/bold yellow]")
-        if config.get("federation_type") == "direct":
-            console.print("• IAM OIDC Provider for authentication")
-        else:
-            console.print("• Cognito Identity Pool for authentication")
+        if config.get("sso_enabled", True):
+            if config.get("federation_type") == "direct":
+                console.print("• IAM OIDC Provider for authentication")
+            else:
+                console.print("• Cognito Identity Pool for authentication")
         console.print("• IAM roles and policies for Bedrock access")
         if config.get("monitoring", {}).get("enabled"):
             console.print("• CloudWatch dashboards for usage monitoring")
