@@ -37,6 +37,8 @@ class TestCommand(Command):
             flag=False,
             default=None,
         ),
+        option("claude", description="Validate Claude Code settings.json in the package (offline)", flag=True),
+        option("cowork", description="Validate CoWork 3P MDM config files in the package (offline)", flag=True),
     ]
 
     def handle(self) -> int:
@@ -250,6 +252,12 @@ class TestCommand(Command):
                 test_profile,
                 quota_api_override,
             )
+
+        # Check for --claude or --cowork flags (offline package validation)
+        if self.option("claude"):
+            return self._validate_claude_config(package_dir, pkg_config, test_profile_name, has_otel, console)
+        if self.option("cowork"):
+            return self._validate_cowork_config(package_dir, console)
 
         # Step 2: Test the binary directly
         console.print("[bold]Step 2: Testing credential process binary[/bold]")
@@ -1427,3 +1435,245 @@ class TestCommand(Command):
             console.print("\n[yellow]Quota tests passed with warnings.[/yellow]")
         else:
             console.print("\n[green]All quota tests passed![/green]")
+
+    def _validate_claude_config(
+        self, package_dir: Path, pkg_config: dict, profile_name: str, has_otel: bool, console: Console
+    ) -> int:
+        """Validate Claude Code settings.json in the package (offline, no AWS)."""
+        results = []
+
+        console.print(
+            Panel.fit(
+                "[bold cyan]Claude Code Config Validation[/bold cyan]\n\n"
+                f"Package: [bold]{package_dir}[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
+        settings_path = package_dir / "claude-settings" / "settings.json"
+
+        # Check 1: settings.json exists
+        if not settings_path.exists():
+            results.append(("settings.json exists", "✗", "claude-settings/settings.json not found"))
+            self._display_validation_results(console, "Claude Code Config", results)
+            return 1
+
+        results.append(("settings.json exists", "✓", str(settings_path.relative_to(package_dir))))
+
+        with open(settings_path) as f:
+            settings = json.load(f)
+
+        env = settings.get("env", {})
+
+        # Check 2: CLAUDE_CODE_USE_BEDROCK=1
+        if env.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+            results.append(("CLAUDE_CODE_USE_BEDROCK", "✓", "Set to '1'"))
+        else:
+            results.append(("CLAUDE_CODE_USE_BEDROCK", "✗", "Missing or not '1'"))
+
+        # Check 3: AWS_PROFILE set
+        if env.get("AWS_PROFILE"):
+            results.append(("AWS_PROFILE", "✓", env["AWS_PROFILE"]))
+        else:
+            results.append(("AWS_PROFILE", "✗", "Not set"))
+
+        # Check 4: AWS_CREDENTIAL_PROCESS set
+        if env.get("AWS_CREDENTIAL_PROCESS"):
+            results.append(("AWS_CREDENTIAL_PROCESS", "✓", "Configured"))
+        else:
+            results.append(("AWS_CREDENTIAL_PROCESS", "✗", "Not set"))
+
+        # Check 5: ANTHROPIC_MODEL set
+        if env.get("ANTHROPIC_MODEL"):
+            results.append(("ANTHROPIC_MODEL", "✓", env["ANTHROPIC_MODEL"][:60]))
+        else:
+            results.append(("ANTHROPIC_MODEL", "!", "Not set (will use default)"))
+
+        # Check 6: Model tier env vars
+        for tier_var in ("ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL"):
+            if env.get(tier_var):
+                results.append((tier_var, "✓", env[tier_var][:50]))
+            else:
+                results.append((tier_var, "!", "Not set"))
+
+        # Check 7: AWS_REGION set
+        if env.get("AWS_REGION"):
+            results.append(("AWS_REGION", "✓", env["AWS_REGION"]))
+        else:
+            results.append(("AWS_REGION", "✗", "Not set"))
+
+        # Check 8: OTEL consistency — if OTEL binary exists, settings must have otelHeadersHelper
+        if has_otel:
+            if settings.get("otelHeadersHelper"):
+                results.append(("otelHeadersHelper", "✓", "Configured"))
+            else:
+                results.append(("otelHeadersHelper", "✗", "OTEL binary present but otelHeadersHelper not in settings"))
+
+            if env.get("CLAUDE_CODE_ENABLE_TELEMETRY") == "1":
+                results.append(("CLAUDE_CODE_ENABLE_TELEMETRY", "✓", "Enabled"))
+            else:
+                results.append(("CLAUDE_CODE_ENABLE_TELEMETRY", "✗", "OTEL binary present but telemetry not enabled"))
+
+            if env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+                results.append(("OTEL_EXPORTER_OTLP_ENDPOINT", "✓", env["OTEL_EXPORTER_OTLP_ENDPOINT"][:60]))
+            else:
+                results.append(("OTEL_EXPORTER_OTLP_ENDPOINT", "✗", "OTEL binary present but endpoint not set"))
+        else:
+            if settings.get("otelHeadersHelper"):
+                results.append(("otelHeadersHelper", "!", "Set but no OTEL binary found"))
+            else:
+                results.append(("otelHeadersHelper", "-", "Not configured (monitoring disabled)"))
+
+        # Check 9: Credential storage consistency
+        profile_config = pkg_config.get(profile_name) or pkg_config.get("ClaudeCode", {})
+        cred_storage = profile_config.get("credential_storage", "session")
+        if cred_storage == "session":
+            if settings.get("awsAuthRefresh"):
+                results.append(("awsAuthRefresh", "✓", "Set (session storage)"))
+            else:
+                results.append(("awsAuthRefresh", "!", "Session storage but awsAuthRefresh not set"))
+        else:
+            if settings.get("awsAuthRefresh"):
+                results.append(("awsAuthRefresh", "!", "Set but credential_storage is keyring"))
+            else:
+                results.append(("awsAuthRefresh", "✓", "Not set (keyring storage)"))
+
+        self._display_validation_results(console, "Claude Code Config", results)
+
+        failed = sum(1 for _, status, _ in results if status == "✗")
+        return 1 if failed > 0 else 0
+
+    def _validate_cowork_config(self, package_dir: Path, console: Console) -> int:
+        """Validate CoWork 3P MDM config files in the package (offline, no AWS)."""
+        results = []
+
+        console.print(
+            Panel.fit(
+                "[bold cyan]CoWork 3P Config Validation[/bold cyan]\n\n"
+                f"Package: [bold]{package_dir}[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
+        REQUIRED_MDM_KEYS = ["inferenceProvider", "inferenceBedrockRegion", "inferenceBedrockProfile", "inferenceModels"]
+
+        # Check 1: cowork-3p-config.json
+        json_path = package_dir / "cowork-3p-config.json"
+        if json_path.exists():
+            with open(json_path) as f:
+                cowork_config = json.load(f)
+
+            results.append(("cowork-3p-config.json", "✓", "Found"))
+
+            for key in REQUIRED_MDM_KEYS:
+                if key in cowork_config:
+                    val = cowork_config[key]
+                    display = str(val)[:50] if not isinstance(val, list) else json.dumps(val)
+                    results.append((f"  {key}", "✓", display))
+                else:
+                    results.append((f"  {key}", "✗", "Missing"))
+
+            if cowork_config.get("inferenceProvider") != "bedrock":
+                results.append(("  provider value", "✗", f"Expected 'bedrock', got '{cowork_config.get('inferenceProvider')}'"))
+        else:
+            results.append(("cowork-3p-config.json", "✗", "Not found — is cowork_3p_enabled set?"))
+            self._display_validation_results(console, "CoWork 3P Config", results)
+            return 1
+
+        # Check 2: macOS .mobileconfig
+        mc_path = package_dir / "cowork-3p.mobileconfig"
+        if mc_path.exists():
+            content = mc_path.read_text()
+            if "com.anthropic.claudefordesktop" in content and "inferenceProvider" in content:
+                results.append(("cowork-3p.mobileconfig", "✓", "Valid macOS profile"))
+            else:
+                results.append(("cowork-3p.mobileconfig", "✗", "Missing required plist keys"))
+
+            # Verify it's parseable XML
+            import xml.etree.ElementTree as ET
+            try:
+                ET.fromstring(content)
+                results.append(("  XML valid", "✓", "Parseable plist"))
+            except ET.ParseError as e:
+                results.append(("  XML valid", "✗", f"Parse error: {e}"))
+        else:
+            results.append(("cowork-3p.mobileconfig", "✗", "Not found"))
+
+        # Check 3: Windows .reg file
+        reg_path = package_dir / "cowork-3p.reg"
+        if reg_path.exists():
+            content = reg_path.read_text()
+            if "Windows Registry Editor Version 5.00" in content and r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude" in content:
+                results.append(("cowork-3p.reg", "✓", "Valid Windows registry file"))
+            else:
+                results.append(("cowork-3p.reg", "✗", "Missing registry header or key"))
+
+            if '"inferenceProvider"="bedrock"' in content:
+                results.append(("  bedrock provider", "✓", "Correctly set"))
+            else:
+                results.append(("  bedrock provider", "✗", "inferenceProvider not set to bedrock"))
+        else:
+            results.append(("cowork-3p.reg", "✗", "Not found"))
+
+        # Check 4: Cross-file consistency — region should match across all formats
+        json_region = cowork_config.get("inferenceBedrockRegion")
+        if mc_path.exists():
+            mc_content = mc_path.read_text()
+            if json_region and json_region in mc_content:
+                results.append(("Region consistency (JSON↔macOS)", "✓", json_region))
+            elif json_region:
+                results.append(("Region consistency (JSON↔macOS)", "✗", f"{json_region} not found in .mobileconfig"))
+
+        if reg_path.exists():
+            reg_content = reg_path.read_text()
+            if json_region and json_region in reg_content:
+                results.append(("Region consistency (JSON↔Windows)", "✓", json_region))
+            elif json_region:
+                results.append(("Region consistency (JSON↔Windows)", "✗", f"{json_region} not found in .reg"))
+
+        self._display_validation_results(console, "CoWork 3P Config", results)
+
+        failed = sum(1 for _, status, _ in results if status == "✗")
+        return 1 if failed > 0 else 0
+
+    def _display_validation_results(self, console: Console, title: str, results: list) -> None:
+        """Display validation results in a table."""
+        table = Table(title=title, box=box.ROUNDED)
+        table.add_column("Check", style="cyan", min_width=30)
+        table.add_column("Status", justify="center", width=10)
+        table.add_column("Details", style="dim", min_width=40, overflow="fold")
+
+        passed = warnings = failed = skipped = 0
+
+        for check_name, status, details in results:
+            if status == "✓":
+                passed += 1
+                status_display = "[green]✓ Pass[/green]"
+            elif status == "!":
+                warnings += 1
+                status_display = "[yellow]! Warn[/yellow]"
+            elif status == "-":
+                skipped += 1
+                status_display = "[dim]- Skip[/dim]"
+            else:
+                failed += 1
+                status_display = "[red]✗ Fail[/red]"
+
+            table.add_row(check_name, status_display, details)
+
+        console.print("\n")
+        console.print(table)
+
+        summary_parts = [f"{passed} passed", f"{warnings} warnings", f"{failed} failed"]
+        if skipped > 0:
+            summary_parts.append(f"{skipped} skipped")
+        console.print(f"\n[bold]Summary:[/bold] {', '.join(summary_parts)}")
+
+        if failed > 0:
+            console.print("\n[red]Some checks failed. Review the details above.[/red]")
+        elif warnings > 0:
+            console.print("\n[yellow]All checks passed with warnings.[/yellow]")
+        else:
+            console.print("\n[green]All checks passed![/green]")
