@@ -1,0 +1,49 @@
+name: Unit Tests
+on:
+  push:
+    paths:
+      - 'source/**'
+  pull_request:
+    paths:
+      - 'source/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        working-directory: source
+        run: poetry install
+
+      - name: Run unit tests
+        working-directory: source
+        run: poetry run pytest --tb=short -q
+
+      - name: Run linting on changed files
+        working-directory: source
+        run: |
+          # Only lint files changed in this PR/push to avoid failing on pre-existing issues
+          CHANGED=$(git diff --name-only origin/main...HEAD -- '*.py' | grep '^source/' | sed 's|^source/||' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "Linting changed files:"
+            echo "$CHANGED"
+            echo "$CHANGED" | xargs poetry run ruff check
+          else
+            echo "No Python files changed, skipping lint"
+          fi

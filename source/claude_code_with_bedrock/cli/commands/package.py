@@ -127,6 +127,7 @@ class PackageCommand(Command):
             default=None,
         ),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
+        option("skip-tests", description="Skip unit tests before building", flag=True),
     ]
 
     def handle(self) -> int:
@@ -271,6 +272,26 @@ class PackageCommand(Command):
 
         # Show what will be packaged using shared display utility
         display_configuration_info(profile, identity_pool_id or federated_role_arn, format_type="simple")
+
+        # Run unit tests before building
+        if self.option("skip-tests"):
+            console.print("\n[yellow]Skipping unit tests (--skip-tests)[/yellow]")
+        else:
+            console.print("\n[bold]Running unit tests...[/bold]")
+            test_result = subprocess.run(
+                ["poetry", "run", "pytest", "--tb=short", "-q"],
+                cwd=Path(__file__).resolve().parents[3],
+                capture_output=True,
+                text=True,
+            )
+            if test_result.returncode != 0:
+                console.print("[red]Unit tests failed! Fix tests before packaging.[/red]")
+                console.print(test_result.stdout)
+                if test_result.stderr:
+                    console.print(test_result.stderr)
+                console.print("\n[dim]Use --skip-tests to bypass this check[/dim]")
+                return 1
+            console.print("[green]✓ All unit tests passed[/green]")
 
         # Build package
         console.print("\n[bold]Building package...[/bold]")
@@ -1789,6 +1810,10 @@ RUN pyinstaller \
         if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
             config[profile_name]["cognito_user_pool_id"] = profile.cognito_user_pool_id
 
+        # Add Okta auth server if configured (e.g., "default" for developer/free plans)
+        if profile.provider_type == "okta" and getattr(profile, "okta_auth_server", ""):
+            config[profile_name]["okta_auth_server"] = profile.okta_auth_server
+
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
@@ -2210,14 +2235,14 @@ echo Configuring AWS profiles...
 
 if not exist "%USERPROFILE%\\.aws" mkdir "%USERPROFILE%\\.aws"
 
-REM Purge any stale stanza from %USERPROFILE%\.aws\credentials. The credential
-REM chain resolves that file before credential_process in %USERPROFILE%\.aws\config,
+REM Purge any stale stanza from %USERPROFILE%\\.aws\\credentials. The credential
+REM chain resolves that file before credential_process in %USERPROFILE%\\.aws\\config,
 REM so a leftover [profile-name] block (e.g. EXPIRED placeholder written by an
 REM older ccwb auth logout) would shadow credential_process and break Cowork
 REM Desktop with a 403 InvalidClientTokenId.
-powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\[' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\\[' + [regex]::Escape($p) + '\\].*?(?=^\\[|\\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
 
-powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\[profile ' + [regex]::Escape($p) + '\].*?(?=^\[|\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza; Write-Host ('  OK Configured AWS profile ' + $p) }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\\[profile ' + [regex]::Escape($p) + '\\].*?(?=^\\[|\\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza; Write-Host ('  OK Configured AWS profile ' + $p) }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
 if %errorlevel% neq 0 (
     echo ERROR: Failed to configure AWS profiles
     pause
