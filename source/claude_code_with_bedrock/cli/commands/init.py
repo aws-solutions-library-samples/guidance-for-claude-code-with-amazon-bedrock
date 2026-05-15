@@ -992,6 +992,9 @@ class InitCommand(Command):
             console.print("\n[bold]Landing Page Configuration[/bold]")
             console.print("Configure IdP authentication for the distribution landing page")
 
+            # Ensure region is available (may not be set if skip_aws was True)
+            region = config.get("aws", {}).get("region", get_current_region())
+
             # IdP provider selection
             idp_choices = [
                 questionary.Choice("Okta", value="okta"),
