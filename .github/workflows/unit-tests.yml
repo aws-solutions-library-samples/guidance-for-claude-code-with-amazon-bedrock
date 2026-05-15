@@ -33,7 +33,7 @@ jobs:
 
       - name: Run unit tests
         working-directory: source
-        run: poetry run pytest --tb=short -q
+        run: poetry run pytest --tb=short -q --ignore=tests/integration
 
       - name: Run linting on changed files
         working-directory: source
