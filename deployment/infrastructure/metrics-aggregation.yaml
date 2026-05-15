@@ -96,7 +96,7 @@ Resources:
           Id: MetricsAggregatorTarget
           RetryPolicy:
             MaximumRetryAttempts: 2
-            MaximumEventAge: 600
+            MaximumEventAgeInSeconds: 600
 
   MetricsAggregatorSchedulePermission:
     Type: AWS::Lambda::Permission
