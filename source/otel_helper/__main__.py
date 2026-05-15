@@ -184,12 +184,12 @@ def extract_user_info(payload):
 
     # Extract team/department information - these fields vary by IdP
     # Provide defaults for consistent metric dimensions
-    department = payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
-    team = payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
-    cost_center = payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
-    manager = payload.get("manager") or payload.get("manager_email") or "unassigned"
-    location = payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
-    role = payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    department = payload.get("custom:department") or payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
+    team = payload.get("custom:team") or payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
+    cost_center = payload.get("custom:cost_center") or payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
+    manager = payload.get("custom:manager") or payload.get("manager") or payload.get("manager_email") or "unassigned"
+    location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
+    role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
 
     return {
         "email": email,
