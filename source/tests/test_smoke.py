@@ -356,3 +356,45 @@ class TestCommandDefinitions:
 
                     if hasattr(cmd, "options"):
                         assert isinstance(cmd.options, list), f"{attr_name}.options should be a list"
+
+
+class TestKeycloakIntegration:
+    """Test Keycloak IdP integration."""
+
+    def test_credential_provider_has_keycloak_config(self):
+        """Test that PROVIDER_CONFIGS includes Keycloak."""
+        from credential_provider.__main__ import PROVIDER_CONFIGS
+
+        assert "keycloak" in PROVIDER_CONFIGS, "Keycloak should be in PROVIDER_CONFIGS"
+
+        keycloak_config = PROVIDER_CONFIGS["keycloak"]
+        assert keycloak_config["name"] == "Keycloak"
+        assert keycloak_config["authorize_endpoint"] == "/protocol/openid-connect/auth"
+        assert keycloak_config["token_endpoint"] == "/protocol/openid-connect/token"
+        assert keycloak_config["scopes"] == "openid profile email"
+        assert keycloak_config["response_type"] == "code"
+        assert keycloak_config["response_mode"] == "query"
+
+    def test_keycloak_domain_parsing(self):
+        """Test that _parse_keycloak_domain correctly splits host and realm."""
+        from claude_code_with_bedrock.cli.commands.deploy import _parse_keycloak_domain
+
+        # Test with https:// prefix
+        host, realm = _parse_keycloak_domain("https://keycloak.example.com/realms/myrealm")
+        assert host == "keycloak.example.com"
+        assert realm == "myrealm"
+
+        # Test without https:// prefix
+        host, realm = _parse_keycloak_domain("keycloak.example.com/realms/myrealm")
+        assert host == "keycloak.example.com"
+        assert realm == "myrealm"
+
+        # Test with trailing slash
+        host, realm = _parse_keycloak_domain("keycloak.example.com/realms/master/")
+        assert host == "keycloak.example.com"
+        assert realm == "master"
+
+        # Test default realm when no /realms/ in domain
+        host, realm = _parse_keycloak_domain("keycloak.example.com")
+        assert host == "keycloak.example.com"
+        assert realm == "master"

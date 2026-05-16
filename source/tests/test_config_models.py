@@ -240,3 +240,84 @@ class TestConfigManagerWithModels:
                     assert loaded_profile.cognito_user_pool_id == "us-east-1_TestPool"
                     assert loaded_profile.selected_model == "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
                     assert loaded_profile.cross_region_profile == "us"
+
+
+class TestKeycloakProfileConfiguration:
+    """Tests for Keycloak IdP profile configuration."""
+
+    def test_keycloak_profile_instantiation(self):
+        """Test that Profile can be created with Keycloak provider."""
+        profile = Profile(
+            name="test-keycloak",
+            provider_type="keycloak",
+            provider_domain="keycloak.example.com/realms/myrealm",
+            client_id="test-client",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            federated_role_arn="arn:aws:iam::123456789012:role/TestKeycloakRole",
+            federation_type="direct",
+        )
+
+        assert profile.provider_type == "keycloak"
+        assert profile.provider_domain == "keycloak.example.com/realms/myrealm"
+        assert profile.federation_type == "direct"
+        assert profile.federated_role_arn == "arn:aws:iam::123456789012:role/TestKeycloakRole"
+
+    def test_keycloak_profile_with_all_fields(self):
+        """Test Keycloak profile with distribution and monitoring features."""
+        profile = Profile(
+            name="keycloak-full",
+            provider_type="keycloak",
+            provider_domain="keycloak.example.com/realms/master",
+            client_id="test-client-id",
+            credential_storage="session",
+            aws_region="us-east-1",
+            federated_role_arn="arn:aws:iam::123456789012:role/TestKeycloakRole",
+            federation_type="direct",
+            identity_pool_name="test-pool",
+            cross_region_profile="us",
+            selected_model="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            enable_distribution=True,
+            distribution_type="landing-page",
+            distribution_idp_provider="keycloak",
+            distribution_idp_domain="https://keycloak.example.com/realms/master",
+            distribution_idp_client_id="test-landing-page-client",
+        )
+
+        assert profile.provider_type == "keycloak"
+        assert profile.enable_distribution is True
+        assert profile.distribution_idp_provider == "keycloak"
+        assert "keycloak.example.com" in profile.distribution_idp_domain
+
+    def test_keycloak_config_persistence(self):
+        """Test that Keycloak profile persists correctly through save/load cycle."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.json"
+
+            with patch.object(Config, "CONFIG_FILE", config_file):
+                with patch.object(Config, "CONFIG_DIR", Path(tmpdir)):
+                    config = Config()
+                    profile = Profile(
+                        name="keycloak-persist-test",
+                        provider_type="keycloak",
+                        provider_domain="keycloak.example.com/realms/master",
+                        client_id="test-client-id",
+                        credential_storage="session",
+                        aws_region="us-east-1",
+                        federated_role_arn="arn:aws:iam::123456789012:role/TestKeycloakRole",
+                        federation_type="direct",
+                        identity_pool_name="test-pool",
+                    )
+                    config.add_profile(profile)
+                    config.save()
+
+                    # Load and verify
+                    loaded_config = Config.load()
+                    loaded_profile = loaded_config.get_profile("keycloak-persist-test")
+
+                    assert loaded_profile is not None
+                    assert loaded_profile.provider_type == "keycloak"
+                    assert loaded_profile.provider_domain == "keycloak.example.com/realms/master"
+                    assert loaded_profile.federation_type == "direct"
+                    assert loaded_profile.federated_role_arn == "arn:aws:iam::123456789012:role/TestKeycloakRole"
