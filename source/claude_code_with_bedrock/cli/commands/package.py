@@ -534,7 +534,11 @@ class PackageCommand(Command):
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
 
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            # Get CodeBuild region (Windows containers may be in different region)
+            from ..utils.aws import get_codebuild_region
+
+            codebuild_region = get_codebuild_region(profile)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -1347,8 +1351,12 @@ RUN pyinstaller \
             profile = config.get_profile(profile_name)
 
             if profile:
+                # Get CodeBuild region (Windows containers may be in different region)
+                from ..utils.aws import get_codebuild_region
+
+                codebuild_region = get_codebuild_region(profile)
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=codebuild_region)
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -1383,10 +1391,15 @@ RUN pyinstaller \
             console.print("  3. Run: poetry run ccwb deploy codebuild")
             raise RuntimeError("CodeBuild not enabled")
 
+        # Get CodeBuild region (Windows containers may be in different region)
+        from ..utils.aws import get_codebuild_region
+
+        codebuild_region = get_codebuild_region(profile)
+
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, codebuild_region)
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -1406,9 +1419,9 @@ RUN pyinstaller \
             task = progress.add_task("Packaging source code for CodeBuild...", total=None)
             source_zip = self._package_source_for_codebuild()
 
-            # Upload to S3
+            # Upload to S3 (bucket is in CodeBuild region)
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=codebuild_region)
             try:
                 s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
@@ -1417,7 +1430,7 @@ RUN pyinstaller \
 
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]

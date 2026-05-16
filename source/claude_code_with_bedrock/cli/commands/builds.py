@@ -69,8 +69,13 @@ class BuildsCommand(Command):
             if not project_name:
                 project_name = f"{profile.identity_pool_name}-windows-build"
 
+            # Get CodeBuild region (Windows containers may be in different region)
+            from ...cli.utils.aws import get_codebuild_region
+
+            codebuild_region = get_codebuild_region(profile)
+
             # Get builds from CodeBuild
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             limit = int(self.option("limit"))
 
             # List builds for project
@@ -173,6 +178,11 @@ class BuildsCommand(Command):
                     )
                 return 1
 
+            # Get CodeBuild region (Windows containers may be in different region)
+            from ...cli.utils.aws import get_codebuild_region
+
+            codebuild_region = get_codebuild_region(profile)
+
             # If no build ID provided or it's "latest", check for latest
             if not build_id or build_id == "latest":
                 build_info_file = Path.home() / ".claude-code" / "latest-build.json"
@@ -192,7 +202,7 @@ class BuildsCommand(Command):
                     # If it's a short ID (like from the table), find the full UUID
                     if len(build_id) == 8:
                         # List recent builds to find the matching one
-                        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                        codebuild = boto3.client("codebuild", region_name=codebuild_region)
                         response = codebuild.list_builds_for_project(
                             projectName=project_name, sortOrder="DESCENDING"
                         )
@@ -213,7 +223,7 @@ class BuildsCommand(Command):
                         build_id = f"{project_name}:{build_id}"
 
             # Get build status from CodeBuild
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=codebuild_region)
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -348,11 +358,14 @@ class BuildsCommand(Command):
                 console.print("[red]CodeBuild is not enabled for this profile[/red]")
                 return False
 
-            # Get CodeBuild stack outputs
-            from ...cli.utils.aws import get_stack_outputs
+            # Get CodeBuild region (Windows containers may be in different region)
+            from ...cli.utils.aws import get_codebuild_region, get_stack_outputs
 
+            codebuild_region = get_codebuild_region(profile)
+
+            # Get CodeBuild stack outputs
             codebuild_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
-            codebuild_outputs = get_stack_outputs(codebuild_stack_name, profile.aws_region)
+            codebuild_outputs = get_stack_outputs(codebuild_stack_name, codebuild_region)
 
             if not codebuild_outputs:
                 console.print("[red]CodeBuild stack not found[/red]")
@@ -363,8 +376,8 @@ class BuildsCommand(Command):
                 console.print("[red]Could not get CodeBuild bucket from stack outputs[/red]")
                 return False
 
-            # Download from S3
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            # Download from S3 (bucket is in CodeBuild region)
+            s3 = boto3.client("s3", region_name=codebuild_region)
             zip_path = package_path / "windows-binaries.zip"
 
             # CodeBuild stores artifacts at root of bucket
