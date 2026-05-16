@@ -180,16 +180,18 @@ class DeployCommand(Command):
             if getattr(profile, "sso_enabled", True):
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
-            if profile.enable_distribution:
-                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
-
-            # Deploy remaining monitoring stacks
+            # Deploy networking and s3bucket before distribution (distribution ALB needs VPC)
             if profile.monitoring_enabled:
                 vpc_config = profile.monitoring_config or {}
                 if vpc_config.get("create_vpc", True):
                     stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+
+            if profile.enable_distribution:
+                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+            # Deploy remaining monitoring stacks
+            if profile.monitoring_enabled:
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
