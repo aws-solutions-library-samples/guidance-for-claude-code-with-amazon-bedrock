@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.aws import get_codebuild_region, get_stack_outputs
 from claude_code_with_bedrock.cli.utils.cf_exceptions import (
     CloudFormationError,
     ResourceConflictError,
@@ -299,6 +299,10 @@ class DeployCommand(Command):
                 key, value = param.split("=", 1)
                 result.append({"ParameterKey": key, "ParameterValue": value})
         return result
+
+    def _get_codebuild_region(self, profile):
+        """Backward-compatible wrapper for shared utility."""
+        return get_codebuild_region(profile)
 
     def _deploy_stack(self, stack_type: str, profile, console: Console, cf_manager: CloudFormationManager) -> int:
         """Deploy a CloudFormation stack using boto3."""
@@ -943,12 +947,36 @@ class DeployCommand(Command):
                             pass
 
             elif stack_type == "codebuild":
+                # CodeBuild needs to deploy to a region that supports Windows containers
+                codebuild_region = self._get_codebuild_region(profile)
+                codebuild_cf_manager = CloudFormationManager(region=codebuild_region)
+
                 template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
                 stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
-                return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CodeBuild for Windows builds..."
+
+                if codebuild_region != profile.aws_region:
+                    console.print(f"[yellow]Note: Deploying CodeBuild to {codebuild_region} (Windows containers not supported in {profile.aws_region})[/yellow]")
+
+                # Use the codebuild-specific cf_manager
+                boto3_params = self._convert_params_to_boto3(params) if params else None
+                stack_tags = dict(profile.tags) if profile.tags else {}
+
+                result = codebuild_cf_manager.deploy_stack(
+                    stack_name=stack_name,
+                    template_path=template,
+                    parameters=boto3_params,
+                    capabilities=["CAPABILITY_IAM"],
+                    tags=stack_tags or None,
+                    on_event=lambda e: None,  # No progress updates for this one-off deployment
                 )
+
+                if result:
+                    console.print(f"[green]✓[/green] {stack_name} deployed successfully")
+                    return 0
+                else:
+                    console.print(f"[red]✗[/red] Failed to deploy {stack_name}")
+                    return 1
 
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
