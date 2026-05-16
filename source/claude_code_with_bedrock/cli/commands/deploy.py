@@ -217,7 +217,15 @@ class DeployCommand(Command):
 
         for stack_type, description in stacks_to_deploy:
             stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-            status = cf_manager.get_stack_status(stack_name)
+
+            # CodeBuild stack may be in a different region (Windows container support)
+            if stack_type == "codebuild":
+                codebuild_region = self._get_codebuild_region(profile)
+                codebuild_cf_manager = CloudFormationManager(region=codebuild_region)
+                status = codebuild_cf_manager.get_stack_status(stack_name)
+            else:
+                status = cf_manager.get_stack_status(stack_name)
+
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
             else:
