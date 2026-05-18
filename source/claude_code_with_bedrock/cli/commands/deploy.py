@@ -307,12 +307,16 @@ class DeployCommand(Command):
                     # Convert parameters to boto3 format
                     boto3_params = self._convert_params_to_boto3(params) if params else None
 
+                    # Build tags from profile configuration
+                    stack_tags = dict(profile.tags) if profile.tags else {}
+
                     # Deploy stack
                     result = cf_manager.deploy_stack(
                         stack_name=stack_name,
                         template_path=template_path,
                         parameters=boto3_params,
                         capabilities=capabilities or ["CAPABILITY_IAM"],
+                        tags=stack_tags or None,
                         on_event=lambda e: progress.update(
                             task,
                             description=f"{e.get('LogicalResourceId', 'Stack')} - {e.get('ResourceStatus', '')}"
@@ -730,7 +734,9 @@ class DeployCommand(Command):
                     # Deploy the packaged template with MetricsRegion parameter
                     params = [f"MetricsRegion={profile.aws_region}"]
                     return deploy_with_cf(
-                        packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
+                        packaged_template_path, stack_name, params,
+                        capabilities=["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying monitoring dashboard...",
                     )
 
                 finally:

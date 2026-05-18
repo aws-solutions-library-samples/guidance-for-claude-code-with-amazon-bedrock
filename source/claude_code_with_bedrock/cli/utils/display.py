@@ -68,6 +68,16 @@ def _display_table_format(console: Console, profile, identity_pool_id: str | Non
         model_names = get_all_model_display_names()
         config_table.add_row("Claude Model", model_names.get(selected_model, selected_model))
 
+    # Application inference profiles (if configured)
+    for tier, attr in [
+        ("Opus", "inference_profile_opus_arn"),
+        ("Sonnet", "inference_profile_sonnet_arn"),
+        ("Haiku", "inference_profile_haiku_arn"),
+    ]:
+        arn = getattr(profile, attr, None)
+        if arn:
+            config_table.add_row(f"{tier} Inference Profile", arn)
+
     # Source region
     source_region = getattr(profile, "selected_source_region", None)
     if source_region:
@@ -131,6 +141,16 @@ def _display_simple_format(console: Console, profile, identity_pool_id: str | No
         model_display = model_names.get(selected_model, selected_model)
         console.print(f"  Claude Model: [cyan]{model_display}[/cyan]")
 
+    # Application inference profiles (if configured)
+    for tier, attr in [
+        ("Opus", "inference_profile_opus_arn"),
+        ("Sonnet", "inference_profile_sonnet_arn"),
+        ("Haiku", "inference_profile_haiku_arn"),
+    ]:
+        arn = getattr(profile, attr, None)
+        if arn:
+            console.print(f"  {tier} Inference Profile: [cyan]{arn}[/cyan]")
+
     # Source region
     source_region = getattr(profile, "selected_source_region", None)
     if source_region:
@@ -174,6 +194,9 @@ def get_configuration_dict(profile, identity_pool_id: str | None = None) -> dict
         "cross_region_profile": getattr(profile, "cross_region_profile", None),
         "source_region": getattr(profile, "selected_source_region", None),
         "analytics_enabled": getattr(profile, "analytics_enabled", None),
+        "inference_profile_opus_arn": getattr(profile, "inference_profile_opus_arn", None),
+        "inference_profile_sonnet_arn": getattr(profile, "inference_profile_sonnet_arn", None),
+        "inference_profile_haiku_arn": getattr(profile, "inference_profile_haiku_arn", None),
     }
 
     if identity_pool_id:

@@ -1,0 +1,166 @@
+name: PR Testing Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-testing-evidence:
+    name: Validate Testing Evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check PR Description for Testing Evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            console.log('PR Number:', prNumber);
+            console.log('PR Author:', prAuthor);
+            console.log('PR Body Length:', prBody.length);
+
+            // ──────────────────────────────────────────────────────────
+            // 1. Check if this PR modifies the validation workflow itself
+            // ──────────────────────────────────────────────────────────
+            const { data: prFiles } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const modifiesValidation = prFiles.some(file =>
+              file.filename === '.github/workflows/pr-testing-validation.yml' ||
+              file.filename === '.github/PULL_REQUEST_TEMPLATE.md'
+            );
+
+            if (modifiesValidation) {
+              console.log('✅ PR modifies validation workflow — skipping validation');
+              return;
+            }
+
+            // ──────────────────────────────────────────────────────────
+            // 2. Determine if this PR affects code (skip for docs-only)
+            // ──────────────────────────────────────────────────────────
+            const isDocumentationOnly =
+              prBody.toLowerCase().includes('[x] documentation update') &&
+              !prBody.toLowerCase().includes('[x] bug fix') &&
+              !prBody.toLowerCase().includes('[x] new feature') &&
+              !prBody.toLowerCase().includes('[x] breaking change') &&
+              !prBody.toLowerCase().includes('[x] infrastructure/deployment change') &&
+              !prBody.toLowerCase().includes('[x] dependency update');
+
+            if (isDocumentationOnly) {
+              console.log('✅ Documentation-only PR — skipping testing validation');
+              return;
+            }
+
+            // ──────────────────────────────────────────────────────────
+            // 2. Check for testing evidence sections
+            // ──────────────────────────────────────────────────────────
+            const hasTestingEvidence = prBody.includes('## Testing Evidence');
+            const hasTestEnvironment = prBody.includes('### Test Environment');
+            const hasTestResults = prBody.includes('### Test Results');
+
+            // Check for filled-in test environment
+            const testEnvRegex = /\*\*AWS Region\*\*:\s*<!--.+?-->(.+?)$/m;
+            const pythonVersionRegex = /\*\*Python Version\*\*:\s*<!--.+?-->(.+?)$/m;
+            const osRegex = /\*\*Operating System\*\*:\s*<!--.+?-->(.+?)$/m;
+
+            const awsRegionFilled = testEnvRegex.test(prBody) &&
+              testEnvRegex.exec(prBody)?.[1]?.trim().length > 0;
+            const pythonVersionFilled = pythonVersionRegex.test(prBody) &&
+              pythonVersionRegex.exec(prBody)?.[1]?.trim().length > 0;
+            const osFilled = osRegex.test(prBody) &&
+              osRegex.exec(prBody)?.[1]?.trim().length > 0;
+
+            // Check for at least one checked testing item
+            const cliTestingChecked = /- \[x\] \*\*`ccwb/i.test(prBody) ||
+                                      /- \[x\] \*\*Binary Installation/i.test(prBody) ||
+                                      /- \[x\] \*\*End-to-End/i.test(prBody);
+
+            const unitTestsChecked = /- \[x\] All existing tests pass locally/i.test(prBody);
+
+            // Check for non-empty Test Results section
+            const testResultsRegex = /### Test Results[\s\S]*?```([\s\S]*?)```/;
+            const testResultsMatch = testResultsRegex.exec(prBody);
+            const hasNonEmptyTestResults = testResultsMatch &&
+              testResultsMatch[1].trim().length > 20 && // More than just placeholder
+              !testResultsMatch[1].includes('[Paste terminal output');
+
+            // ──────────────────────────────────────────────────────────
+            // 3. Validate completeness
+            // ──────────────────────────────────────────────────────────
+            const validationResults = {
+              hasTestingEvidence,
+              hasTestEnvironment,
+              hasTestResults,
+              awsRegionFilled,
+              pythonVersionFilled,
+              osFilled,
+              cliTestingChecked,
+              unitTestsChecked,
+              hasNonEmptyTestResults
+            };
+
+            console.log('Validation Results:', validationResults);
+
+            const isValid =
+              hasTestingEvidence &&
+              (cliTestingChecked || unitTestsChecked) &&
+              (hasNonEmptyTestResults || cliTestingChecked);
+
+            // ──────────────────────────────────────────────────────────
+            // 4. Fail with clear error message if validation fails
+            // ──────────────────────────────────────────────────────────
+            if (!isValid) {
+              const missingItems = [];
+
+              if (!hasTestingEvidence) {
+                missingItems.push('❌ Missing "Testing Evidence" section');
+              }
+              if (!cliTestingChecked && !unitTestsChecked) {
+                missingItems.push('❌ No testing checkboxes marked (check at least one: unit tests, ccwb commands, or binary installation)');
+              }
+              if (!hasNonEmptyTestResults && !cliTestingChecked) {
+                missingItems.push('❌ "Test Results" section is empty — please paste terminal output, logs, or attach screenshots');
+              }
+
+              const warningItems = [];
+              if (!awsRegionFilled) warningItems.push('⚠️  AWS Region not specified');
+              if (!pythonVersionFilled) warningItems.push('⚠️  Python version not specified');
+              if (!osFilled) warningItems.push('⚠️  Operating system not specified');
+
+              // Build detailed error message
+              let errorMessage = '❌ PR Testing Validation Failed\n\n';
+              errorMessage += 'This PR is missing required testing evidence.\n\n';
+
+              errorMessage += 'What\'s Missing:\n';
+              missingItems.forEach(item => errorMessage += `  ${item}\n`);
+
+              if (warningItems.length > 0) {
+                errorMessage += '\nAdditional Context Recommended:\n';
+                warningItems.forEach(item => errorMessage += `  ${item}\n`);
+              }
+
+              errorMessage += '\nHow to Fix:\n';
+              errorMessage += '  1. Run the affected commands (ccwb init/deploy/build/package/test)\n';
+              errorMessage += '  2. Check the testing checkboxes in the PR description\n';
+              errorMessage += '  3. Add screenshots or paste terminal output in "Test Results" section\n';
+              errorMessage += '  4. Fill in test environment (AWS region, Python version, OS)\n';
+              errorMessage += '\nSee the PR template for detailed testing requirements.\n';
+
+              console.error(errorMessage);
+              core.setFailed(errorMessage);
+
+            } else {
+              console.log('✅ Testing evidence validation passed');
+              console.log('PR includes required testing evidence and can proceed to review.');
+            }

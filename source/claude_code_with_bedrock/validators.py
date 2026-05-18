@@ -326,6 +326,28 @@ class ProfileValidator:
         pool_pattern = r"^[a-z]{2}-[a-z]+-\d+_[a-zA-Z0-9]+$"
         return bool(re.match(pool_pattern, pool_id))
 
+    @staticmethod
+    def validate_application_inference_profile_arn(arn: str) -> str | None:
+        """Validate an Application Inference Profile ARN.
+
+        Args:
+            arn: ARN to validate, or empty string / None.
+
+        Returns:
+            None if valid (or empty/None), error message string if invalid.
+        """
+        if not arn or not arn.strip():
+            return None  # Empty is valid (means not configured)
+
+        arn = arn.strip()
+        pattern = r"^arn:(aws|aws-us-gov):bedrock:[a-z0-9-]+:\d{12}:application-inference-profile/[a-zA-Z0-9_-]+$"
+        if not re.match(pattern, arn):
+            return (
+                "Invalid Application Inference Profile ARN. Expected format: "
+                "arn:aws:bedrock:{region}:{account-id}:application-inference-profile/{profile-id}"
+            )
+        return None
+
 
 def validate_profile(profile_data: dict[str, Any]) -> ValidationResult:
     """Convenience function to validate a profile.
