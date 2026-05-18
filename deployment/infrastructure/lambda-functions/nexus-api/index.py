@@ -37,13 +37,14 @@ def _get_org_tables(org_id: str):
         result = orgs_table.get_item(Key={"pk": f"ORG#{org_id}", "sk": "DETAILS"})
         org = result.get("Item", {})
     except Exception:
-        return metrics_table, policies_table, quota_table
+        return None, None, None
 
     role_arn = org.get("role_arn", "")
     region = org.get("region", "us-east-1")
 
     if not role_arn:
-        return metrics_table, policies_table, quota_table
+        # Org exists but hasn't deployed yet — return None to signal empty
+        return None, None, None
 
     # Assume cross-account role (cached)
     cache_key = f"{org_id}:{role_arn}"
@@ -300,6 +301,9 @@ def handle_summary(event):
     """GET /api/metrics/summary - org-wide usage."""
     org_id = _get_org_from_event(event)
     org_metrics, org_policies, org_quota = _get_org_tables(org_id)
+
+    if org_metrics is None:
+        return response(200, {"activeUsers": 0, "monthlyTokens": 0, "orgQuotaPercent": 0, "topUsers": [], "tokenHistory": []})
     
     now = datetime.now(timezone.utc)
     thirty_days_ago = (now - timedelta(days=30)).isoformat()
@@ -406,33 +410,49 @@ def handle_users(event):
     now = datetime.now(timezone.utc)
     thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
+    # Get users in org- groups to exclude from AllCode list
+    cognito = boto3.client("cognito-idp")
+    pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    org_users = set()
+    if pool_id and org_id == "allcode":
+        try:
+            groups_resp = cognito.list_groups(UserPoolId=pool_id, Limit=60)
+            for group in groups_resp.get("Groups", []):
+                if group["GroupName"].startswith("org-"):
+                    members = cognito.list_users_in_group(UserPoolId=pool_id, GroupName=group["GroupName"], Limit=60)
+                    for u in members.get("Users", []):
+                        for attr in u.get("Attributes", []):
+                            if attr["Name"] == "email":
+                                org_users.add(attr["Value"])
+        except Exception:
+            pass
+
     # Skip the full user list for non-allcode orgs (already populated above)
     if org_id == "allcode":
-        # Get all users from Cognito
-        cognito = boto3.client("cognito-idp")
-        pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
-    all_users: dict = {}
+        all_users: dict = {}
 
-    if pool_id:
-        try:
-            paginator = cognito.get_paginator("list_users")
-            for page in paginator.paginate(UserPoolId=pool_id, Limit=60):
-                for user in page.get("Users", []):
-                    email = ""
-                    for attr in user.get("Attributes", []):
-                        if attr["Name"] == "email":
-                            email = attr["Value"]
-                    if email:
-                        last_active_str = ""
-                        if hasattr(user.get("UserLastModifiedDate", ""), "isoformat"):
-                            last_active_str = user["UserLastModifiedDate"].isoformat()
-                        all_users[email] = {
-                            "tokens": 0,
-                            "last_active": last_active_str,
-                            "status": "active" if user.get("UserStatus") == "CONFIRMED" else "inactive",
-                            "role": "user",
-                            "username": user.get("Username", ""),
-                        }
+        if pool_id:
+            try:
+                paginator = cognito.get_paginator("list_users")
+                for page in paginator.paginate(UserPoolId=pool_id, Limit=60):
+                    for user in page.get("Users", []):
+                        email = ""
+                        for attr in user.get("Attributes", []):
+                            if attr["Name"] == "email":
+                                email = attr["Value"]
+                        if email and email not in org_users:
+                            last_active_str = ""
+                            if hasattr(user.get("UserLastModifiedDate", ""), "isoformat"):
+                                last_active_str = user["UserLastModifiedDate"].isoformat()
+                            all_users[email] = {
+                                "tokens": 0,
+                                "last_active": last_active_str,
+                                "status": "active" if user.get("UserStatus") == "CONFIRMED" else "inactive",
+                                "role": "user",
+                                "username": user.get("Username", ""),
+                            }
+            except Exception:
+                pass
             # Check admin group membership
             try:
                 super_resp = cognito.list_users_in_group(UserPoolId=pool_id, GroupName="nexus-super-admins", Limit=60)
@@ -451,8 +471,6 @@ def handle_users(event):
                                 all_users[attr["Value"]]["role"] = "org-admin"
             except Exception:
                 pass
-        except Exception:
-            pass
 
     # Overlay usage data from metrics
     result = {"Items": _query_all_metrics(thirty_days_ago)}
@@ -464,7 +482,7 @@ def handle_users(event):
                 if isinstance(u, dict):
                     email = u.get("email", u.get("user", ""))
                     tokens = int(u.get("tokens", 0))
-                    if email:
+                    if email and email not in org_users:
                         if email not in all_users:
                             all_users[email] = {"tokens": 0, "last_active": "", "status": "active", "role": "user", "username": ""}
                         all_users[email]["tokens"] += tokens
@@ -489,6 +507,7 @@ def handle_users(event):
 def handle_user_me(event):
     """GET /api/users/me - current user's data."""
     email = get_caller_email(event)
+    org_id = _get_org_from_event(event)
 
     # Get user's token usage from WINDOW#SUMMARY records
     now = datetime.now(timezone.utc)
@@ -537,6 +556,7 @@ def handle_user_me(event):
     daily_limit = int(policy.get("daily_limit", 0)) or int(monthly_limit / 30)
 
     return response(200, {
+        "org": org_id,
         "monthly": {"used": monthly_tokens, "limit": monthly_limit},
         "daily": {"used": daily_tokens, "limit": daily_limit},
         "model": os.environ.get("SELECTED_MODEL", "Claude Sonnet 4"),
@@ -916,6 +936,11 @@ def handle_billing_report(event):
     import csv
     import io
 
+    org_id = _get_org_from_event(event)
+    org_metrics, _, _ = _get_org_tables(org_id)
+    if org_metrics is None:
+        return response(200, {"csv": "user,tokens,cost\n", "summary": {"totalTokens": 0, "totalCost": 0, "projectedMonthly": 0}})
+
     now = datetime.now(timezone.utc)
     thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
@@ -1088,6 +1113,8 @@ def handle_audit_log(event):
     """GET /api/audit - admin action audit log."""
     org_id = _get_org_from_event(event)
     _, org_policies, _ = _get_org_tables(org_id)
+    if org_policies is None:
+        return response(200, {"entries": []})
     try:
         result = org_policies.query(
             KeyConditionExpression=Key("pk").eq("AUDIT"),
@@ -1195,6 +1222,16 @@ def handle_slack_status(event):
 def handle_slack_insights(event):
     """GET /api/integrations/slack/insights - activity summary."""
     org_id = _get_org_from_event(event)
+
+    # Check if this org has Slack connected
+    token_table = dynamodb.Table("IntegrationTokens")
+    try:
+        tok_result = token_table.get_item(Key={"pk": f"ORG#{org_id}", "sk": "slack"})
+        if not tok_result.get("Item"):
+            return response(200, {"total_messages": 0, "active_users": 0, "active_channels": 0, "peak_hour": 0, "top_users": [], "hourly_distribution": {}})
+    except Exception:
+        return response(200, {"total_messages": 0, "active_users": 0, "active_channels": 0, "peak_hour": 0, "top_users": [], "hourly_distribution": {}})
+
     metrics = dynamodb.Table("ClaudeCodeMetrics")
     try:
         result = metrics.scan(
