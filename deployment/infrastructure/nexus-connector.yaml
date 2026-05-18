@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AllCode Nexus Connector - Grants read access to your Claude Code metrics for the Nexus management portal
+
+Parameters:
+  AllCodeAccountId:
+    Type: String
+    Default: "916587687563"
+    Description: AllCode's AWS account ID (do not change)
+  ExternalId:
+    Type: String
+    Description: Your organization ID from AllCode Nexus (provided during setup)
+
+Resources:
+  NexusConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AllCodeNexusConnector
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AllCodeAccountId}:root"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: NexusReadMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                Resource:
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/ClaudeCodeMetrics"
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/ClaudeCodeMetrics/index/*"
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/QuotaPolicies"
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/QuotaPolicies/index/*"
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/UserQuotaMetrics"
+                  - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/UserQuotaMetrics/index/*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: "ClaudeCode"
+
+Outputs:
+  ConnectorRoleArn:
+    Description: Provide this ARN to AllCode Nexus to complete setup
+    Value: !GetAtt NexusConnectorRole.Arn
+  AccountId:
+    Description: Your AWS Account ID
+    Value: !Ref AWS::AccountId

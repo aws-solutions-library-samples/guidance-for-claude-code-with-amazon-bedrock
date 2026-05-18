@@ -155,10 +155,12 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "nexus":
+                stacks_to_deploy.append(("nexus", "AllCode Nexus Management UI"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild, nexus\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -1113,6 +1115,40 @@ class DeployCommand(Command):
                 template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
+
+        elif stack_type == "nexus":
+            template = project_root / "deployment" / "infrastructure" / "nexus-ui.yaml"
+            stack_name = profile.stack_names.get("nexus", "allcode-nexus-ui")
+
+            # Determine OIDC issuer from provider
+            if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
+                pool_region = profile.cognito_user_pool_id.split("_")[0] if "_" in profile.cognito_user_pool_id else profile.aws_region
+                oidc_issuer = f"https://cognito-idp.{pool_region}.amazonaws.com/{profile.cognito_user_pool_id}"
+            else:
+                oidc_issuer = f"https://{profile.provider_domain}"
+
+            params = [
+                f"OidcIssuer={oidc_issuer}",
+                f"OidcAudience={profile.client_id}",
+                f"SelectedModel={profile.selected_model or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+                f"CrossRegionProfile={profile.cross_region_profile or 'us'}",
+            ]
+            result = deploy_with_cf(template, stack_name, params, task_description="Deploying AllCode Nexus UI...")
+            if result == 0:
+                # Build and upload frontend
+                nexus_dir = project_root / "nexus-ui"
+                if nexus_dir.exists():
+                    import subprocess
+                    console.print("[yellow]Building Nexus UI frontend...[/yellow]")
+                    subprocess.run(["npm", "run", "build", "--", "--mode", "production"], cwd=nexus_dir, capture_output=True)
+                    # Get bucket name from stack outputs
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    if outputs and outputs.get("NexusUIBucket"):
+                        console.print("[yellow]Uploading to S3...[/yellow]")
+                        subprocess.run(["aws", "s3", "sync", str(nexus_dir / "dist"), f"s3://{outputs['NexusUIBucket']}/", "--delete"], capture_output=True)
+                        console.print(f"[green]✓ Nexus UI deployed at: {outputs.get('NexusUIUrl', '')}[/green]")
+                        console.print(f"[green]  API endpoint: {outputs.get('NexusApiUrl', '')}[/green]")
+            return result
 
         else:
             console.print(f"[yellow]  No command template available for stack type: {stack_type}[/yellow]")

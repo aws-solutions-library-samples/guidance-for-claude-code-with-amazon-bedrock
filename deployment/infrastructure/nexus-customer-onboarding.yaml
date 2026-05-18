@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AllCode Nexus - Complete deployment for your organization. Deploys authentication, monitoring, and connects to AllCode Nexus management portal.
+
+Parameters:
+  OrganizationName:
+    Type: String
+    Description: Your organization name (e.g., "acme-corp")
+    AllowedPattern: "[a-z0-9-]+"
+    ConstraintDescription: Lowercase letters, numbers, and hyphens only
+  AdminEmail:
+    Type: String
+    Description: Email for the first admin user
+  AllCodeAccountId:
+    Type: String
+    Default: "916587687563"
+    Description: AllCode's AWS account ID (do not change)
+
+Resources:
+  # Cognito User Pool for this org's users
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${OrganizationName}-claude-code"
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${OrganizationName}-cli"
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      GenerateSecret: false
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - "http://localhost:8400/callback"
+        - "http://localhost:8401/callback"
+        - "http://localhost:8402/callback"
+        - "http://localhost:8403/callback"
+        - "http://localhost:8404/callback"
+        - "http://localhost:8405/callback"
+      SupportedIdentityProviders: [COGNITO]
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${OrganizationName}-nexus"
+      UserPoolId: !Ref UserPool
+
+  # IAM OIDC Provider for Bedrock access
+  OIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+      ClientIdList:
+        - !Ref UserPoolClient
+      ThumbprintList:
+        - "9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
+
+  # IAM Role for Bedrock access
+  BedrockRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${OrganizationName}-BedrockRole"
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt OIDCProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub "cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}:aud": !Ref UserPoolClient
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:provisioned-model/*"
+
+  # Metrics table for usage tracking
+  MetricsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ClaudeCodeMetrics
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  # Quota policies table
+  PoliciesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: QuotaPolicies
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: policy_type
+          AttributeType: S
+        - AttributeName: identifier
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: PolicyTypeIndex
+          KeySchema:
+            - AttributeName: policy_type
+              KeyType: HASH
+            - AttributeName: identifier
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # Nexus Connector - allows AllCode to read metrics
+  NexusConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AllCodeNexusConnector
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AllCodeAccountId}:root"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref OrganizationName
+      Policies:
+        - PolicyName: ReadMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt MetricsTable.Arn
+                  - !Sub "${MetricsTable.Arn}/index/*"
+                  - !GetAtt PoliciesTable.Arn
+                  - !Sub "${PoliciesTable.Arn}/index/*"
+
+  # First admin user
+  AdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref AdminEmail
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminEmail
+        - Name: email_verified
+          Value: "true"
+      DesiredDeliveryMediums: [EMAIL]
+
+Outputs:
+  ConnectorRoleArn:
+    Description: Provide this to AllCode Nexus to complete setup
+    Value: !GetAtt NexusConnectorRole.Arn
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  ClientId:
+    Description: App Client ID
+    Value: !Ref UserPoolClient
+  ProviderDomain:
+    Description: Cognito domain
+    Value: !Sub "${OrganizationName}-nexus.auth.${AWS::Region}.amazoncognito.com"
+  BedrockRoleArn:
+    Description: IAM Role for Bedrock access
+    Value: !GetAtt BedrockRole.Arn
+  OrganizationName:
+    Description: Your organization identifier
+    Value: !Ref OrganizationName
+  SetupInstructions:
+    Description: Next steps
+    Value: !Sub |
+      1. Copy the ConnectorRoleArn above
+      2. Go to https://nexus.allcode.com/setup
+      3. Paste the Role ARN to complete setup
+      4. Check your email for login credentials

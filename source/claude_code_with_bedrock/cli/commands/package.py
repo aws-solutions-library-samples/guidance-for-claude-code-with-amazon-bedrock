@@ -2126,12 +2126,108 @@ echo "  aws sts get-caller-identity"
 echo
 echo "Note: Authentication will automatically open your browser when needed."
 echo
+
+# Create a launcher script on PATH
+echo "Creating Claude launcher..."
+LAUNCHER="/usr/local/bin/claude-code"
+cat > /tmp/claude-code-launcher << 'LAUNCHER_EOF'
+#!/bin/bash
+# Claude Code Launcher - AllCode Nexus
+export AWS_PROFILE="PROFILE_PLACEHOLDER"
+export CLAUDE_CODE_USE_BEDROCK=1
+unset ANTHROPIC_API_KEY
+exec claude "$@"
+LAUNCHER_EOF
+
+# Replace placeholder with actual profile
+sed -i.bak "s/PROFILE_PLACEHOLDER/$FIRST_PROFILE/" /tmp/claude-code-launcher
+rm -f /tmp/claude-code-launcher.bak
+
+# Install to PATH (try /usr/local/bin, fall back to ~/bin)
+if [ -w /usr/local/bin ]; then
+    cp /tmp/claude-code-launcher /usr/local/bin/claude-code
+    chmod +x /usr/local/bin/claude-code
+    echo "✓ Created /usr/local/bin/claude-code"
+else
+    sudo cp /tmp/claude-code-launcher /usr/local/bin/claude-code 2>/dev/null && sudo chmod +x /usr/local/bin/claude-code 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "✓ Created /usr/local/bin/claude-code"
+    else
+        mkdir -p ~/bin
+        cp /tmp/claude-code-launcher ~/bin/claude-code
+        chmod +x ~/bin/claude-code
+        echo "✓ Created ~/bin/claude-code"
+        echo "  Add ~/bin to your PATH if not already: export PATH=\\"\\$HOME/bin:\\$PATH\\""
+    fi
+fi
+rm -f /tmp/claude-code-launcher
+
+echo
+echo "======================================"
+echo "✓ Installation complete!"
+echo "======================================"
+echo
+echo "To launch Claude Code, just run:"
+echo "  claude-code"
+echo
+echo "Or use the standard command with the profile:"
+echo "  export AWS_PROFILE=$FIRST_PROFILE"
+echo "  claude"
+echo
+
+# Ask if they want to launch now
+read -p "Launch Claude Code now? (Y/n): " -n 1 -r
+echo
+if [[ -z "$REPLY" ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
+    export AWS_PROFILE="$FIRST_PROFILE"
+    export CLAUDE_CODE_USE_BEDROCK=1
+    unset ANTHROPIC_API_KEY
+    echo "Starting Claude Code..."
+    exec claude
+fi
 """
 
         installer_path = output_dir / "install.sh"
         with open(installer_path, "w") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
+
+        # Create run.sh - quick launcher that sets profile and verifies credentials
+        run_script = output_dir / "run.sh"
+        run_content = f"""#!/bin/bash
+# Claude Code Quick Launcher
+# Sets the AWS profile and verifies credentials before launching Claude Code
+
+# Use first available profile from config.json
+PROFILE=$(python3 -c "import json; print(list(json.load(open('$HOME/claude-code-with-bedrock/config.json')).keys())[0])" 2>/dev/null || echo "{profile.name}")
+
+export AWS_PROFILE="$PROFILE"
+echo "Using AWS profile: $PROFILE"
+echo
+
+# Verify credentials
+echo "Verifying credentials..."
+if aws sts get-caller-identity > /dev/null 2>&1; then
+    echo "✓ Authenticated"
+    echo
+    # Launch Claude Code
+    exec claude "$@"
+else
+    echo "❌ Authentication failed. Opening browser for SSO login..."
+    ~/claude-code-with-bedrock/credential-process --profile "$PROFILE" > /dev/null 2>&1
+    if aws sts get-caller-identity > /dev/null 2>&1; then
+        echo "✓ Authenticated"
+        echo
+        exec claude "$@"
+    else
+        echo "❌ Could not authenticate. Please check your configuration."
+        exit 1
+    fi
+fi
+"""
+        with open(run_script, "w") as f:
+            f.write(run_content)
+        run_script.chmod(0o755)
 
         # Create Windows installer only if Windows builds are enabled (CodeBuild)
         if "windows" in platforms_built or (hasattr(profile, "enable_codebuild") and profile.enable_codebuild):

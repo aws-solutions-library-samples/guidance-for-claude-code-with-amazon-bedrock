@@ -131,6 +131,47 @@ Resources:
                 Resource:
                   - "arn:aws:s3:::claude-code-auth-distribution-916587687563"
                   - "arn:aws:s3:::claude-code-auth-distribution-916587687563/*"
+              - Effect: Allow
+                Action:
+                  - sns:Subscribe
+                Resource:
+                  - "arn:aws:sns:us-east-1:916587687563:claude-code-quota-alerts"
+              - Effect: Allow
+                Action:
+                  - cognito-idp:ListUsers
+                  - cognito-idp:AdminCreateUser
+                  - cognito-idp:AdminDeleteUser
+                  - cognito-idp:AdminAddUserToGroup
+                  - cognito-idp:ListUsersInGroup
+                  - cognito-idp:AdminResetUserPassword
+                  - cognito-idp:AdminGetUser
+                  - cognito-idp:AdminListGroupsForUser
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/us-east-1_3mbtSSlmt"
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - "arn:aws:iam::*:role/AllCodeNexusConnector"
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource:
+                  - "arn:aws:ses:us-east-1:916587687563:identity/allcode.com"
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - "arn:aws:bedrock:*::foundation-model/*"
+                  - "arn:aws:bedrock:*:*:inference-profile/*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/NexusOrganizations"
 
   # Lambda Function
   NexusApiFunction:
@@ -150,7 +191,9 @@ Resources:
           SELECTED_MODEL: !Ref SelectedModel
           CROSS_REGION_PROFILE: !Ref CrossRegionProfile
           DISTRIBUTION_BUCKET: "claude-code-auth-distribution-916587687563"
-          CORS_ORIGIN: !Sub "https://${NexusDistribution.DomainName}"
+          ALERT_TOPIC_ARN: "arn:aws:sns:us-east-1:916587687563:claude-code-quota-alerts"
+          COGNITO_USER_POOL_ID: "us-east-1_3mbtSSlmt"
+          CORS_ORIGIN: "*"
       Code:
         ZipFile: |
           # Placeholder - actual code deployed via S3
@@ -166,6 +209,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins:
           - !Sub "https://${NexusDistribution.DomainName}"
+          - "https://nexus.allcode.com"
           - "http://localhost:5173"
         AllowMethods:
           - GET
@@ -176,6 +220,7 @@ Resources:
         AllowHeaders:
           - Authorization
           - Content-Type
+          - x-org-id
 
   # JWT Authorizer
   NexusApiAuthorizer:
@@ -219,11 +264,47 @@ Resources:
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"
 
+  RouteCreateUser:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "POST /api/users"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteDeleteUser:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "DELETE /api/users/{id}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
   RouteUsersMe:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref NexusApi
       RouteKey: "GET /api/users/me"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteUserDetail:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/users/{id}"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteUserToggle:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "PUT /api/users/{id}/toggle"
       AuthorizationType: JWT
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"
@@ -305,6 +386,68 @@ Resources:
     Properties:
       ApiId: !Ref NexusApi
       RouteKey: "GET /api/users/me/activity"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteExportUsers:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/users/export"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteGetAlerts:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/config/alerts"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RoutePostAlerts:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "POST /api/config/alerts"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteRecentActivity:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/metrics/activity"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteAudit:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "GET /api/audit"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref NexusApiAuthorizer
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteRequestAccess:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "POST /api/request-access"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${NexusApiIntegration}"
+
+  RouteChat:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NexusApi
+      RouteKey: "POST /api/chat"
       AuthorizationType: JWT
       AuthorizerId: !Ref NexusApiAuthorizer
       Target: !Sub "integrations/${NexusApiIntegration}"

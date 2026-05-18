@@ -113,22 +113,27 @@ class MultiProviderAuth:
         if self.redirect_port is not None:
             return self.redirect_port
 
-        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            test_socket.bind(("127.0.0.1", self.preferred_port))
-            test_socket.close()
-            self.redirect_port = self.preferred_port
-        except OSError as e:
-            test_socket.close()
-            if e.errno == errno.EADDRINUSE:
-                self._debug_print(f"Port {self.preferred_port} in use, selecting available port")
-                auto_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                auto_socket.bind(("127.0.0.1", 0))
-                self.redirect_port = auto_socket.getsockname()[1]
-                auto_socket.close()
-                self._debug_print(f"Using port {self.redirect_port} for OAuth callback")
-            else:
-                raise
+        # Try preferred port and a range of fallback ports (all registered in Cognito)
+        ports_to_try = list(range(self.preferred_port, self.preferred_port + 20))
+        for port in ports_to_try:
+            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                test_socket.bind(("127.0.0.1", port))
+                test_socket.close()
+                self.redirect_port = port
+                if port != self.preferred_port:
+                    self._debug_print(f"Port {self.preferred_port} in use, using port {port}")
+                return self.redirect_port
+            except OSError:
+                test_socket.close()
+                continue
+
+        # All known ports busy — fall back to random (may cause redirect_mismatch)
+        self._debug_print(f"All ports {ports_to_try[0]}-{ports_to_try[-1]} in use, using random port")
+        auto_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        auto_socket.bind(("127.0.0.1", 0))
+        self.redirect_port = auto_socket.getsockname()[1]
+        auto_socket.close()
 
         self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
         return self.redirect_port
