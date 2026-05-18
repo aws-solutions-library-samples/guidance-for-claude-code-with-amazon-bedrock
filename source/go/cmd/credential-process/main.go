@@ -7,15 +7,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/bluedoors/ccwb-binaries/internal/azure"
 	"github.com/bluedoors/ccwb-binaries/internal/config"
 	"github.com/bluedoors/ccwb-binaries/internal/federation"
 	"github.com/bluedoors/ccwb-binaries/internal/jwt"
 	"github.com/bluedoors/ccwb-binaries/internal/oidc"
 	"github.com/bluedoors/ccwb-binaries/internal/portlock"
 	"github.com/bluedoors/ccwb-binaries/internal/provider"
-	"github.com/bluedoors/ccwb-binaries/internal/quota"
 	"github.com/bluedoors/ccwb-binaries/internal/storage"
 	"github.com/bluedoors/ccwb-binaries/internal/version"
+	"golang.org/x/term"
 )
 
 var debug bool
@@ -36,10 +37,10 @@ func main() {
 	shortProfile := flag.String("p", "", "Configuration profile to use (short)")
 	versionFlag := flag.Bool("version", false, "Show version")
 	shortVersion := flag.Bool("v", false, "Show version (short)")
-	getMonitoring := flag.Bool("get-monitoring-token", false, "Get cached monitoring token")
 	clearCache := flag.Bool("clear-cache", false, "Clear cached credentials")
 	checkExpiration := flag.Bool("check-expiration", false, "Check if credentials are expired")
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
+	setClientSecret := flag.Bool("set-client-secret", false, "Store Azure AD client secret in OS secure storage")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -60,10 +61,21 @@ func main() {
 
 	debug = os.Getenv("COGNITO_AUTH_DEBUG") == "1" || os.Getenv("COGNITO_AUTH_DEBUG") == "true" || os.Getenv("COGNITO_AUTH_DEBUG") == "yes"
 
+	if *setClientSecret {
+		os.Exit(handleSetClientSecret(profile))
+	}
+
 	cfg, err := config.LoadProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Load client secret from keyring if configured
+	if cfg.AzureAuthMode == "secret" {
+		if secret, err := azure.ReadClientSecret(profile); err == nil && secret != "" {
+			cfg.ClientSecret = secret
+		}
 	}
 
 	// Resolve provider type
@@ -79,10 +91,6 @@ func main() {
 	if *clearCache {
 		app.clearCache()
 		os.Exit(0)
-	}
-
-	if *getMonitoring {
-		os.Exit(app.getMonitoringToken())
 	}
 
 	if *checkExpiration {
@@ -168,37 +176,6 @@ func (a *credentialApp) clearCache() {
 	fmt.Fprintf(os.Stderr, "Cleared cached credentials for profile '%s'\n", a.profile)
 }
 
-func (a *credentialApp) getMonitoringToken() int {
-	token, err := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
-	if err == nil && token != "" {
-		fmt.Println(token)
-		return 0
-	}
-
-	// No cached token — trigger authentication
-	debugPrint("No valid monitoring token found, triggering authentication...")
-	authResult, err := a.authenticate()
-	if err != nil {
-		debugPrint("Authentication failed: %v", err)
-		return 1
-	}
-
-	// Get AWS creds (needed to complete the flow)
-	awsCreds, err := a.getAWSCredentials(authResult)
-	if err != nil {
-		debugPrint("Failed to get AWS credentials: %v", err)
-		return 1
-	}
-	_ = a.saveCredentials(awsCreds)
-
-	// Save monitoring token
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
-
-	fmt.Println(authResult.IDToken)
-	return 0
-}
-
 func (a *credentialApp) checkExpiration() int {
 	creds, err := storage.ReadFromCredentialsFile(a.profile)
 	if err != nil || creds == nil || storage.IsExpiredDummy(creds) {
@@ -214,14 +191,49 @@ func (a *credentialApp) checkExpiration() int {
 	return 0
 }
 
+func (a *credentialApp) trySilentRefresh() (*federation.AWSCredentials, *oidc.AuthResult) {
+	token, err := storage.GetMonitoringTokenWithBuffer(a.profile, a.cfg.CredentialStorage, 60)
+	if err != nil || token == "" {
+		debugPrint("No valid cached id_token for silent refresh")
+		return nil, nil
+	}
+
+	debugPrint("Found valid cached id_token, attempting silent credential refresh...")
+	claims, err := jwt.DecodePayload(token)
+	if err != nil {
+		debugPrint("Failed to decode cached token: %v", err)
+		return nil, nil
+	}
+
+	authResult := &oidc.AuthResult{
+		IDToken:     token,
+		TokenClaims: claims,
+	}
+
+	creds, err := a.getAWSCredentials(authResult)
+	if err != nil {
+		debugPrint("Silent refresh failed, will require browser auth: %v", err)
+		return nil, nil
+	}
+
+	if err := a.saveCredentials(creds); err != nil {
+		debugPrint("Failed to save credentials after silent refresh: %v", err)
+	}
+
+	debugPrint("Silent credential refresh succeeded")
+	return creds, authResult
+}
+
 func (a *credentialApp) run() int {
 	// Check cache first
 	if cached := a.getCachedCredentials(); cached != nil {
-		// Periodic quota re-check
-		if a.shouldRecheckQuota() {
-			a.performQuotaRecheck()
-		}
 		outputJSON(cached)
+		return 0
+	}
+
+	// Try silent refresh using cached id_token before opening browser
+	if creds, _ := a.trySilentRefresh(); creds != nil {
+		outputJSON(creds)
 		return 0
 	}
 
@@ -260,12 +272,16 @@ func (a *credentialApp) run() int {
 		return 1
 	}
 
-	// Quota check before issuing credentials
-	if a.cfg.QuotaAPIEndpoint != "" {
-		qr := quota.Check(a.cfg.QuotaAPIEndpoint, authResult.IDToken, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-		if !qr.Allowed {
-			printQuotaBlocked(qr)
-			return 1
+	// Debug: log token claims
+	if debug {
+		debugPrint("\n=== ID Token Claims ===")
+		claimsJSON, _ := json.MarshalIndent(authResult.TokenClaims, "", "  ")
+		debugPrint("%s", string(claimsJSON))
+		debugPrint("\n=== Key Claims for Mapping ===")
+		for _, key := range []string{"sub", "email", "name", "preferred_username", "groups", "cognito:groups", "custom:department", "custom:role"} {
+			if v := authResult.TokenClaims.GetString(key); v != "" {
+				debugPrint("%s: %s", key, v)
+			}
 		}
 	}
 
@@ -287,7 +303,7 @@ func (a *credentialApp) run() int {
 		debugPrint("Failed to save credentials: %v", err)
 	}
 
-	// Save monitoring token (non-blocking)
+	// Cache ID token for silent refresh on next invocation
 	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
 		authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
 
@@ -296,7 +312,33 @@ func (a *credentialApp) run() int {
 }
 
 func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
-	return oidc.Authenticate(a.cfg.ProviderDomain, a.cfg.ClientID, a.providerType, a.redirectPort)
+	opts := &oidc.AuthOptions{
+		ProviderDomain: a.cfg.ProviderDomain,
+		ClientID:       a.cfg.ClientID,
+		ProviderType:   a.providerType,
+		RedirectPort:   a.redirectPort,
+	}
+
+	if a.cfg.AzureAuthMode == "certificate" {
+		tokenURL := "https://" + a.cfg.ProviderDomain + "/oauth2/v2.0/token"
+		assertion, err := azure.BuildClientAssertion(
+			a.cfg.ClientCertificatePath, a.cfg.ClientCertificateKeyPath,
+			a.cfg.ClientID, tokenURL,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("building client assertion: %w", err)
+		}
+		opts.ConfidentialClient = &oidc.ConfidentialClientOpts{
+			ClientAssertion:     assertion,
+			ClientAssertionType: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+		}
+	} else if a.cfg.AzureAuthMode == "secret" && a.cfg.ClientSecret != "" {
+		opts.ConfidentialClient = &oidc.ConfidentialClientOpts{
+			ClientSecret: a.cfg.ClientSecret,
+		}
+	}
+
+	return oidc.AuthenticateWithOpts(opts)
 }
 
 func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AWSCredentials, error) {
@@ -312,38 +354,38 @@ func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AW
 	)
 }
 
-func (a *credentialApp) shouldRecheckQuota() bool {
-	if a.cfg.QuotaAPIEndpoint == "" {
-		return false
-	}
-	// Simple interval check - omitting full persistence for now
-	return false
-}
+func handleSetClientSecret(profile string) int {
+	envSecret := os.Getenv("CCWB_CLIENT_SECRET")
+	var secret string
 
-func (a *credentialApp) performQuotaRecheck() {
-	token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
-	if token == "" {
-		return
+	if envSecret != "" {
+		secret = envSecret
+	} else {
+		fmt.Fprintf(os.Stderr, "Enter client secret for profile '%s' (press Enter to clear): ", profile)
+		rawSecret, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+			return 1
+		}
+		secret = string(rawSecret)
 	}
-	claims, err := jwt.DecodePayload(token)
-	if err != nil {
-		return
-	}
-	qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-	_ = claims // suppress unused
-	if !qr.Allowed {
-		printQuotaBlocked(qr)
-	}
-}
 
-func printQuotaBlocked(qr *quota.Result) {
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "============================================================")
-	fmt.Fprintln(os.Stderr, "ACCESS BLOCKED - QUOTA EXCEEDED")
-	fmt.Fprintln(os.Stderr, "============================================================")
-	fmt.Fprintf(os.Stderr, "\n%s\n", qr.Message)
-	fmt.Fprintln(os.Stderr, "\nTo request an unblock, contact your administrator.")
-	fmt.Fprintln(os.Stderr, "============================================================")
+	if secret == "" {
+		if err := azure.DeleteClientSecret(profile); err != nil {
+			// Ignore "not found" errors when clearing
+			debugPrint("Note: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "Client secret cleared for profile '%s'\n", profile)
+		return 0
+	}
+
+	if err := azure.SaveClientSecret(profile, secret); err != nil {
+		fmt.Fprintf(os.Stderr, "Error storing client secret: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "Client secret stored in OS secure storage for profile '%s'\n", profile)
+	return 0
 }
 
 func outputJSON(v interface{}) {

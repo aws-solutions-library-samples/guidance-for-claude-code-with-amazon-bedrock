@@ -9,7 +9,11 @@ import (
 
 // GetMonitoringToken retrieves a valid monitoring token from the configured storage.
 func GetMonitoringToken(profile, storageType string) (string, error) {
-	// Check environment first
+	return GetMonitoringTokenWithBuffer(profile, storageType, 600)
+}
+
+// GetMonitoringTokenWithBuffer retrieves a monitoring token with a custom expiry buffer in seconds.
+func GetMonitoringTokenWithBuffer(profile, storageType string, bufferSeconds int64) (string, error) {
 	if token := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); token != "" {
 		return token, nil
 	}
@@ -26,9 +30,8 @@ func GetMonitoringToken(profile, storageType string) (string, error) {
 		return "", err
 	}
 
-	// Check expiration (10 min buffer)
 	now := time.Now().Unix()
-	if data.Expires-now <= 600 {
+	if data.Expires-now <= bufferSeconds {
 		return "", nil
 	}
 

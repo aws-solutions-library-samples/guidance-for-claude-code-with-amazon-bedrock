@@ -19,14 +19,35 @@ type TokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 }
 
+// ConfidentialClientOpts holds optional parameters for confidential client authentication.
+type ConfidentialClientOpts struct {
+	ClientAssertion     string
+	ClientAssertionType string
+	ClientSecret        string
+}
+
 // ExchangeCode exchanges an authorization code for tokens at the provider's token endpoint.
 func ExchangeCode(tokenURL, code, redirectURI, clientID, codeVerifier string) (*TokenResponse, error) {
+	return ExchangeCodeWithOpts(tokenURL, code, redirectURI, clientID, codeVerifier, nil)
+}
+
+// ExchangeCodeWithOpts exchanges an authorization code with optional confidential client parameters.
+func ExchangeCodeWithOpts(tokenURL, code, redirectURI, clientID, codeVerifier string, opts *ConfidentialClientOpts) (*TokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"client_id":     {clientID},
 		"code_verifier": {codeVerifier},
+	}
+
+	if opts != nil {
+		if opts.ClientAssertion != "" {
+			data.Set("client_assertion", opts.ClientAssertion)
+			data.Set("client_assertion_type", opts.ClientAssertionType)
+		} else if opts.ClientSecret != "" {
+			data.Set("client_secret", opts.ClientSecret)
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}

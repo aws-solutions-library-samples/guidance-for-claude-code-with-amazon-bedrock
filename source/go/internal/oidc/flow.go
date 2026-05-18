@@ -18,11 +18,31 @@ type AuthResult struct {
 	TokenClaims jwt.Claims
 }
 
+// AuthOptions configures the OIDC authentication flow.
+type AuthOptions struct {
+	ProviderDomain string
+	ClientID       string
+	ProviderType   string
+	RedirectPort   int
+	// Confidential client (optional)
+	ConfidentialClient *ConfidentialClientOpts
+}
+
 // Authenticate performs the full OIDC authorization code flow with PKCE.
 func Authenticate(providerDomain, clientID, providerType string, redirectPort int) (*AuthResult, error) {
-	provCfg, ok := provider.Configs[providerType]
+	return AuthenticateWithOpts(&AuthOptions{
+		ProviderDomain: providerDomain,
+		ClientID:       clientID,
+		ProviderType:   providerType,
+		RedirectPort:   redirectPort,
+	})
+}
+
+// AuthenticateWithOpts performs the OIDC flow with full options including confidential client support.
+func AuthenticateWithOpts(opts *AuthOptions) (*AuthResult, error) {
+	provCfg, ok := provider.Configs[opts.ProviderType]
 	if !ok {
-		return nil, fmt.Errorf("unknown provider type: %s", providerType)
+		return nil, fmt.Errorf("unknown provider type: %s", opts.ProviderType)
 	}
 
 	// Generate PKCE, state, nonce
@@ -39,18 +59,18 @@ func Authenticate(providerDomain, clientID, providerType string, redirectPort in
 		return nil, fmt.Errorf("generating PKCE: %w", err)
 	}
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/callback", redirectPort)
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", opts.RedirectPort)
 
 	// Build base URL
-	domain := providerDomain
-	if providerType == "azure" && strings.HasSuffix(domain, "/v2.0") {
+	domain := opts.ProviderDomain
+	if opts.ProviderType == "azure" && strings.HasSuffix(domain, "/v2.0") {
 		domain = domain[:len(domain)-5]
 	}
 	baseURL := "https://" + domain
 
 	// Build authorization URL
 	params := url.Values{
-		"client_id":             {clientID},
+		"client_id":             {opts.ClientID},
 		"response_type":        {provCfg.ResponseType},
 		"scope":                {provCfg.Scopes},
 		"redirect_uri":         {redirectURI},
@@ -59,14 +79,14 @@ func Authenticate(providerDomain, clientID, providerType string, redirectPort in
 		"code_challenge_method": {"S256"},
 		"code_challenge":       {pkce.CodeChallenge},
 	}
-	if providerType == "azure" {
+	if opts.ProviderType == "azure" {
 		params.Set("response_mode", "query")
 		params.Set("prompt", "select_account")
 	}
 	authURL := baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
 
 	// Start callback server
-	resultCh, srv, err := StartCallbackServer(redirectPort, state)
+	resultCh, srv, err := StartCallbackServer(opts.RedirectPort, state)
 	if err != nil {
 		return nil, fmt.Errorf("starting callback server: %w", err)
 	}
@@ -87,7 +107,7 @@ func Authenticate(providerDomain, clientID, providerType string, redirectPort in
 
 	// Exchange code for tokens
 	tokenURL := baseURL + provCfg.TokenEndpoint
-	tokenResp, err := ExchangeCode(tokenURL, result.Code, redirectURI, clientID, pkce.CodeVerifier)
+	tokenResp, err := ExchangeCodeWithOpts(tokenURL, result.Code, redirectURI, opts.ClientID, pkce.CodeVerifier, opts.ConfidentialClient)
 	if err != nil {
 		return nil, err
 	}

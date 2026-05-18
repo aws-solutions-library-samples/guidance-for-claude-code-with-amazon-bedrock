@@ -29,11 +29,11 @@ type ProfileConfig struct {
 	// Session
 	MaxSessionDuration int `json:"max_session_duration"`
 
-	// Quota
-	QuotaAPIEndpoint   string `json:"quota_api_endpoint"`
-	QuotaFailMode      string `json:"quota_fail_mode"`
-	QuotaCheckInterval int    `json:"quota_check_interval"`
-	QuotaCheckTimeout  int    `json:"quota_check_timeout"`
+	// Azure confidential client
+	AzureAuthMode            string `json:"azure_auth_mode"`
+	ClientCertificatePath    string `json:"client_certificate_path"`
+	ClientCertificateKeyPath string `json:"client_certificate_key_path"`
+	ClientSecret             string `json:"-"`
 
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
@@ -121,16 +121,6 @@ func LoadProfile(profileName string) (*ProfileConfig, error) {
 		} else {
 			profile.MaxSessionDuration = 28800
 		}
-	}
-
-	if profile.QuotaFailMode == "" {
-		profile.QuotaFailMode = "open"
-	}
-	if profile.QuotaCheckInterval == 0 {
-		profile.QuotaCheckInterval = 30
-	}
-	if profile.QuotaCheckTimeout == 0 {
-		profile.QuotaCheckTimeout = 5
 	}
 
 	return &profile, nil
