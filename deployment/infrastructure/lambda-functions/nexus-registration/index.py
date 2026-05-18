@@ -69,6 +69,20 @@ def lambda_handler(event, context):
         "registered_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     })
 
+    # Notify Slack #allcode-nexus
+    try:
+        import urllib.request
+        token_table = dynamodb.Table("IntegrationTokens")
+        tok = token_table.get_item(Key={"pk": "ORG#allcode", "sk": "slack"})
+        slack_token = tok.get("Item", {}).get("access_token", "")
+        if slack_token:
+            msg = f"🎉 *New Marketplace Subscription!*\n>Customer ID: {customer_id}\n>Product: {product_code}"
+            data = json.dumps({"channel": "C0B28HHRMAM", "text": msg}).encode()
+            req = urllib.request.Request("https://slack.com/api/chat.postMessage", data=data, headers={"Authorization": f"Bearer {slack_token}", "Content-Type": "application/json"})
+            urllib.request.urlopen(req)
+    except Exception:
+        pass
+
     # Return redirect to Nexus landing page
     return {
         "statusCode": 302,

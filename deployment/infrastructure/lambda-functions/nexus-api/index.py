@@ -195,7 +195,7 @@ def handle_provision_org(event):
 
 
 def handle_request_access(event):
-    """POST /api/request-access - send access request email via SES."""
+    """POST /api/request-access - send access request email via SES + Slack."""
     body = json.loads(event.get("body", "{}"))
     first_name = body.get("firstName", "")
     last_name = body.get("lastName", "")
@@ -204,6 +204,7 @@ def handle_request_access(event):
     if not email:
         return response(400, {"error": "Email is required"})
 
+    # Send email
     ses = boto3.client("ses")
     try:
         ses.send_email(
@@ -214,8 +215,22 @@ def handle_request_access(event):
                 "Body": {"Text": {"Data": f"New access request:\n\nFirst Name: {first_name}\nLast Name: {last_name}\nEmail: {email}"}},
             },
         )
-    except Exception as e:
-        return response(500, {"error": str(e)})
+    except Exception:
+        pass
+
+    # Send to Slack #allcode-nexus channel
+    try:
+        import urllib.request
+        token_table = dynamodb.Table("IntegrationTokens")
+        tok = token_table.get_item(Key={"pk": "ORG#allcode", "sk": "slack"})
+        slack_token = tok.get("Item", {}).get("access_token", "")
+        if slack_token:
+            msg = f"🔔 *New Access Request*\n>Name: {first_name} {last_name}\n>Email: {email}"
+            data = json.dumps({"channel": "C0B28HHRMAM", "text": msg}).encode()
+            req = urllib.request.Request("https://slack.com/api/chat.postMessage", data=data, headers={"Authorization": f"Bearer {slack_token}", "Content-Type": "application/json"})
+            urllib.request.urlopen(req)
+    except Exception:
+        pass
 
     return response(200, {"sent": True})
 

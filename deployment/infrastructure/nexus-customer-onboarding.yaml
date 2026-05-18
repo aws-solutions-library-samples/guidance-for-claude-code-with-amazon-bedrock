@@ -14,6 +14,10 @@ Parameters:
     Type: String
     Default: "916587687563"
     Description: AllCode's AWS account ID (do not change)
+  PRMTag:
+    Type: String
+    Default: "pc:92nbpajp068qmpcgk4dpgu490"
+    Description: AWS Partner Revenue Measurement tag (do not change)
 
 Resources:
   # Cognito User Pool for this org's users
@@ -111,6 +115,11 @@ Resources:
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
+      Tags:
+        - Key: aws-apn-id
+          Value: !Ref PRMTag
+        - Key: Project
+          Value: AllCode-Nexus
 
   # Quota policies table
   PoliciesTable:
@@ -141,12 +150,22 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      Tags:
+        - Key: aws-apn-id
+          Value: !Ref PRMTag
+        - Key: Project
+          Value: AllCode-Nexus
 
   # Nexus Connector - allows AllCode to read metrics
   NexusConnectorRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: AllCodeNexusConnector
+      Tags:
+        - Key: aws-apn-id
+          Value: !Ref PRMTag
+        - Key: Project
+          Value: AllCode-Nexus
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
