@@ -149,11 +149,6 @@ Resources:
               Action:
                 - 'cloudwatch:PutMetricData'
               Resource: '*'
-              Condition:
-                StringEquals:
-                  'cloudwatch:namespace':
-                    - 'ClaudeCode/Bedrock/Usage'
-                    - 'AWS/Bedrock'
             - !Ref 'AWS::NoValue'
 
   # ===============================================

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - OTLP-First Metrics
+
+### Changed
+
+- **OTLP-first monitoring**: OTEL Collector now exports to CloudWatch OTLP endpoint (for PromQL dashboards). EMF export is conditionally added only when analytics is enabled, controlled by the `EnableAnalytics` CloudFormation parameter.
+- **PromQL dashboard**: Replaced all Lambda-backed custom widgets with native PromQL chart widgets — zero Lambda functions in the dashboard stack
+- **Quota monitoring**: Quota monitor Lambda now queries CloudWatch Prometheus-compatible API (`/api/v1/query`) for usage data instead of relying on MetricsAggregator
+- **Auth templates**: Removed `cloudwatch:namespace` IAM conditions (OTLP metrics don't use CW namespaces)
+- **Dashboard deployment**: No longer requires S3 packaging (no Lambda functions to package)
+
+### Removed
+
+- **MetricsAggregator Lambda**: Replaced by PromQL queries — no longer needed to pre-compute metrics
+- **DynamoDB MetricsTable**: Dashboard reads directly from OTLP metrics via PromQL
+- **Custom widget Lambda functions**: All 16 widget Lambdas replaced by PromQL chart widgets
+- **metrics-aggregation.yaml**: Standalone aggregation stack removed
+- **MetricsAggregatorQuotaPolicy**: Cross-stack IAM policy no longer needed
+
+### Kept (unchanged)
+
+- Analytics pipeline (optional) — Kinesis Firehose → S3 → Athena for long-term historical SQL
+- ECS/ALB/VPC networking infrastructure
+- Quota monitoring DynamoDB tables (UserQuotaMetrics, QuotaPolicies)
+
 ## [2.3.0] - 2026-04-02
 
 ### Added

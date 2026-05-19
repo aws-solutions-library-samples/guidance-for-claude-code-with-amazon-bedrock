@@ -9,10 +9,6 @@ Parameters:
     MinValue: 1000000
     MaxValue: 1000000000
 
-  MetricsTableArn:
-    Type: String
-    Description: ARN of the ClaudeCodeMetrics table from the dashboard stack
-
   WarningThreshold80:
     Type: Number
     Default: 8000000
@@ -45,10 +41,6 @@ Parameters:
       - 'alert'
       - 'block'
     Description: Enforcement mode for monthly limits - alert (warn only) or block (deny access)
-
-  MetricsAggregatorRoleName:
-    Type: String
-    Description: Name of the MetricsAggregatorRole from the dashboard stack
 
   EnableFinegrainedQuotas:
     Type: String
@@ -165,7 +157,6 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:Scan
                 Resource:
-                  - !Ref MetricsTableArn
                   - !GetAtt UserQuotaMetrics.Arn
               - Effect: Allow
                 Action:
@@ -179,6 +170,11 @@ Resources:
                 Action:
                   - sns:Publish
                 Resource: !Ref QuotaAlertTopic
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: '*'
 
   # Lambda function for quota monitoring
   QuotaMonitorFunction:
@@ -203,6 +199,7 @@ Resources:
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
+          METRICS_REGION: !Ref 'AWS::Region'
       Code: ./lambda-functions/quota_monitor/
 
   # EventBridge Rule to run quota monitor every 15 minutes
@@ -349,31 +346,6 @@ Resources:
   # ============================================
   # End Quota Check API
   # ============================================
-
-  # Grant MetricsAggregator permissions to write to quota table and read policies
-  MetricsAggregatorQuotaPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: MetricsAggregatorQuotaAccess
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - dynamodb:PutItem
-              - dynamodb:UpdateItem
-              - dynamodb:GetItem
-            Resource:
-              - !GetAtt UserQuotaMetrics.Arn
-          - Effect: Allow
-            Action:
-              - dynamodb:Query
-              - dynamodb:GetItem
-            Resource:
-              - !GetAtt QuotaPolicies.Arn
-              - !Sub '${QuotaPolicies.Arn}/index/*'
-      Roles:
-        - !Ref MetricsAggregatorRoleName
 
 Outputs:
   QuotaTableName:

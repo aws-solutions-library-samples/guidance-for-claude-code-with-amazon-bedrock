@@ -1,10 +1,26 @@
 #!/bin/bash
-# ABOUTME: Lightweight shell wrapper for otel-helper that checks file cache first
-# ABOUTME: Avoids PyInstaller binary startup (~6s) on cache hit, falls back to full binary on miss
+# ABOUTME: Lightweight shell wrapper for otel-helper that ensures the local OTEL collector
+# ABOUTME: sidecar is running (when present), then checks file cache for headers (avoids PyInstaller startup)
 PROFILE="${AWS_PROFILE:-ClaudeCode}"
+INSTALL_DIR="$HOME/claude-code-with-bedrock"
+PID_FILE="$INSTALL_DIR/collector.pid"
 CACHE_DIR="$HOME/.claude-code-session"
 CACHE_FILE="$CACHE_DIR/${PROFILE}-otel-headers.json"
 RAW_FILE="$CACHE_DIR/${PROFILE}-otel-headers.raw"
+
+# Ensure collector sidecar is running (only in sidecar mode — binary present)
+# Use a dedicated <profile>-collector AWS profile so the Go SDK always resolves
+# credentials via credential_process (the main profile has static creds in
+# ~/.aws/credentials that shadow credential_process and can't auto-refresh).
+if [ -x "$INSTALL_DIR/otelcol" ] && [ -f "$INSTALL_DIR/collector-config.yaml" ]; then
+    if ! { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; }; then
+        mkdir -p "$CACHE_DIR"
+        AWS_PROFILE="${PROFILE}-collector" \
+        "$INSTALL_DIR/otelcol" --config "$INSTALL_DIR/collector-config.yaml" \
+            >> "$CACHE_DIR/collector.log" 2>&1 &
+        echo $! > "$PID_FILE"
+    fi
+fi
 
 # Check if cache exists and token is still valid
 if [ -f "$CACHE_FILE" ] && [ -f "$RAW_FILE" ]; then
