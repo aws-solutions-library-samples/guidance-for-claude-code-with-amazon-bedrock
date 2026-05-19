@@ -25,9 +25,9 @@ Fixes # (issue)
 
 <!-- List the key changes in this PR -->
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Additional Notes
 
@@ -76,6 +76,6 @@ Provide evidence that you've tested the changes:
 
 **Test Results:**
 
-```
+```text
 [Paste terminal output, screenshots, or logs here]
 ```
