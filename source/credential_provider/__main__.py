@@ -70,6 +70,16 @@ PROVIDER_CONFIGS = {
         "response_type": "code",
         "response_mode": "query",
     },
+    # Generic OIDC: paths come from the profile (oidc_authorization_endpoint /
+    # oidc_token_endpoint), so we leave these as empty placeholders.
+    "generic": {
+        "name": "Generic OIDC",
+        "authorize_endpoint": "",
+        "token_endpoint": "",
+        "scopes": "openid profile email",
+        "response_type": "code",
+        "response_mode": "query",
+    },
 }
 
 
@@ -957,7 +967,14 @@ class MultiProviderAuth:
             auth_params["response_mode"] = "query"
             auth_params["prompt"] = "select_account"
 
-        auth_url = f"{base_url}{self.provider_config['authorize_endpoint']}?" + urlencode(auth_params)
+        # For generic OIDC, the profile carries full endpoint URLs since path layout varies by IdP.
+        # Other providers use the hardcoded paths in PROVIDER_CONFIGS appended to the base URL.
+        configured_authorize = self.config.get("oidc_authorization_endpoint")
+        if configured_authorize:
+            authorize_url = configured_authorize
+        else:
+            authorize_url = f"{base_url}{self.provider_config['authorize_endpoint']}"
+        auth_url = f"{authorize_url}?" + urlencode(auth_params)
 
         # Setup callback server
         auth_result = {"code": None, "error": None}
@@ -991,8 +1008,12 @@ class MultiProviderAuth:
             "code_verifier": code_verifier,
         }
 
-        # Build token endpoint URL
-        token_url = f"{base_url}{self.provider_config['token_endpoint']}"
+        # Build token endpoint URL (configured value wins for generic OIDC)
+        configured_token = self.config.get("oidc_token_endpoint")
+        if configured_token:
+            token_url = configured_token
+        else:
+            token_url = f"{base_url}{self.provider_config['token_endpoint']}"
 
         # Confidential client: inject client_secret or certificate assertion
         if self.config.get("client_certificate_path") and self.config.get("client_certificate_key_path"):

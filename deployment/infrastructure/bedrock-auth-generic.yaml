@@ -1,0 +1,400 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code with Bedrock - Generic OIDC Authentication Stack (PingFederate, Keycloak, ForgeRock, etc.)'
+
+Parameters:
+  FederationType:
+    Type: String
+    Default: direct
+    AllowedValues:
+      - direct
+      - cognito
+    Description: Authentication mode - Direct IAM or Cognito Identity Pool
+
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC issuer URL (e.g. https://auth.example.com). Must include scheme.
+    AllowedPattern: '^https://[a-zA-Z0-9][a-zA-Z0-9.\-/_]*$'
+    ConstraintDescription: Must be an https:// URL
+
+  OidcClientId:
+    Type: String
+    Description: OIDC application client ID
+    MinLength: 1
+    MaxLength: 256
+
+  OidcThumbprintList:
+    Type: CommaDelimitedList
+    Description: SHA-1 thumbprint(s) of the JWKS endpoint TLS root cert (40 hex chars each, comma-separated for rotation)
+
+  IdentityPoolName:
+    Type: String
+    Default: claude-code-oidc
+    Description: Name for the Cognito Identity Pool (used in cognito mode)
+    AllowedPattern: '^[\w\s+=,.@-]+$'
+    MaxLength: 128
+
+  FederatedRoleName:
+    Type: String
+    Default: BedrockOidcFederatedRole
+    Description: Name for the IAM role used for federation
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-_]*$'
+    MaxLength: 64
+
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'af-south-1,ap-east-2,ap-northeast-1,ap-northeast-2,ap-northeast-3,ap-south-1,ap-south-2,ap-south-5,ap-southeast-1,ap-southeast-2,ap-southeast-3,ap-southeast-4,ca-central-1,ca-west-1,eu-central-1,eu-central-2,eu-north-1,eu-south-1,eu-south-2,eu-south-3,eu-west-1,eu-west-2,eu-west-3,il-central-1,me-central-1,me-south-1,sa-east-1,us-east-1,us-east-2,us-west-1,us-west-2'
+    Description: AWS regions allowed for Bedrock access (auto-generated from supported model regions)
+
+  EnableMonitoring:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable CloudWatch monitoring for Bedrock usage
+
+Conditions:
+  UseDirectIAM: !Equals [!Ref FederationType, direct]
+  UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
+  MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  # Partition-aware conditions for Cognito Identity service principals
+  IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
+  IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
+
+Resources:
+  # ===============================================
+  # OIDC Provider for Generic OIDC IdP
+  # ===============================================
+
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Ref OidcIssuerUrl
+      ClientIdList:
+        - !Ref OidcClientId
+      ThumbprintList: !Ref OidcThumbprintList
+      Tags:
+        - Key: Purpose
+          Value: Claude Code OIDC Authentication
+        - Key: Provider
+          Value: Generic OIDC
+
+  # ===============================================
+  # Bedrock Access Policy (Shared)
+  # ===============================================
+
+  BedrockAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy for accessing Bedrock services
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBedrockInvokeRegional
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockInvokeGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
+          - Sid: AllowBedrockListRegional
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockListGlobal
+            Effect: Allow
+            Action:
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:GetFoundationModelAvailability'
+              - 'bedrock:ListInferenceProfiles'
+              - 'bedrock:GetInferenceProfile'
+            Resource: '*'
+          - !If
+            - MonitoringEnabled
+            - Sid: AllowCloudWatchMetrics
+              Effect: Allow
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace':
+                    - 'ClaudeCode/Bedrock/Usage'
+                    - 'AWS/Bedrock'
+            - !Ref 'AWS::NoValue'
+
+  # ===============================================
+  # Direct IAM Resources (when FederationType=direct)
+  # ===============================================
+
+  DirectIAMRole:
+    Type: AWS::IAM::Role
+    Condition: UseDirectIAM
+    Properties:
+      RoleName: !Ref FederatedRoleName
+      Description: Direct IAM role for OIDC users accessing Bedrock
+      MaxSessionDuration: 43200  # 12 hours
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt OidcProvider.Arn
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+              - 'sts:TagSession'
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Direct IAM Authentication
+        - Key: Provider
+          Value: Generic OIDC
+        - Key: FederationType
+          Value: direct
+
+  # ===============================================
+  # Cognito Identity Pool Resources (when FederationType=cognito)
+  # ===============================================
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolName: !Ref IdentityPoolName
+      AllowUnauthenticatedIdentities: false
+      AllowClassicFlow: false
+      OpenIdConnectProviderARNs:
+        - !GetAtt OidcProvider.Arn
+
+  CognitoAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      Description: Role for authenticated Cognito Identity Pool users
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - IsGovCloudWest
+                - cognito-identity-us-gov.amazonaws.com
+                - !If
+                  - IsGovCloudEast
+                  - cognito-identity.us-gov-east-1.amazonaws.com
+                  - cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:aud': !Ref CognitoIdentityPool
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:aud': !Ref CognitoIdentityPool
+                    - 'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:amr': authenticated
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:amr': authenticated
+                    - 'cognito-identity.amazonaws.com:amr': authenticated
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Authentication
+        - Key: Provider
+          Value: Generic OIDC
+
+  CognitoUnauthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: UseCognitoIdentity
+    Properties:
+      Description: Role for unauthenticated Cognito Identity Pool users (restricted)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - IsGovCloudWest
+                - cognito-identity-us-gov.amazonaws.com
+                - !If
+                  - IsGovCloudEast
+                  - cognito-identity.us-gov-east-1.amazonaws.com
+                  - cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:aud': !Ref CognitoIdentityPool
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:aud': !Ref CognitoIdentityPool
+                    - 'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                !If
+                  - IsGovCloudWest
+                  - 'cognito-identity-us-gov.amazonaws.com:amr': unauthenticated
+                  - !If
+                    - IsGovCloudEast
+                    - 'cognito-identity.us-gov-east-1.amazonaws.com:amr': unauthenticated
+                    - 'cognito-identity.amazonaws.com:amr': unauthenticated
+      Policies:
+        - PolicyName: DenyAll
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Deny
+                Action: '*'
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: Claude Code Cognito Unauthenticated Role
+        - Key: Provider
+          Value: Generic OIDC
+
+  CognitoIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: UseCognitoIdentity
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthenticatedRole.Arn
+        unauthenticated: !GetAtt CognitoUnauthenticatedRole.Arn
+
+  # Principal Tag Mapping for Session Tags
+  # IdentityProviderName is the issuer URL with the "https://" scheme stripped
+  IdentityPoolPrincipalTag:
+    Type: AWS::Cognito::IdentityPoolPrincipalTag
+    Condition: UseCognitoIdentity
+    DeletionPolicy: Delete
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      IdentityProviderName: !Select [1, !Split ['://', !Ref OidcIssuerUrl]]
+      UseDefaults: false
+      PrincipalTags:
+        UserEmail: email
+        UserId: sub
+        UserName: name
+
+  # ===============================================
+  # Optional Monitoring Resources
+  # ===============================================
+
+  BedrockAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: MonitoringEnabled
+    Properties:
+      LogGroupName: !Sub '/aws/bedrock/claude-code-${AWS::StackName}'
+      RetentionInDays: 30
+
+Outputs:
+  FederationType:
+    Description: Current federation type configuration
+    Value: !Ref FederationType
+    Export:
+      Name: !Sub '${AWS::StackName}-FederationType'
+
+  OIDCProviderArn:
+    Description: ARN of the OIDC Provider
+    Value: !GetAtt OidcProvider.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OIDCProviderArn'
+
+  FederatedRoleArn:
+    Description: ARN of the federated role for OIDC users
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FederatedRoleArn'
+
+  DirectSTSRoleArn:
+    Description: Direct STS federated role ARN (when using direct IAM)
+    Condition: UseDirectIAM
+    Value: !GetAtt DirectIAMRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DirectSTSRoleArn'
+
+  BedrockRoleArn:
+    Description: IAM Role ARN for Bedrock access (for backward compatibility)
+    Value: !If
+      - UseDirectIAM
+      - !GetAtt DirectIAMRole.Arn
+      - !GetAtt CognitoAuthenticatedRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockRoleArn'
+
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID (if using Cognito mode)
+    Condition: UseCognitoIdentity
+    Value: !Ref CognitoIdentityPool
+    Export:
+      Name: !Sub '${AWS::StackName}-IdentityPoolId'
+
+  BedrockPolicyArn:
+    Description: ARN of the Bedrock access policy
+    Value: !Ref BedrockAccessPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockPolicyArn'
+
+  ConfigurationJson:
+    Description: Configuration JSON for CLI tool
+    Value: !If
+      - UseDirectIAM
+      - !Sub |
+        {
+          "federation_type": "direct",
+          "provider_type": "generic",
+          "provider_domain": "${OidcIssuerUrl}",
+          "client_id": "${OidcClientId}",
+          "federated_role_arn": "${DirectIAMRole.Arn}",
+          "aws_region": "${AWS::Region}",
+          "max_session_duration": 43200
+        }
+      - !Sub |
+        {
+          "federation_type": "cognito",
+          "provider_type": "generic",
+          "provider_domain": "${OidcIssuerUrl}",
+          "client_id": "${OidcClientId}",
+          "identity_pool_id": "${CognitoIdentityPool}",
+          "federated_role_arn": "${CognitoAuthenticatedRole.Arn}",
+          "aws_region": "${AWS::Region}"
+        }

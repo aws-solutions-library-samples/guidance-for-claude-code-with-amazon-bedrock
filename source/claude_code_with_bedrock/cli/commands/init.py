@@ -398,10 +398,11 @@ class InitCommand(Command):
                 provider_type = questionary.select(
                     "Select your identity provider type:",
                     choices=[
-                        questionary.Choice("Okta (or generic OIDC)", value="okta"),
+                        questionary.Choice("Okta", value="okta"),
                         questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
                         questionary.Choice("Auth0", value="auth0"),
                         questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                        questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
                     ],
                     instruction="(Used to select the correct CloudFormation template)",
                 ).ask()
@@ -441,6 +442,126 @@ class InitCommand(Command):
 
                 if not cognito_user_pool_id:
                     return None
+
+            # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP):
+            # we cannot infer endpoint paths or the JWKS thumbprint from the domain,
+            # so we try OIDC discovery first and fall through to manual entry on failure.
+            oidc_issuer_url = None
+            oidc_authorization_endpoint = None
+            oidc_token_endpoint = None
+            oidc_jwks_uri = None
+            oidc_thumbprint = None
+            if provider_type == "generic":
+                from claude_code_with_bedrock.cli.utils.oidc_discovery import (
+                    OidcDiscoveryError,
+                    compute_jwks_thumbprint,
+                    discover_oidc_endpoints,
+                )
+
+                console.print("\n[bold]Generic OIDC Configuration[/bold]")
+                console.print(
+                    "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
+                    "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
+                )
+
+                # Construct issuer URL from the domain entered earlier; let the user override.
+                default_issuer = (
+                    provider_domain if provider_domain.startswith(("http://", "https://"))
+                    else f"https://{provider_domain}"
+                ).rstrip("/")
+
+                oidc_issuer_url = questionary.text(
+                    "OIDC issuer URL:",
+                    validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
+                    default=config.get("oidc_issuer_url", default_issuer),
+                    instruction="(must match the 'iss' claim in tokens)",
+                ).ask()
+                if not oidc_issuer_url:
+                    return None
+                oidc_issuer_url = oidc_issuer_url.rstrip("/")
+
+                # Attempt discovery — pre-fill defaults but always let the user confirm/override.
+                discovered: dict[str, str] = {}
+                console.print(f"[dim]Querying {oidc_issuer_url}/.well-known/openid-configuration ...[/dim]")
+                try:
+                    discovered = discover_oidc_endpoints(oidc_issuer_url)
+                    console.print("[green]✓ Discovery succeeded.[/green]")
+                    if discovered.get("issuer") and discovered["issuer"].rstrip("/") != oidc_issuer_url:
+                        console.print(
+                            f"[yellow]Note: discovery reports issuer={discovered['issuer']}, "
+                            f"which differs from {oidc_issuer_url}. Tokens must match the "
+                            f"discovered value.[/yellow]"
+                        )
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Discovery failed: {e}[/yellow]")
+                    console.print("[dim]Falling back to manual entry.[/dim]")
+
+                oidc_authorization_endpoint = questionary.text(
+                    "Authorization endpoint:",
+                    validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
+                    default=(
+                        discovered.get("authorization_endpoint")
+                        or config.get("oidc_authorization_endpoint")
+                        or f"{oidc_issuer_url}/as/authorization.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_authorization_endpoint:
+                    return None
+
+                oidc_token_endpoint = questionary.text(
+                    "Token endpoint:",
+                    validate=lambda x: bool(x) or "Token endpoint cannot be empty",
+                    default=(
+                        discovered.get("token_endpoint")
+                        or config.get("oidc_token_endpoint")
+                        or f"{oidc_issuer_url}/as/token.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_token_endpoint:
+                    return None
+
+                oidc_jwks_uri = questionary.text(
+                    "JWKS URI:",
+                    validate=lambda x: bool(x) or "JWKS URI cannot be empty",
+                    default=(
+                        discovered.get("jwks_uri")
+                        or config.get("oidc_jwks_uri")
+                        or f"{oidc_issuer_url}/pf/JWKS"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_jwks_uri:
+                    return None
+
+                # Try to auto-compute the JWKS leaf-cert thumbprint via TLS handshake.
+                # Falls back to manual entry on any failure (firewall, hostname mismatch, etc.).
+                computed_thumbprint = ""
+                console.print(f"[dim]Fetching TLS certificate from {oidc_jwks_uri} ...[/dim]")
+                try:
+                    computed_thumbprint = compute_jwks_thumbprint(oidc_jwks_uri)
+                    console.print(f"[green]✓ Computed thumbprint: {computed_thumbprint}[/green]")
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Could not compute thumbprint automatically: {e}[/yellow]")
+                    console.print(
+                        "[dim]Compute manually with: echo | openssl s_client -servername <host> "
+                        "-connect <host>:443 2>/dev/null | openssl x509 -fingerprint -sha1 -noout[/dim]"
+                    )
+
+                oidc_thumbprint = questionary.text(
+                    "JWKS TLS cert SHA-1 thumbprint:",
+                    validate=lambda x: (
+                        bool(x and len(x.replace(":", "")) == 40 and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", "")))
+                        or "Thumbprint must be 40 hex characters (colons optional)"
+                    ),
+                    default=computed_thumbprint or config.get("oidc_thumbprint", ""),
+                    instruction="(40 hex chars, colons optional — confirm or replace)",
+                ).ask()
+                if not oidc_thumbprint:
+                    return None
+                # Normalize: strip colons, lowercase
+                oidc_thumbprint = oidc_thumbprint.replace(":", "").lower()
 
             client_id = questionary.text(
                 "Enter your OIDC Client ID:",
@@ -548,6 +669,12 @@ class InitCommand(Command):
             config["provider_type"] = provider_type
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
+            if provider_type == "generic":
+                config["oidc_issuer_url"] = oidc_issuer_url
+                config["oidc_authorization_endpoint"] = oidc_authorization_endpoint
+                config["oidc_token_endpoint"] = oidc_token_endpoint
+                config["oidc_jwks_uri"] = oidc_jwks_uri
+                config["oidc_thumbprint"] = oidc_thumbprint
 
             # Ask about federation type
             console.print("\n[cyan]Federation Type Selection[/cyan]")
@@ -1751,6 +1878,11 @@ class InitCommand(Command):
             inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+            oidc_issuer_url=config_data.get("oidc_issuer_url"),
+            oidc_authorization_endpoint=config_data.get("oidc_authorization_endpoint"),
+            oidc_token_endpoint=config_data.get("oidc_token_endpoint"),
+            oidc_jwks_uri=config_data.get("oidc_jwks_uri"),
+            oidc_thumbprint=config_data.get("oidc_thumbprint"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             sso_enabled=config_data.get("sso_enabled", True),
@@ -2067,6 +2199,17 @@ class InitCommand(Command):
             # Add Cognito User Pool ID if present
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:
                 existing_config["cognito_user_pool_id"] = profile.cognito_user_pool_id
+
+            # Add Generic OIDC fields if present
+            for oidc_field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+                "oidc_thumbprint",
+            ):
+                if getattr(profile, oidc_field, None):
+                    existing_config[oidc_field] = getattr(profile, oidc_field)
 
             # Add selected model if present
             if hasattr(profile, "selected_model") and profile.selected_model:

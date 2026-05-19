@@ -364,6 +364,7 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "generic": "bedrock-auth-generic.yaml",
                 }
 
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
@@ -433,6 +434,20 @@ class DeployCommand(Command):
                             f"CognitoUserPoolId={profile.cognito_user_pool_id}",
                             f"CognitoUserPoolClientId={profile.client_id}",
                             f"CognitoUserPoolDomain={cognito_domain}",
+                        ]
+                    )
+                elif provider_type == "generic":
+                    if not (profile.oidc_issuer_url and profile.oidc_thumbprint):
+                        console.print(
+                            "[red]Generic OIDC provider requires oidc_issuer_url and oidc_thumbprint."
+                            " Re-run `ccwb init` to configure them.[/red]"
+                        )
+                        return 1
+                    params.extend(
+                        [
+                            f"OidcIssuerUrl={profile.oidc_issuer_url}",
+                            f"OidcClientId={profile.client_id}",
+                            f"OidcThumbprintList={profile.oidc_thumbprint}",
                         ]
                     )
 
@@ -666,6 +681,10 @@ class DeployCommand(Command):
                                 oidc_jwks = (
                                     f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
                                 )
+                        elif provider_type == "generic":
+                            # Trust what the operator configured — we can't synthesize these for arbitrary IdPs
+                            oidc_issuer = getattr(profile, "oidc_issuer_url", "") or ""
+                            oidc_jwks = getattr(profile, "oidc_jwks_uri", "") or ""
                         if oidc_issuer and oidc_jwks:
                             params.append(f"OidcIssuerUrl={oidc_issuer}")
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
@@ -967,6 +986,7 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "generic": "bedrock-auth-generic.yaml",
                 }
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
                 template = project_root / "deployment" / "infrastructure" / template_file
@@ -990,6 +1010,12 @@ class DeployCommand(Command):
                         f"CognitoUserPoolId={profile.cognito_user_pool_id}",
                         f"CognitoUserPoolClientId={profile.client_id}",
                         f"CognitoUserPoolDomain={cognito_domain}",
+                    ])
+                elif provider_type == "generic":
+                    params.extend([
+                        f"OidcIssuerUrl={profile.oidc_issuer_url or ''}",
+                        f"OidcClientId={profile.client_id}",
+                        f"OidcThumbprintList={profile.oidc_thumbprint or ''}",
                     ])
                 params.extend([
                     f"IdentityPoolName={profile.identity_pool_name}",

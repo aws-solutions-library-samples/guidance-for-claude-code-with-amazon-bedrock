@@ -426,6 +426,7 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Okta](assets/docs/providers/okta-setup.md)
 - [Microsoft Entra ID (Azure AD)](assets/docs/providers/microsoft-entra-id-setup.md)
 - [Auth0](assets/docs/providers/auth0-setup.md)
+- [Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)](assets/docs/providers/generic-oidc-setup.md)
 
 ## License
 

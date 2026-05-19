@@ -35,8 +35,17 @@ class Profile:
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
+
+    # Generic OIDC provider configuration (provider_type == "generic")
+    # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
+    # When set, these override the hardcoded paths in PROVIDER_CONFIGS.
+    oidc_issuer_url: str | None = None  # e.g. https://auth.example.com (no trailing slash)
+    oidc_authorization_endpoint: str | None = None  # Full URL or path appended to issuer
+    oidc_token_endpoint: str | None = None  # Full URL or path appended to issuer
+    oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
+    oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 

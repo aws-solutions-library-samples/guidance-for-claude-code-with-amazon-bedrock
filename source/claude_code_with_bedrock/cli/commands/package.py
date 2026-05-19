@@ -1789,6 +1789,18 @@ RUN pyinstaller \
         if profile.provider_type == "cognito" and profile.cognito_user_pool_id:
             config[profile_name]["cognito_user_pool_id"] = profile.cognito_user_pool_id
 
+        # Add Generic OIDC endpoints — credential provider needs these at runtime
+        if profile.provider_type == "generic":
+            for oidc_field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+            ):
+                value = getattr(profile, oidc_field, None)
+                if value:
+                    config[profile_name][oidc_field] = value
+
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
