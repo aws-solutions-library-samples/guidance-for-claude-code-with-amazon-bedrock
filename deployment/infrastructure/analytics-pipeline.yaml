@@ -25,6 +25,24 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable debug logging in Lambda transformation function
 
+  LakeFormationEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Set to 'true' if AWS Lake Formation is enabled in this account/region.
+      When true, the stack registers the analytics S3 data location with Lake
+      Formation and grants the Firehose delivery role the LF permissions it
+      needs to read the Glue table schema during data conversion. Leave 'false'
+      for accounts using IAM-only Glue authorization.
+      NOTE: When true, the principal running this stack must be a Lake
+      Formation Data Lake Admin (or hold equivalent CREATE_TABLE / GRANT
+      permissions on the database) so the AWS::Glue::Table and
+      AWS::LakeFormation::PrincipalPermissions resources can be created.
+
+Conditions:
+  UseLakeFormation: !Equals [!Ref LakeFormationEnabled, 'true']
+
 Resources:
   # S3 Bucket for analytics data
   AnalyticsBucket:
@@ -486,6 +504,59 @@ Resources:
           'projection.hour.range': '00,23'
           'projection.hour.digits': '2'
           'storage.location.template': !Sub 's3://${AnalyticsBucket}/data/year=${!year}/month=${!month}/day=${!day}/hour=${!hour}/'
+
+  # Registering the S3 data location is what makes Athena queries against the
+  # metrics table possible in an LF-managed account.
+  AnalyticsDataLakeRole:
+    Type: AWS::IAM::Role
+    Condition: UseLakeFormation
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lakeformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LakeFormationDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                Resource: !Sub '${AnalyticsBucket.Arn}/data/*'
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:GetBucketLocation'
+                Resource: !GetAtt AnalyticsBucket.Arn
+
+  AnalyticsDataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    Condition: UseLakeFormation
+    Properties:
+      ResourceArn: !Sub '${AnalyticsBucket.Arn}/data/'
+      RoleArn: !GetAtt AnalyticsDataLakeRole.Arn
+      UseServiceLinkedRole: false
+
+  FirehoseTablePermissions:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: UseLakeFormation
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt FirehoseDeliveryRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: !Ref GlueDatabase
+          Name: !Ref GlueTable
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
 
   # Athena Workgroup
   AthenaWorkgroup:
@@ -954,3 +1025,24 @@ Outputs:
       - Identify heavy users and usage spikes
       - Calculate accurate cost attribution
       - Debug metric collection issues
+
+  LakeFormationAthenaSetup:
+    Condition: UseLakeFormation
+    Description: >-
+      Lake Formation is enabled. The Firehose delivery role is granted DESCRIBE
+      on the database and table automatically. Athena query principals must be
+      granted SELECT on the table and DATA_LOCATION_ACCESS on the data location
+      separately — run the AWS CLI commands below for each principal that needs
+      to query the analytics table.
+    Value: !Sub |
+      # Replace <PRINCIPAL_ARN> with the IAM role/user ARN that should query Athena.
+
+      aws lakeformation grant-permissions \
+        --principal DataLakePrincipalIdentifier=<PRINCIPAL_ARN> \
+        --resource '{"Table":{"CatalogId":"${AWS::AccountId}","DatabaseName":"${GlueDatabase}","Name":"${GlueTable}"}}' \
+        --permissions SELECT DESCRIBE
+
+      aws lakeformation grant-permissions \
+        --principal DataLakePrincipalIdentifier=<PRINCIPAL_ARN> \
+        --resource '{"DataLocation":{"CatalogId":"${AWS::AccountId}","ResourceArn":"${AnalyticsBucket.Arn}/data/"}}' \
+        --permissions DATA_LOCATION_ACCESS
