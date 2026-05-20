@@ -52,6 +52,7 @@ FEEDBACK.md
 output.json
 *.bak
 test_*.py
+!source/tests/**/test_*.py
 
 CLAUDE.md
 

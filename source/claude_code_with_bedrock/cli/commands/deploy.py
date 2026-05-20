@@ -95,8 +95,9 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
-                if not getattr(profile, "sso_enabled", True):
-                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
+                _auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+                if _auth_type == "none":
+                    console.print("[yellow]Authentication is disabled (auth_type=none) in your configuration.[/yellow]")
                     console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
@@ -165,8 +166,9 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order
-            # Only deploy auth stack if SSO is enabled (default: True for backward compatibility)
-            if getattr(profile, "sso_enabled", True):
+            # Deploy auth stack for OIDC and IDC paths; skip only for auth_type="none"
+            _auth_type_all = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+            if _auth_type_all != "none":
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
             # Deploy distribution after networking if it's landing-page type
@@ -363,7 +365,42 @@ class DeployCommand(Command):
 
             # Deploy based on stack type
             if stack_type == "auth":
-                # Select template based on provider type
+                # Use profile regions, or fall back to all known Bedrock regions
+                bedrock_regions = profile.allowed_bedrock_regions
+                if not bedrock_regions:
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
+                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+                auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+
+                if auth_type == "idc":
+                    # IAM Identity Center path — use dedicated IDC template
+                    template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+
+                    if not template.exists():
+                        console.print("[red]Error: bedrock-auth-idc.yaml template not found[/red]")
+                        return 1
+
+                    # Derive role name from permission set or use default
+                    idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
+
+                    params = [
+                        f"FederatedRoleName={idc_role_name}",
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying IAM Identity Center auth stack...",
+                    )
+
+                # OIDC path — select template based on provider type
                 provider_type = profile.provider_type or "okta"
                 template_map = {
                     "okta": "bedrock-auth-okta.yaml",
@@ -382,8 +419,6 @@ class DeployCommand(Command):
                     console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
                     return 1
 
-                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-
                 # Build parameters
                 params = []
                 params.append(f"FederationType={profile.federation_type}")
@@ -395,6 +430,9 @@ class DeployCommand(Command):
                             f"OktaClientId={profile.client_id}",
                         ]
                     )
+                    okta_auth_server = getattr(profile, "okta_auth_server", "")
+                    if okta_auth_server:
+                        params.append(f"OktaAuthServer={okta_auth_server}")
                 elif provider_type == "auth0":
                     params.extend(
                         [
@@ -456,12 +494,6 @@ class DeployCommand(Command):
                             f"OidcThumbprintList={profile.oidc_thumbprint}",
                         ]
                     )
-
-                # Use profile regions, or fall back to all known Bedrock regions
-                bedrock_regions = profile.allowed_bedrock_regions
-                if not bedrock_regions:
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
-                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
                     [
@@ -671,8 +703,13 @@ class DeployCommand(Command):
                         elif provider_type == "okta":
                             # provider_domain is e.g. "company.okta.com"
                             domain = provider_domain.rstrip("/")
-                            oidc_issuer = f"https://{domain}/oauth2/default"
-                            oidc_jwks = f"https://{domain}/oauth2/default/v1/keys"
+                            okta_auth_server = getattr(profile, "okta_auth_server", "")
+                            if okta_auth_server:
+                                oidc_issuer = f"https://{domain}/oauth2/{okta_auth_server}"
+                                oidc_jwks = f"https://{domain}/oauth2/{okta_auth_server}/v1/keys"
+                            else:
+                                oidc_issuer = f"https://{domain}"
+                                oidc_jwks = f"https://{domain}/oauth2/v1/keys"
                         elif provider_type == "auth0":
                             domain = provider_domain.rstrip("/")
                             oidc_issuer = f"https://{domain}/"
@@ -873,7 +910,7 @@ class DeployCommand(Command):
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -988,7 +1025,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1029,7 +1066,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [

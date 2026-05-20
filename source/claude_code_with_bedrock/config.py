@@ -37,6 +37,7 @@ class Profile:
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "generic"
+    okta_auth_server: str = ""  # Okta auth server ID ("default" for dev/free, empty for paid)
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
 
     # Generic OIDC provider configuration (provider_type == "generic")
@@ -80,6 +81,17 @@ class Profile:
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
     sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
+
+    # Authentication type — explicit three-way classification
+    # "oidc"  = OIDC/Direct IdP path (Okta, Azure AD, Auth0, Cognito) — default / backward-compatible
+    # "idc"   = AWS IAM Identity Center path
+    # "none"  = no SSO, use existing AWS credentials directly
+    auth_type: str = "oidc"
+
+    # IAM Identity Center specific fields (only populated when auth_type == "idc")
+    idc_start_url: str | None = None       # e.g. https://company.awsapps.com/start
+    idc_account_id: str | None = None      # AWS account ID for IDC access
+    idc_permission_set_name: str | None = None  # Permission set / role name
 
     # Confidential client authentication (Azure AD / Entra ID)
     # If neither is set, public client flow is used (current default).
@@ -175,6 +187,13 @@ class Profile:
                             data["provider_type"] = "cognito"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
+
+        # Derive auth_type from sso_enabled for backward compatibility with existing configs
+        if "auth_type" not in data:
+            if data.get("sso_enabled", True):
+                data["auth_type"] = "oidc"
+            else:
+                data["auth_type"] = "none"
 
         # Migrate legacy distribution configuration
         if "enable_distribution" in data and data.get("enable_distribution"):

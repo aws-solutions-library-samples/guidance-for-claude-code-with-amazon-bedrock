@@ -41,8 +41,8 @@ __version__ = "1.0.0"
 PROVIDER_CONFIGS = {
     "okta": {
         "name": "Okta",
-        "authorize_endpoint": "/oauth2/v1/authorize",
-        "token_endpoint": "/oauth2/v1/token",
+        "authorize_endpoint": "/oauth2/{auth_server}/v1/authorize",
+        "token_endpoint": "/oauth2/{auth_server}/v1/token",
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -104,7 +104,20 @@ class MultiProviderAuth:
                 f"Unknown provider type '{self.provider_type}'. "
                 f"Valid providers: {', '.join(PROVIDER_CONFIGS.keys())}"
             )
-        self.provider_config = PROVIDER_CONFIGS[self.provider_type]
+        self.provider_config = dict(PROVIDER_CONFIGS[self.provider_type])
+
+        # For Okta, resolve the authorization server in endpoint paths.
+        # "default" = Okta custom auth server (free/developer plans).
+        # Empty string with trailing slash removed = Org auth server (paid plans).
+        if self.provider_type == "okta":
+            auth_server = self.config.get("okta_auth_server", "")
+            if auth_server:
+                fmt = {"auth_server": auth_server}
+                self.provider_config["authorize_endpoint"] = self.provider_config["authorize_endpoint"].format(**fmt)
+                self.provider_config["token_endpoint"] = self.provider_config["token_endpoint"].format(**fmt)
+            else:
+                self.provider_config["authorize_endpoint"] = "/oauth2/v1/authorize"
+                self.provider_config["token_endpoint"] = "/oauth2/v1/token"
 
         # OAuth callback port — also used for inter-process locking.
         # Precedence: REDIRECT_PORT env var > config.json redirect_port > default 8400
@@ -862,7 +875,6 @@ class MultiProviderAuth:
         """
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
 
         # Env vars take precedence over config.json so paths stay portable across
         # machines (self-install and admin-push scenarios).  This follows the
@@ -1284,8 +1296,11 @@ class MultiProviderAuth:
                     login_key = f"cognito-idp.{self.config['aws_region']}.amazonaws.com/{user_pool_id}"
                     self._debug_print(f"Cognito User Pool ID from config: {user_pool_id}")
             else:
-                # For external OIDC providers, use the provider domain
-                login_key = self.config["provider_domain"]
+                # For external OIDC providers, use the issuer from the token to match the OIDC provider in Cognito
+                if "iss" in token_claims:
+                    login_key = token_claims["iss"].replace("https://", "").replace("http://", "")
+                else:
+                    login_key = self.config["provider_domain"]
 
             self._debug_print(f"Login key: {login_key}")
             self._debug_print(f"Token claims: {list(token_claims.keys())}")
