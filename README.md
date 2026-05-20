@@ -158,6 +158,7 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
 - Poetry (dependency management)
 - AWS CLI v2
 - Git
+- Go 1.23+ (optional — only needed for building the OTEL collector sidecar)
 
 **AWS Requirements:**
 
@@ -341,15 +342,21 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
 
 ### Monitoring Infrastructure (Optional)
 
-Enable usage visibility with OpenTelemetry monitoring stack:
+Enable usage visibility with OpenTelemetry monitoring. During `ccwb init`, choose between two monitoring modes:
 
-**Components:**
+| Mode | Description | Infrastructure | Analytics | Cost |
+|------|-------------|----------------|-----------|------|
+| **Central collector** (ECS Fargate) | Server-side collector shared by all users | VPC, ECS Fargate, ALB | Supported | ~$30-50/mo |
+| **Sidecar collector** (local) | Runs on each developer's machine | None | Not in v1 | $0 server cost |
+
+Both modes use OTLP to send metrics to CloudWatch and share the same PromQL dashboard.
+
+**Central collector components:**
 
 - VPC and networking resources (or use existing VPC)
-- ECS Fargate cluster running OpenTelemetry collector
+- ECS Fargate cluster running OpenTelemetry collector (OTLP export; adds EMF when analytics enabled)
 - Application Load Balancer for metric ingestion
-- CloudWatch dashboards with real-time usage metrics
-- DynamoDB for metrics aggregation
+- CloudWatch dashboards with PromQL widgets over OTLP-ingested metrics
 
 **Optional Analytics Add-On:**
 
@@ -386,7 +393,16 @@ Optional OpenTelemetry monitoring provides comprehensive usage visibility for co
 
 ### Infrastructure
 
-The monitoring stack (deployed with `ccwb deploy monitoring`) includes:
+During `ccwb init`, choose between two monitoring modes:
+
+| Mode | Description | Infrastructure | Analytics | Cost |
+|------|-------------|----------------|-----------|------|
+| **Central collector** (ECS Fargate) | Server-side collector shared by all users | VPC, ECS Fargate, ALB | Supported | ~$30-50/mo |
+| **Sidecar collector** (local) | Runs on each developer's machine | None | Not in v1 | $0 server cost |
+
+Both modes use OTLP to send metrics to CloudWatch and share the same PromQL dashboard.
+
+The central collector stack (deployed with `ccwb deploy monitoring`) includes:
 
 - ECS Fargate running OpenTelemetry collector
 - Application Load Balancer for metric ingestion

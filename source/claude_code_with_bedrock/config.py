@@ -23,6 +23,7 @@ class Profile:
     schema_version: str = "2.0"  # Configuration schema version
     stack_names: dict[str, str] = field(default_factory=dict)
     monitoring_enabled: bool = True
+    monitoring_mode: str = "sidecar"  # "sidecar" (local collector) or "central" (ECS Fargate)
     monitoring_config: dict[str, Any] = field(default_factory=dict)
     analytics_enabled: bool = True  # Analytics pipeline for user metrics
     metrics_log_group: str = "/aws/claude-code/metrics"
@@ -91,6 +92,9 @@ class Profile:
     client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
+
+    # OAuth callback port (also used for inter-process locking)
+    redirect_port: int | None = None  # OAuth callback port (default 8400); must match IdP registered redirect URI
 
     # Resource tagging
     tags: dict[str, str] = field(default_factory=dict)  # Tags applied to all deployed CloudFormation stacks

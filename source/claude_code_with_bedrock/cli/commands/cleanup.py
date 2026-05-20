@@ -94,6 +94,15 @@ class CleanupCommand(Command):
 
         # Remove authentication directory
         if auth_dir.exists():
+            # Stop running collector sidecar before removing files
+            pid_file = auth_dir / "collector.pid"
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, 15)  # SIGTERM
+                    console.print(f"✓ Stopped collector sidecar (PID {pid})")
+                except (ProcessLookupError, ValueError, OSError):
+                    pass  # Process already gone
             try:
                 shutil.rmtree(auth_dir)
                 console.print(f"✓ Removed {auth_dir}")

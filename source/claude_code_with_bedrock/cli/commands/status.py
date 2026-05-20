@@ -180,11 +180,16 @@ class StatusCommand(Command):
         stacks["auth"] = auth_status
 
         if profile.monitoring_enabled:
-            # Check monitoring stack
-            monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-monitoring")
-            stacks["monitoring"] = self._check_stack(monitoring_stack, profile.aws_region)
+            monitoring_mode = getattr(profile, "monitoring_mode", "central")
+            if monitoring_mode == "central":
+                # Check monitoring stack (ECS)
+                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-monitoring")
+                stacks["monitoring"] = self._check_stack(monitoring_stack, profile.aws_region)
+            else:
+                # Sidecar mode: show local collector status
+                stacks["monitoring (sidecar)"] = self._check_local_collector()
 
-            # Check dashboard stack
+            # Check dashboard stack (both modes)
             dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             stacks["dashboard"] = self._check_stack(dashboard_stack, profile.aws_region)
 
@@ -229,18 +234,44 @@ class StatusCommand(Command):
             endpoints["oidc_provider"] = auth_outputs.get("OIDCProviderArn")
 
         if profile.monitoring_enabled:
-            # Get monitoring endpoint
-            monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
-            monitoring_outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
-
-            if monitoring_outputs:
-                endpoints["monitoring_endpoint"] = monitoring_outputs.get("CollectorEndpoint")
+            monitoring_mode = getattr(profile, "monitoring_mode", "central")
+            if monitoring_mode == "central":
+                # Get monitoring endpoint from CloudFormation
+                monitoring_stack = profile.stack_names.get(
+                    "monitoring", f"{profile.identity_pool_name}-otel-collector"
+                )
+                monitoring_outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
+                if monitoring_outputs:
+                    endpoints["monitoring_endpoint"] = monitoring_outputs.get("CollectorEndpoint")
+            else:
+                endpoints["monitoring_endpoint"] = "http://localhost:4318 (sidecar)"
 
             # Get dashboard URL
             dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             dashboard_outputs = get_stack_outputs(dashboard_stack, profile.aws_region)
-
             if dashboard_outputs:
                 endpoints["dashboard_url"] = dashboard_outputs.get("DashboardURL")
 
         return endpoints
+
+    def _check_local_collector(self) -> dict[str, Any]:
+        """Check local sidecar collector status."""
+        install_dir = Path.home() / "claude-code-with-bedrock"
+        binary = install_dir / "otelcol"
+        pid_file = install_dir / "collector.pid"
+
+        if not binary.exists():
+            return {"status": "NOT_INSTALLED", "last_updated": None}
+
+        if pid_file.exists():
+            try:
+                import os
+                import signal
+
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIG_DFL)  # check if process exists
+                return {"status": "RUNNING", "last_updated": f"PID {pid}"}
+            except (ProcessLookupError, ValueError, OSError):
+                return {"status": "INSTALLED (not running)", "last_updated": None}
+
+        return {"status": "INSTALLED (not running)", "last_updated": None}

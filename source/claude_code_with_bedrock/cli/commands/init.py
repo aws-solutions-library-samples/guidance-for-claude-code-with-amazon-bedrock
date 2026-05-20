@@ -262,6 +262,15 @@ class InitCommand(Command):
                 "deployment; developer packages work without it)[/dim]"
             )
 
+        go_present = self._check_go_version()
+        if go_present:
+            console.print("  [green]✓[/green] Go 1.23+ installed [dim](used for OTEL collector sidecar build)[/dim]")
+        else:
+            console.print(
+                "  [yellow]⚠[/yellow] Go 1.23+ not found [dim](optional — only needed for building "
+                "the OpenTelemetry collector sidecar)[/dim]"
+            )
+
         # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
         if region:
             bedrock_access = check_bedrock_access(region)
@@ -660,6 +669,41 @@ class InitCommand(Command):
             if not credential_storage:
                 return None
 
+            # OAuth callback port configuration
+            console.print("\n[bold]OAuth Callback Port[/bold]")
+            console.print(
+                "The credential provider listens on a local port to receive the OAuth callback "
+                "from your identity provider. This port must match the redirect URI registered "
+                "in your IdP application (e.g., http://localhost:8400/callback)."
+            )
+            console.print(
+                "  • If port 8400 is already used by another application on your users' machines "
+                "(e.g., Commvault, HashiCorp Vault), choose a different port."
+            )
+            console.print(
+                "  • The port you choose here must also be registered as a valid redirect URI "
+                "in your IdP application configuration.\n"
+            )
+
+            use_custom_port = questionary.confirm(
+                "Use a custom OAuth callback port? (default: 8400)",
+                default=False,
+            ).ask()
+
+            if use_custom_port:
+                redirect_port_str = questionary.text(
+                    "Enter OAuth callback port:",
+                    validate=lambda x: (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535",
+                    default=str(config.get("redirect_port", 8400)),
+                    instruction="(must match the port in your IdP's registered redirect URI)",
+                ).ask()
+                if redirect_port_str:
+                    config["redirect_port"] = int(redirect_port_str)
+                    console.print(
+                        f"[dim]  Remember to register http://localhost:{redirect_port_str}/callback "
+                        f"as a redirect URI in your IdP application.[/dim]"
+                    )
+
             # Preserve existing okta settings, only update domain/client_id
             if "okta" not in config:
                 config["okta"] = {}
@@ -794,104 +838,147 @@ class InitCommand(Command):
                 config["monitoring"] = {}
             config["monitoring"]["enabled"] = enable_monitoring
 
-            # If monitoring is enabled, configure VPC
+            # If monitoring is enabled, choose mode and configure
             if enable_monitoring:
-                # Pass existing vpc_config if available
-                existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
-                vpc_config = self._configure_vpc(
-                    config.get("aws", {}).get("region", get_current_region()), existing_vpc_config
+                console.print("\n[bold]Monitoring Collector Mode[/bold]")
+                console.print(
+                    "\n[cyan]Sidecar (Recommended):[/cyan]\n"
+                    "  [green]+[/green] No server infrastructure needed\n"
+                    "  [green]+[/green] Simpler setup, lower cost\n"
+                    "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
+                    "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
+                    "  [yellow]-[/yellow] Each machine manages its own collector process\n"
                 )
-                if not vpc_config:
-                    return None
-                config["monitoring"]["vpc_config"] = vpc_config
+                console.print(
+                    "[cyan]Central:[/cyan]\n"
+                    "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
+                    "  [green]+[/green] Single collector for all users — centralized management\n"
+                    "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
+                    "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
+                    "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
+                    "  [yellow]-[/yellow] Requires network connectivity to collector endpoint\n"
+                )
+                monitoring_mode = questionary.select(
+                    "Monitoring mode:",
+                    choices=[
+                        questionary.Choice(
+                            "Sidecar collector (Recommended — runs locally, no server infra)",
+                            value="sidecar",
+                        ),
+                        questionary.Choice(
+                            "Central collector (ECS Fargate — server-side, optional Athena SQL pipeline)",
+                            value="central",
+                        ),
+                    ],
+                    default=config.get("monitoring", {}).get("mode", "sidecar"),
+                ).ask()
+                config["monitoring"]["mode"] = monitoring_mode
 
-                # Optional: Configure HTTPS with custom domain
-                console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
+                if monitoring_mode == "central":
+                    # Central mode: VPC, HTTPS, analytics configuration
+                    existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
+                    vpc_config = self._configure_vpc(
+                        config.get("aws", {}).get("region", get_current_region()), existing_vpc_config
+                    )
+                    if not vpc_config:
+                        return None
+                    config["monitoring"]["vpc_config"] = vpc_config
 
-                # Check if HTTPS is already configured
-                existing_custom_domain = config["monitoring"].get("custom_domain")
-                existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                already_configured = bool(existing_custom_domain and existing_zone_id)
-                has_existing_domain = bool(existing_custom_domain)
+                    # Optional: Configure HTTPS with custom domain
+                    console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
 
-                if has_existing_domain:
-                    console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
+                    existing_custom_domain = config["monitoring"].get("custom_domain")
+                    existing_zone_id = config["monitoring"].get("hosted_zone_id")
+                    already_configured = bool(existing_custom_domain and existing_zone_id)
 
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=has_existing_domain).ask()
+                    if already_configured:
+                        console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
 
-                if enable_https:
-                    custom_domain = questionary.text(
-                        "Enter custom domain name (e.g., telemetry.company.com):",
-                        validate=lambda x: len(x) > 0 and "." in x,
-                        default=existing_custom_domain if existing_custom_domain else "",
+                    enable_https = questionary.confirm(
+                        "Enable HTTPS with custom domain?", default=already_configured
                     ).ask()
 
-                    # Save the domain immediately — regardless of what happens with
-                    # hosted zone lookup. This is the root cause of "domain never saves":
-                    # previously the domain was only written inside the if hosted_zones
-                    # block, so any Route53 failure silently discarded the user's input.
-                    config["monitoring"]["custom_domain"] = custom_domain
-
-                    # Get Route53 hosted zones
-                    hosted_zones, zones_error = self._get_hosted_zones()
-                    if hosted_zones:
-                        zone_choices = [
-                            f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
-                        ]
-
-                        # Pre-select existing zone if available
-                        default_zone = None
-                        if existing_zone_id:
-                            for choice in zone_choices:
-                                if existing_zone_id in choice:
-                                    default_zone = choice
-                                    break
-
-                        selected_zone = questionary.select(
-                            "Select Route53 hosted zone for the domain:",
-                            choices=zone_choices,
-                            default=default_zone if default_zone else zone_choices[0],
+                    if enable_https:
+                        custom_domain = questionary.text(
+                            "Enter custom domain name (e.g., telemetry.company.com):",
+                            validate=lambda x: len(x) > 0 and "." in x,
+                            default=existing_custom_domain if existing_custom_domain else "",
                         ).ask()
 
-                        # Extract zone ID
-                        zone_id = selected_zone.split("(")[-1].rstrip(")")
-                        config["monitoring"]["hosted_zone_id"] = zone_id
-                        console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                        config["monitoring"]["custom_domain"] = custom_domain
+
+                        hosted_zones, zones_error = self._get_hosted_zones()
+                        if hosted_zones:
+                            zone_choices = [
+                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})"
+                                for zone in hosted_zones
+                            ]
+
+                            default_zone = None
+                            if existing_zone_id:
+                                for choice in zone_choices:
+                                    if existing_zone_id in choice:
+                                        default_zone = choice
+                                        break
+
+                            selected_zone = questionary.select(
+                                "Select Route53 hosted zone for the domain:",
+                                choices=zone_choices,
+                                default=default_zone if default_zone else zone_choices[0],
+                            ).ask()
+
+                            zone_id = selected_zone.split("(")[-1].rstrip(")")
+                            config["monitoring"]["hosted_zone_id"] = zone_id
+                            console.print(
+                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
+                            )
+                        else:
+                            if zones_error:
+                                console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
+                            else:
+                                console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
+                            console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                            manual_zone_id = questionary.text(
+                                "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                                default=existing_zone_id if existing_zone_id else "",
+                            ).ask()
+                            if manual_zone_id and manual_zone_id.strip():
+                                config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                            else:
+                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                     else:
-                        if zones_error:
-                            console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
-                        else:
-                            console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
-                        console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
-                        manual_zone_id = questionary.text(
-                            "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
-                            default=existing_zone_id if existing_zone_id else "",
-                        ).ask()
-                        if manual_zone_id and manual_zone_id.strip():
-                            config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                            console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
-                        else:
-                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                        config["monitoring"]["custom_domain"] = None
+                        config["monitoring"]["hosted_zone_id"] = None
+
+                    # Analytics configuration (central mode only)
+                    console.print("\n[bold]Analytics Pipeline[/bold]")
+                    console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
+                    enable_analytics = questionary.confirm(
+                        "Enable analytics?",
+                        default=config.get("analytics", {}).get("enabled", True),
+                    ).ask()
+
+                    if "analytics" not in config:
+                        config["analytics"] = {}
+                    config["analytics"]["enabled"] = enable_analytics
+
+                    if enable_analytics:
+                        console.print(
+                            "[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack"
+                        )
+
                 else:
-                    # User disabled HTTPS, clear any existing config
+                    # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
+                    console.print(
+                        "[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar"
+                    )
+                    config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
-
-                # Analytics configuration (only if monitoring is enabled)
-                console.print("\n[bold]Analytics Pipeline[/bold]")
-                console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
-                enable_analytics = questionary.confirm(
-                    "Enable analytics?",
-                    default=config.get("analytics", {}).get("enabled", True),
-                ).ask()
-
-                # Preserve existing analytics settings, only update enabled flag
-                if "analytics" not in config:
-                    config["analytics"] = {}
-                config["analytics"]["enabled"] = enable_analytics
-
-                if enable_analytics:
-                    console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
+                    if "analytics" not in config:
+                        config["analytics"] = {}
+                    config["analytics"]["enabled"] = False
 
                     console.print("")
                     console.print("[dim]Lake Formation: enable this only if your account already uses[/dim]")
@@ -907,7 +994,7 @@ class InitCommand(Command):
                     ).ask()
                     config["analytics"]["lake_formation_enabled"] = lake_formation_enabled
 
-                # Quota monitoring configuration (only if monitoring is enabled)
+                # Quota monitoring configuration (both modes)
                 console.print("\n[bold]Quota Monitoring[/bold]")
                 console.print("Track per-user token consumption, set limits, and receive alerts")
                 console.print("when users approach or exceed their quotas.")
@@ -1634,6 +1721,10 @@ class InitCommand(Command):
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
+            mode = config.get("monitoring", {}).get("mode", "sidecar")
+            mode_label = "Central (ECS Fargate)" if mode == "central" else "Sidecar (local collector)"
+            table.add_row("Monitoring Mode", mode_label)
+
             quota_config = config.get("quota", {})
             if quota_config.get("enabled", False):
                 monthly = quota_config.get("monthly_limit", 225000000)
@@ -1648,12 +1739,17 @@ class InitCommand(Command):
                 table.add_row("Quota Monitoring", quota_status)
             else:
                 table.add_row("Quota Monitoring", "✗ Disabled")
-            table.add_row(
-                "Analytics Pipeline", "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled"
-            )
 
-        # Show VPC config if monitoring is enabled
-        if config.get("monitoring", {}).get("enabled"):
+            if mode == "central":
+                table.add_row(
+                    "Athena SQL Pipeline",
+                    "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled",
+                )
+            else:
+                table.add_row("Athena SQL Pipeline", "N/A (sidecar mode — PromQL dashboards included)")
+
+        # Show VPC config if monitoring is enabled in central mode
+        if config.get("monitoring", {}).get("enabled") and config.get("monitoring", {}).get("mode", "sidecar") == "central":
             vpc_config = config.get("monitoring", {}).get("vpc_config", {})
             if vpc_config.get("create_vpc"):
                 table.add_row("Monitoring VPC", "New VPC will be created")
@@ -1706,13 +1802,18 @@ class InitCommand(Command):
             console.print("• Cognito Identity Pool for authentication")
         console.print("• IAM roles and policies for Bedrock access")
         if config.get("monitoring", {}).get("enabled"):
-            console.print("• CloudWatch dashboards for usage monitoring")
-            console.print("• OpenTelemetry collector for metrics aggregation")
-            console.print("• ECS cluster and load balancer for collector")
-            if config.get("analytics", {}).get("enabled", True):
-                console.print("• Kinesis Firehose for analytics data streaming")
-                console.print("• S3 bucket for analytics data storage")
-                console.print("• Glue catalog and Athena tables for analytics")
+            mode = config.get("monitoring", {}).get("mode", "sidecar")
+            if mode == "central":
+                console.print("• CloudWatch dashboards for usage monitoring")
+                console.print("• OpenTelemetry collector for metrics aggregation")
+                console.print("• ECS cluster and load balancer for collector")
+                if config.get("analytics", {}).get("enabled", True):
+                    console.print("• Kinesis Firehose for analytics data streaming")
+                    console.print("• S3 bucket for analytics data storage")
+                    console.print("• Glue catalog and Athena tables for analytics")
+            else:
+                console.print("• Local OTEL Collector sidecar (no server infrastructure)")
+                console.print("• CloudWatch PromQL dashboard for metrics visualization")
             if config.get("quota", {}).get("enabled", False):
                 console.print("• DynamoDB tables for quota tracking")
                 console.print("• Lambda function for quota checking")
@@ -1877,6 +1978,7 @@ class InitCommand(Command):
             identity_pool_name=config_data["aws"]["identity_pool_name"],
             stack_names=config_data["aws"]["stacks"],
             monitoring_enabled=config_data["monitoring"]["enabled"],
+            monitoring_mode=config_data.get("monitoring", {}).get("mode", "sidecar"),
             monitoring_config=monitoring_config,
             analytics_enabled=(
                 config_data.get("analytics", {}).get("enabled", True)
@@ -1928,6 +2030,7 @@ class InitCommand(Command):
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
             tags=config_data.get("tags", {}),
+            redirect_port=config_data.get("redirect_port"),
         )
 
         config.add_profile(profile)
@@ -1972,6 +2075,20 @@ class InitCommand(Command):
         import sys
 
         return sys.version_info >= (3, 10)
+
+    def _check_go_version(self) -> bool:
+        """Check if Go >= 1.23 is installed (needed for OTEL collector build)."""
+        try:
+            result = subprocess.run(["go", "version"], capture_output=True, text=True)
+            if result.returncode != 0:
+                return False
+            match = re.search(r"go(\d+)\.(\d+)", result.stdout)
+            if not match:
+                return False
+            major, minor = int(match.group(1)), int(match.group(2))
+            return (major, minor) >= (1, 23)
+        except Exception:
+            return False
 
     def _get_bedrock_regions(self) -> list[str]:
         """Get list of regions where Bedrock is available."""
@@ -2189,6 +2306,7 @@ class InitCommand(Command):
                 },
                 "monitoring": {
                     "enabled": profile.monitoring_enabled,
+                    "mode": getattr(profile, "monitoring_mode", "central"),
                     "vpc_config": vpc_config,
                     "custom_domain": profile.monitoring_config.get("custom_domain")
                     if profile.monitoring_config

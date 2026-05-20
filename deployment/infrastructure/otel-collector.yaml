@@ -15,11 +15,6 @@ Parameters:
     Default: public.ecr.aws/aws-observability/aws-otel-collector:latest
     Description: ADOT Collector container image
 
-  MetricsNamespace:
-    Type: String
-    Default: ClaudeCode
-    Description: CloudWatch metrics namespace
-
   CustomDomainName:
     Type: String
     Default: ''
@@ -45,11 +40,19 @@ Parameters:
     Default: ''
     Description: OIDC client ID for ALB JWT audience (aud) claim validation
 
+  EnableAnalytics:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable dual-export (OTLP + EMF) for analytics pipeline. When false, only OTLP export is used.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
+  AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
+  AnalyticsDisabled: !Not [!Equals [!Ref EnableAnalytics, 'true']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -78,6 +81,7 @@ Resources:
 
   MetricsLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: AnalyticsEnabled
     Properties:
       LogGroupName: /aws/claude-code/metrics
       RetentionInDays: 30
@@ -87,7 +91,6 @@ Resources:
         - Key: Stack
           Value: !Ref AWS::StackName
 
-  # Security Groups
   # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -303,14 +306,17 @@ Resources:
                 Action:
                   - cloudwatch:PutMetricData
                 Resource: '*'
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:CreateLogGroup
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+              - !If
+                - AnalyticsEnabled
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                    - logs:CreateLogGroup
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+                - !Ref 'AWS::NoValue'
         # We keep the CloudWatch permissions but remove the AssumeRole permission
         # that was related to the overly permissive trust policy
         - PolicyName: SSMParameterAccess
@@ -324,19 +330,23 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
-  # SSM Parameter for Configuration
-  OTelConfig:
+  # SSM Parameter for Configuration — OTLP-only (no analytics)
+  OTelConfigOtlpOnly:
     Type: AWS::SSM::Parameter
+    Condition: AnalyticsDisabled
     Properties:
       Name: claude-code-otel-config
       Type: String
       Tier: Advanced
-      Description: Custom OpenTelemetry configuration for Claude Code
+      Description: OpenTelemetry configuration - OTLP export only
       Value: !Sub |
         extensions:
           health_check:
             endpoint: 0.0.0.0:13133
             path: /
+          sigv4auth:
+            service: "monitoring"
+            region: "${AWS::Region}"
 
         receivers:
           otlp:
@@ -351,11 +361,8 @@ Resources:
         processors:
           batch/metrics:
             timeout: 60s
-          # Extract HTTP headers to resource attributes
-          # Note: Headers are normalized to lowercase in metadata
           attributes:
             actions:
-              # Extract user information from headers
               - key: user.email
                 from_context: metadata.x-user-email
                 action: upsert
@@ -365,7 +372,6 @@ Resources:
               - key: user.name
                 from_context: metadata.x-user-name
                 action: upsert
-              # Extract team/organization information
               - key: department
                 from_context: metadata.x-department
                 action: upsert
@@ -387,7 +393,6 @@ Resources:
               - key: manager
                 from_context: metadata.x-manager
                 action: upsert
-          # Add AWS account ID to all metrics
           resource:
             attributes:
               - key: aws.account_id
@@ -398,52 +403,15 @@ Resources:
                 action: insert
 
         exporters:
-          awsemf:
-            namespace: ${MetricsNamespace}
-            log_group_name: /aws/claude-code/metrics
-            dimension_rollup_option: "ZeroAndSingleDimensionRollup"
-            region: ${AWS::Region}
-            output_destination: cloudwatch
-            log_retention: 7
-            resource_to_telemetry_conversion:
-              enabled: true
-            metric_declarations:
-              # Overall metrics
-              - dimensions: [[OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Department and team aggregates
-              - dimensions: [[department, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[organization, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Model usage tracking
-              - dimensions: [[model, OTelLib]]
-                metric_name_selectors: [".*"]
-
-              # Cost center tracking
-              - dimensions: [[cost_center, OTelLib]]
-                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
-
-              # Token and line types
-              - dimensions: [[type, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
-
-              # Tool and language usage
-              - dimensions: [[tool_name, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-              - dimensions: [[language, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-
-              # Code decision tracking
-              - dimensions: [[decision, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+          otlphttp:
+            tls:
+              insecure: false
+            endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
+            auth:
+              authenticator: sigv4auth
 
         service:
-          extensions: [health_check]
+          extensions: [health_check, sigv4auth]
           telemetry:
             logs:
               level: info
@@ -454,7 +422,131 @@ Resources:
             metrics:
               receivers: [otlp]
               processors: [attributes, resource, batch/metrics]
-              exporters: [awsemf]
+              exporters: [otlphttp]
+
+  # SSM Parameter for Configuration — dual-export (OTLP + EMF for analytics)
+  OTelConfigDualExport:
+    Type: AWS::SSM::Parameter
+    Condition: AnalyticsEnabled
+    Properties:
+      Name: claude-code-otel-config
+      Type: String
+      Tier: Advanced
+      Description: OpenTelemetry configuration - dual export (OTLP + EMF)
+      Value: !Sub |
+        extensions:
+          health_check:
+            endpoint: 0.0.0.0:13133
+            path: /
+          sigv4auth:
+            service: "monitoring"
+            region: "${AWS::Region}"
+
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+                include_metadata: true
+              http:
+                endpoint: 0.0.0.0:4318
+                include_metadata: true
+
+        processors:
+          batch/metrics:
+            timeout: 60s
+          attributes:
+            actions:
+              - key: user.email
+                from_context: metadata.x-user-email
+                action: upsert
+              - key: user.id
+                from_context: metadata.x-user-id
+                action: upsert
+              - key: user.name
+                from_context: metadata.x-user-name
+                action: upsert
+              - key: department
+                from_context: metadata.x-department
+                action: upsert
+              - key: team.id
+                from_context: metadata.x-team-id
+                action: upsert
+              - key: cost_center
+                from_context: metadata.x-cost-center
+                action: upsert
+              - key: organization
+                from_context: metadata.x-organization
+                action: upsert
+              - key: location
+                from_context: metadata.x-location
+                action: upsert
+              - key: role
+                from_context: metadata.x-role
+                action: upsert
+              - key: manager
+                from_context: metadata.x-manager
+                action: upsert
+          resource:
+            attributes:
+              - key: aws.account_id
+                value: "${AWS::AccountId}"
+                action: insert
+              - key: deployment.environment
+                value: "production"
+                action: insert
+
+        exporters:
+          otlphttp:
+            tls:
+              insecure: false
+            endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
+            auth:
+              authenticator: sigv4auth
+
+          awsemf:
+            namespace: ClaudeCode
+            log_group_name: /aws/claude-code/metrics
+            region: ${AWS::Region}
+            output_destination: cloudwatch
+            log_retention: 7
+            resource_to_telemetry_conversion:
+              enabled: true
+            metric_declarations:
+              - dimensions: [[OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[department, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[team.id, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[organization, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[model, OTelLib]]
+                metric_name_selectors: [".*"]
+              - dimensions: [[cost_center, OTelLib]]
+                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+              - dimensions: [[type, OTelLib]]
+                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+              - dimensions: [[tool_name, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+              - dimensions: [[language, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.*"]
+              - dimensions: [[decision, OTelLib]]
+                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+
+        service:
+          extensions: [health_check, sigv4auth]
+          telemetry:
+            logs:
+              level: info
+              development: false
+              encoding: json
+              output_paths: [stdout]
+          pipelines:
+            metrics:
+              receivers: [otlp]
+              processors: [attributes, resource, batch/metrics]
+              exporters: [otlphttp, awsemf]
 
   # ECS Task Definition
   TaskDefinition:
@@ -475,7 +567,10 @@ Resources:
           Memory: 512
           Secrets:
             - Name: AOT_CONFIG_CONTENT
-              ValueFrom: !Ref OTelConfig
+              ValueFrom: !If
+                - AnalyticsEnabled
+                - !Ref OTelConfigDualExport
+                - !Ref OTelConfigOtlpOnly
           PortMappings:
             - ContainerPort: 4317
               Protocol: tcp
@@ -598,10 +693,14 @@ Outputs:
 
   ConfigParameterName:
     Description: SSM Parameter containing collector configuration
-    Value: !Ref OTelConfig
+    Value: !If
+      - AnalyticsEnabled
+      - !Ref OTelConfigDualExport
+      - !Ref OTelConfigOtlpOnly
 
   LogGroupName:
-    Description: CloudWatch Log Group for metrics
+    Description: CloudWatch Log Group for metrics (only when analytics enabled)
+    Condition: AnalyticsEnabled
     Value: /aws/claude-code/metrics
 
   Note:
