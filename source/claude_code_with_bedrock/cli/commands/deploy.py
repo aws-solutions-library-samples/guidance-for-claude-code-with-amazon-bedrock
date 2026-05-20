@@ -95,8 +95,9 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
-                if not getattr(profile, "sso_enabled", True):
-                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
+                _auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+                if _auth_type == "none":
+                    console.print("[yellow]Authentication is disabled (auth_type=none) in your configuration.[/yellow]")
                     console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
@@ -131,6 +132,10 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
+                _auth_type_quota = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+                if _auth_type_quota in ("idc", "none"):
+                    console.print("[yellow]Quota monitoring is not supported without an OIDC provider (no issuer for JWT authorization).[/yellow]")
+                    return 1
                 if profile.monitoring_enabled:
                     if getattr(profile, "quota_monitoring_enabled", False):
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
@@ -165,8 +170,9 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order
-            # Only deploy auth stack if SSO is enabled (default: True for backward compatibility)
-            if getattr(profile, "sso_enabled", True):
+            # Deploy auth stack for OIDC and IDC paths; skip only for auth_type="none"
+            _auth_type_all = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+            if _auth_type_all != "none":
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
             # Deploy distribution after networking if it's landing-page type
@@ -185,9 +191,12 @@ class DeployCommand(Command):
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
-                # Check if quota monitoring is enabled
+                # Check if quota monitoring is enabled (requires OIDC provider for JWT auth)
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                    if _auth_type_all in ("idc", "none"):
+                        console.print("[yellow]Skipping quota monitoring — not supported without an OIDC provider (no issuer for JWT authorization).[/yellow]")
+                    else:
+                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -357,7 +366,42 @@ class DeployCommand(Command):
 
             # Deploy based on stack type
             if stack_type == "auth":
-                # Select template based on provider type
+                # Use profile regions, or fall back to all known Bedrock regions
+                bedrock_regions = profile.allowed_bedrock_regions
+                if not bedrock_regions:
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
+                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+                auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+
+                if auth_type == "idc":
+                    # IAM Identity Center path — use dedicated IDC template
+                    template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+
+                    if not template.exists():
+                        console.print("[red]Error: bedrock-auth-idc.yaml template not found[/red]")
+                        return 1
+
+                    # Derive role name from permission set or use default
+                    idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
+
+                    params = [
+                        f"FederatedRoleName={idc_role_name}",
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying IAM Identity Center auth stack...",
+                    )
+
+                # OIDC path — select template based on provider type
                 provider_type = profile.provider_type or "okta"
                 template_map = {
                     "okta": "bedrock-auth-okta.yaml",
@@ -375,8 +419,6 @@ class DeployCommand(Command):
                     console.print(f"[red]Error: Template not found: {template_file}[/red]")
                     console.print(f"[yellow]Supported provider types: {', '.join(template_map.keys())}[/yellow]")
                     return 1
-
-                stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
                 # Build parameters
                 params = []
@@ -450,12 +492,6 @@ class DeployCommand(Command):
                             f"OidcThumbprintList={profile.oidc_thumbprint}",
                         ]
                     )
-
-                # Use profile regions, or fall back to all known Bedrock regions
-                bedrock_regions = profile.allowed_bedrock_regions
-                if not bedrock_regions:
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
-                    bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
                     [
@@ -1151,27 +1187,32 @@ class DeployCommand(Command):
 
     def _show_stack_outputs(self, profile, console: Console, config: Config) -> None:
         """Show outputs from deployed stacks."""
-        # Get auth stack outputs
-        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-        outputs = get_stack_outputs(auth_stack, profile.aws_region)
+        # Get auth stack outputs (skip for auth_type=none since no auth stack is deployed)
+        _auth_type_output = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+        if _auth_type_output == "none":
+            console.print("\n[bold]Authentication:[/bold]")
+            console.print("• No authentication stack (using existing AWS credentials)")
+        else:
+            auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+            outputs = get_stack_outputs(auth_stack, profile.aws_region)
 
-        if outputs:
-            console.print("\n[bold]Authentication Stack:[/bold]")
-            console.print(f"• Federation Type: [cyan]{outputs.get('FederationType', 'cognito')}[/cyan]")
-            if outputs.get("FederationType") == "direct" or outputs.get("DirectSTSRoleArn", "").startswith("arn:"):
-                console.print(f"• Direct STS Role ARN: [cyan]{outputs.get('DirectSTSRoleArn', 'N/A')}[/cyan]")
-            if outputs.get("IdentityPoolId"):
-                console.print(f"• Identity Pool ID: [cyan]{outputs.get('IdentityPoolId', 'N/A')}[/cyan]")
-            # FederatedRoleArn is the new output name from split templates
-            role_arn = outputs.get("FederatedRoleArn") or outputs.get("BedrockRoleArn", "N/A")
-            console.print(f"• Role ARN: [cyan]{role_arn}[/cyan]")
-            console.print(f"• OIDC Provider: [cyan]{outputs.get('OIDCProviderArn', 'N/A')}[/cyan]")
+            if outputs:
+                console.print("\n[bold]Authentication Stack:[/bold]")
+                console.print(f"• Federation Type: [cyan]{outputs.get('FederationType', 'cognito')}[/cyan]")
+                if outputs.get("FederationType") == "direct" or outputs.get("DirectSTSRoleArn", "").startswith("arn:"):
+                    console.print(f"• Direct STS Role ARN: [cyan]{outputs.get('DirectSTSRoleArn', 'N/A')}[/cyan]")
+                if outputs.get("IdentityPoolId"):
+                    console.print(f"• Identity Pool ID: [cyan]{outputs.get('IdentityPoolId', 'N/A')}[/cyan]")
+                # FederatedRoleArn is the new output name from split templates
+                role_arn = outputs.get("FederatedRoleArn") or outputs.get("BedrockRoleArn", "N/A")
+                console.print(f"• Role ARN: [cyan]{role_arn}[/cyan]")
+                console.print(f"• OIDC Provider: [cyan]{outputs.get('OIDCProviderArn', 'N/A')}[/cyan]")
 
-            # Save federated_role_arn to profile for direct STS federation
-            direct_sts_role = outputs.get("DirectSTSRoleArn")
-            if direct_sts_role and direct_sts_role != "N/A" and direct_sts_role.startswith("arn:"):
-                profile.federated_role_arn = direct_sts_role
-                config.save_profile(profile)
+                # Save federated_role_arn to profile for direct STS federation
+                direct_sts_role = outputs.get("DirectSTSRoleArn")
+                if direct_sts_role and direct_sts_role != "N/A" and direct_sts_role.startswith("arn:"):
+                    profile.federated_role_arn = direct_sts_role
+                    config.save_profile(profile)
 
         # Get networking outputs if enabled
         if profile.monitoring_enabled:
