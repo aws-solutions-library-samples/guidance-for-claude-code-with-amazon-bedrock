@@ -23,12 +23,16 @@ def get_model_display_name(model_id):
     # Detect model family and version
     model_lower = model_display.lower()
     
-    if "opus-4-6" in model_lower or "opus-4.6" in model_lower:
+    if "opus-4-7" in model_lower or "opus-4.7" in model_lower:
+        return "Opus 4.7"
+    elif "opus-4-6" in model_lower or "opus-4.6" in model_lower:
         return "Opus 4.6"
     elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
         return "Opus 4.1"
     elif "opus-4" in model_lower:
         return "Opus 4"
+    elif "sonnet-4-6" in model_lower or "sonnet-4.6" in model_lower:
+        return "Sonnet 4.6"
     elif "sonnet-4-5" in model_lower or "sonnet-4.5" in model_lower:
         return "Sonnet 4.5"
     elif "sonnet-4" in model_lower:
@@ -37,6 +41,10 @@ def get_model_display_name(model_id):
         return "Sonnet 3.7"
     elif "sonnet-3.5" in model_lower or "sonnet-3-5" in model_lower:
         return "Sonnet 3.5"
+    elif "haiku-4-6" in model_lower or "haiku-4.6" in model_lower:
+        return "Haiku 4.6"
+    elif "haiku-4-5" in model_lower or "haiku-4.5" in model_lower:
+        return "Haiku 4.5"
     elif "haiku-3.5" in model_lower or "haiku-3-5" in model_lower:
         return "Haiku 3.5"
     elif "haiku-3" in model_lower or "haiku-3.0" in model_lower:
@@ -55,15 +63,19 @@ def get_model_display_name(model_id):
 def get_model_color(model_name):
     """Get color for model based on family."""
     colors = {
+        "Opus 4.7": "#0ea5e9",  # Sky blue
         "Opus 4.6": "#14b8a6",  # Teal
         "Opus 4.1": "#3b82f6",  # Blue
         "Opus 4": "#f97316",    # Orange
         "Opus": "#8b5cf6",      # Purple
+        "Sonnet 4.6": "#d946ef", # Fuchsia
         "Sonnet 4.5": "#a855f7", # Purple variant
         "Sonnet 4": "#10b981",  # Green
         "Sonnet 3.7": "#ef4444", # Red
         "Sonnet 3.5": "#ec4899", # Pink
         "Sonnet": "#06b6d4",    # Cyan
+        "Haiku 4.6": "#facc15", # Yellow
+        "Haiku 4.5": "#fbbf24", # Amber
         "Haiku 3.5": "#8b5cf6", # Purple
         "Haiku 3.0": "#6366f1", # Indigo
         "Haiku": "#84cc16",     # Lime
