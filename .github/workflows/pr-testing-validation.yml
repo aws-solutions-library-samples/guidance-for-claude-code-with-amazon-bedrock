@@ -2,7 +2,7 @@ name: PR Testing Validation
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
     branches: [main]
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Check PR Description for Testing Evidence
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const prBody = context.payload.pull_request.body || '';
@@ -28,7 +28,18 @@ jobs:
             console.log('PR Body Length:', prBody.length);
 
             // ──────────────────────────────────────────────────────────
-            // 1. Check if this PR modifies the validation workflow itself
+            // 1. Skip validation if PR has bypass label
+            // ──────────────────────────────────────────────────────────
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            console.log('PR Labels:', labels);
+
+            if (labels.includes('skip-testing-validation') || labels.includes('dependencies')) {
+              console.log('✅ Skip label detected — bypassing testing validation');
+              return;
+            }
+
+            // ──────────────────────────────────────────────────────────
+            // 2. Check if this PR modifies the validation workflow itself
             // ──────────────────────────────────────────────────────────
             const { data: prFiles } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
@@ -47,7 +58,7 @@ jobs:
             }
 
             // ──────────────────────────────────────────────────────────
-            // 2. Determine if this PR affects code (skip for docs-only)
+            // 3. Determine if this PR affects code (skip for docs-only)
             // ──────────────────────────────────────────────────────────
             const isDocumentationOnly =
               prBody.toLowerCase().includes('[x] documentation update') &&
@@ -63,7 +74,7 @@ jobs:
             }
 
             // ──────────────────────────────────────────────────────────
-            // 2. Check for testing evidence sections
+            // 4. Check for testing evidence sections
             // ──────────────────────────────────────────────────────────
             const hasTestingEvidence = prBody.includes('## Testing Evidence');
             const hasTestEnvironment = prBody.includes('### Test Environment');
@@ -96,7 +107,7 @@ jobs:
               !testResultsMatch[1].includes('[Paste terminal output');
 
             // ──────────────────────────────────────────────────────────
-            // 3. Validate completeness
+            // 5. Validate completeness
             // ──────────────────────────────────────────────────────────
             const validationResults = {
               hasTestingEvidence,
@@ -118,7 +129,7 @@ jobs:
               (hasNonEmptyTestResults || cliTestingChecked);
 
             // ──────────────────────────────────────────────────────────
-            // 4. Fail with clear error message if validation fails
+            // 6. Fail with clear error message if validation fails
             // ──────────────────────────────────────────────────────────
             if (!isValid) {
               const missingItems = [];

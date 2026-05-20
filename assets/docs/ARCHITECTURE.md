@@ -48,7 +48,15 @@ The IAM role assigned to authenticated users grants the following Amazon Bedrock
 
 These permissions are scoped to the configured regions and enable users to discover and invoke models through cross-region inference profiles, ensuring optimal performance and availability.
 
-When monitoring is enabled, the solution deploys additional infrastructure to collect and analyze usage metrics. A VPC with public subnets hosts an ECS Fargate cluster running the OpenTelemetry collector. An Application Load Balancer provides the ingestion endpoint for metrics from Claude Code clients. The collector processes these metrics and forwards them to CloudWatch Logs in Embedded Metric Format, enabling real-time dashboards and alerting.
+When monitoring is enabled, the solution supports two deployment modes:
+
+**Central Mode** (default): A shared, server-side collector ingests metrics from all clients.
+- Client → ALB → ECS OTEL Collector → CloudWatch OTLP + EMF logs
+- Deploys a VPC with public subnets, an ECS Fargate cluster running the OpenTelemetry collector, and an Application Load Balancer as the ingestion endpoint. When analytics is enabled, the collector additionally writes EMF logs to CloudWatch Logs for the analytics pipeline (Athena SQL over historical data).
+
+**Sidecar Mode**: Each client runs a local OpenTelemetry collector that exports directly to CloudWatch.
+- Client → localhost:4318 → Local OTEL Collector → CloudWatch OTLP (SigV4)
+- No server-side networking or ECS infrastructure is required. The local collector authenticates to CloudWatch using SigV4 with the user's federated credentials. Only the CloudWatch dashboard stack is deployed on the AWS side.
 
 For organizations requiring detailed analytics, the optional analytics stack provides comprehensive usage analysis capabilities. Kinesis Data Firehose continuously streams metrics from CloudWatch Logs to an S3 data lake, with a Lambda function transforming the data into Parquet format for efficient querying. Amazon Athena enables SQL analytics on this data, with pre-configured partition projection eliminating the need for Glue crawlers. This architecture supports queries spanning months of historical data while keeping costs minimal through columnar storage and lifecycle policies.
 

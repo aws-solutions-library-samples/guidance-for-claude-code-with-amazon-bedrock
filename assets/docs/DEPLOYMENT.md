@@ -44,7 +44,12 @@ Once configuration is complete, deploy the infrastructure with:
 poetry run ccwb deploy
 ```
 
-This single command orchestrates the creation of multiple AWS resources. Depending on your chosen authentication method, it creates either an IAM OIDC Provider or a Cognito Identity Pool to establish the trust relationship with your identity provider. IAM roles and policies grant precisely scoped Bedrock access. If you enabled monitoring, it also deploys an ECS Fargate cluster running OpenTelemetry collector, complete with CloudWatch dashboards.
+This single command orchestrates the creation of multiple AWS resources. Depending on your chosen authentication method, it creates either an IAM OIDC Provider or a Cognito Identity Pool to establish the trust relationship with your identity provider. IAM roles and policies grant precisely scoped Bedrock access.
+
+The stacks deployed by `ccwb deploy` depend on the monitoring mode selected during `ccwb init`:
+
+- **Central mode**: Deploys networking, s3bucket, monitoring, dashboard, and analytics stacks (ECS Fargate collector shared by all users).
+- **Sidecar mode**: Deploys only the dashboard stack. The OpenTelemetry collector runs locally on each developer's machine, so no server-side networking or monitoring infrastructure is needed.
 
 > **Deployment Options**: For more control, see the [CLI Reference](CLI_REFERENCE.md) for deploying specific stacks or using dry-run mode.
 

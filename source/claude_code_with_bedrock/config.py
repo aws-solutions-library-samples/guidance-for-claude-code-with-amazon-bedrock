@@ -23,6 +23,7 @@ class Profile:
     schema_version: str = "2.0"  # Configuration schema version
     stack_names: dict[str, str] = field(default_factory=dict)
     monitoring_enabled: bool = True
+    monitoring_mode: str = "sidecar"  # "sidecar" (local collector) or "central" (ECS Fargate)
     monitoring_config: dict[str, Any] = field(default_factory=dict)
     analytics_enabled: bool = True  # Analytics pipeline for user metrics
     metrics_log_group: str = "/aws/claude-code/metrics"
@@ -35,9 +36,18 @@ class Profile:
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "generic"
     okta_auth_server: str = ""  # Okta auth server ID ("default" for dev/free, empty for paid)
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
+
+    # Generic OIDC provider configuration (provider_type == "generic")
+    # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
+    # When set, these override the hardcoded paths in PROVIDER_CONFIGS.
+    oidc_issuer_url: str | None = None  # e.g. https://auth.example.com (no trailing slash)
+    oidc_authorization_endpoint: str | None = None  # Full URL or path appended to issuer
+    oidc_token_endpoint: str | None = None  # Full URL or path appended to issuer
+    oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
+    oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
@@ -93,6 +103,9 @@ class Profile:
     client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
+
+    # OAuth callback port (also used for inter-process locking)
+    redirect_port: int | None = None  # OAuth callback port (default 8400); must match IdP registered redirect URI
 
     # Resource tagging
     tags: dict[str, str] = field(default_factory=dict)  # Tags applied to all deployed CloudFormation stacks

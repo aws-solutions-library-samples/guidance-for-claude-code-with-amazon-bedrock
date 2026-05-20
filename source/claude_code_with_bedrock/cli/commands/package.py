@@ -6,6 +6,7 @@
 import json
 import os
 import platform
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -419,19 +420,38 @@ class PackageCommand(Command):
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
-        # Check if Windows is being built via CodeBuild (async, no local binary)
-        has_codebuild_windows = "windows" in requested_platforms and not any(
-            p == "windows" for p, _ in built_executables
-        )
+        # Build OTEL Collector sidecar if sidecar mode
+        if profile.monitoring_enabled and getattr(profile, "monitoring_mode", "central") == "sidecar":
+            console.print("\n[cyan]Building OTEL Collector sidecar...[/cyan]")
+            try:
+                self._build_otelcol(output_dir, platforms_to_build)
+                # Copy and template collector-config.yaml
+                import shutil as _shutil_col
 
-        # Check if any binaries were built OR if Windows is building in CodeBuild
-        if not built_executables and not has_codebuild_windows:
+                config_src = Path(__file__).parent.parent.parent.parent / "otel_helper" / "collector-config.yaml"
+                config_dst = output_dir / "collector-config.yaml"
+                _shutil_col.copy2(config_src, config_dst)
+                text = config_dst.read_text().replace("${REGION}", profile.aws_region)
+                config_dst.write_text(text)
+                console.print("[green]✓ Collector config templated[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not build OTEL Collector sidecar: {e}[/yellow]")
+                console.print("[dim]Metrics will not be sent to CloudWatch without the collector.[/dim]")
+
+        # Track whether Windows build was submitted to CodeBuild
+        windows_codebuild_pending = any(
+            platform_name == "windows" and platform_name not in [p for p, _ in built_executables]
+            for platform_name in platforms_to_build
+        ) and profile and getattr(profile, "enable_codebuild", False)
+
+        # Check if any binaries were built (or pending in CodeBuild)
+        if not built_executables and not windows_codebuild_pending:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
 
         # Inform user about CodeBuild status
-        if has_codebuild_windows and not built_executables:
+        if windows_codebuild_pending and not built_executables:
             console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
             console.print("Local configuration files will be generated now for distribution.")
             console.print("\nTo check build status:")
@@ -450,7 +470,7 @@ class PackageCommand(Command):
         # even though we don't have local binaries yet
         console.print("[cyan]Creating installer script...[/cyan]")
         self._create_installer(
-            output_dir, profile, built_executables, built_otel_helpers, has_windows_codebuild=has_codebuild_windows
+            output_dir, profile, built_executables, built_otel_helpers, has_windows_codebuild=windows_codebuild_pending
         )
 
         # Copy shell wrapper for OTEL helper (Layer 2 caching - avoids PyInstaller startup)
@@ -497,6 +517,10 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+            if (output_dir / "collector-config.yaml").exists():
+                console.print("  • collector-config.yaml - OTEL Collector sidecar configuration")
+            for f in sorted(output_dir.glob("otelcol-*")):
+                console.print(f"  • {f.name} - OTEL Collector sidecar binary")
         if profile.cowork_3p_enabled:
             if (output_dir / "cowork-3p-config.json").exists():
                 console.print("  • cowork-3p-config.json - CoWork 3P MDM configuration (JSON)")
@@ -506,23 +530,29 @@ class PackageCommand(Command):
                 console.print("  • cowork-3p.reg - CoWork 3P registry file (Windows)")
 
         # Next steps
-        console.print("\n[bold]Distribution steps:[/bold]")
-        console.print("1. Send users the entire dist folder")
-        console.print("2. Users run: ./install.sh")
-        console.print("3. Authentication is configured automatically")
-
-        console.print("\n[bold]To test locally:[/bold]")
-        console.print(f"cd {output_dir}")
-        console.print("./install.sh")
-
-        # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
 
-        # Only show distribute command if distribution is enabled
-        if profile.enable_distribution:
-            console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
+        if windows_codebuild_pending:
+            console.print("\n[yellow]⏳ Windows build is running in CodeBuild (~20 minutes)[/yellow]")
+            console.print("  1. Download .exe:  [cyan]poetry run ccwb builds --status latest --download[/cyan]")
+            if profile.enable_distribution:
+                console.print("  2. Distribute:     [cyan]poetry run ccwb distribute[/cyan]")
+            else:
+                console.print("  2. Share the dist folder with your users")
         else:
-            console.print("Share the dist folder with your users for installation")
+            console.print("\n[bold]Distribution steps:[/bold]")
+            console.print("1. Send users the entire dist folder")
+            console.print("2. Users run: ./install.sh")
+            console.print("3. Authentication is configured automatically")
+
+            console.print("\n[bold]To test locally:[/bold]")
+            console.print(f"cd {output_dir}")
+            console.print("./install.sh")
+
+            if profile.enable_distribution:
+                console.print("\nTo create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
+            else:
+                console.print("\nShare the dist folder with your users for installation")
 
         return 0
 
@@ -592,8 +622,12 @@ class PackageCommand(Command):
             # Show console link
             project_name = build_id.split(":")[0]
             build_uuid = build_id.split(":")[1]
+            # Extract account ID from build ARN (arn:aws:codebuild:region:account:build/...)
+            account_id = build.get("arn", "").split(":")[4] if build.get("arn") else ""
+            region = profile.aws_region
+            encoded_build_id = f"{project_name}%3A{build_uuid}"
             console.print(
-                f"\n[dim]View logs: https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_uuid}[/dim]"
+                f"\n[dim]View logs: https://{region}.console.aws.amazon.com/codesuite/codebuild/{account_id}/projects/{project_name}/build/{encoded_build_id}[/dim]"
             )
 
             return 0
@@ -1442,6 +1476,7 @@ RUN pyinstaller \
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]
+                build_account_id = response["build"].get("arn", "").split(":")[4]
             except ClientError as e:
                 console.print(f"[red]Failed to start build: {e}[/red]")
                 raise
@@ -1495,12 +1530,9 @@ RUN pyinstaller \
             console.print("\n[dim]Note: Package will be saved locally in the dist/ folder[/dim]")
 
         console.print("\n[dim]View logs in AWS Console:[/dim]")
-        # Properly encode the build ID (contains colon) and include region
-        from urllib.parse import quote
-        encoded_build_id = quote(build_id, safe='')
-        aws_region = profile_obj.aws_region if profile_obj else "us-east-1"
+        encoded_build_id = f"{project_name}%3A{build_id.split(':')[1]}"
         console.print(
-            f"  [dim]https://{aws_region}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{encoded_build_id}[/dim]"
+            f"  [dim]https://{profile.aws_region}.console.aws.amazon.com/codesuite/codebuild/{build_account_id}/projects/{project_name}/build/{encoded_build_id}[/dim]"
         )
 
         # Return None since we don't have a local binary path
@@ -1530,6 +1562,113 @@ RUN pyinstaller \
                 zf.write(pyproject_file, "pyproject.toml")
 
         return source_zip
+
+    def _build_otelcol(self, output_dir: Path, platforms_to_build: list[str]) -> None:
+        """Build minimal OTEL Collector sidecar using OCB for all target platforms."""
+        import platform as platform_mod
+        import shutil
+        import urllib.request
+
+        console = Console()
+        host_os = platform_mod.system().lower()
+        host_arch = platform_mod.machine().lower()
+
+        result = subprocess.run(["go", "version"], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[yellow]Go not found — skipping collector build[/yellow]")
+            console.print("[dim]Install Go 1.23+ from https://go.dev/dl/ to build the collector sidecar[/dim]")
+            return
+        go_match = re.search(r"go(\d+)\.(\d+)", result.stdout)
+        if not go_match or (int(go_match.group(1)), int(go_match.group(2))) < (1, 23):
+            console.print("[yellow]Go 1.23+ required — skipping collector build[/yellow]")
+            console.print(f"[dim]Found: {result.stdout.strip()}. Install Go 1.23+ from https://go.dev/dl/[/dim]")
+            return
+
+        OCB_VERSION = "0.120.0"
+        ocb_os = "darwin" if host_os == "darwin" else "linux"
+        ocb_arch = "arm64" if host_arch in ["arm64", "aarch64"] else "amd64"
+        ocb_dir = Path.home() / ".cache" / "ocb"
+        ocb_dir.mkdir(parents=True, exist_ok=True)
+        ocb_path = ocb_dir / f"ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}"
+
+        if not ocb_path.exists():
+            url = (
+                f"https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/"
+                f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}"
+            )
+            console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
+            urllib.request.urlretrieve(url, ocb_path)
+            ocb_path.chmod(0o755)
+
+        manifest = Path(__file__).parent.parent.parent.parent / "otel_helper" / "ocb-manifest.yaml"
+        if not manifest.exists():
+            raise FileNotFoundError(f"OCB manifest not found: {manifest}")
+
+        all_targets = {
+            "macos-arm64": ("darwin", "arm64", "otelcol-macos-arm64"),
+            "macos-intel": ("darwin", "amd64", "otelcol-macos-intel"),
+            "macos": ("darwin", "arm64" if host_arch == "arm64" else "amd64",
+                      "otelcol-macos-arm64" if host_arch == "arm64" else "otelcol-macos-intel"),
+            "macos-universal": ("darwin", "arm64", "otelcol-macos-arm64"),
+            "linux-x64": ("linux", "amd64", "otelcol-linux-x64"),
+            "linux-arm64": ("linux", "arm64", "otelcol-linux-arm64"),
+            "linux": ("linux", "amd64", "otelcol-linux-x64"),
+            "windows": ("windows", "amd64", "otelcol-windows.exe"),
+        }
+
+        targets = []
+        seen = set()
+        for plat in platforms_to_build:
+            if plat in all_targets:
+                binary_name = all_targets[plat][2]
+                if binary_name not in seen:
+                    targets.append(all_targets[plat])
+                    seen.add(binary_name)
+
+        if not targets:
+            return
+
+        build_dir = output_dir / "_otelcol_build"
+        build_dir.mkdir(exist_ok=True)
+
+        try:
+            manifest_text = manifest.read_text().replace(
+                "output_path: ./build/otelcol", f"output_path: {build_dir}"
+            )
+            temp_manifest = build_dir / "manifest.yaml"
+            temp_manifest.write_text(manifest_text)
+
+            console.print("[dim]Generating collector source code...[/dim]")
+            result = subprocess.run(
+                [str(ocb_path), "--config", str(temp_manifest), "--skip-compilation"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"OCB source generation failed: {result.stderr}")
+
+            console.print("[dim]Downloading Go modules...[/dim]")
+            dl_result = subprocess.run(
+                ["go", "mod", "download"], capture_output=True, text=True, cwd=build_dir,
+            )
+            if dl_result.returncode != 0:
+                raise RuntimeError(f"go mod download failed: {dl_result.stderr}")
+
+            for goos, goarch, binary_name in targets:
+                console.print(f"[dim]Compiling collector for {goos}/{goarch}...[/dim]")
+                output_binary = (output_dir / binary_name).resolve()
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                result = subprocess.run(
+                    ["go", "build", "-trimpath", "-ldflags=-s -w", "-o", str(output_binary), "."],
+                    capture_output=True, text=True, env=env, cwd=build_dir,
+                )
+                if result.returncode != 0:
+                    console.print(f"[yellow]Warning: Failed to build {binary_name}: {result.stderr[:200]}[/yellow]")
+                    continue
+                if goos != "windows":
+                    output_binary.chmod(0o755)
+                console.print(f"[green]✓ {binary_name}[/green]")
+        finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
     def _build_otel_helper(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for OTEL helper script."""
@@ -1814,6 +1953,18 @@ RUN pyinstaller \
         if profile.provider_type == "okta" and getattr(profile, "okta_auth_server", ""):
             config[profile_name]["okta_auth_server"] = profile.okta_auth_server
 
+        # Add Generic OIDC endpoints — credential provider needs these at runtime
+        if profile.provider_type == "generic":
+            for oidc_field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+            ):
+                value = getattr(profile, oidc_field, None)
+                if value:
+                    config[profile_name][oidc_field] = value
+
         # Add selected_model if available
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
@@ -1846,6 +1997,10 @@ RUN pyinstaller \
             config[profile_name]["quota_api_endpoint"] = profile.quota_api_endpoint
             config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
+
+        # Add redirect_port if explicitly configured (for IdPs requiring fixed callback URLs)
+        if getattr(profile, "redirect_port", None) is not None:
+            config[profile_name]["redirect_port"] = profile.redirect_port
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
@@ -2043,6 +2198,30 @@ if [ -f "$OTEL_BINARY" ]; then
     echo "✓ OTEL helper installed"
 fi
 
+# Install OTEL Collector sidecar if present
+OTELCOL_BINARY="otelcol-$BINARY_SUFFIX"
+if [ -f "$OTELCOL_BINARY" ]; then
+    echo
+    echo "Installing OTEL Collector sidecar..."
+    # Stop running collector before overwriting
+    if [ -f ~/claude-code-with-bedrock/collector.pid ]; then
+        kill $(cat ~/claude-code-with-bedrock/collector.pid) 2>/dev/null
+        rm -f ~/claude-code-with-bedrock/collector.pid
+    fi
+    cp "$OTELCOL_BINARY" ~/claude-code-with-bedrock/otelcol
+    chmod +x ~/claude-code-with-bedrock/otelcol
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otelcol 2>/dev/null || true
+    fi
+    echo "✓ OTEL Collector sidecar installed"
+fi
+
+# Install collector config if present
+if [ -f "collector-config.yaml" ]; then
+    cp "collector-config.yaml" ~/claude-code-with-bedrock/
+    echo "✓ Collector config installed"
+fi
+
 # Add debug info if OTEL helper was installed
 if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
@@ -2099,6 +2278,19 @@ credential_process = $HOME/claude-code-with-bedrock/credential-process --profile
 region = $PROFILE_REGION
 EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+
+    # Create a companion collector profile for the OTel sidecar.
+    # The main profile caches static creds in ~/.aws/credentials for performance,
+    # which shadows credential_process for other SDKs. The collector profile has
+    # no entry in ~/.aws/credentials, so the Go SDK always calls credential_process.
+    COLLECTOR_PROFILE="${{PROFILE_NAME}}-collector"
+    sed -i.bak "/\\[profile $COLLECTOR_PROFILE\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+    cat >> ~/.aws/config << EOF
+[profile $COLLECTOR_PROFILE]
+credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+region = $PROFILE_REGION
+EOF
+    echo "  ✓ Created collector profile '$COLLECTOR_PROFILE'"
 done
 
 # Apply CoWork configuration profile on macOS if present
@@ -2155,7 +2347,7 @@ echo
         """Create Windows batch installer script."""
 
         installer_content = f"""@echo off
-SETLOCAL ENABLEDELAYEDEXPANSION
+setlocal enabledelayedexpansion
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -2186,6 +2378,18 @@ if exist "otel-helper-windows.exe" (
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
 )
 
+REM Copy OTEL Collector sidecar if it exists
+if exist "otelcol-windows.exe" (
+    echo Copying OTEL Collector sidecar...
+    copy /Y "otelcol-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe" >nul
+)
+
+REM Copy collector config if it exists
+if exist "collector-config.yaml" (
+    echo Copying collector config...
+    copy /Y "collector-config.yaml" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+)
+
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
@@ -2209,21 +2413,22 @@ if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
     if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
 
+
     REM Copy settings and replace placeholders
     if exist "claude-settings\\settings.json" (
         set SKIP_SETTINGS=false
         if exist "%USERPROFILE%\\.claude\\settings.json" (
             echo Existing Claude Code settings found
             set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
+            if /i not "!OVERWRITE!"=="y" (
                 echo Skipping Claude Code settings...
                 set SKIP_SETTINGS=true
             )
         )
 
-        if not "%SKIP_SETTINGS%"=="true" (
+        if not "!SKIP_SETTINGS!"=="true" (
             REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            powershell -NoProfile -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -2235,14 +2440,10 @@ echo Configuring AWS profiles...
 
 if not exist "%USERPROFILE%\\.aws" mkdir "%USERPROFILE%\\.aws"
 
-REM Purge any stale stanza from %USERPROFILE%\\.aws\\credentials. The credential
-REM chain resolves that file before credential_process in %USERPROFILE%\\.aws\\config,
-REM so a leftover [profile-name] block (e.g. EXPIRED placeholder written by an
-REM older ccwb auth logout) would shadow credential_process and break Cowork
-REM Desktop with a 403 InvalidClientTokenId.
+REM Purge any stale stanza from %USERPROFILE%\\.aws\\credentials.
 powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $awsCreds = Join-Path $env:USERPROFILE '.aws\\credentials'; if (Test-Path $awsCreds) {{ $cfg = Get-Content config.json | ConvertFrom-Json; $existing = Get-Content $awsCreds -Raw; foreach ($p in $cfg.PSObject.Properties.Name) {{ $pattern = '(?ms)^\\[' + [regex]::Escape($p) + '\\].*?(?=^\\[|\\Z)'; $existing = [regex]::Replace($existing, $pattern, '') }}; Set-Content -Path $awsCreds -Value $existing.TrimStart() -NoNewline -Encoding ASCII }}"
 
-powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\\[profile ' + [regex]::Escape($p) + '\\].*?(?=^\\[|\\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza; Write-Host ('  OK Configured AWS profile ' + $p) }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $nl = [char]13 + [char]10; $cfg = Get-Content config.json | ConvertFrom-Json; $awsConfig = Join-Path $env:USERPROFILE '.aws\\config'; $credProcess = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\\credential-process.exe'; $existing = if (Test-Path $awsConfig) {{ Get-Content $awsConfig -Raw }} else {{ '' }}; foreach ($p in $cfg.PSObject.Properties.Name) {{ $region = $cfg.$p.aws_region; if (-not $region) {{ $region = '{profile.aws_region}' }}; $pattern = '(?ms)^\\[profile ' + [regex]::Escape($p) + '\\].*?(?=^\\[|\\Z)'; $existing = [regex]::Replace($existing, $pattern, ''); $stanza = '[profile ' + $p + ']' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $collectorStanza = '[profile ' + $p + '-collector]' + $nl + 'credential_process = ' + $credProcess + ' --profile ' + $p + $nl + 'region = ' + $region + $nl; $existing = $existing.TrimEnd() + $nl + $nl + $stanza + $nl + $collectorStanza; Write-Host ('  OK Configured AWS profile ' + $p + ' + collector') }}; Set-Content -Path $awsConfig -Value $existing.TrimStart() -NoNewline -Encoding ASCII"
 if %errorlevel% neq 0 (
     echo ERROR: Failed to configure AWS profiles
     pause
@@ -2530,61 +2731,48 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Get monitoring stack outputs
-                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
-                cmd = [
-                    "aws",
-                    "cloudformation",
-                    "describe-stacks",
-                    "--stack-name",
-                    monitoring_stack,
-                    "--region",
-                    profile.aws_region,
-                    "--query",
-                    "Stacks[0].Outputs",
-                    "--output",
-                    "json",
-                ]
+                monitoring_mode = getattr(profile, "monitoring_mode", "central")
+                endpoint = None
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    outputs = json.loads(result.stdout)
-                    endpoint = None
-
-                    for output in outputs:
-                        if output["OutputKey"] == "CollectorEndpoint":
-                            endpoint = output["OutputValue"]
-                            break
-
-                    if endpoint:
-                        # Add monitoring configuration
-                        settings["env"].update(
-                            {
-                                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-                                "OTEL_METRICS_EXPORTER": "otlp",
-                                "OTEL_LOGS_EXPORTER": "otlp",
-                                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-                                "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default, \
-                                cost_center=default,organization=default",
-                            }
-                        )
-
-                        # Add the helper executable for generating OTEL headers with user attributes
-                        # Use a placeholder that will be replaced by the installer script based on platform
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
-
-                        is_https = endpoint.startswith("https://")
-                        console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
-                        if not is_https:
-                            console.print(
-                                "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
-                            )
-                    else:
-                        console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
+                if monitoring_mode == "sidecar":
+                    # Sidecar: local collector on localhost
+                    endpoint = "http://localhost:4318"
                 else:
-                    console.print("[yellow]Warning: Could not fetch monitoring stack outputs[/yellow]")
+                    # Central: look up ALB endpoint from CloudFormation stack outputs
+                    monitoring_stack = profile.stack_names.get(
+                        "monitoring", f"{profile.identity_pool_name}-otel-collector"
+                    )
+                    cmd = [
+                        "aws", "cloudformation", "describe-stacks",
+                        "--stack-name", monitoring_stack,
+                        "--region", profile.aws_region,
+                        "--query", "Stacks[0].Outputs",
+                        "--output", "json",
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        outputs = json.loads(result.stdout)
+                        for output in outputs:
+                            if output["OutputKey"] == "CollectorEndpoint":
+                                endpoint = output["OutputValue"]
+                                break
+
+                if endpoint:
+                    settings["env"].update(
+                        {
+                            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                            "OTEL_METRICS_EXPORTER": "otlp",
+                            "OTEL_LOGS_EXPORTER": "otlp",
+                            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                            "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+                            "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,"
+                            "cost_center=default,organization=default",
+                        }
+                    )
+                    settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                    console.print(f"[dim]Added monitoring endpoint: {endpoint}[/dim]")
+                else:
+                    console.print("[yellow]Warning: No monitoring endpoint found[/yellow]")
 
             # Save settings.json
             settings_path = claude_dir / "settings.json"

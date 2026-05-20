@@ -124,7 +124,7 @@ class ProfileValidator:
 
         # Validate provider type if specified
         provider_type = profile_data.get("provider_type")
-        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito"]:
+        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito", "generic"]:
             warnings.append(f"Unknown provider_type: {provider_type}")
 
         # Conditional validation: Cognito requires user_pool_id
@@ -134,6 +134,18 @@ class ProfileValidator:
                 errors.append("cognito_user_pool_id is required when provider_type is 'cognito'")
             elif not ProfileValidator._is_valid_cognito_user_pool_id(user_pool_id):
                 errors.append(f"Invalid cognito_user_pool_id format: {user_pool_id}")
+
+        # Conditional validation: Generic OIDC requires issuer + endpoints + thumbprint
+        if provider_type == "generic":
+            for required_field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+                "oidc_thumbprint",
+            ):
+                if not profile_data.get(required_field):
+                    errors.append(f"{required_field} is required when provider_type is 'generic'")
 
         # Validate federation type
         federation_type = profile_data.get("federation_type", "cognito")
