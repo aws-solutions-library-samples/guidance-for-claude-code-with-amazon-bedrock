@@ -176,7 +176,7 @@ Resources:
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub '${AWS::StackName}-tg'
+      Name: otel-collector-tg
       Port: 4318
       Protocol: HTTP
       TargetType: ip
