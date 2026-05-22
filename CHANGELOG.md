@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - OTLP-First Metrics
+## [2.4.0] - 2026-05-22 - OTLP-First Metrics
+
+### Added
+
+- **Sidecar monitoring mode**: New "sidecar" collector option during `ccwb init` — runs a local OTel collector on each dev machine, no ECS/VPC infrastructure needed
+- **Monitoring mode backward compatibility**: Existing profiles without `monitoring_mode` default to "central", preserving current behavior on upgrade without re-running init
 
 ### Changed
 
@@ -14,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quota monitoring**: Quota monitor Lambda now queries CloudWatch Prometheus-compatible API (`/api/v1/query`) for usage data instead of relying on MetricsAggregator
 - **Auth templates**: Removed `cloudwatch:namespace` IAM conditions (OTLP metrics don't use CW namespaces)
 - **Dashboard deployment**: No longer requires S3 packaging (no Lambda functions to package)
+- **Init wizard**: Sidecar mode description now clearly states that Claude Cowork (desktop) telemetry is not supported
+- **CoWork MDM generation**: Sidecar mode no longer emits `otlpEndpoint`/`otlpProtocol` in MDM config files
+
+### Fixed
+
+- **Orphaned stack deletion order**: Stacks are now deleted in reverse deployment order, respecting dependencies (e.g., monitoring before networking)
+- **CoWork MDM OTLP endpoint**: Central mode correctly resolves the collector endpoint from CloudFormation stack outputs
+- **CoWork dashboard in sidecar mode**: Blocked deployment of CoWork dashboard when in sidecar mode (Cowork desktop cannot reach localhost collector)
+- **Orphaned stack detection**: Added `cowork-dashboard` to orphaned stack detection so it is offered for cleanup when switching from central to sidecar
 
 ### Removed
 

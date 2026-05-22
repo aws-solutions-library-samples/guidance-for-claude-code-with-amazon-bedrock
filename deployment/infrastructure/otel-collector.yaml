@@ -52,7 +52,6 @@ Conditions:
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
-  AnalyticsDisabled: !Not [!Equals [!Ref EnableAnalytics, 'true']]
 
 # Rules section removed - validation handled by deployment script
 
@@ -330,223 +329,218 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
-  # SSM Parameter for Configuration — OTLP-only (no analytics)
-  OTelConfigOtlpOnly:
+  # SSM Parameter for Configuration — single resource with conditional value
+  # to avoid delete+create race during stack updates between analytics modes.
+  OTelConfig:
     Type: AWS::SSM::Parameter
-    Condition: AnalyticsDisabled
     Properties:
       Name: claude-code-otel-config
       Type: String
       Tier: Advanced
-      Description: OpenTelemetry configuration - OTLP export only
-      Value: !Sub |
-        extensions:
-          health_check:
-            endpoint: 0.0.0.0:13133
-            path: /
-          sigv4auth:
-            service: "monitoring"
-            region: "${AWS::Region}"
+      Description: !If
+        - AnalyticsEnabled
+        - "OpenTelemetry configuration - dual export (OTLP + EMF)"
+        - "OpenTelemetry configuration - OTLP export only"
+      Value: !If
+        - AnalyticsEnabled
+        - !Sub |
+            extensions:
+              health_check:
+                endpoint: 0.0.0.0:13133
+                path: /
+              sigv4auth:
+                service: "monitoring"
+                region: "${AWS::Region}"
 
-        receivers:
-          otlp:
-            protocols:
-              grpc:
-                endpoint: 0.0.0.0:4317
-                include_metadata: true
-              http:
-                endpoint: 0.0.0.0:4318
-                include_metadata: true
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                    include_metadata: true
+                  http:
+                    endpoint: 0.0.0.0:4318
+                    include_metadata: true
 
-        processors:
-          batch/metrics:
-            timeout: 60s
-          attributes:
-            actions:
-              - key: user.email
-                from_context: metadata.x-user-email
-                action: upsert
-              - key: user.id
-                from_context: metadata.x-user-id
-                action: upsert
-              - key: user.name
-                from_context: metadata.x-user-name
-                action: upsert
-              - key: department
-                from_context: metadata.x-department
-                action: upsert
-              - key: team.id
-                from_context: metadata.x-team-id
-                action: upsert
-              - key: cost_center
-                from_context: metadata.x-cost-center
-                action: upsert
-              - key: organization
-                from_context: metadata.x-organization
-                action: upsert
-              - key: location
-                from_context: metadata.x-location
-                action: upsert
-              - key: role
-                from_context: metadata.x-role
-                action: upsert
-              - key: manager
-                from_context: metadata.x-manager
-                action: upsert
-          resource:
-            attributes:
-              - key: aws.account_id
-                value: "${AWS::AccountId}"
-                action: insert
-              - key: deployment.environment
-                value: "production"
-                action: insert
+            processors:
+              batch/metrics:
+                timeout: 60s
+              attributes:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: location
+                    from_context: metadata.x-location
+                    action: upsert
+                  - key: role
+                    from_context: metadata.x-role
+                    action: upsert
+                  - key: manager
+                    from_context: metadata.x-manager
+                    action: upsert
+              resource:
+                attributes:
+                  - key: aws.account_id
+                    value: "${AWS::AccountId}"
+                    action: insert
+                  - key: deployment.environment
+                    value: "production"
+                    action: insert
 
-        exporters:
-          otlphttp:
-            tls:
-              insecure: false
-            endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
-            auth:
-              authenticator: sigv4auth
+            exporters:
+              otlphttp:
+                tls:
+                  insecure: false
+                endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
+                auth:
+                  authenticator: sigv4auth
 
-        service:
-          extensions: [health_check, sigv4auth]
-          telemetry:
-            logs:
-              level: info
-              development: false
-              encoding: json
-              output_paths: [stdout]
-          pipelines:
-            metrics:
-              receivers: [otlp]
-              processors: [attributes, resource, batch/metrics]
-              exporters: [otlphttp]
+              awsemf:
+                namespace: ClaudeCode
+                log_group_name: /aws/claude-code/metrics
+                region: ${AWS::Region}
+                output_destination: cloudwatch
+                log_retention: 7
+                resource_to_telemetry_conversion:
+                  enabled: true
+                metric_declarations:
+                  - dimensions: [[OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[department, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[team.id, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[organization, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[model, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[cost_center, OTelLib]]
+                    metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
+                  - dimensions: [[type, OTelLib]]
+                    metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
+                  - dimensions: [[tool_name, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[language, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.*"]
+                  - dimensions: [[decision, OTelLib]]
+                    metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
-  # SSM Parameter for Configuration — dual-export (OTLP + EMF for analytics)
-  OTelConfigDualExport:
-    Type: AWS::SSM::Parameter
-    Condition: AnalyticsEnabled
-    Properties:
-      Name: claude-code-otel-config
-      Type: String
-      Tier: Advanced
-      Description: OpenTelemetry configuration - dual export (OTLP + EMF)
-      Value: !Sub |
-        extensions:
-          health_check:
-            endpoint: 0.0.0.0:13133
-            path: /
-          sigv4auth:
-            service: "monitoring"
-            region: "${AWS::Region}"
+            service:
+              extensions: [health_check, sigv4auth]
+              telemetry:
+                logs:
+                  level: info
+                  development: false
+                  encoding: json
+                  output_paths: [stdout]
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [attributes, resource, batch/metrics]
+                  exporters: [otlphttp, awsemf]
+        - !Sub |
+            extensions:
+              health_check:
+                endpoint: 0.0.0.0:13133
+                path: /
+              sigv4auth:
+                service: "monitoring"
+                region: "${AWS::Region}"
 
-        receivers:
-          otlp:
-            protocols:
-              grpc:
-                endpoint: 0.0.0.0:4317
-                include_metadata: true
-              http:
-                endpoint: 0.0.0.0:4318
-                include_metadata: true
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                    include_metadata: true
+                  http:
+                    endpoint: 0.0.0.0:4318
+                    include_metadata: true
 
-        processors:
-          batch/metrics:
-            timeout: 60s
-          attributes:
-            actions:
-              - key: user.email
-                from_context: metadata.x-user-email
-                action: upsert
-              - key: user.id
-                from_context: metadata.x-user-id
-                action: upsert
-              - key: user.name
-                from_context: metadata.x-user-name
-                action: upsert
-              - key: department
-                from_context: metadata.x-department
-                action: upsert
-              - key: team.id
-                from_context: metadata.x-team-id
-                action: upsert
-              - key: cost_center
-                from_context: metadata.x-cost-center
-                action: upsert
-              - key: organization
-                from_context: metadata.x-organization
-                action: upsert
-              - key: location
-                from_context: metadata.x-location
-                action: upsert
-              - key: role
-                from_context: metadata.x-role
-                action: upsert
-              - key: manager
-                from_context: metadata.x-manager
-                action: upsert
-          resource:
-            attributes:
-              - key: aws.account_id
-                value: "${AWS::AccountId}"
-                action: insert
-              - key: deployment.environment
-                value: "production"
-                action: insert
+            processors:
+              batch/metrics:
+                timeout: 60s
+              attributes:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: location
+                    from_context: metadata.x-location
+                    action: upsert
+                  - key: role
+                    from_context: metadata.x-role
+                    action: upsert
+                  - key: manager
+                    from_context: metadata.x-manager
+                    action: upsert
+              resource:
+                attributes:
+                  - key: aws.account_id
+                    value: "${AWS::AccountId}"
+                    action: insert
+                  - key: deployment.environment
+                    value: "production"
+                    action: insert
 
-        exporters:
-          otlphttp:
-            tls:
-              insecure: false
-            endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
-            auth:
-              authenticator: sigv4auth
+            exporters:
+              otlphttp:
+                tls:
+                  insecure: false
+                endpoint: "https://monitoring.${AWS::Region}.amazonaws.com"
+                auth:
+                  authenticator: sigv4auth
 
-          awsemf:
-            namespace: ClaudeCode
-            log_group_name: /aws/claude-code/metrics
-            region: ${AWS::Region}
-            output_destination: cloudwatch
-            log_retention: 7
-            resource_to_telemetry_conversion:
-              enabled: true
-            metric_declarations:
-              - dimensions: [[OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[department, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[team.id, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[organization, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[model, OTelLib]]
-                metric_name_selectors: [".*"]
-              - dimensions: [[cost_center, OTelLib]]
-                metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
-              - dimensions: [[type, OTelLib]]
-                metric_name_selectors: ["claude_code.token.usage", "claude_code.lines_of_code.count"]
-              - dimensions: [[tool_name, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-              - dimensions: [[language, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.*"]
-              - dimensions: [[decision, OTelLib]]
-                metric_name_selectors: ["claude_code.code_edit_tool.decision"]
-
-        service:
-          extensions: [health_check, sigv4auth]
-          telemetry:
-            logs:
-              level: info
-              development: false
-              encoding: json
-              output_paths: [stdout]
-          pipelines:
-            metrics:
-              receivers: [otlp]
-              processors: [attributes, resource, batch/metrics]
-              exporters: [otlphttp, awsemf]
+            service:
+              extensions: [health_check, sigv4auth]
+              telemetry:
+                logs:
+                  level: info
+                  development: false
+                  encoding: json
+                  output_paths: [stdout]
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [attributes, resource, batch/metrics]
+                  exporters: [otlphttp]
 
   # ECS Task Definition
   TaskDefinition:
@@ -567,10 +561,7 @@ Resources:
           Memory: 512
           Secrets:
             - Name: AOT_CONFIG_CONTENT
-              ValueFrom: !If
-                - AnalyticsEnabled
-                - !Ref OTelConfigDualExport
-                - !Ref OTelConfigOtlpOnly
+              ValueFrom: !Ref OTelConfig
           PortMappings:
             - ContainerPort: 4317
               Protocol: tcp
@@ -693,10 +684,7 @@ Outputs:
 
   ConfigParameterName:
     Description: SSM Parameter containing collector configuration
-    Value: !If
-      - AnalyticsEnabled
-      - !Ref OTelConfigDualExport
-      - !Ref OTelConfigOtlpOnly
+    Value: !Ref OTelConfig
 
   LogGroupName:
     Description: CloudWatch Log Group for metrics (only when analytics enabled)
