@@ -1274,24 +1274,39 @@ class InitCommand(Command):
                 # IdP domain
                 idp_domain = questionary.text(
                     "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
-                    default=config.get("distribution", {}).get("idp_domain", ""),
+                    default=config.get("distribution", {}).get("idp_domain") or "",
                 ).ask()
 
-                # Web app client ID
-                idp_client_id = questionary.text(
-                    "Web application client ID (separate from CLI native app):",
-                    default=config.get("distribution", {}).get("idp_client_id", ""),
-                ).ask()
+                if not idp_domain:
+                    console.print("[yellow]Skipping landing page configuration (no domain provided)[/yellow]")
+                    config["distribution"]["type"] = None
+                    config["distribution"]["enabled"] = False
+                else:
+                    # Web app client ID
+                    idp_client_id = questionary.text(
+                        "Web application client ID (separate from CLI native app):",
+                        default=config.get("distribution", {}).get("idp_client_id") or "",
+                    ).ask()
 
-                # Web app client secret
-                idp_client_secret = questionary.password(
-                    "Web application client secret:",
-                ).ask()
+                    if not idp_client_id:
+                        console.print("[yellow]Skipping landing page configuration (no client ID provided)[/yellow]")
+                        config["distribution"]["type"] = None
+                        config["distribution"]["enabled"] = False
+                    else:
+                        # Web app client secret
+                        idp_client_secret = questionary.password(
+                            "Web application client secret:",
+                        ).ask()
 
-            # Store secret in AWS Secrets Manager (only if not auto-configured)
+                        if not idp_client_secret:
+                            console.print("[yellow]Skipping landing page configuration (no secret provided)[/yellow]")
+                            config["distribution"]["type"] = None
+                            config["distribution"]["enabled"] = False
+
+            # Store secret in AWS Secrets Manager (only if not auto-configured and values provided)
             import boto3
 
-            if not cognito_auto_configured:
+            if not cognito_auto_configured and config.get("distribution", {}).get("type") is not None:
                 try:
                     secrets_client = boto3.client("secretsmanager", region_name=region)
                     account_id = boto3.client("sts").get_caller_identity()["Account"]
@@ -1322,80 +1337,90 @@ class InitCommand(Command):
                     console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
                     secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
 
-            # Custom domain (REQUIRED for authenticated landing page)
-            console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
-            console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
-            console.print("You will need:")
-            console.print("  • A custom domain (e.g., downloads.company.com)")
-            console.print("  • An ACM certificate for this domain in the same region")
+            # Custom domain and remaining config (only if landing page setup wasn't skipped)
+            if config.get("distribution", {}).get("type") is None:
+                pass  # Skipped above - no further prompts needed
+            else:
+                console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
+                console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
+                console.print("You will need:")
+                console.print("  • A custom domain (e.g., downloads.company.com)")
+                console.print("  • An ACM certificate for this domain in the same region")
 
-            custom_domain = questionary.text(
-                "Custom domain (e.g., downloads.company.com):",
-                default=config.get("distribution", {}).get("custom_domain", ""),
-                validate=lambda text: len(text.strip()) > 0
-                or "Custom domain is required for authenticated landing page",
-            ).ask()
+                custom_domain = questionary.text(
+                    "Custom domain (e.g., downloads.company.com):",
+                    default=config.get("distribution", {}).get("custom_domain") or "",
+                    validate=lambda text: len(text.strip()) > 0
+                    or "Custom domain is required for authenticated landing page",
+                ).ask()
 
-            # Check for Route53 hosted zones
-            console.print("\n[bold]Route53 Configuration[/bold]")
-            console.print("Looking for Route53 hosted zones...")
+                if not custom_domain:
+                    console.print("[yellow]Skipping landing page configuration[/yellow]")
+                    config["distribution"]["type"] = None
+                    config["distribution"]["enabled"] = False
 
-            hosted_zone_id = None
-            try:
-                route53_client = boto3.client("route53")
-                zones_response = route53_client.list_hosted_zones()
-                hosted_zones = zones_response.get("HostedZones", [])
+            # Route53 and final save (only if still enabled)
+            if config.get("distribution", {}).get("type") is not None:
+                # Check for Route53 hosted zones
+                console.print("\n[bold]Route53 Configuration[/bold]")
+                console.print("Looking for Route53 hosted zones...")
 
-                if hosted_zones:
-                    console.print(f"Found {len(hosted_zones)} hosted zone(s)")
+                hosted_zone_id = None
+                try:
+                    route53_client = boto3.client("route53")
+                    zones_response = route53_client.list_hosted_zones()
+                    hosted_zones = zones_response.get("HostedZones", [])
 
-                    # Get existing hosted zone if configured
-                    existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
+                    if hosted_zones:
+                        console.print(f"Found {len(hosted_zones)} hosted zone(s)")
 
-                    # Create zone choices
-                    zone_choices = [
-                        questionary.Choice(
-                            f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
-                        )
-                        for zone in hosted_zones
-                    ]
-                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                        # Get existing hosted zone if configured
+                        existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
 
-                    # Find the default choice based on existing zone
-                    default_choice = None
-                    if existing_zone_id:
-                        for choice in zone_choices:
-                            if choice.value == existing_zone_id:
-                                default_choice = choice
-                                break
+                        # Create zone choices
+                        zone_choices = [
+                            questionary.Choice(
+                                f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
+                            )
+                            for zone in hosted_zones
+                        ]
+                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
 
-                    hosted_zone_id = questionary.select(
-                        "Select Route53 hosted zone:",
-                        choices=zone_choices,
-                        default=default_choice if default_choice else zone_choices[0],
-                    ).ask()
-                else:
-                    console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
-                    console.print("You can still use custom domain if it's managed externally")
+                        # Find the default choice based on existing zone
+                        default_choice = None
+                        if existing_zone_id:
+                            for choice in zone_choices:
+                                if choice.value == existing_zone_id:
+                                    default_choice = choice
+                                    break
+
+                        hosted_zone_id = questionary.select(
+                            "Select Route53 hosted zone:",
+                            choices=zone_choices,
+                            default=default_choice if default_choice else zone_choices[0],
+                        ).ask()
+                    else:
+                        console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
+                        console.print("You can still use custom domain if it's managed externally")
+                        hosted_zone_id = None
+
+                except Exception as e:
+                    console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
                     hosted_zone_id = None
 
-            except Exception as e:
-                console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
-                hosted_zone_id = None
+                # Save landing page configuration
+                config["distribution"].update(
+                    {
+                        "idp_provider": idp_provider,
+                        "idp_domain": idp_domain,
+                        "idp_client_id": idp_client_id,
+                        "idp_client_secret_arn": secret_arn,
+                        "custom_domain": custom_domain,
+                        "hosted_zone_id": hosted_zone_id,
+                    }
+                )
 
-            # Save landing page configuration
-            config["distribution"].update(
-                {
-                    "idp_provider": idp_provider,
-                    "idp_domain": idp_domain,
-                    "idp_client_id": idp_client_id,
-                    "idp_client_secret_arn": secret_arn,
-                    "custom_domain": custom_domain,
-                    "hosted_zone_id": hosted_zone_id,
-                }
-            )
-
-            console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
+                console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
         elif distribution_type == "presigned-s3":
             console.print("[green]✓[/green] Presigned S3 distribution will be deployed")
