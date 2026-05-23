@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bluedoors/ccwb-binaries/internal/oidc"
+	"ccwb-go/internal/oidc"
 )
 
 func main() {

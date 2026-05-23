@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/99designs/keyring"
-	"github.com/bluedoors/ccwb-binaries/internal/federation"
+	"ccwb-go/internal/federation"
 )
 
 // mockKeyring is a keyringRW implementation backed by an in-memory map.

@@ -1,4 +1,4 @@
-module github.com/bluedoors/ccwb-binaries
+module ccwb-go
 
 go 1.24
 

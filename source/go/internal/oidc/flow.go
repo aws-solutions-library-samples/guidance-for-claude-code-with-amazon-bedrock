@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluedoors/ccwb-binaries/internal/jwt"
-	"github.com/bluedoors/ccwb-binaries/internal/provider"
+	"ccwb-go/internal/jwt"
+	"ccwb-go/internal/provider"
 	"github.com/pkg/browser"
 )
 

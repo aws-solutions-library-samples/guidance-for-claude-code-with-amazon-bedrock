@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	"github.com/99designs/keyring"
-	"github.com/bluedoors/ccwb-binaries/internal/federation"
+	"ccwb-go/internal/federation"
 )
 
 const serviceName = "claude-code-with-bedrock"

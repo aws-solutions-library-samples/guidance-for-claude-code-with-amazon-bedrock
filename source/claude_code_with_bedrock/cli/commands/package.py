@@ -131,7 +131,6 @@ class PackageCommand(Command):
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
         option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
         option("go", description="Build binaries using Go cross-compilation (native binaries, no AV false positives)", flag=True),
-        option("prebuilt", description="Use pre-built Go binaries from source/go/prebuilt/ (no build tools needed, recommended)", flag=True),
     ]
 
     def handle(self) -> int:
@@ -167,7 +166,6 @@ class PackageCommand(Command):
 
         # Go build mode: all platforms always available via cross-compilation
         use_go = self.option("go")
-        use_prebuilt = self.option("prebuilt")
 
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
@@ -182,8 +180,8 @@ class PackageCommand(Command):
                 "linux-arm64",
             ]
 
-            # With Go or prebuilt, Windows is always available
-            if use_go or use_prebuilt:
+            # With Go, Windows is always available
+            if use_go:
                 platform_choices.append("windows")
             elif hasattr(profile, "enable_codebuild") and profile.enable_codebuild:
                 platform_choices.append("windows")
@@ -329,10 +327,10 @@ class PackageCommand(Command):
         _universal2_python = _find_universal2_python() if platform.system().lower() == "darwin" else None
 
         # Build executable(s)
-        # With Go or prebuilt, all platforms available from any machine
-        if (use_go or use_prebuilt) and not isinstance(target_platform, list) and target_platform == "all":
+        # With Go, all platforms available from any machine
+        if (use_go) and not isinstance(target_platform, list) and target_platform == "all":
             platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
-        elif (use_go or use_prebuilt) and isinstance(target_platform, list) and "all" in target_platform:
+        elif (use_go) and isinstance(target_platform, list) and "all" in target_platform:
             platforms_to_build = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
         elif isinstance(target_platform, list):
             # User selected multiple platforms via checkbox
@@ -418,17 +416,7 @@ class PackageCommand(Command):
 
         console.print()
 
-        if use_prebuilt:
-            # Use pre-built binaries: no build tools needed
-            console.print("[cyan]Using pre-built Go binaries...[/cyan]")
-            try:
-                go_results = self._use_prebuilt_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
-                built_executables = go_results["executables"]
-                built_otel_helpers = go_results["otel_helpers"]
-            except Exception as e:
-                console.print(f"[red]Pre-built binaries not available: {e}[/red]")
-                return 1
-        elif use_go:
+        if use_go:
             # Go cross-compilation: build all selected platforms at once
             console.print("[cyan]Building Go binaries (cross-compilation)...[/cyan]")
             try:
@@ -622,77 +610,6 @@ class PackageCommand(Command):
         except Exception as e:
             console.print(f"[red]Error checking build status: {e}[/red]")
             return 1
-
-    def _use_prebuilt_binaries(self, output_dir: Path, platforms: list, monitoring_enabled: bool) -> dict:
-        """Copy pre-built Go binaries from source/go/prebuilt/ instead of compiling.
-
-        No Go, Docker, or AWS access required. The prebuilt directory contains
-        generic binaries that work for all customers.
-        """
-        import shutil
-
-        prebuilt_dir = Path(__file__).parents[3] / "go" / "prebuilt" / "latest"
-        if not prebuilt_dir.exists():
-            raise FileNotFoundError(
-                f"Pre-built binaries not found at {prebuilt_dir}. "
-                "Run 'make prebuilt' from source/go/ or use --go to compile locally."
-            )
-
-        executables = []
-        otel_helpers = []
-
-        for plat in platforms:
-            # Copy credential-process
-            if plat == "windows":
-                src_name = "credential-process-windows.exe"
-            else:
-                src_name = f"credential-process-{plat}"
-
-            src = prebuilt_dir / src_name
-            if not src.exists():
-                raise FileNotFoundError(f"Pre-built binary not found: {src}")
-            dst = output_dir / src_name
-            shutil.copy2(src, dst)
-            executables.append((plat, dst))
-
-            self.line(f"  Copied <comment>{src_name}</comment>")
-
-            # Copy otel-helper
-            if monitoring_enabled:
-                if plat == "windows":
-                    src_name = "otel-helper-windows.exe"
-                else:
-                    src_name = f"otel-helper-{plat}"
-
-                src = prebuilt_dir / src_name
-                if not src.exists():
-                    raise FileNotFoundError(f"Pre-built binary not found: {src}")
-                dst = output_dir / src_name
-                shutil.copy2(src, dst)
-                otel_helpers.append((plat, dst))
-
-                self.line(f"  Copied <comment>{src_name}</comment>")
-
-        # Copy generic install scripts. install.sh must be written with Unix
-        # line endings regardless of the host OS that runs `ccwb package`:
-        # end users on Linux/macOS will see `/bin/bash^M: bad interpreter`
-        # if the file carries CR characters (which happens when the repo is
-        # cloned on Windows with core.autocrlf=true or edited in a tool that
-        # saves CRLF). Normalize explicitly so the bundle is always correct.
-        for script in ["install.sh", "install.bat", "ccwb-install.ps1"]:
-            src = prebuilt_dir / script
-            if not src.exists():
-                continue
-            dst = output_dir / script
-            if script == "install.sh":
-                # Read bytes, strip CRs, write back with LF-only line endings.
-                dst.write_bytes(src.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
-                dst.chmod(0o755)
-            else:
-                shutil.copy2(src, dst)
-
-        self.line(f"  <info>Copied {len(executables) + len(otel_helpers)} binaries + install scripts</info>")
-        return {"executables": executables, "otel_helpers": otel_helpers}
 
     def _build_go_binaries(self, output_dir: Path, platforms: list, monitoring_enabled: bool) -> dict:
         """Build binaries using Go cross-compilation.
@@ -2227,17 +2144,16 @@ RUN pyinstaller \
     def _create_installer(self, output_dir: Path, profile, built_executables, built_otel_helpers=None) -> Path:
         """Create simple installer script.
 
-        When the bundle was built via --prebuilt, both install.sh and
-        ccwb-install.ps1 have already been copied from source/go/prebuilt/
-        latest/. Those prebuilt scripts are the source of truth. The inline
-        templates below are a legacy fallback for non-prebuilt builds
+        When the bundle was built via --go, both install.sh and
+        ccwb-install.ps1 may be copied from an external source. The inline
+        templates below are the standard installer generation path for builds
         (--go, PyInstaller, CodeBuild) that don't copy installer scripts;
-        we skip them whenever the prebuilt pair is already in place.
+        we skip them if external scripts are already in place.
         """
         installer_path = output_dir / "install.sh"
-        prebuilt_ps1 = output_dir / "ccwb-install.ps1"
-        if installer_path.exists() and prebuilt_ps1.exists():
-            self.line("  <info>Using prebuilt installer scripts (install.sh, ccwb-install.ps1)</info>")
+        external_ps1 = output_dir / "ccwb-install.ps1"
+        if installer_path.exists() and external_ps1.exists():
+            self.line("  <info>Using existing installer scripts (install.sh, ccwb-install.ps1)</info>")
             return installer_path
 
         # Determine which binaries were built

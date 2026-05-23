@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bluedoors/ccwb-binaries/internal/jwt"
-	"github.com/bluedoors/ccwb-binaries/internal/provider"
+	"ccwb-go/internal/jwt"
+	"ccwb-go/internal/provider"
 )
 
 // UserInfo holds extracted user attributes from JWT claims.

@@ -7,16 +7,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/bluedoors/ccwb-binaries/internal/config"
-	"github.com/bluedoors/ccwb-binaries/internal/federation"
-	"github.com/bluedoors/ccwb-binaries/internal/jwt"
-	"github.com/bluedoors/ccwb-binaries/internal/oidc"
-	"github.com/bluedoors/ccwb-binaries/internal/otel"
-	"github.com/bluedoors/ccwb-binaries/internal/portlock"
-	"github.com/bluedoors/ccwb-binaries/internal/provider"
-	"github.com/bluedoors/ccwb-binaries/internal/quota"
-	"github.com/bluedoors/ccwb-binaries/internal/storage"
-	"github.com/bluedoors/ccwb-binaries/internal/version"
+	"ccwb-go/internal/config"
+	"ccwb-go/internal/federation"
+	"ccwb-go/internal/jwt"
+	"ccwb-go/internal/oidc"
+	"ccwb-go/internal/otel"
+	"ccwb-go/internal/portlock"
+	"ccwb-go/internal/provider"
+	"ccwb-go/internal/quota"
+	"ccwb-go/internal/storage"
+	"ccwb-go/internal/version"
 )
 
 var debug bool

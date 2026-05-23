@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/99designs/keyring"
-	"github.com/bluedoors/ccwb-binaries/internal/federation"
+	"ccwb-go/internal/federation"
 )
 
 // Windows Credential Manager has a ~2560 byte UTF-16LE limit.

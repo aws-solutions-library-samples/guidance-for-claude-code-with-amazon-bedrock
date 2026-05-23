@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bluedoors/ccwb-binaries/internal/jwt"
+	"ccwb-go/internal/jwt"
 )
 
 func TestExtractUserInfo_AllFields(t *testing.T) {

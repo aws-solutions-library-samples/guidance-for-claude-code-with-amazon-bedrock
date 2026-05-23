@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bluedoors/ccwb-binaries/internal/config"
-	"github.com/bluedoors/ccwb-binaries/internal/jwt"
-	"github.com/bluedoors/ccwb-binaries/internal/otel"
-	"github.com/bluedoors/ccwb-binaries/internal/version"
+	"ccwb-go/internal/config"
+	"ccwb-go/internal/jwt"
+	"ccwb-go/internal/otel"
+	"ccwb-go/internal/version"
 )
 
 var (

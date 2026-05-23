@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluedoors/ccwb-binaries/internal/federation"
+	"ccwb-go/internal/federation"
 	"gopkg.in/ini.v1"
 )
 
