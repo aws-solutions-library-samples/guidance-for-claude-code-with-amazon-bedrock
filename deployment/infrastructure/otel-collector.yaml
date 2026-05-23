@@ -331,8 +331,10 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/claude-code-otel-config'
 
   # SSM Parameter for Configuration — OTLP-only (no analytics)
-  OTelConfigOtlpOnly:
+  OTelConfig:
     Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Condition: AnalyticsDisabled
     Properties:
       Name: claude-code-otel-config
@@ -427,6 +429,8 @@ Resources:
   # SSM Parameter for Configuration — dual-export (OTLP + EMF for analytics)
   OTelConfigDualExport:
     Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Condition: AnalyticsEnabled
     Properties:
       Name: claude-code-otel-config
@@ -570,7 +574,7 @@ Resources:
               ValueFrom: !If
                 - AnalyticsEnabled
                 - !Ref OTelConfigDualExport
-                - !Ref OTelConfigOtlpOnly
+                - !Ref OTelConfig
           PortMappings:
             - ContainerPort: 4317
               Protocol: tcp
@@ -696,7 +700,7 @@ Outputs:
     Value: !If
       - AnalyticsEnabled
       - !Ref OTelConfigDualExport
-      - !Ref OTelConfigOtlpOnly
+      - !Ref OTelConfig
 
   LogGroupName:
     Description: CloudWatch Log Group for metrics (only when analytics enabled)
