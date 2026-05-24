@@ -160,6 +160,9 @@ def handle_provision_org(event):
     body = json.loads(event.get("body", "{}"))
     org_name = body.get("orgName", "")
     role_arn = body.get("roleArn", "")
+    user_pool_id = body.get("userPoolId", "")
+    client_id = body.get("clientId", "")
+    provider_domain = body.get("providerDomain", "")
 
     if not org_name or not role_arn:
         return response(400, {"error": "orgName and roleArn are required"})
@@ -187,9 +190,23 @@ def handle_provision_org(event):
         "role_arn": role_arn,
         "region": "us-east-1",
         "account_id": account_id,
+        "user_pool_id": user_pool_id,
+        "client_id": client_id,
+        "provider_domain": provider_domain,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+
+    # Trigger package generation async
+    try:
+        lam = boto3.client("lambda")
+        lam.invoke(
+            FunctionName="nexus-package-gen",
+            InvocationType="Event",
+            Payload=json.dumps({"org_id": org_name}),
+        )
+    except Exception:
+        pass
 
     return response(201, {"orgName": org_name, "status": "provisioned"})
 
@@ -954,7 +971,11 @@ def handle_billing_report(event):
     org_id = _get_org_from_event(event)
     org_metrics, _, _ = _get_org_tables(org_id)
     if org_metrics is None:
-        return response(200, {"csv": "user,tokens,cost\n", "summary": {"totalTokens": 0, "totalCost": 0, "projectedMonthly": 0}})
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "text/csv", "Content-Disposition": "attachment; filename=billing-report.csv", "Access-Control-Allow-Origin": CORS_ORIGIN},
+            "body": "User,Tokens,Bedrock Cost ($),Nexus Fee ($),Total ($)\r\n",
+        }
 
     now = datetime.now(timezone.utc)
     thirty_days_ago = (now - timedelta(days=30)).isoformat()
@@ -968,17 +989,28 @@ def handle_billing_report(event):
     for item in items:
         for u in item.get("top_users", []):
             if isinstance(u, dict):
-                email = u.get("user", "unknown")
+                email = u.get("email", u.get("user", "unknown"))
                 tokens = int(u.get("tokens", 0))
                 user_totals[email] = user_totals.get(email, 0) + tokens
 
     # Generate CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["User", "Tokens", "Estimated Cost ($)"])
+    writer.writerow(["User", "Tokens", "Bedrock Cost ($)", "Nexus Fee (30%)", "Total ($)"])
+    total_tokens = 0
+    total_cost = 0
     for email, tokens in sorted(user_totals.items(), key=lambda x: -x[1]):
-        cost = (tokens / 1_000_000) * 8  # ~$8/M blended
-        writer.writerow([email, tokens, f"{cost:.2f}"])
+        bedrock_cost = (tokens / 1_000_000) * 8
+        nexus_fee = bedrock_cost * 0.30
+        row_total = bedrock_cost + nexus_fee
+        writer.writerow([email, tokens, f"{bedrock_cost:.2f}", f"{nexus_fee:.2f}", f"{row_total:.2f}"])
+        total_tokens += tokens
+        total_cost += row_total
+    writer.writerow([])
+    writer.writerow(["TOTAL", total_tokens, "", "", f"{total_cost:.2f}"])
+    writer.writerow([])
+    writer.writerow(["Report Period", f"{thirty_days_ago[:10]} to {now.strftime('%Y-%m-%d')}"])
+    writer.writerow(["Organization", org_id])
 
     csv_content = output.getvalue()
 
@@ -1005,7 +1037,31 @@ def handle_download(event):
 
     s3 = boto3.client("s3")
 
+    # Handle cowork config downloads
+    cowork_files = {
+        "cowork-macos": "cowork/cowork-3p.mobileconfig",
+        "cowork-windows": "cowork/cowork-3p.reg",
+        "cowork-json": "cowork/cowork-3p-config.json",
+    }
+    if platform in cowork_files:
+        try:
+            url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": cowork_files[platform]}, ExpiresIn=3600)
+            return response(200, {"url": url, "filename": cowork_files[platform].split("/")[-1], "platform": platform})
+        except Exception as e:
+            return response(500, {"error": str(e)})
+
     try:
+        # Check for org-specific package first
+        org_id = _get_org_from_event(event)
+        if org_id and org_id != "allcode":
+            org_prefix = f"packages/{org_id}/{platform}/"
+            org_result = s3.list_objects_v2(Bucket=bucket, Prefix=org_prefix)
+            org_zips = [o["Key"] for o in org_result.get("Contents", []) if o["Key"].endswith(".zip")]
+            if org_zips:
+                org_zips.sort(reverse=True)
+                url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": org_zips[0]}, ExpiresIn=3600)
+                return response(200, {"url": url, "filename": org_zips[0].split("/")[-1], "platform": platform})
+
         # Look for platform-specific package first
         platform_prefix = f"packages/{platform}/"
         result = s3.list_objects_v2(Bucket=bucket, Prefix=platform_prefix)
@@ -1343,6 +1399,74 @@ def handle_slack_events(event):
     return response(200, {"ok": True})
 
 
+def handle_transform_event(event):
+    """Handle EventBridge Transform job state change events."""
+    detail = event.get("detail", {})
+    job_id = detail.get("jobId", "unknown")
+    status = detail.get("status", "UNKNOWN")
+    tokens = int(detail.get("tokenCount", 0))
+    job_type = detail.get("jobType", "unknown")
+    role_arn = detail.get("roleArn", "")
+    cost = (tokens / 1_000_000) * 8 * 1.30
+
+    # Store in metrics table
+    metrics_table.put_item(Item={
+        "pk": f"TRANSFORM#{job_type}",
+        "sk": f"{job_id}#{detail.get('completedAt', datetime.now(timezone.utc).isoformat())}",
+        "job_type": job_type,
+        "tokens": tokens,
+        "cost_usd": str(round(cost, 2)),
+        "status": status,
+        "team_id": detail.get("teamId", ""),
+        "timestamp": detail.get("completedAt", datetime.now(timezone.utc).isoformat()),
+    })
+    return {"statusCode": 200}
+
+
+def handle_transform_jobs(event):
+    """GET /api/transform/jobs - list Transform modernization jobs."""
+    # Query known transform job types
+    items = []
+    job_types = ["python-boto2-to-boto3", "java-version-upgrade", "nodejs-version-upgrade", "custom", "mainframe", "dotnet", "attribution"]
+    for jt in job_types:
+        try:
+            result = metrics_table.query(KeyConditionExpression=Key("pk").eq(f"TRANSFORM#{jt}"))
+            items.extend(result.get("Items", []))
+        except Exception:
+            pass
+    # Also try a general scan with limit
+    if not items:
+        try:
+            result = metrics_table.scan(
+                FilterExpression="begins_with(pk, :prefix)",
+                ExpressionAttributeValues={":prefix": "TRANSFORM#"},
+                Limit=100,
+            )
+            items = result.get("Items", [])
+        except Exception:
+            pass
+
+    jobs = []
+    total_tokens = 0
+    total_cost = 0.0
+    for item in items:
+        tokens = int(item.get("tokens", 0))
+        cost = float(item.get("cost_usd", 0))
+        total_tokens += tokens
+        total_cost += cost
+        jobs.append({
+            "jobId": item.get("sk", "").split("#")[0] if "#" in item.get("sk", "") else item.get("sk", ""),
+            "jobType": item.get("job_type", "unknown"),
+            "team": item.get("team_id", ""),
+            "tokens": tokens,
+            "cost": cost,
+            "status": item.get("status", "COMPLETED"),
+            "timestamp": item.get("timestamp", ""),
+        })
+
+    return response(200, {"jobs": sorted(jobs, key=lambda x: x.get("timestamp", ""), reverse=True), "totalTokens": total_tokens, "totalCost": total_cost})
+
+
 ROUTES = {
     "GET /api/orgs": handle_list_orgs,
     "GET /api/debug/claims": lambda event: response(200, {"claims": event.get("requestContext", {}).get("authorizer", {}), "headers": list((event.get("headers", {}) or {}).keys()), "email": get_caller_email(event)}),
@@ -1363,6 +1487,7 @@ ROUTES = {
     "POST /api/config/alerts": handle_budget_alerts,
     "GET /api/metrics/activity": handle_recent_activity,
     "GET /api/audit": handle_audit_log,
+    "GET /api/transform/jobs": handle_transform_jobs,
     "GET /api/integrations/slack/connect": handle_slack_connect,
     "GET /api/integrations/slack/callback": handle_slack_callback,
     "GET /api/integrations/slack/status": handle_slack_status,
@@ -1373,6 +1498,10 @@ ROUTES = {
 
 def lambda_handler(event, context):
     """Main Lambda handler - routes requests."""
+    # Handle EventBridge Transform events
+    if event.get("source") == "aws.transform":
+        return handle_transform_event(event)
+
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     path = event.get("requestContext", {}).get("http", {}).get("path", "")
     route_key = f"{method} {path}"

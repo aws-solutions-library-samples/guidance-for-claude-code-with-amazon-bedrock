@@ -84,7 +84,7 @@ Resources:
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                !Sub "cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}:aud": !Ref UserPoolClient
+                "sts:ExternalId": !Ref OrganizationName
       Policies:
         - PolicyName: BedrockAccess
           PolicyDocument:

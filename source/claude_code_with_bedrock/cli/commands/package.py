@@ -876,6 +876,8 @@ class PackageCommand(Command):
                 "--hidden-import=keyring.backends.SecretService",
                 "--hidden-import=keyring.backends.Windows",
                 "--hidden-import=keyring.backends.chainer",
+                "--hidden-import=certifi",
+                "--collect-data=certifi",
                 str(src_file),
             ]
 
@@ -2046,28 +2048,15 @@ if [ -d "claude-settings" ]; then
 
     # Copy settings and replace placeholders
     if [ -f "claude-settings/settings.json" ]; then
-        # Check if settings file already exists
+        # Always apply telemetry settings (merge with existing)
         if [ -f ~/.claude/settings.json ]; then
-            echo "Existing Claude Code settings found"
-            read -p "Overwrite with new settings? (Y/n): " -n 1 -r
-            echo
-            # Default to Yes if user just presses enter (empty REPLY)
-            if [[ -z "$REPLY" ]]; then
-                REPLY="y"
-            fi
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "Skipping Claude Code settings..."
-                SKIP_SETTINGS=true
-            fi
+            echo "Updating Claude Code settings with telemetry config..."
         fi
-
-        if [ "$SKIP_SETTINGS" != "true" ]; then
-            # Replace placeholders and write settings
-            sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
-                -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
-                "claude-settings/settings.json" > ~/.claude/settings.json
-            echo "✓ Claude Code settings configured"
-        fi
+        # Replace placeholders and write settings
+        sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
+            -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
+            "claude-settings/settings.json" > ~/.claude/settings.json
+        echo "✓ Claude Code settings configured"
     fi
 fi
 
@@ -2165,6 +2154,52 @@ if [[ "$OSTYPE" == "darwin"* ]] && [ -f "cowork-3p.mobileconfig" ]; then
     fi
 fi
 
+# Install Node.js if missing (required for Claude Code CLI)
+if ! command -v node &> /dev/null; then
+    echo "⚠️  Node.js not found. Installing..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install node
+        else
+            curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+            export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            nvm install --lts
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get install -y nodejs
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y nodejs
+        fi
+    fi
+    if command -v node &> /dev/null; then
+        echo "✓ Node.js installed ($(node --version))"
+    else
+        echo "❌ Could not install Node.js. Install from https://nodejs.org"
+    fi
+else
+    echo "✓ Node.js found ($(node --version))"
+fi
+
+# Install Claude Code CLI if not already installed
+if ! command -v claude &> /dev/null; then
+    echo "Installing Claude Code CLI..."
+    if command -v npm &> /dev/null; then
+        # Don't use sudo with nvm (user-space node manager)
+        if [ -d "$HOME/.nvm" ]; then
+            npm install -g @anthropic-ai/claude-code 2>/dev/null && echo "✓ Claude Code CLI installed" || echo "⚠️  Could not install Claude Code CLI. Run: npm install -g @anthropic-ai/claude-code"
+        else
+            sudo npm install -g @anthropic-ai/claude-code 2>/dev/null && echo "✓ Claude Code CLI installed" || echo "⚠️  Could not install Claude Code CLI. Run: sudo npm install -g @anthropic-ai/claude-code"
+        fi
+    else
+        echo "⚠️  npm not found. Install Node.js from https://nodejs.org then run:"
+        echo "    npm install -g @anthropic-ai/claude-code"
+    fi
+else
+    echo "✓ Claude Code CLI already installed"
+fi
+
 echo
 echo "======================================"
 echo "✓ Installation complete!"
@@ -2251,6 +2286,12 @@ fi
         with open(installer_path, "w") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
+
+        # Create .command wrapper for macOS double-click install
+        command_path = output_dir / "Install Claude Code.command"
+        with open(command_path, "w") as f:
+            f.write('#!/bin/bash\ncd "$(dirname "$0")"\n./install.sh\necho\necho "Launching Claude Code..."\nclaude\n')
+        command_path.chmod(0o755)
 
         # Create run.sh - quick launcher that sets profile and verifies credentials
         run_script = output_dir / "run.sh"
@@ -2391,6 +2432,29 @@ if %errorlevel% neq 0 (
     echo ERROR: Failed to configure AWS profiles
     pause
     exit /b 1
+)
+
+echo.
+echo ======================================
+
+REM Install Claude Code CLI if not already installed
+where claude >nul 2>nul
+if %errorlevel% neq 0 (
+    echo Installing Claude Code CLI...
+    where npm >nul 2>nul
+    if %errorlevel% equ 0 (
+        npm install -g @anthropic-ai/claude-code
+        if %errorlevel% equ 0 (
+            echo OK Claude Code CLI installed
+        ) else (
+            echo WARNING: Could not install Claude Code CLI. Run: npm install -g @anthropic-ai/claude-code
+        )
+    ) else (
+        echo WARNING: npm not found. Install Node.js from https://nodejs.org then run:
+        echo     npm install -g @anthropic-ai/claude-code
+    )
+) else (
+    echo OK Claude Code CLI already installed
 )
 
 echo.

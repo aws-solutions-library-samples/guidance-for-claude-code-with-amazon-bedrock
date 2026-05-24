@@ -114,7 +114,7 @@ class MultiProviderAuth:
             return self.redirect_port
 
         # Try preferred port and a range of fallback ports (all registered in Cognito)
-        ports_to_try = list(range(self.preferred_port, self.preferred_port + 20))
+        ports_to_try = list(range(self.preferred_port, self.preferred_port + 95))
         for port in ports_to_try:
             test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
@@ -128,12 +128,8 @@ class MultiProviderAuth:
                 test_socket.close()
                 continue
 
-        # All known ports busy — fall back to random (may cause redirect_mismatch)
-        self._debug_print(f"All ports {ports_to_try[0]}-{ports_to_try[-1]} in use, using random port")
-        auto_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        auto_socket.bind(("127.0.0.1", 0))
-        self.redirect_port = auto_socket.getsockname()[1]
-        auto_socket.close()
+        # All known ports busy — fail with clear message
+        raise RuntimeError(f"All ports {ports_to_try[0]}-{ports_to_try[-1]} are in use. Close other applications and try again.")
 
         self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
         return self.redirect_port
@@ -907,6 +903,57 @@ class MultiProviderAuth:
             headers={"x5t#S256": x5t_s256},
         )
         return token
+
+    def _decode_jwt_claims(self, token):
+        """Decode JWT without verification to extract claims."""
+        return jwt.decode(token, options={"verify_signature": False})
+
+    def authenticate_device_flow(self):
+        """Perform device authorization flow — no ports, no redirects."""
+        import urllib.request
+        import ssl
+        import certifi
+
+        api_url = "https://dtxfifv2cj.execute-api.us-east-1.amazonaws.com"
+        ctx = ssl.create_default_context(cafile=certifi.where())
+
+        # Step 1: Request device code
+        req = urllib.request.Request(f"{api_url}/api/device/code", method="POST", data=b"{}", headers={"Content-Type": "application/json"})
+        resp = json.loads(urllib.request.urlopen(req, context=ctx).read())
+        user_code = resp["user_code"]
+        device_code = resp["device_code"]
+        verification_uri = resp["verification_uri"]
+        interval = resp.get("interval", 3)
+
+        # Step 2: Show code to user and open browser
+        print(f"\n  To authenticate, visit: {verification_uri}", file=sys.stderr)
+        print(f"  and enter code: {user_code}\n", file=sys.stderr)
+        webbrowser.open(f"{verification_uri}?code={user_code}")
+
+        # Step 3: Poll for completion
+        import time
+        deadline = time.time() + resp.get("expires_in", 600)
+        while time.time() < deadline:
+            time.sleep(interval)
+            poll_data = json.dumps({"device_code": device_code}).encode()
+            poll_req = urllib.request.Request(f"{api_url}/api/device/token", method="POST", data=poll_data, headers={"Content-Type": "application/json"})
+            try:
+                poll_resp = json.loads(urllib.request.urlopen(poll_req, context=ctx).read())
+            except Exception:
+                continue
+
+            if poll_resp.get("status") == "complete":
+                tokens = poll_resp.get("tokens", {})
+                if tokens and tokens.get("id_token"):
+                    return tokens["id_token"], tokens.get("access_token", "")
+                # No tokens yet — keep polling (AuthGuard will send them shortly)
+                continue
+            elif poll_resp.get("status") == "authorization_pending":
+                continue
+            elif poll_resp.get("error") in ("expired_token", "invalid_device_code"):
+                raise RuntimeError("Device code expired. Please try again.")
+
+        raise RuntimeError("Device authorization timed out.")
 
     def authenticate_oidc(self):
         """Perform OIDC authentication with PKCE"""
@@ -1948,7 +1995,8 @@ class MultiProviderAuth:
 
             # Authenticate with OIDC provider (browser popup - only when id_token is also expired)
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
-            id_token, token_claims = self.authenticate_oidc()
+            id_token, access_token = self.authenticate_device_flow()
+            token_claims = self._decode_jwt_claims(id_token)
 
             # Check quota before issuing credentials (if configured)
             if self._should_check_quota():

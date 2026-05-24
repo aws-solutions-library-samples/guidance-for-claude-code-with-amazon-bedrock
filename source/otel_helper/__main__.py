@@ -312,8 +312,29 @@ def write_cached_headers(headers, token_exp):
 
 
 def get_token_via_credential_process():
-    """Get monitoring token via credential-process to avoid direct keychain access"""
+    """Get monitoring token via credential-process or directly from keyring cache"""
     logger.info("Getting token via credential-process...")
+
+    # First try reading directly from keyring (avoids device flow browser prompt)
+    try:
+        import keyring
+        profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+        # Try the monitoring token first
+        token = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
+        if token:
+            logger.info("Got monitoring token from keyring cache")
+            return token
+        # Fall back to credentials (contains ID token)
+        creds = keyring.get_password("claude-code-with-bedrock", f"{profile}-credentials")
+        if creds:
+            import json
+            creds_data = json.loads(creds)
+            id_token = creds_data.get("id_token", "")
+            if id_token:
+                logger.info("Got ID token from keyring credentials cache")
+                return id_token
+    except Exception as e:
+        logger.debug(f"Keyring read failed: {e}")
 
     # Path to credential process - add .exe extension on Windows
     import platform
@@ -339,7 +360,7 @@ def get_token_via_credential_process():
             [credential_process, "--profile", profile, "--get-monitoring-token"],
             capture_output=True,
             text=True,
-            timeout=30,  # Reduced from 300s - fail open if auth can't complete quickly
+            timeout=10,  # Short timeout - don't wait for browser auth
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -350,7 +371,7 @@ def get_token_via_credential_process():
             return None
 
     except subprocess.TimeoutExpired:
-        logger.warning("Credential process timed out")
+        logger.warning("Credential process timed out (likely needs browser auth)")
         return None
     except Exception as e:
         logger.warning(f"Failed to get token via credential-process: {e}")
