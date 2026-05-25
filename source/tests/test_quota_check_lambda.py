@@ -284,3 +284,234 @@ class TestDailyEnforcementFineGrainedPath:
         body = _parse(mod.lambda_handler(_build_event(), None))
         assert body["allowed"] is True
         assert body["reason"] == "within_quota"
+
+
+# ---------------------------------------------------------------------------
+# Contract tests: response schema validation
+# ---------------------------------------------------------------------------
+
+
+# Required keys in every quota_check response body
+RESPONSE_REQUIRED_KEYS = {"allowed"}
+
+# Keys expected when a quota policy exists and user is within quota
+NORMAL_RESPONSE_KEYS = {
+    "allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"
+}
+
+# Valid values for 'reason' field
+VALID_REASONS = {
+    "within_quota", "monthly_exceeded", "daily_exceeded",
+    "no_policy", "no_email", "unblocked", "missing_email_claim",
+}
+
+# Valid values for 'enforcement_mode' field
+VALID_ENFORCEMENT_MODES = {"alert", "block", None}
+
+
+class TestResponseSchemaContract:
+    """Contract tests ensuring quota_check Lambda responses conform to expected schema.
+
+    The credential-process binary parses these responses. If the schema changes,
+    credential-process breaks silently (users get blocked or allowed incorrectly).
+    These tests ensure both sides agree on the contract.
+    """
+
+    def _make_module(self, base_env, **overrides):
+        env = {
+            **base_env,
+            "ENABLE_FINEGRAINED_QUOTAS": "false",
+            "MONTHLY_TOKEN_LIMIT": "1000",
+            "DAILY_TOKEN_LIMIT": "100",
+            "MONTHLY_ENFORCEMENT_MODE": "block",
+            "DAILY_ENFORCEMENT_MODE": "block",
+            **overrides,
+        }
+        return _load_quota_check(env)
+
+    def _patch_usage(self, mod, daily_tokens: int = 0, monthly_tokens: int = 0):
+        mod.quota_table = MagicMock()
+        mod.quota_table.get_item.side_effect = [
+            {},  # unblock
+            {
+                "Item": {
+                    "total_tokens": monthly_tokens,
+                    "daily_tokens": daily_tokens,
+                    "daily_date": mod.datetime.now(mod.timezone.utc).strftime("%Y-%m-%d"),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_tokens": 0,
+                }
+            },
+        ]
+
+    def test_response_is_valid_json_with_status_code(self, base_env):
+        """Lambda returns dict with statusCode and JSON-parseable body."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        response = mod.lambda_handler(_build_event(), None)
+        assert "statusCode" in response
+        assert "body" in response
+        assert isinstance(response["statusCode"], int)
+        body = json.loads(response["body"])
+        assert isinstance(body, dict)
+
+    def test_allowed_response_has_required_keys(self, base_env):
+        """When allowed=True, response includes all expected keys."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is True
+        for key in NORMAL_RESPONSE_KEYS:
+            assert key in body, f"Missing key '{key}' in allowed response"
+
+    def test_blocked_response_has_required_keys(self, base_env):
+        """When allowed=False, response includes all expected keys."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=150)  # exceeds 100 limit
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is False
+        for key in NORMAL_RESPONSE_KEYS:
+            assert key in body, f"Missing key '{key}' in blocked response"
+
+    def test_reason_field_is_valid_enum(self, base_env):
+        """'reason' field uses a known value."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["reason"] in VALID_REASONS, f"Unknown reason: {body['reason']}"
+
+    def test_enforcement_mode_is_valid(self, base_env):
+        """'enforcement_mode' is alert, block, or None."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["enforcement_mode"] in VALID_ENFORCEMENT_MODES
+
+    def test_usage_summary_structure(self, base_env):
+        """'usage' field contains expected token count keys."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=50, monthly_tokens=200)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        usage = body["usage"]
+        assert usage is not None
+        assert "monthly_tokens" in usage
+        assert "monthly_limit" in usage
+        assert "monthly_percent" in usage
+        assert "daily_tokens" in usage
+        assert "daily_limit" in usage
+
+    def test_policy_field_structure(self, base_env):
+        """'policy' field contains type and identifier."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        policy = body["policy"]
+        assert policy is not None
+        assert "type" in policy
+        assert "identifier" in policy
+
+    def test_unblock_status_structure(self, base_env):
+        """'unblock_status' field contains is_unblocked boolean."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert "unblock_status" in body
+        assert "is_unblocked" in body["unblock_status"]
+        assert isinstance(body["unblock_status"]["is_unblocked"], bool)
+
+    def test_message_field_is_string(self, base_env):
+        """'message' field is always a human-readable string."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, daily_tokens=0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert isinstance(body["message"], str)
+        assert len(body["message"]) > 0
+
+    def test_monthly_exceeded_sets_reason_correctly(self, base_env):
+        """Monthly limit exceeded returns reason='monthly_exceeded'."""
+        mod = self._make_module(base_env)
+        self._patch_usage(mod, monthly_tokens=1500)  # exceeds 1000 limit
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is False
+        assert body["reason"] == "monthly_exceeded"
+
+    def test_no_policy_response(self, base_env):
+        """When MONTHLY_TOKEN_LIMIT=0 (disabled), returns no_policy."""
+        mod = self._make_module(base_env, MONTHLY_TOKEN_LIMIT="0", DAILY_TOKEN_LIMIT="0")
+        self._patch_usage(mod)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is True
+        assert body["reason"] == "no_policy"
+
+
+class TestInputValidationContract:
+    """Contract tests for input handling — ensures malformed requests don't crash."""
+
+    def _make_module(self, base_env):
+        env = {
+            **base_env,
+            "ENABLE_FINEGRAINED_QUOTAS": "false",
+            "MONTHLY_TOKEN_LIMIT": "1000",
+            "DAILY_TOKEN_LIMIT": "100",
+            "MONTHLY_ENFORCEMENT_MODE": "block",
+            "DAILY_ENFORCEMENT_MODE": "block",
+        }
+        return _load_quota_check(env)
+
+    def test_missing_email_claim(self, base_env):
+        """Request with no email in JWT claims returns structured response."""
+        mod = self._make_module(base_env)
+        event = {"requestContext": {"authorizer": {"jwt": {"claims": {}}}}}
+
+        response = mod.lambda_handler(event, None)
+        assert response["statusCode"] == 200
+        body = _parse(response)
+        assert "allowed" in body
+        assert body.get("reason") == "missing_email_claim"
+
+    def test_missing_authorizer_context(self, base_env):
+        """Request with no authorizer context does not crash."""
+        mod = self._make_module(base_env)
+        event = {"requestContext": {}}
+
+        response = mod.lambda_handler(event, None)
+        assert response["statusCode"] == 200
+        body = _parse(response)
+        assert "allowed" in body
+
+    def test_empty_event(self, base_env):
+        """Completely empty event does not crash the Lambda."""
+        mod = self._make_module(base_env)
+
+        response = mod.lambda_handler({}, None)
+        assert response["statusCode"] == 200
+        body = _parse(response)
+        assert "allowed" in body
+
+    def test_missing_email_blocked_by_default(self, base_env):
+        """Missing email defaults to blocked (fail-closed security)."""
+        env = {**base_env, "MISSING_EMAIL_ENFORCEMENT": "block"}
+        mod = _load_quota_check({
+            **env,
+            "ENABLE_FINEGRAINED_QUOTAS": "false",
+            "MONTHLY_TOKEN_LIMIT": "1000",
+            "DAILY_TOKEN_LIMIT": "100",
+            "MONTHLY_ENFORCEMENT_MODE": "block",
+            "DAILY_ENFORCEMENT_MODE": "block",
+        })
+        event = {"requestContext": {"authorizer": {"jwt": {"claims": {}}}}}
+
+        body = _parse(mod.lambda_handler(event, None))
+        assert body["allowed"] is False
