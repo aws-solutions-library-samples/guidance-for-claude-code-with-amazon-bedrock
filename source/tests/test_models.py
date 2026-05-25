@@ -10,6 +10,7 @@ from claude_code_with_bedrock.models import (
     DEFAULT_REGIONS,
     get_all_model_display_names,
     get_available_profiles_for_model,
+    get_claude_code_alias,
     get_default_region_for_profile,
     get_destination_regions_for_model_profile,
     get_model_id_for_profile,
@@ -461,6 +462,24 @@ class TestResolveModelForTier:
 
         opus = resolve_model_for_tier("opus", "apac")
         assert opus is not None and "global." in opus
+
+    def test_get_claude_code_alias_sonnet(self):
+        """Sonnet CRIS model IDs resolve to 'sonnet' alias."""
+        assert get_claude_code_alias("us.anthropic.claude-sonnet-4-6") == "sonnet"
+        assert get_claude_code_alias("eu.anthropic.claude-sonnet-4-6") == "sonnet"
+
+    def test_get_claude_code_alias_opus(self):
+        """Opus CRIS model IDs resolve to 'opus' alias."""
+        assert get_claude_code_alias("us.anthropic.claude-opus-4-7") == "opus"
+        assert get_claude_code_alias("eu.anthropic.claude-opus-4-6-v1") == "opus"
+
+    def test_get_claude_code_alias_haiku(self):
+        """Haiku CRIS model IDs resolve to 'haiku' alias."""
+        assert get_claude_code_alias("us.anthropic.claude-haiku-4-5-20251001-v1:0") == "haiku"
+
+    def test_get_claude_code_alias_unknown(self):
+        """Unknown model IDs return None."""
+        assert get_claude_code_alias("us.anthropic.claude-unknown-99") is None
 
     def test_data_residency_prefixes_match_api(self):
         """Every prefix from the live API should resolve all available tiers."""
