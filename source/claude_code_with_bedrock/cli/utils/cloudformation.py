@@ -299,7 +299,7 @@ class CloudFormationManager:
         template_path = Path(template_path)
 
         # Read template
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             template_body = f.read()
 
         # Parse template using cfn-flip for CloudFormation compatibility
@@ -454,7 +454,7 @@ class CloudFormationManager:
     def _read_template(self, template_path: str | Path) -> str:
         """Read and return template content."""
         template_path = Path(template_path)
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             content = f.read()
         return content
 

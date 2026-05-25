@@ -162,7 +162,7 @@ class TestConfigManager:
             # Write new-style config
             config_data = {"schema_version": "2.0", "active_profile": "default", "profiles_dir": str(profiles_dir)}
 
-            with open(config_file, "w") as f:
+            with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_data, f)
 
             # Write profile without cross_region_profile (backward compatibility test)
@@ -180,7 +180,7 @@ class TestConfigManager:
                 "updated_at": "2024-01-01T00:00:00",
             }
 
-            with open(profiles_dir / "default.json", "w") as f:
+            with open(profiles_dir / "default.json", "w", encoding="utf-8") as f:
                 json.dump(profile_data, f)
 
             with patch.object(Config, "CONFIG_FILE", config_file):
