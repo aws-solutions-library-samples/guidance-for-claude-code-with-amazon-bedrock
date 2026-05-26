@@ -51,6 +51,7 @@ This guide covers the **AWS infrastructure** side of the deployment. It assumes 
 | **Microsoft Entra ID (Azure AD)** | [Microsoft Entra ID Setup Guide](assets/docs/providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [Auth0 Setup Guide](assets/docs/providers/auth0-setup.md) |
 | **AWS Cognito User Pool** | [Cognito User Pool Setup Guide](assets/docs/providers/cognito-user-pool-setup.md) |
+| **PingFederate, Keycloak, ForgeRock, or other generic OIDC** | [Generic OIDC Setup Guide](assets/docs/providers/generic-oidc-setup.md) |
 
 Each guide walks through creating the application, setting the redirect URI to `http://localhost:8400/callback`, enabling PKCE, and noting the two values you will need here: your **provider domain** and **client ID**.
 
@@ -103,7 +104,18 @@ poetry run ccwb init
 
 The wizard runs through three numbered steps plus optional features. Every question is explained below — read this section before running the wizard so you know exactly what to enter.
 
-> **Before you run `ccwb init`:** The wizard calls AWS APIs to validate account id ( using your **administrator** credentials — not developer credentials). Make sure your terminal has a valid AWS session before you start. See [How ccwb init reads your AWS credentials](#how-ccwb-init-reads-your-aws-credentials) below.
+> **Before you run `ccwb init`:** The wizard calls AWS APIs to validate account id (using your **administrator** credentials — not developer credentials). Make sure your terminal has a valid AWS session before you start. See [How ccwb init reads your AWS credentials](#how-ccwb-init-reads-your-aws-credentials) below.
+
+The wizard collects:
+
+- OIDC provider configuration (domain, client ID)
+- AWS region selection for infrastructure
+- Amazon Bedrock cross-region inference configuration
+- Credential storage method (keyring or session files)
+- Optional monitoring setup:
+  - Enable monitoring? (yes/no)
+  - Monitoring mode: **central collector** (ECS Fargate) or **sidecar collector** (local). Sidecar mode skips VPC configuration and Athena SQL pipeline setup (PromQL dashboards are included in both modes).
+  - VPC configuration (central collector only)
 
 ---
 
@@ -576,30 +588,21 @@ This deploys in order based on what you configured in Step 2:
 
 **Monitoring stack** (if monitoring = Yes):
 
-| Resource | What it does |
-|---|---|
-| ECS Fargate cluster | Runs the ADOT (OpenTelemetry) collector container |
-| Application Load Balancer | Receives OTLP metrics from developer machines (port 4318) |
-| ACM Certificate + Route53 record | TLS for the OTEL endpoint (if custom domain configured) |
-| CloudWatch Log Groups + Metrics | Stores and visualises token usage data |
-| CloudWatch Dashboard (`ClaudeCodeMonitoring`) | Per-user token usage, costs, model breakdown |
-| DynamoDB table (`UserQuotaMetrics`) | Per-user monthly/daily token totals for quota enforcement |
-| Lambda functions | Power custom CloudWatch dashboard widgets |
-
-**Analytics stack** (if analytics = Yes):
-
-| Resource | What it does |
-|---|---|
-| Kinesis Data Firehose | Streams CloudWatch logs to S3 in Parquet format |
-| S3 bucket | 90-day hot storage, auto-transition to Glacier |
-| Athena workgroup + 10 named queries | SQL analytics over historical token data |
+- VPC and networking resources (or integration with existing VPC)
+- ECS Fargate cluster running OpenTelemetry collector
+- Application Load Balancer for OTLP ingestion
+- CloudWatch Log Groups and Metrics
+- CloudWatch Dashboard with PromQL widgets (no Lambda functions)
+- Kinesis Data Firehose for streaming metrics to S3 (if analytics enabled)
+- Amazon Athena for SQL analytics on collected metrics (if analytics enabled)
+- S3 bucket for long-term metrics storage (if analytics enabled)
 
 **Quota stack** (if quota monitoring = Yes):
 
 | Resource | What it does |
 |---|---|
 | DynamoDB table (`QuotaPolicies`) | Stores per-user/group/default token limits |
-| Lambda (quota-monitor) | Runs every 15 min — checks thresholds, sends alerts |
+| Lambda (quota-monitor) | Runs every 15 min — checks thresholds via PromQL, sends alerts |
 | SNS topic | Delivers quota alerts to subscribed email/webhook |
 | API Gateway (quota check) | Real-time quota check at credential issuance time |
 
@@ -615,12 +618,6 @@ This deploys in order based on what you configured in Step 2:
 ```bash
 poetry run ccwb status
 ```
-
-#### Known Limitations
-
-> **Monitoring + Private VPC (no Internet Gateway):** The OTEL collector ALB is currently hardcoded as `internet-facing` in the CloudFormation template. If your VPC has no Internet Gateway, the monitoring stack will fail with `VPC has no internet gateway`. **Workaround: disable monitoring during `ccwb init`.** The auth infrastructure deploys without any ALB or IGW requirement.
-
-> **HTTPS disabled + monitoring:** A known bug in older versions of the template causes `Unresolved resource dependencies [HTTPSListener]` when you answer No to HTTPS. If you hit this error, either enable HTTPS (requires a Route53 hosted zone) or disable monitoring entirely.
 
 ### Step 4: Create Distribution Package
 
@@ -775,6 +772,7 @@ See [Distribution Comparison](assets/docs/distribution/comparison.md) for detail
 
 ### Build Requirements
 
+- **Go 1.23+** (optional): Required for building the OpenTelemetry collector sidecar binary. If not installed, the sidecar build is skipped and packages are created without it. Install from https://go.dev/dl/
 - **Windows**: AWS CodeBuild with Nuitka (automated)
 - **macOS**: PyInstaller with architecture-specific builds
   - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
@@ -855,16 +853,32 @@ Force re-authentication after deployment:
 
 If CoWork Desktop 3P fails with `403 The security token included in the request is invalid` and the user was previously on a session-files build, `~/.aws/credentials` may contain a stale `[<profile-name>]` stanza with literal `EXPIRED` values that shadows the current `credential_process` entry in `~/.aws/config`. Re-run `install.sh` / `install.bat` — it purges any such stanza before writing the new profile. Alternatively, remove the block by hand.
 
-### Port Conflicts
+### Port Configuration
 
-The credential provider uses port 8400 by default for OAuth callbacks.
-If this port is in use by another application, authentication will automatically use an available port.
+The credential provider uses port 8400 by default for OAuth callbacks. This port also serves as an inter-process lock: if multiple credential-process invocations run concurrently, the second will wait for the first to complete authentication and then read credentials from cache.
 
-To manually specify a different port, set the `REDIRECT_PORT` environment variable:
+**Important:** The callback port must match the redirect URI registered in your IdP application (e.g., `http://localhost:8400/callback`). If port 8400 is occupied by another application on your users' machines (e.g., Commvault, HashiCorp Vault), configure a different port.
+
+**Option 1: Configure in profile** (recommended — persisted in config.json):
+
+During `ccwb init`, select "Use a custom OAuth callback port" when prompted. Or manually add to `config.json`:
+
+```json
+{
+  "ProfileName": {
+    "redirect_port": 8401,
+    ...
+  }
+}
+```
+
+**Option 2: Environment variable** (takes precedence over config.json):
 
 ```bash
 export REDIRECT_PORT=8401
 ```
+
+Whichever port you choose, ensure `http://localhost:<port>/callback` is registered as a valid redirect URI in your IdP application configuration.
 
 ### `Exec format error` on the credential-process binary (end user)
 

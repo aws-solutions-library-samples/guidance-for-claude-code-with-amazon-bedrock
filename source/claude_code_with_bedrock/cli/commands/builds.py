@@ -290,8 +290,11 @@ class BuildsCommand(Command):
             # Show console link
             project_name = build_id.split(":")[0]
             build_uuid = build_id.split(":")[1]
+            account_id = build.get("arn", "").split(":")[4] if build.get("arn") else ""
+            region = profile.aws_region
+            encoded_build_id = f"{project_name}%3A{build_uuid}"
             console.print(
-                f"\n[dim]View logs: https://console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_uuid}[/dim]"
+                f"\n[dim]View logs: https://{region}.console.aws.amazon.com/codesuite/codebuild/{account_id}/projects/{project_name}/build/{encoded_build_id}[/dim]"
             )
 
             return 0

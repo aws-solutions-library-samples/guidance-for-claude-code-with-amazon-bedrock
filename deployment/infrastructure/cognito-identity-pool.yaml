@@ -168,9 +168,6 @@ Resources:
               Resource: '*'
               Condition:
                 StringEquals:
-                  'cloudwatch:namespace':
-                    - 'ClaudeCode'
-                    - 'AWS/Bedrock'
                   'aws:RequestedRegion': !Ref AllowedBedrockRegions
             - !Ref 'AWS::NoValue'
 

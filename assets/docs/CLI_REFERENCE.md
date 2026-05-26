@@ -89,6 +89,7 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
+- Prompts for monitoring mode (central collector on ECS Fargate, or sidecar collector running locally on each developer's machine)
 - Configures quota monitoring:
   - Monthly token limit per user
   - Daily token limit with burst buffer (auto-calculated from monthly)
@@ -127,12 +128,14 @@ poetry run ccwb deploy [stack] [options]
 **Stacks deployed:**
 
 1. **auth** - Authentication infrastructure and IAM roles (always required)
-2. **networking** - VPC and networking resources for monitoring (optional)
-3. **monitoring** - OpenTelemetry collector on ECS Fargate (optional)
+2. **networking** - VPC and networking resources for monitoring (central mode only)
+3. **monitoring** - OpenTelemetry collector on ECS Fargate (central mode only)
 4. **dashboard** - CloudWatch dashboard for usage metrics (optional)
-5. **analytics** - Kinesis Firehose and Athena for analytics (optional)
+5. **analytics** - Kinesis Firehose and Athena SQL query pipeline (central mode only, optional)
 6. **quota** - Per-user token quota monitoring and alerts (optional, requires dashboard)
 7. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
+
+> **Note**: In sidecar monitoring mode, the auth and dashboard stacks are deployed. The networking, monitoring, and analytics stacks are skipped because the OpenTelemetry collector runs locally on each developer's machine. Both modes include the same PromQL CloudWatch dashboard with full metric analytics.
 
 **Examples:**
 
@@ -559,6 +562,7 @@ poetry run ccwb status [options]
 - Checks CloudFormation stack status
 - Displays Identity Pool information
 - Shows monitoring configuration and endpoints
+- In sidecar monitoring mode, shows local collector status (running/stopped) and the local OTLP endpoint
 
 ### `cleanup` - Remove Installed Components
 
