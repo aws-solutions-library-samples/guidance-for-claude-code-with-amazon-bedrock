@@ -330,52 +330,98 @@ def get_caller_email(event):
 
 
 def handle_summary(event):
-    """GET /api/metrics/summary - org-wide usage."""
+    """GET /api/metrics/summary - org-wide usage from CloudWatch."""
     org_id = _get_org_from_event(event)
-    org_metrics, org_policies, org_quota = _get_org_tables(org_id)
 
-    if org_metrics is None:
-        return response(200, {"activeUsers": 0, "monthlyTokens": 0, "orgQuotaPercent": 0, "topUsers": [], "tokenHistory": []})
-    
+    if org_id != "allcode":
+        org_metrics, _, _ = _get_org_tables(org_id)
+        if org_metrics is None:
+            return response(200, {"activeUsers": 0, "monthlyTokens": 0, "orgQuotaPercent": 0, "topUsers": [], "tokenHistory": []})
+
     now = datetime.now(timezone.utc)
-    thirty_days_ago = (now - timedelta(days=30)).isoformat()
+    cw = boto3.client("cloudwatch")
 
-    # Query recent metrics summaries (paginate to get all)
-    items = _query_all_metrics(thirty_days_ago, org_metrics)
+    # Get total tokens (30 days) from CloudWatch
+    # Display: input + output only (what Anthropic shows)
+    # Cost: all types at their respective rates
+    PRICING = {"input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheCreation": 3.75}
+    try:
+        total_tokens = 0  # Display tokens (input + output only)
+        total_cost = 0.0  # Real cost (all types)
+        token_history_map = {}
+        for token_type, price_per_million in PRICING.items():
+            result = cw.get_metric_statistics(
+                Namespace="ClaudeCode",
+                MetricName="claude_code.token.usage",
+                Dimensions=[{"Name": "type", "Value": token_type}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
+                StartTime=now - timedelta(days=30),
+                EndTime=now,
+                Period=86400,
+                Statistics=["Sum"],
+            )
+            for p in result.get("Datapoints", []):
+                tokens = int(p["Sum"])
+                total_cost += (tokens / 1_000_000) * price_per_million
+                # Only count input + output for display
+                if token_type in ("input", "output"):
+                    total_tokens += tokens
+                    date = p["Timestamp"].strftime("%Y-%m-%d")
+                    token_history_map[date] = token_history_map.get(date, 0) + tokens
+        token_history = [{"date": k, "tokens": v} for k, v in sorted(token_history_map.items())]
+    except Exception:
+        total_tokens = 0
+        total_cost = 0.0
+        token_history = []
 
-    total_tokens = sum(int(i.get("total_tokens", 0)) for i in items)
-    # Count unique users from top_users across all summaries
-    all_emails = set()
-    for i in items:
-        for u in i.get("top_users", []):
-            if isinstance(u, dict) and u.get("email"):
-                all_emails.add(u["email"])
-    unique_users = len(all_emails) if all_emails else max((int(i.get("unique_users", 0)) for i in items), default=0)
-
-    # Build daily token history
-    daily = {}
-    for item in items:
-        date = item.get("timestamp", "")[:10]
-        daily[date] = daily.get(date, 0) + int(item.get("total_tokens", 0))
-
-    token_history = [{"date": k, "tokens": v} for k, v in sorted(daily.items())]
-
-    # Top users from latest summary
+    # Get per-user token usage from CloudWatch
+    # Note: per-user includes all token types (input+output+cache)
+    # We calculate proportional billable tokens based on org total
     top_users = []
-    if items:
-        for item in items:
-            raw_top = item.get("top_users", [])
-            if raw_top:
-                for u in raw_top:
-                    if isinstance(u, dict):
-                        top_users.append({"email": u.get("email", u.get("user", "")), "tokens": int(u.get("tokens", 0))})
-                break
+    all_emails = set()
+    total_all_types = 0
+    try:
+        metrics = cw.list_metrics(Namespace="ClaudeCode", MetricName="claude_code.token.usage", Dimensions=[{"Name": "user.email"}])
+        user_emails = set()
+        for m in metrics.get("Metrics", []):
+            for d in m.get("Dimensions", []):
+                if d["Name"] == "user.email" and "@" in d["Value"] and "anonymous" not in d["Value"] and "example.com" not in d["Value"]:
+                    user_emails.add(d["Value"])
+
+        user_raw = {}
+        for email in list(user_emails)[:20]:
+            try:
+                user_result = cw.get_metric_statistics(
+                    Namespace="ClaudeCode",
+                    MetricName="claude_code.token.usage",
+                    Dimensions=[{"Name": "user.email", "Value": email}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
+                    StartTime=now - timedelta(days=30),
+                    EndTime=now,
+                    Period=2592000,
+                    Statistics=["Sum"],
+                )
+                user_tokens = int(sum(p.get("Sum", 0) for p in user_result.get("Datapoints", [])))
+                if user_tokens > 0:
+                    user_raw[email] = user_tokens
+                    total_all_types += user_tokens
+                    all_emails.add(email)
+            except Exception:
+                pass
+
+        # Calculate proportional billable tokens per user
+        for email, raw in sorted(user_raw.items(), key=lambda x: -x[1]):
+            proportion = raw / total_all_types if total_all_types > 0 else 0
+            billable = int(total_tokens * proportion)
+            top_users.append({"email": email, "tokens": billable})
+
+    except Exception:
+        pass
 
     return response(200, {
-        "activeUsers": unique_users,
+        "activeUsers": len(all_emails),
         "monthlyTokens": total_tokens,
+        "monthlyCost": round(total_cost, 2),
         "orgQuotaPercent": min(int(total_tokens / 2_250_000_000 * 100), 100) if total_tokens else 0,
-        "topUsers": top_users,
+        "topUsers": top_users[:10],
         "tokenHistory": token_history,
     })
 
@@ -504,24 +550,48 @@ def handle_users(event):
             except Exception:
                 pass
 
-    # Overlay usage data from metrics
-    result = {"Items": _query_all_metrics(thirty_days_ago)}
+    # Overlay usage data from CloudWatch (accurate input+output tokens)
+    cw = boto3.client("cloudwatch")
+    now = datetime.now(timezone.utc)
+    try:
+        # Get total billable tokens (input + output)
+        total_billable = 0
+        for token_type in ["input", "output"]:
+            r = cw.get_metric_statistics(
+                Namespace="ClaudeCode", MetricName="claude_code.token.usage",
+                Dimensions=[{"Name": "type", "Value": token_type}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
+                StartTime=now - timedelta(days=30), EndTime=now, Period=2592000, Statistics=["Sum"],
+            )
+            total_billable += int(sum(p.get("Sum", 0) for p in r.get("Datapoints", [])))
 
-    for item in result.get("Items", []):
-        sk = item.get("sk", "")
-        if "#WINDOW#SUMMARY" in sk:
-            for u in item.get("top_users", []):
-                if isinstance(u, dict):
-                    email = u.get("email", u.get("user", ""))
-                    tokens = int(u.get("tokens", 0))
-                    if email and email not in org_users and "@example.com" not in email and "anonymous" not in email and user.get("UserStatus") == "CONFIRMED":
-                        if email not in all_users:
-                            all_users[email] = {"tokens": 0, "last_active": "", "status": "active", "role": "user", "username": ""}
-                        all_users[email]["tokens"] += tokens
-                        # Update last_active from metrics if more recent
-                        ts = item.get("timestamp", "")
-                        if ts and ts > all_users[email].get("last_active", ""):
-                            all_users[email]["last_active"] = ts
+        # Get per-user proportions
+        user_metrics = cw.list_metrics(Namespace="ClaudeCode", MetricName="claude_code.token.usage", Dimensions=[{"Name": "user.email"}])
+        total_all = 0
+        user_raw = {}
+        for m in user_metrics.get("Metrics", []):
+            for d in m.get("Dimensions", []):
+                if d["Name"] == "user.email" and "@" in d["Value"] and "anonymous" not in d["Value"] and "example.com" not in d["Value"]:
+                    email = d["Value"]
+                    r = cw.get_metric_statistics(
+                        Namespace="ClaudeCode", MetricName="claude_code.token.usage",
+                        Dimensions=[{"Name": "user.email", "Value": email}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
+                        StartTime=now - timedelta(days=30), EndTime=now, Period=2592000, Statistics=["Sum"],
+                    )
+                    tokens = int(sum(p.get("Sum", 0) for p in r.get("Datapoints", [])))
+                    if tokens > 0:
+                        user_raw[email] = tokens
+                        total_all += tokens
+
+        # Apply proportional billable tokens to users
+        for email, raw in user_raw.items():
+            proportion = raw / total_all if total_all > 0 else 0
+            billable = int(total_billable * proportion)
+            if email in all_users:
+                all_users[email]["tokens"] = billable
+            elif email not in org_users and "CONFIRMED" not in email:
+                all_users[email] = {"tokens": billable, "last_active": "", "status": "active", "role": "user", "username": ""}
+    except Exception:
+        pass
 
     users = []
     for email, data in all_users.items():

@@ -1,0 +1,65 @@
+# Local OTEL Collector sidecar for Claude Code monitoring
+# Exports directly to CloudWatch OTLP endpoint using SigV4 auth
+# This is the AWS-recommended approach from the upstream repo
+
+extensions:
+  sigv4auth:
+    service: "monitoring"
+    region: "us-east-1"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+        include_metadata: true
+
+processors:
+  batch/metrics:
+    timeout: 60s
+  attributes:
+    actions:
+      - key: user.email
+        from_context: metadata.x-user-email
+        action: upsert
+      - key: user.id
+        from_context: metadata.x-user-id
+        action: upsert
+      - key: user.name
+        from_context: metadata.x-user-name
+        action: upsert
+      - key: department
+        from_context: metadata.x-department
+        action: upsert
+      - key: team.id
+        from_context: metadata.x-team-id
+        action: upsert
+      - key: cost_center
+        from_context: metadata.x-cost-center
+        action: upsert
+      - key: organization
+        from_context: metadata.x-organization
+        action: upsert
+      - key: deployment.environment
+        value: "production"
+        action: insert
+
+exporters:
+  otlphttp:
+    tls:
+      insecure: false
+    endpoint: "https://monitoring.us-east-1.amazonaws.com"
+    auth:
+      authenticator: sigv4auth
+
+service:
+  extensions: [sigv4auth]
+  telemetry:
+    logs:
+      level: warn
+      output_paths: [stderr]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [attributes, batch/metrics]
+      exporters: [otlphttp]

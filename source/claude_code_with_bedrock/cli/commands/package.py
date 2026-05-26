@@ -2762,6 +2762,8 @@ Available metrics include:
 
             # Always add telemetry configuration
             otel_endpoint = "https://telemetry.allcode.com"
+            # Use local sidecar collector for reliable token counting
+            otel_endpoint = "http://localhost:4318"
             settings["env"].update({
                 "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                 "OTEL_METRICS_EXPORTER": "otlp",
