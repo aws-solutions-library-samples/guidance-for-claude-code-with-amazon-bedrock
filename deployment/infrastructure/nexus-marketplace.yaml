@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AllCode Nexus - AWS Marketplace Metering & Registration
+
+Parameters:
+  MarketplaceProductCode:
+    Type: String
+    Description: AWS Marketplace product code (provided during listing)
+    Default: "92nbpajp068qmpcgk4dpgu490"
+  MarketplaceCustomerId:
+    Type: String
+    Description: Customer identifier (resolved during registration)
+    Default: ""
+  MetricsTableName:
+    Type: String
+    Default: ClaudeCodeMetrics
+
+Resources:
+  # DynamoDB table for metering checkpoints
+  MeteringCheckpointsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: MeteringCheckpoints
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  # IAM Role for Metering Lambda
+  MeteringLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MeteringPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetricsTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetricsTableName}/index/*"
+                  - !GetAtt MeteringCheckpointsTable.Arn
+              - Effect: Allow
+                Action:
+                  - aws-marketplace:BatchMeterUsage
+                  - aws-marketplace:ResolveCustomer
+                Resource: "*"
+
+  # Metering Lambda (runs hourly)
+  MeteringFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nexus-metering
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt MeteringLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          METRICS_TABLE: !Ref MetricsTableName
+          CHECKPOINTS_TABLE: !Ref MeteringCheckpointsTable
+          MARKETPLACE_PRODUCT_CODE: !Ref MarketplaceProductCode
+          MARKETPLACE_CUSTOMER_ID: !Ref MarketplaceCustomerId
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "placeholder"}
+
+  # EventBridge rule - trigger metering every hour
+  MeteringSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "rate(1 hour)"
+      State: ENABLED
+      Targets:
+        - Id: MeteringLambda
+          Arn: !GetAtt MeteringFunction.Arn
+
+  MeteringSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MeteringFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MeteringSchedule.Arn
+
+  # Registration Lambda
+  RegistrationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nexus-registration
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt MeteringLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          CHECKPOINTS_TABLE: !Ref MeteringCheckpointsTable
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "placeholder"}
+
+  # API Gateway for registration endpoint
+  RegistrationApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: nexus-registration
+      ProtocolType: HTTP
+
+  RegistrationIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref RegistrationApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt RegistrationFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RegistrationRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref RegistrationApi
+      RouteKey: "GET /register"
+      Target: !Sub "integrations/${RegistrationIntegration}"
+
+  RegistrationStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref RegistrationApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  RegistrationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RegistrationFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RegistrationApi}/*"
+
+Outputs:
+  MeteringFunctionArn:
+    Value: !GetAtt MeteringFunction.Arn
+  RegistrationUrl:
+    Value: !Sub "https://${RegistrationApi}.execute-api.${AWS::Region}.amazonaws.com/register"
+    Description: URL to use as Marketplace fulfillment URL
+  CheckpointsTable:
+    Value: !Ref MeteringCheckpointsTable

@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AllCode Nexus - AWS Transform Integration (IAM Role, ECR Repo, EventBridge Rule)
+
+Parameters:
+  NexusStackName:
+    Type: String
+    Default: allcode-nexus-ui
+    Description: Name of the existing Nexus stack (for Lambda ARN import)
+
+Resources:
+  # IAM Role for Nexus-managed users to invoke AWS Transform
+  NexusTransformRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'nexus-transform-role-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: transform.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns: []
+      Policies:
+        - PolicyName: TransformAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - transform:*
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock-runtime:*
+                Resource: '*'
+      Tags:
+        - Key: nexus:managed
+          Value: 'true'
+        - Key: aws-apn-id
+          Value: 'pc:92nbpajp068qmpcgk4dpgu490'
+
+  # ECR Repository for Nexus Governance Agent
+  NexusGovernanceAgentRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: nexus-governance-agent
+      ImageTagMutability: IMMUTABLE
+      EncryptionConfiguration:
+        EncryptionType: KMS
+      Tags:
+        - Key: nexus:managed
+          Value: 'true'
+        - Key: aws-apn-id
+          Value: 'pc:92nbpajp068qmpcgk4dpgu490'
+
+  # EventBridge Rule to capture Transform job lifecycle events
+  TransformJobEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: nexus-transform-job-events
+      EventPattern:
+        source:
+          - aws.transform
+        detail-type:
+          - Transform Job State Change
+      Targets:
+        - Arn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:allcode-nexus-ui-api'
+          Id: NexusTransformAttributionTarget
+
+  # Permission for EventBridge to invoke the Nexus Lambda
+  EventBridgeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: allcode-nexus-ui-api
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TransformJobEventRule.Arn
+
+Outputs:
+  TransformRoleArn:
+    Value: !GetAtt NexusTransformRole.Arn
+    Description: IAM Role ARN for Transform access
+  GovernanceAgentRepoUri:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/nexus-governance-agent'
+    Description: ECR URI for the Nexus Governance Agent

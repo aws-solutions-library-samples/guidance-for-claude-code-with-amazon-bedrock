@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "aws-transform": {
+      "type": "stdio",
+      "command": "atx",
+      "args": ["mcp"],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "allcode-dev-us-east-1"
+      }
+    }
+  }
+}

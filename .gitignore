@@ -82,3 +82,6 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+claude.json
+nexus-ui/
+nexus-build-session.json

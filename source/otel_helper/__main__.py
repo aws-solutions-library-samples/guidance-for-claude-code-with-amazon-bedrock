@@ -312,8 +312,38 @@ def write_cached_headers(headers, token_exp):
 
 
 def get_token_via_credential_process():
-    """Get monitoring token via credential-process to avoid direct keychain access"""
+    """Get monitoring token via credential-process or directly from keyring cache"""
     logger.info("Getting token via credential-process...")
+
+    # First try reading directly from keyring (avoids device flow browser prompt)
+    try:
+        import keyring
+        profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+        # Try the monitoring token first
+        raw = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
+        if raw:
+            # Token may be stored as JSON {"token": "..."} or raw JWT
+            try:
+                parsed = json.loads(raw)
+                token = parsed.get("token", raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                token = raw
+            if token and "." in token and token.count(".") == 2:
+                logger.info("Got monitoring token from keyring cache")
+                return token
+        # Fall back to credentials (contains ID token)
+        creds = keyring.get_password("claude-code-with-bedrock", f"{profile}-credentials")
+        if creds:
+            try:
+                creds_data = json.loads(creds)
+                id_token = creds_data.get("id_token", "")
+                if id_token and id_token.count(".") == 2:
+                    logger.info("Got ID token from keyring credentials cache")
+                    return id_token
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+    except Exception as e:
+        logger.debug(f"Keyring read failed: {e}")
 
     # Path to credential process - add .exe extension on Windows
     import platform
@@ -339,7 +369,7 @@ def get_token_via_credential_process():
             [credential_process, "--profile", profile, "--get-monitoring-token"],
             capture_output=True,
             text=True,
-            timeout=30,  # Reduced from 300s - fail open if auth can't complete quickly
+            timeout=10,  # Short timeout - don't wait for browser auth
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -350,7 +380,7 @@ def get_token_via_credential_process():
             return None
 
     except subprocess.TimeoutExpired:
-        logger.warning("Credential process timed out")
+        logger.warning("Credential process timed out (likely needs browser auth)")
         return None
     except Exception as e:
         logger.warning(f"Failed to get token via credential-process: {e}")
@@ -723,66 +753,6 @@ def run_proxy(target_url: str, port: int = 4318):
     server.serve_forever()
 
 
-def ensure_collector_running():
-    """Ensure the OTel collector sidecar is running (if installed).
-
-    Uses a dedicated <profile>-collector AWS profile so the Go SDK resolves
-    credentials via credential_process rather than static creds in
-    ~/.aws/credentials that can't auto-refresh.
-    """
-    import platform as platform_mod
-
-    install_dir = Path.home() / "claude-code-with-bedrock"
-    collector_binary = install_dir / ("otelcol.exe" if platform_mod.system() == "Windows" else "otelcol")
-    collector_config = install_dir / "collector-config.yaml"
-    pid_file = install_dir / "collector.pid"
-
-    if not collector_binary.exists() or not collector_config.exists():
-        return
-
-    # Check if already running
-    if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            if platform_mod.system() == "Windows":
-                # os.kill(pid, 0) raises OSError on Windows even for running processes
-                result = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True, text=True,
-                )
-                if str(pid) in result.stdout:
-                    return  # already running
-            else:
-                os.kill(pid, 0)  # signal 0 = check if alive
-                return  # already running
-        except (ProcessLookupError, ValueError, OSError):
-            pass  # stale PID file
-
-    # Launch collector with the -collector profile
-    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
-    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector"}
-
-    cache_dir = Path.home() / ".claude-code-session"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    log_file = cache_dir / "collector.log"
-
-    try:
-        with open(log_file, "a") as lf:
-            kwargs = {"stdout": lf, "stderr": lf, "env": collector_env}
-            if platform_mod.system() == "Windows":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                kwargs["start_new_session"] = True
-            proc = subprocess.Popen(
-                [str(collector_binary), "--config", str(collector_config)],
-                **kwargs,
-            )
-        pid_file.write_text(str(proc.pid))
-        logger.debug(f"Started collector sidecar (PID {proc.pid})")
-    except Exception as e:
-        logger.debug(f"Failed to start collector sidecar: {e}")
-
-
 def main():
     """Main function to generate OTEL headers"""
     args = parse_args()
@@ -791,9 +761,6 @@ def main():
     if args.proxy:
         run_proxy(args.proxy, port=args.proxy_port)
         return 0
-
-    # Ensure collector sidecar is running (no-op if not installed)
-    ensure_collector_running()
 
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:

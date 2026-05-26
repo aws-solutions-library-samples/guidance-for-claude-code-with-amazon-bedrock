@@ -1,0 +1,48 @@
+name: Build macOS ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller and dependencies
+        run: |
+          pip install pyinstaller boto3 requests PyJWT cryptography keyring questionary rich cleo pydantic pyyaml
+
+      - name: Build ARM64 binary
+        working-directory: source
+        run: |
+          pyinstaller \
+            --onefile \
+            --clean \
+            --noconfirm \
+            --target-arch=arm64 \
+            --name=credential-process-macos-arm64 \
+            --distpath=./dist-arm64 \
+            --log-level=WARN \
+            --hidden-import=keyring.backends.macOS \
+            --hidden-import=keyring.backends.SecretService \
+            --hidden-import=keyring.backends.Windows \
+            --hidden-import=keyring.backends.chainer \
+            credential_provider/__main__.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: credential-process-macos-arm64
+          path: source/dist-arm64/credential-process-macos-arm64
+          retention-days: 30
