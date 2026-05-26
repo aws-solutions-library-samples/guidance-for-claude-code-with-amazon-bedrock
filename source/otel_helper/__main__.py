@@ -312,8 +312,37 @@ def write_cached_headers(headers, token_exp):
 
 
 def get_token_via_credential_process():
-    """Get monitoring token via credential-process to avoid direct keychain access"""
+    """Get monitoring token via credential-process or directly from keyring cache"""
     logger.info("Getting token via credential-process...")
+
+    # First try reading directly from keyring (avoids browser auth prompts)
+    try:
+        import keyring
+        profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+        raw = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
+        if raw:
+            # Token may be stored as JSON {"token": "..."} or raw JWT
+            try:
+                parsed = json.loads(raw)
+                token = parsed.get("token", raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                token = raw
+            if token and "." in token and token.count(".") == 2:
+                logger.info("Got monitoring token from keyring cache")
+                return token
+        # Fall back to credentials entry
+        creds = keyring.get_password("claude-code-with-bedrock", f"{profile}-credentials")
+        if creds:
+            try:
+                creds_data = json.loads(creds)
+                id_token = creds_data.get("id_token", "")
+                if id_token and id_token.count(".") == 2:
+                    logger.info("Got ID token from keyring credentials cache")
+                    return id_token
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+    except Exception as e:
+        logger.debug(f"Keyring read failed: {e}")
 
     # Path to credential process - add .exe extension on Windows
     import platform
