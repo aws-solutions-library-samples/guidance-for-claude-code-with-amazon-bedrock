@@ -320,19 +320,28 @@ def get_token_via_credential_process():
         import keyring
         profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
         # Try the monitoring token first
-        token = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
-        if token:
-            logger.info("Got monitoring token from keyring cache")
-            return token
+        raw = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
+        if raw:
+            # Token may be stored as JSON {"token": "..."} or raw JWT
+            try:
+                parsed = json.loads(raw)
+                token = parsed.get("token", raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                token = raw
+            if token and "." in token and token.count(".") == 2:
+                logger.info("Got monitoring token from keyring cache")
+                return token
         # Fall back to credentials (contains ID token)
         creds = keyring.get_password("claude-code-with-bedrock", f"{profile}-credentials")
         if creds:
-            import json
-            creds_data = json.loads(creds)
-            id_token = creds_data.get("id_token", "")
-            if id_token:
-                logger.info("Got ID token from keyring credentials cache")
-                return id_token
+            try:
+                creds_data = json.loads(creds)
+                id_token = creds_data.get("id_token", "")
+                if id_token and id_token.count(".") == 2:
+                    logger.info("Got ID token from keyring credentials cache")
+                    return id_token
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
     except Exception as e:
         logger.debug(f"Keyring read failed: {e}")
 

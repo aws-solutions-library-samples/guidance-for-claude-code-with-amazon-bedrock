@@ -472,7 +472,7 @@ def handle_users(event):
                         for attr in user.get("Attributes", []):
                             if attr["Name"] == "email":
                                 email = attr["Value"]
-                        if email and email not in org_users:
+                        if email and email not in org_users and "@example.com" not in email and "anonymous" not in email and user.get("UserStatus") == "CONFIRMED":
                             last_active_str = ""
                             if hasattr(user.get("UserLastModifiedDate", ""), "isoformat"):
                                 last_active_str = user["UserLastModifiedDate"].isoformat()
@@ -514,7 +514,7 @@ def handle_users(event):
                 if isinstance(u, dict):
                     email = u.get("email", u.get("user", ""))
                     tokens = int(u.get("tokens", 0))
-                    if email and email not in org_users:
+                    if email and email not in org_users and "@example.com" not in email and "anonymous" not in email and user.get("UserStatus") == "CONFIRMED":
                         if email not in all_users:
                             all_users[email] = {"tokens": 0, "last_active": "", "status": "active", "role": "user", "username": ""}
                         all_users[email]["tokens"] += tokens
