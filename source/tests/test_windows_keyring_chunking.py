@@ -21,24 +21,29 @@ def auth_instance():
         mock_keyring.set_password = MagicMock()
 
         with patch.dict(sys.modules, {"keyring": mock_keyring}):
+            # Force reimport if already cached to pick up our mock
+            if "credential_provider.__main__" in sys.modules:
+                importlib.reload(sys.modules["credential_provider.__main__"])
             from credential_provider.__main__ import MultiProviderAuth
 
-            config = {
-                "okta_domain": "test.okta.com",
-                "okta_client_id": "test-client-id",
-                "aws_region": "us-east-1",
-                "identity_pool_name": "test-pool",
-                "credential_storage": "keyring",
-                "provider_type": "okta",
-            }
-            auth = MultiProviderAuth.__new__(MultiProviderAuth)
-            auth.config = config
-            auth.profile = "TestProfile"
-            auth.provider_type = "okta"
-            auth._MONITORING_CHUNK_SIZE = 1200
-            auth._debug_print = lambda *a, **kw: None
+            # Also patch keyring in the module's namespace directly
+            with patch("credential_provider.__main__.keyring", mock_keyring):
+                config = {
+                    "okta_domain": "test.okta.com",
+                    "okta_client_id": "test-client-id",
+                    "aws_region": "us-east-1",
+                    "identity_pool_name": "test-pool",
+                    "credential_storage": "keyring",
+                    "provider_type": "okta",
+                }
+                auth = MultiProviderAuth.__new__(MultiProviderAuth)
+                auth.config = config
+                auth.profile = "TestProfile"
+                auth.provider_type = "okta"
+                auth._MONITORING_CHUNK_SIZE = 1200
+                auth._debug_print = lambda *a, **kw: None
 
-            yield auth, mock_keyring
+                yield auth, mock_keyring
 
 
 class TestWindowsKeyringChunking:

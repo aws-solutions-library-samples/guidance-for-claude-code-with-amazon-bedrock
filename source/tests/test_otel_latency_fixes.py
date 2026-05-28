@@ -46,6 +46,10 @@ def _reset_sts_cache():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not SETTINGS_JSON_PATH.exists(),
+    reason="settings.json not present (requires 'poetry run ccwb package' build)",
+)
 class TestSettingsJsonTelemetryEnvVar:
     """settings.json must not override the user's CLAUDE_CODE_ENABLE_TELEMETRY."""
 

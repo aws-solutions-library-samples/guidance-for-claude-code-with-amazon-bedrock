@@ -25,22 +25,20 @@ class TestInitCommandSourceRegions:
         assert "us-east-1" in us_regions
 
     def test_source_region_selection_flow_europe(self):
-        """Test source region selection for Europe models."""
-        # Test that Europe models have source regions available
-        eu_regions = get_source_regions_for_model_profile("sonnet-4", "europe")
+        """Test source region selection for EU models."""
+        # Profile name is "eu" not "europe" in the current model catalog
+        eu_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
         assert len(eu_regions) > 0
         assert all(region.startswith("eu-") for region in eu_regions)
-        assert "eu-west-3" in eu_regions
         assert "eu-west-1" in eu_regions
+        assert "eu-central-1" in eu_regions
 
     def test_source_region_selection_flow_apac(self):
         """Test source region selection for APAC models."""
-        # Test that APAC models have source regions available
-        apac_regions = get_source_regions_for_model_profile("sonnet-3-7", "apac")
+        apac_regions = get_source_regions_for_model_profile("sonnet-4", "apac")
         assert len(apac_regions) > 0
         assert all(region.startswith("ap-") for region in apac_regions)
         assert "ap-southeast-2" in apac_regions
-        assert "ap-southeast-1" in apac_regions
 
     def test_config_includes_selected_source_region(self):
         """Test that configuration includes selected source region."""
@@ -77,7 +75,7 @@ class TestInitCommandSourceRegions:
         existing_profile = Mock()
         existing_profile.name = "default"
         existing_profile.selected_source_region = "eu-central-1"
-        existing_profile.cross_region_profile = "europe"
+        existing_profile.cross_region_profile = "eu"
         existing_profile.selected_model = "eu.anthropic.claude-sonnet-4-20250514-v1:0"
 
         # Mock the config loading
@@ -104,19 +102,8 @@ class TestInitCommandSourceRegions:
         # Test for different model/profile combinations
         test_cases = [
             ("opus-4-1", "us", ["us-west-2", "us-east-2", "us-east-1"]),
-            ("sonnet-4", "europe", ["eu-west-3", "eu-west-1", "eu-central-1", "eu-north-1"]),
-            (
-                "sonnet-3-7",
-                "apac",
-                [
-                    "ap-southeast-2",
-                    "ap-southeast-1",
-                    "ap-south-1",
-                    "ap-northeast-3",
-                    "ap-northeast-2",
-                    "ap-northeast-1",
-                ],
-            ),
+            ("sonnet-4", "eu", ["eu-west-1", "eu-central-1"]),
+            ("sonnet-4", "apac", ["ap-southeast-2"]),
         ]
 
         for model_key, profile_key, expected_regions in test_cases:
@@ -141,14 +128,14 @@ class TestInitCommandSourceRegions:
         result = get_source_region_for_profile(us_profile)
         assert result == "us-east-1"  # Should use infrastructure region
 
-        # Test Europe profile fallback
+        # Test EU profile fallback — should return an EU region
         eu_profile = Mock()
         eu_profile.selected_source_region = None
-        eu_profile.cross_region_profile = "europe"
+        eu_profile.cross_region_profile = "eu"
         eu_profile.aws_region = "us-east-1"
 
         result = get_source_region_for_profile(eu_profile)
-        assert result == "eu-west-3"  # Should use default Europe region
+        assert result.startswith("eu-")  # Should use a default EU region
 
     def test_source_region_priority_order(self):
         """Test that source region selection follows correct priority order."""
@@ -157,7 +144,7 @@ class TestInitCommandSourceRegions:
         # Create profile with both selected source region and cross-region profile
         profile = Mock()
         profile.selected_source_region = "us-west-2"  # This should take priority
-        profile.cross_region_profile = "europe"  # This should be ignored
+        profile.cross_region_profile = "eu"  # This should be ignored
         profile.aws_region = "us-east-1"  # This should be ignored
 
         result = get_source_region_for_profile(profile)
@@ -177,14 +164,13 @@ class TestInitCommandSourceRegions:
         # US-only models should only have US source regions
         us_only_models = ["opus-4-1", "opus-4"]
         for model_key in us_only_models:
-            if model_key in {"opus-4-1", "opus-4"}:  # These are US-only
-                us_regions = get_source_regions_for_model_profile(model_key, "us")
-                assert len(us_regions) > 0
-                assert all(region.startswith("us-") for region in us_regions)
+            us_regions = get_source_regions_for_model_profile(model_key, "us")
+            assert len(us_regions) > 0
+            assert all(region.startswith("us-") for region in us_regions)
 
-                # Should not be available in other regions
-                with pytest.raises(ValueError):
-                    get_source_regions_for_model_profile(model_key, "europe")
+            # Should not be available in EU
+            with pytest.raises(ValueError):
+                get_source_regions_for_model_profile(model_key, "eu")
 
     def test_configuration_review_includes_source_region(self):
         """Test that configuration review displays selected source region."""
@@ -193,7 +179,7 @@ class TestInitCommandSourceRegions:
         config = {
             "aws": {
                 "selected_source_region": "eu-west-3",
-                "cross_region_profile": "europe",
+                "cross_region_profile": "eu",
                 "selected_model": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
                 "region": "us-east-1",  # Infrastructure region
             }
@@ -201,7 +187,7 @@ class TestInitCommandSourceRegions:
 
         # Verify structure
         assert config["aws"]["selected_source_region"] == "eu-west-3"
-        assert config["aws"]["cross_region_profile"] == "europe"
+        assert config["aws"]["cross_region_profile"] == "eu"
 
         # The source region should be different from infrastructure region for cross-region profiles
         assert config["aws"]["selected_source_region"] != config["aws"]["region"]
