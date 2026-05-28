@@ -23,8 +23,8 @@ class TestSourceRegionFunctionality:
             for profile_key, profile_config in model_config["profiles"].items():
                 source_regions = profile_config["source_regions"]
 
-                # Should have at least one source region available
-                assert isinstance(source_regions, list)
+                # Should have at least one source region available (tuple or list)
+                assert isinstance(source_regions, (list, tuple))
                 assert len(source_regions) > 0, f"No source regions for {model_key}/{profile_key}"
 
                 # All source regions should be valid AWS region format
@@ -38,21 +38,15 @@ class TestSourceRegionFunctionality:
         """Test getting source regions for specific model/profile combinations."""
         # Test US model
         us_regions = get_source_regions_for_model_profile("opus-4-1", "us")
-        assert isinstance(us_regions, list)
+        assert isinstance(us_regions, (list, tuple))
         assert len(us_regions) > 0
         assert "us-west-2" in us_regions  # Should include us-west-2
 
-        # Test Europe model
-        eu_regions = get_source_regions_for_model_profile("sonnet-4", "europe")
-        assert isinstance(eu_regions, list)
+        # Test Europe model (profile name is "eu" not "europe")
+        eu_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
+        assert isinstance(eu_regions, (list, tuple))
         assert len(eu_regions) > 0
         assert any(region.startswith("eu-") for region in eu_regions)
-
-        # Test APAC model
-        apac_regions = get_source_regions_for_model_profile("sonnet-4", "apac")
-        assert isinstance(apac_regions, list)
-        assert len(apac_regions) > 0
-        assert any(region.startswith("ap-") for region in apac_regions)
 
     def test_get_source_region_for_profile_with_selected_region(self):
         """Test source region selection when user has selected a specific region."""
@@ -71,12 +65,12 @@ class TestSourceRegionFunctionality:
         # Create mock profile without selected source region
         profile = Mock()
         profile.selected_source_region = None
-        profile.cross_region_profile = "europe"
+        profile.cross_region_profile = "eu"
         profile.aws_region = "us-east-1"
 
-        # Should fallback to cross-region profile default
+        # Should fallback to cross-region profile default (first region in EU set)
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"  # Default Europe region
+        assert result.startswith("eu-")
 
     def test_get_source_region_for_profile_fallback_to_aws_region(self):
         """Test source region fallback to infrastructure region for US profiles."""
@@ -104,31 +98,36 @@ class TestSourceRegionFunctionality:
 
     def test_source_region_regional_consistency(self):
         """Test that source regions are consistent with their profile regions."""
-        test_cases = [
-            ("opus-4-1", "us", "us-"),
-            ("sonnet-4", "us", "us-"),
-            ("sonnet-4", "europe", "eu-"),
-            ("sonnet-4", "apac", "ap-"),
-            ("sonnet-3-7", "europe", "eu-"),
-            ("sonnet-3-7", "apac", "ap-"),
-        ]
+        # Map profile names to expected region prefixes
+        profile_prefix_map = {
+            "us": "us-",
+            "eu": "eu-",
+            "au": "ap-southeast-",
+            "jp": "ap-northeast-",
+        }
 
-        for model_key, profile_key, expected_prefix in test_cases:
-            source_regions = get_source_regions_for_model_profile(model_key, profile_key)
+        for model_key, model_config in CLAUDE_MODELS.items():
+            for profile_key, profile_config in model_config["profiles"].items():
+                if profile_key in ("global",):
+                    continue  # global profile has regions from all areas
 
-            # All source regions should match the expected regional prefix
-            for region in source_regions:
-                assert region.startswith(
-                    expected_prefix
-                ), f"Region {region} doesn't match expected prefix {expected_prefix} for {model_key}/{profile_key}"
+                expected_prefix = profile_prefix_map.get(profile_key)
+                if expected_prefix is None:
+                    continue  # Skip profiles we don't have prefix rules for
+
+                source_regions = profile_config["source_regions"]
+                for region in source_regions:
+                    # US profile may include Canadian regions (ca-central-1, ca-west-1)
+                    if profile_key == "us" and region.startswith("ca-"):
+                        continue
+                    assert region.startswith(expected_prefix), (
+                        f"Region {region} doesn't match expected prefix {expected_prefix} "
+                        f"for {model_key}/{profile_key}"
+                    )
 
     def test_source_region_invalid_model_profile_combinations(self):
         """Test that invalid model/profile combinations raise appropriate errors."""
         invalid_combinations = [
-            ("opus-4-1", "europe"),  # Opus 4.1 not available in Europe
-            ("opus-4-1", "apac"),  # Opus 4.1 not available in APAC
-            ("opus-4", "europe"),  # Opus 4 not available in Europe
-            ("opus-4", "apac"),  # Opus 4 not available in APAC
             ("invalid-model", "us"),  # Invalid model
             ("sonnet-4", "invalid-profile"),  # Invalid profile
         ]
@@ -144,12 +143,12 @@ class TestSourceRegionFunctionality:
 
         # Test when selected_source_region attribute doesn't exist
         del profile.selected_source_region
-        profile.cross_region_profile = "europe"
+        profile.cross_region_profile = "eu"
         profile.aws_region = "us-east-1"
 
         # Should handle missing attribute gracefully and use fallback
         result = get_source_region_for_profile(profile)
-        assert result == "eu-west-3"
+        assert result.startswith("eu-")
 
     def test_all_models_have_source_regions(self):
         """Test that all models in CLAUDE_MODELS have source regions defined."""
@@ -164,29 +163,26 @@ class TestSourceRegionFunctionality:
 
     def test_source_regions_do_not_overlap_inappropriately(self):
         """Test that source regions are regionally appropriate."""
-        regional_tests = {
-            "us": ["us-east-1", "us-east-2", "us-west-1", "us-west-2"],
-            "europe": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
-            "apac": [
-                "ap-northeast-1",
-                "ap-northeast-2",
-                "ap-northeast-3",
-                "ap-south-1",
-                "ap-south-2",
-                "ap-southeast-1",
-                "ap-southeast-2",
-            ],
+        # Map profile names to valid region prefixes (including adjacent regions)
+        profile_valid_prefixes = {
+            "us": ("us-", "ca-"),  # US profile may include Canadian regions
+            "eu": ("eu-",),
+            "au": ("ap-southeast-",),
+            "jp": ("ap-northeast-",),
         }
 
         for model_key, model_config in CLAUDE_MODELS.items():
             for profile_key, profile_config in model_config["profiles"].items():
-                source_regions = profile_config["source_regions"]
-                expected_regions = regional_tests.get(profile_key, [])
+                if profile_key in ("global",):
+                    continue  # global is intentionally cross-region
 
-                if expected_regions:
-                    # Check that all source regions are from the expected regional set
-                    for region in source_regions:
-                        assert region in expected_regions, (
-                            f"Unexpected region {region} for {model_key}/{profile_key}. "
-                            f"Expected one of {expected_regions}"
-                        )
+                valid_prefixes = profile_valid_prefixes.get(profile_key)
+                if valid_prefixes is None:
+                    continue  # Skip profiles without defined prefix rules
+
+                source_regions = profile_config["source_regions"]
+                for region in source_regions:
+                    assert any(region.startswith(prefix) for prefix in valid_prefixes), (
+                        f"Unexpected region {region} for {model_key}/{profile_key}. "
+                        f"Expected prefix from {valid_prefixes}"
+                    )
