@@ -58,6 +58,7 @@ Create a test environment that simulates a fresh user installation:
 mkdir -p ~/test-user
 cp -r dist ~/test-user/
 cd ~/test-user/dist
+chmod +x install.sh
 ./install.sh
 ```
 

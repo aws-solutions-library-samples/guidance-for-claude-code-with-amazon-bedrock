@@ -1,0 +1,7 @@
+{
+  "ClaudeCode": {
+    "okta_domain": "dev-12345.okta.com",
+    "okta_client_id": "0oa123abc456",
+    "aws_region": "us-east-1"
+  }
+}

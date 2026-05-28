@@ -37,7 +37,8 @@ def detect_provider_type_secure(domain: str) -> str:
 
         # Check for exact domain match or subdomain match
         # Using endswith with leading dot prevents bypass attacks
-        if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+        okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
             return "okta"
         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
             return "auth0"
@@ -46,6 +47,8 @@ def detect_provider_type_secure(domain: str) -> str:
         elif hostname_lower.endswith(".windows.net") or hostname_lower == "windows.net":
             return "azure"
         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
+            return "cognito"
+        elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
             return "cognito"
         else:
             return "oidc"
