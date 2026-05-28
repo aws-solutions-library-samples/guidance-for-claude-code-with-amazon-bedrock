@@ -49,7 +49,7 @@ def _load_template(name: str) -> dict:
     path = INFRA_DIR / name
     if not path.exists():
         pytest.skip(f"Template {name} not found")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.load(f, Loader=CFNLoader)
 
 
@@ -71,14 +71,14 @@ class TestCloudFormationTemplateValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_is_valid_yaml(self, template_path):
         """All templates must be parseable YAML (with CloudFormation intrinsics)."""
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             content = yaml.load(f, Loader=CFNLoader)
         assert isinstance(content, dict), f"{template_path.name} did not parse to a dict"
 
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_resources(self, template_path):
         """All templates must define at least one Resource."""
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             content = yaml.load(f, Loader=CFNLoader)
         # Some templates might be utility-only, but most should have Resources
         if "Resources" in content:
@@ -87,7 +87,7 @@ class TestCloudFormationTemplateValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_description(self, template_path):
         """Templates should have a Description for CloudFormation console."""
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             content = yaml.load(f, Loader=CFNLoader)
         # Not strictly required but good practice
         if "AWSTemplateFormatVersion" in content:
@@ -133,7 +133,7 @@ class TestIAMPolicyValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_iam_actions_use_valid_prefixes(self, template_path):
         """All IAM actions must use valid service prefixes (catches #375)."""
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             content = yaml.load(f, Loader=CFNLoader)
 
         actions = self._extract_actions(content)
@@ -226,7 +226,7 @@ class TestDeployCommandStackNames:
                 continue
 
             # The template should be parseable and have basic structure
-            with open(template_path) as f:
+            with open(template_path, encoding="utf-8") as f:
                 content = yaml.load(f, Loader=CFNLoader)
 
             assert "Resources" in content or "AWSTemplateFormatVersion" in content, (
