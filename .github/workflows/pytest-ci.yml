@@ -1,0 +1,97 @@
+name: Python Tests
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'source/**'
+      - 'deployment/infrastructure/lambda-functions/**'
+      - '.github/workflows/pytest-ci.yml'
+  pull_request:
+    branches: ["main"]
+    paths:
+      - 'source/**'
+      - 'deployment/infrastructure/lambda-functions/**'
+      - '.github/workflows/pytest-ci.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+        os: [ubuntu-latest]
+        include:
+          # Spot-check on macOS and Windows with latest Python only
+          - python-version: '3.12'
+            os: macos-latest
+          - python-version: '3.12'
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: source/.venv
+          key: ${{ runner.os }}-poetry-${{ matrix.python-version }}-${{ hashFiles('source/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        working-directory: source
+        run: poetry install --no-interaction
+
+      - name: Run tests
+        working-directory: source
+        run: poetry run pytest tests/ -v --tb=short --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: source/test-results.xml
+
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation templates
+        run: |
+          cfn-lint deployment/infrastructure/*.yaml \
+            --ignore-checks W3002 \
+            --ignore-checks W2001 \
+            --ignore-checks E3012
