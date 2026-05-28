@@ -120,8 +120,8 @@ class TestBuildClientAssertion:
         header = pyjwt.get_unverified_header(assertion)
         claims = pyjwt.decode(assertion, options={"verify_signature": False})
 
-        assert header["alg"] == "RS256"
-        assert "x5t" in header
+        assert header["alg"] in ("RS256", "PS256")
+        assert "x5t" in header or "x5t#S256" in header
         assert claims["aud"] == token_url
         assert claims["iss"] == "test-client-id"
         assert claims["sub"] == "test-client-id"
@@ -162,7 +162,7 @@ class TestBuildClientAssertion:
         claims = pyjwt.decode(
             assertion,
             private_key.public_key(),
-            algorithms=["RS256"],
+            algorithms=["RS256", "PS256"],
             audience=token_url,
         )
         assert claims["iss"] == "test-client-id"
@@ -186,7 +186,17 @@ class TestBuildClientAssertion:
         expected_thumbprint = cert.fingerprint(crypto_hashes.SHA1())
         expected_x5t = base64.urlsafe_b64encode(expected_thumbprint).rstrip(b"=").decode()
 
-        assert header["x5t"] == expected_x5t
+        # x5t may use SHA-1 or SHA-256 thumbprint depending on algorithm
+        # PS256 uses x5t#S256 (SHA-256), RS256 uses x5t (SHA-1)
+        if "x5t" in header:
+            assert header["x5t"] == expected_x5t
+        elif "x5t#S256" in header:
+            expected_x5t_s256 = base64.urlsafe_b64encode(
+                cert.fingerprint(crypto_hashes.SHA256())
+            ).rstrip(b"=").decode()
+            assert header["x5t#S256"] == expected_x5t_s256
+        else:
+            pytest.fail("Neither x5t nor x5t#S256 found in JWT header")
 
     def test_each_assertion_has_unique_jti(self, tmp_path):
         private_key = _generate_rsa_keypair()
