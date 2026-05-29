@@ -100,6 +100,7 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock-runtime:InvokeModel'
@@ -109,6 +110,7 @@ Resources:
             Resource:
               - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
               - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref AllowedBedrockRegions
@@ -117,6 +119,7 @@ Resources:
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
               - 'bedrock-runtime:InvokeModel'
@@ -153,11 +156,6 @@ Resources:
               Action:
                 - 'cloudwatch:PutMetricData'
               Resource: '*'
-              Condition:
-                StringEquals:
-                  'cloudwatch:namespace':
-                    - 'ClaudeCode/Bedrock/Usage'
-                    - 'AWS/Bedrock'
             - !Ref 'AWS::NoValue'
 
   # ===============================================

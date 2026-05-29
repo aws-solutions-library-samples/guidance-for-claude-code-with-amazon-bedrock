@@ -89,6 +89,7 @@ poetry run ccwb init [options]
 - Configures cross-region inference profiles (US, Europe, APAC)
 - Prompts for source region selection for model inference
 - Sets up monitoring options
+- Prompts for monitoring mode (central collector on ECS Fargate, or sidecar collector running locally on each developer's machine)
 - Configures quota monitoring:
   - Monthly token limit per user
   - Daily token limit with burst buffer (auto-calculated from monthly)
@@ -127,12 +128,14 @@ poetry run ccwb deploy [stack] [options]
 **Stacks deployed:**
 
 1. **auth** - Authentication infrastructure and IAM roles (always required)
-2. **networking** - VPC and networking resources for monitoring (optional)
-3. **monitoring** - OpenTelemetry collector on ECS Fargate (optional)
+2. **networking** - VPC and networking resources for monitoring (central mode only)
+3. **monitoring** - OpenTelemetry collector on ECS Fargate (central mode only)
 4. **dashboard** - CloudWatch dashboard for usage metrics (optional)
-5. **analytics** - Kinesis Firehose and Athena for analytics (optional)
+5. **analytics** - Kinesis Firehose and Athena SQL query pipeline (central mode only, optional)
 6. **quota** - Per-user token quota monitoring and alerts (optional, requires dashboard)
 7. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
+
+> **Note**: In sidecar monitoring mode, the auth and dashboard stacks are deployed. The networking, monitoring, and analytics stacks are skipped because the OpenTelemetry collector runs locally on each developer's machine. Both modes include the same PromQL CloudWatch dashboard with full metric analytics.
 
 **Examples:**
 
@@ -237,7 +240,7 @@ poetry run ccwb package [options]
 - `--target-platform <platform>` - Target platform for binary (default: "all")
   - `macos` - Build for current macOS architecture
   - `macos-arm64` - Build for Apple Silicon Macs
-  - `macos-intel` - Build for Intel Macs (uses Rosetta on ARM Macs)
+  - `macos-intel` - Build for Intel Macs (cross-arch on Apple Silicon requires universal2 Python)
   - `linux` - Build for Linux (native, current architecture)
   - `linux-x64` - Build for Linux x64 using Docker
   - `linux-arm64` - Build for Linux ARM64 using Docker
@@ -263,50 +266,49 @@ poetry run ccwb package [options]
 **Platform Support (Hybrid Build System):**
 
 - **macOS**: Uses PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs (works on all Macs)
-  - Intel: **Optional** - requires x86_64 Python environment on ARM Macs
-  - Universal: Requires both architectures' Python libraries (not currently automated)
-- **Linux**: Uses PyInstaller in Docker containers
+  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
+  - Intel: Runs natively on Intel Macs and on Apple Silicon via Rosetta — covers all Mac users with one binary
+  - Cross-arch: **Optional** — build the other architecture from your current Mac; requires a universal2 Python (see below)
+- **Linux**: Uses PyInstaller in Docker containers (cross-compiled from macOS host)
   - x64: Uses linux/amd64 Docker platform
   - ARM64: Uses linux/arm64 Docker platform
   - Docker Desktop handles architecture emulation automatically
+  - **Requires Docker Desktop to be installed and running** — see Graceful Fallback Behavior below
+  - Not required for macOS or Windows builds
 - **Windows**: Uses Nuitka via AWS CodeBuild (if enabled during init)
   - Automated builds take 12-15 minutes
   - Requires CodeBuild to be enabled during `init`
   - Will be skipped if CodeBuild is not enabled
 
-**Intel Mac Build Setup (Optional):**
+**Cross-arch macOS Build Setup (Optional):**
 
-To enable Intel builds on Apple Silicon Macs (optional):
+By default, `ccwb package` builds a binary for your Mac's own architecture. The Intel (`macos-intel`) binary covers all Mac users — it runs natively on Intel Macs and via Rosetta on Apple Silicon — so an Apple Silicon admin who needs to support Intel Mac users should build the Intel binary using this setup.
 
-```bash
-# Step 1: Install x86_64 Homebrew (if not already installed)
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM64 binary on Intel), install a universal2 Python:
 
-# Step 2: Install x86_64 Python
-arch -x86_64 /usr/local/bin/brew install python@3.12
+1. Download the **macOS 64-bit universal2 installer** for Python 3.12 from [python.org/downloads/macos](https://www.python.org/downloads/macos/)
+2. Run the installer — it places Python at `/Library/Frameworks/Python.framework/`
+3. Re-run `ccwb package` — it detects the universal2 Python automatically
 
-# Step 3: Create x86_64 virtual environment
-arch -x86_64 /usr/local/bin/python3.12 -m venv ~/venv-x86
+`ccwb` creates an isolated per-arch build environment at `~/.ccwb/build-venvs/` on first cross-arch build (~30s). Subsequent runs reuse it.
 
-# Step 4: Install required packages
-arch -x86_64 ~/venv-x86/bin/pip install pyinstaller boto3 keyring
-```
+**Behavior when universal2 Python is not installed:**
 
-**Behavior when Intel environment is not set up:**
-
-- For `--target-platform=all`: Skips Intel builds with a note, builds all other platforms
-- For `--target-platform=macos-intel`: Shows instructions for optional setup, skips the build
-- The package process continues successfully without Intel binaries
-- ARM64 binaries can be distributed to all Mac users (Intel and Apple Silicon)
+- For `--target-platform=all`: Skips the cross-arch target with a note, builds all other platforms normally
+- For an explicit cross-arch target (e.g. `--target-platform=macos-intel` on Apple Silicon): Fails with a clear error pointing to the python.org installer
+- The package process continues successfully without cross-arch binaries
+- Note: Intel (`macos-intel`) binaries run natively on Intel Macs and via Rosetta on Apple Silicon — they cover all Mac users. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
 
 **Graceful Fallback Behavior:**
 
 The package command is designed to handle missing optional components gracefully:
 
-- **Intel Mac builds**: Skipped if x86_64 Python environment is not available on ARM Macs
+- **Cross-arch macOS builds**: Skipped if universal2 Python is not installed (see Cross-arch macOS Build Setup above)
 - **Windows builds**: Skipped if CodeBuild was not enabled during `init`
-- **Linux builds**: Skipped if Docker is not available
+- **Linux builds (from macOS)**: Skipped with a warning in two cases:
+  - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
+  - Docker is installed but the daemon is not running — open Docker Desktop and wait for it to start, then retry
+  - macOS and Windows builds are **unaffected** by Docker availability
 - **At least one platform must build successfully** for the package command to succeed
 
 This ensures that packaging always works, even if some optional platforms are not available.
@@ -560,6 +562,7 @@ poetry run ccwb status [options]
 - Checks CloudFormation stack status
 - Displays Identity Pool information
 - Shows monitoring configuration and endpoints
+- In sidecar monitoring mode, shows local collector status (running/stopped) and the local OTLP endpoint
 
 ### `cleanup` - Remove Installed Components
 
@@ -612,9 +615,6 @@ poetry run ccwb cowork generate -o ./my-mdm-configs/
 
 # Specific profile
 poetry run ccwb cowork generate --profile Production
-
-# Custom credential helper TTL
-poetry run ccwb cowork generate --credential-helper-ttl 7200
 ```
 
 **Options:**
@@ -625,7 +625,6 @@ poetry run ccwb cowork generate --credential-helper-ttl 7200
 | `--output`, `-o` | Output directory | `dist/cowork-3p/` |
 | `--format`, `-f` | Output format: `all`, `json`, `mobileconfig`, `reg` | `all` |
 | `--models`, `-m` | Comma-separated model aliases | Auto-detected from profile |
-| `--credential-helper-ttl` | Credential helper cache TTL (seconds) | `3600` |
 
 **Generated files:**
 

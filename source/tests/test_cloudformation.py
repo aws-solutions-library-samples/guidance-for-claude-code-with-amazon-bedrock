@@ -71,6 +71,16 @@ def condition_constructor(loader, node):
     return {"Condition": loader.construct_scalar(node)}
 
 
+def select_constructor(loader, node):
+    """Handle !Select function."""
+    return {"Fn::Select": loader.construct_sequence(node)}
+
+
+def split_constructor(loader, node):
+    """Handle !Split function."""
+    return {"Fn::Split": loader.construct_sequence(node)}
+
+
 # Register the constructors
 CloudFormationLoader.add_constructor("!Ref", ref_constructor)
 CloudFormationLoader.add_constructor("!GetAtt", getatt_constructor)
@@ -82,6 +92,8 @@ CloudFormationLoader.add_constructor("!Or", or_constructor)
 CloudFormationLoader.add_constructor("!And", and_constructor)
 CloudFormationLoader.add_constructor("!Not", not_constructor)
 CloudFormationLoader.add_constructor("!Condition", condition_constructor)
+CloudFormationLoader.add_constructor("!Select", select_constructor)
+CloudFormationLoader.add_constructor("!Split", split_constructor)
 
 
 class TestCloudFormationCrossRegion:
@@ -251,3 +263,167 @@ class TestCloudFormationCrossRegion:
         assert isinstance(value, dict)
         assert "Ref" in value
         assert value["Ref"] == "BedrockIdentityPool"
+
+
+# Common Okta thumbprint hardcoded in bedrock-auth-okta.yaml — must NOT appear in the generic template
+OKTA_HARDCODED_THUMBPRINT = "9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
+
+
+class TestBedrockAuthGenericTemplate:
+    """Tests for bedrock-auth-generic.yaml — covers PingFederate/Keycloak/ForgeRock/etc.
+
+    The template was added to fix a bug where choosing 'Okta (or generic OIDC)' for a
+    non-Okta IdP silently applied the Okta template. The generic template must:
+      - take the OIDC issuer URL, client ID, and JWKS thumbprint as parameters
+      - NOT hardcode the Okta thumbprint
+      - NOT contain Okta-specific strings in tags/descriptions
+      - emit the same set of outputs as the Okta template (downstream stacks rely on these)
+    """
+
+    def get_template(self):
+        template_path = (
+            Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-generic.yaml"
+        )
+        with open(template_path) as f:
+            return yaml.load(f, Loader=CloudFormationLoader)
+
+    def test_template_loads(self):
+        """Template must parse as valid CloudFormation YAML."""
+        template = self.get_template()
+        assert template["AWSTemplateFormatVersion"] == "2010-09-09"
+        assert "Parameters" in template
+        assert "Resources" in template
+        assert "Outputs" in template
+
+    def test_required_oidc_parameters(self):
+        """Must accept issuer URL, client ID, and thumbprint list as parameters."""
+        params = self.get_template()["Parameters"]
+
+        assert "OidcIssuerUrl" in params
+        assert "OidcClientId" in params
+        assert "OidcThumbprintList" in params
+        # ThumbprintList must be a CommaDelimitedList — IAM OIDC supports rotation
+        assert params["OidcThumbprintList"]["Type"] == "CommaDelimitedList"
+        # Issuer URL pattern must require https://
+        assert params["OidcIssuerUrl"]["AllowedPattern"].startswith("^https://")
+
+    def test_no_okta_specific_parameters(self):
+        """Must not carry over OktaDomain/OktaClientId from the okta template."""
+        params = self.get_template()["Parameters"]
+        assert "OktaDomain" not in params
+        assert "OktaClientId" not in params
+
+    def test_oidc_provider_resource_uses_parameter_thumbprint(self):
+        """OIDC provider must reference the parameter, not hardcode a thumbprint."""
+        resources = self.get_template()["Resources"]
+        assert "OidcProvider" in resources
+        oidc_provider = resources["OidcProvider"]
+        assert oidc_provider["Type"] == "AWS::IAM::OIDCProvider"
+
+        thumbprint_list = oidc_provider["Properties"]["ThumbprintList"]
+        # Must be a !Ref to OidcThumbprintList, not a literal list of hex strings
+        assert isinstance(thumbprint_list, dict), (
+            f"ThumbprintList must be a !Ref, got literal: {thumbprint_list}"
+        )
+        assert thumbprint_list.get("Ref") == "OidcThumbprintList"
+
+    def test_no_hardcoded_okta_thumbprint_anywhere(self):
+        """The Okta-specific thumbprint constant must not appear anywhere in the template."""
+        template = self.get_template()
+        # Stringify the entire template to catch the thumbprint regardless of where it sits
+        import json
+
+        serialized = json.dumps(template, default=str)
+        assert OKTA_HARDCODED_THUMBPRINT not in serialized, (
+            f"Okta-specific thumbprint {OKTA_HARDCODED_THUMBPRINT} leaked into generic template"
+        )
+
+    def test_no_okta_substring_in_tags_or_descriptions(self):
+        """Tags, descriptions, and resource names must not advertise Okta."""
+        import json
+
+        template = self.get_template()
+        serialized = json.dumps(template, default=str).lower()
+        # 'okta' should not appear anywhere — this template is provider-agnostic
+        assert "okta" not in serialized, "Generic template still contains 'okta' references"
+
+    def test_outputs_match_okta_template_contract(self):
+        """Downstream stacks (monitoring, packaging) consume these outputs by name."""
+        outputs = self.get_template()["Outputs"]
+        for required_output in (
+            "FederationType",
+            "OIDCProviderArn",
+            "FederatedRoleArn",
+            "DirectSTSRoleArn",
+            "BedrockRoleArn",
+            "IdentityPoolId",
+            "BedrockPolicyArn",
+            "ConfigurationJson",
+        ):
+            assert required_output in outputs, f"Missing output: {required_output}"
+
+    def test_configuration_json_marks_provider_type_as_generic(self):
+        """The ConfigurationJson output must declare provider_type=generic so downstream
+        consumers don't misclassify the deployment."""
+        outputs = self.get_template()["Outputs"]
+        config_json = outputs["ConfigurationJson"]["Value"]
+        # Value is a !If [cond, direct-config-string, cognito-config-string].
+        # Both branches are Fn::Sub strings — verify both contain provider_type=generic.
+        if_branches = config_json["Fn::If"]
+        assert len(if_branches) == 3, "Expected !If [condition, direct, cognito]"
+        for branch in if_branches[1:]:
+            assert "Fn::Sub" in branch
+            sub_string = branch["Fn::Sub"]
+            assert '"provider_type": "generic"' in sub_string, (
+                f"Expected provider_type=generic in: {sub_string!r}"
+            )
+
+    def test_supports_both_federation_modes(self):
+        """Template must support both direct STS and Cognito Identity Pool federation."""
+        template = self.get_template()
+
+        params = template["Parameters"]
+        assert params["FederationType"]["AllowedValues"] == ["direct", "cognito"]
+
+        # Both conditions must exist
+        conditions = template["Conditions"]
+        assert "UseDirectIAM" in conditions
+        assert "UseCognitoIdentity" in conditions
+
+        # Both role variants must exist
+        resources = template["Resources"]
+        assert "DirectIAMRole" in resources
+        assert "CognitoAuthenticatedRole" in resources
+
+    def test_govcloud_partition_aware(self):
+        """Cognito service principals must select the GovCloud variant when deployed there."""
+        template = self.get_template()
+        conditions = template["Conditions"]
+        assert "IsGovCloudWest" in conditions
+        assert "IsGovCloudEast" in conditions
+
+        # The Cognito role's principal should reference these (verified by string search —
+        # the nested !If chain is awkward to traverse but the string presence is sufficient)
+        import json
+
+        cognito_role = template["Resources"]["CognitoAuthenticatedRole"]
+        serialized = json.dumps(cognito_role, default=str)
+        assert "cognito-identity-us-gov.amazonaws.com" in serialized
+        assert "cognito-identity.us-gov-east-1.amazonaws.com" in serialized
+
+    def test_bedrock_policy_uses_partition_pseudoparameter(self):
+        """ARN construction must use ${AWS::Partition} for multi-partition support."""
+        template = self.get_template()
+        policy = template["Resources"]["BedrockAccessPolicy"]
+        policy_doc = policy["Properties"]["PolicyDocument"]
+
+        # Find any Resource entries — they should contain ${AWS::Partition}, not literal "aws"
+        partition_found = False
+        for stmt in policy_doc["Statement"]:
+            if "Resource" in stmt:
+                resources = stmt["Resource"] if isinstance(stmt["Resource"], list) else [stmt["Resource"]]
+                for r in resources:
+                    if isinstance(r, dict) and "Fn::Sub" in r and "${AWS::Partition}" in r["Fn::Sub"]:
+                        partition_found = True
+                        break
+        assert partition_found, "Bedrock ARNs must use ${AWS::Partition} for GovCloud support"

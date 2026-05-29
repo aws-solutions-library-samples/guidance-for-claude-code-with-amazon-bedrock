@@ -494,27 +494,42 @@ class DistributeCommand(Command):
             "windows": [
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
+                ("otelcol-windows.exe", "otelcol-windows.exe"),
+                ("collector-config.yaml", "collector-config.yaml"),
                 ("install.bat", "install.bat"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p.reg", "cowork-3p.reg"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
                 ("credential-process-linux-arm64", "credential-process-linux-arm64"),
                 ("otel-helper-linux-x64", "otel-helper-linux-x64"),
                 ("otel-helper-linux-arm64", "otel-helper-linux-arm64"),
+                ("otelcol-linux-x64", "otelcol-linux-x64"),
+                ("otelcol-linux-arm64", "otelcol-linux-arm64"),
+                ("otel-helper.sh", "otel-helper.sh"),
+                ("collector-config.yaml", "collector-config.yaml"),
                 ("install.sh", "install.sh"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
             "mac": [
                 ("credential-process-macos-arm64", "credential-process-macos-arm64"),
                 ("credential-process-macos-intel", "credential-process-macos-intel"),
                 ("otel-helper-macos-arm64", "otel-helper-macos-arm64"),
                 ("otel-helper-macos-intel", "otel-helper-macos-intel"),
+                ("otelcol-macos-arm64", "otelcol-macos-arm64"),
+                ("otelcol-macos-intel", "otelcol-macos-intel"),
+                ("otel-helper.sh", "otel-helper.sh"),
+                ("collector-config.yaml", "collector-config.yaml"),
                 ("install.sh", "install.sh"),
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
+                ("cowork-3p.mobileconfig", "cowork-3p.mobileconfig"),
+                ("cowork-3p-config.json", "cowork-3p-config.json"),
             ],
         }
 
@@ -1110,12 +1125,24 @@ class DistributeCommand(Command):
             "otel-helper-linux-x64",
             "otel-helper-linux-arm64",
             "otel-helper-windows.exe",
+            "otel-helper.sh",
+            # OTEL Collector sidecar
+            "otelcol-macos-arm64",
+            "otelcol-macos-intel",
+            "otelcol-linux-x64",
+            "otelcol-linux-arm64",
+            "otelcol-windows.exe",
+            "collector-config.yaml",
             # Installation scripts
             "install.sh",
             "install.bat",
             # Configuration
             "config.json",
             "README.md",
+            # CoWork 3P MDM configs (optional — only present when CoWork is enabled)
+            "cowork-3p.reg",
+            "cowork-3p.mobileconfig",
+            "cowork-3p-config.json",
         ]
 
         # Also include claude-settings directory if it exists
