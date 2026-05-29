@@ -51,6 +51,18 @@ type ProfileConfig struct {
 	// empty to "Project" so older bundles that predate this field keep working.
 	CostAttributionTagKey string `json:"cost_attribution_tag_key,omitempty"`
 
+	// Generic OIDC provider (provider_type == "generic").
+	// Full absolute URLs for IdPs that aren't Okta/Auth0/Azure/Cognito
+	// (e.g. CyberArk, PingFederate, Keycloak, ForgeRock).
+	OIDCIssuerURL             string `json:"oidc_issuer_url,omitempty"`
+	OIDCAuthorizationEndpoint string `json:"oidc_authorization_endpoint,omitempty"`
+	OIDCTokenEndpoint         string `json:"oidc_token_endpoint,omitempty"`
+	OIDCJwksURI               string `json:"oidc_jwks_uri,omitempty"`
+	OIDCThumbprint            string `json:"oidc_thumbprint,omitempty"`
+
+	// Custom OAuth callback port (default 8400). REDIRECT_PORT env var takes precedence.
+	RedirectPort int `json:"redirect_port,omitempty"`
+
 	// Azure AD confidential-client auth. "" or "public" -> PKCE-only public client.
 	// "secret" -> look up client_secret from OS keyring at token-exchange time.
 	// "certificate" -> sign a JWT client assertion with a PEM cert + private key.
