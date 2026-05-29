@@ -6,7 +6,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 
 ### For Organizations
 
-- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, etc.)
+- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, Google, etc.)
 - **AWS SSO / IAM Identity Center**: Native AWS identity path for teams already using IAM Identity Center — no external IdP required
 - **Centralized Access Control**: Manage Claude Code access through your identity provider
 - **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
@@ -44,7 +44,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 
 ## Quick Start
 
-This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, or Cognito User Pools) to provide federated access to Amazon Bedrock.
+This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, Google, or Cognito User Pools) to provide federated access to Amazon Bedrock.
 
 ### What You Need
 
@@ -442,6 +442,8 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Okta](assets/docs/providers/okta-setup.md)
 - [Microsoft Entra ID (Azure AD)](assets/docs/providers/microsoft-entra-id-setup.md)
 - [Auth0](assets/docs/providers/auth0-setup.md)
+- [Google](assets/docs/providers/google-oidc-setup.md)
+- [AWS Cognito User Pool](assets/docs/providers/cognito-user-pool-setup.md)
 - [Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)](assets/docs/providers/generic-oidc-setup.md)
 
 ## License
