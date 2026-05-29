@@ -71,21 +71,28 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     if not profile.monitoring_enabled:
         return
 
+    monitoring_mode = getattr(profile, "monitoring_mode", "central")
+
+    if monitoring_mode == "sidecar":
+        console.print("[dim]Sidecar mode — Cowork telemetry not supported, skipping OTLP config[/dim]")
+        return
+
     monitoring_stack = profile.stack_names.get(
         "monitoring", f"{profile.identity_pool_name}-otel-collector"
     )
-
     try:
         outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
         endpoint = outputs.get("CollectorEndpoint")
-        if endpoint:
-            mdm_config["otlpEndpoint"] = endpoint
-            mdm_config["otlpProtocol"] = "http/protobuf"
-            console.print(f"[dim]OTLP endpoint: {endpoint}[/dim]")
-        else:
-            console.print("[dim]Monitoring stack not found — skipping OTLP config[/dim]")
     except Exception:
         console.print("[dim]Could not query monitoring stack — skipping OTLP config[/dim]")
+        return
+
+    if endpoint:
+        mdm_config["otlpEndpoint"] = endpoint
+        mdm_config["otlpProtocol"] = "http/protobuf"
+        console.print(f"[dim]OTLP endpoint: {endpoint}[/dim]")
+    else:
+        console.print("[dim]Monitoring endpoint not found — skipping OTLP config[/dim]")
 
 
 def _mdm_keys(config: dict) -> dict:

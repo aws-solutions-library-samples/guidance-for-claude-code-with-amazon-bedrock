@@ -848,11 +848,13 @@ class InitCommand(Command):
                     "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
                     "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
                     "  [yellow]-[/yellow] Each machine manages its own collector process\n"
+                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
                 )
                 console.print(
                     "[cyan]Central:[/cyan]\n"
                     "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
                     "  [green]+[/green] Single collector for all users — centralized management\n"
+                    "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
                     "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
                     "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
                     "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"

@@ -32,7 +32,7 @@ Resources:
                 "title": "Total Tokens Used",
                 "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\"})", "step": 60, "label": "Tokens" }] },
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Tokens" }] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
@@ -43,7 +43,7 @@ Resources:
                 "title": "Active Users",
                 "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\"}))", "step": 60, "label": "Users" }] },
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Users" }] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
@@ -54,7 +54,7 @@ Resources:
                 "title": "Sessions",
                 "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.session.count\"})", "step": 60, "label": "Sessions" }] },
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Sessions" }] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
@@ -65,7 +65,7 @@ Resources:
                 "title": "Cache Hit Rate",
                 "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\"}) / sum({\"claude_code.token.usage\"}) * 100", "step": 60, "label": "%" }] },
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\", \"@resource.service.name\"=\"claude-code\"}) / sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}) * 100", "step": 60, "label": "%" }] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
@@ -82,9 +82,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "total", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\"})", "step": 60, "label": "Total Tokens" }
+                  { "id": "total", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Total Tokens" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -95,12 +95,12 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "input", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"input\"})", "step": 60, "label": "Input" },
-                  { "id": "output", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"output\"})", "step": 60, "label": "Output" },
-                  { "id": "cache", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\"})", "step": 60, "label": "Cache Read" },
-                  { "id": "cacheCreate", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheCreation\"})", "step": 60, "label": "Cache Creation" }
+                  { "id": "input", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"input\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Input" },
+                  { "id": "output", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"output\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Output" },
+                  { "id": "cache", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Cache Read" },
+                  { "id": "cacheCreate", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheCreation\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Cache Creation" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -111,9 +111,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.token.usage\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -124,9 +124,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.token.usage\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -137,9 +137,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.cost.usage\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -150,9 +150,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\"}))", "step": 60, "label": "Active Users" }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Active Users" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -168,10 +168,10 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "added", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"added\"})", "step": 60, "label": "Added" },
-                  { "id": "removed", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"removed\"})", "step": 60, "label": "Removed" }
+                  { "id": "added", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"added\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Added" },
+                  { "id": "removed", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"removed\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Removed" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -182,9 +182,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.commit.count\"})", "step": 60, "label": "Commits" }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.commit.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Commits" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -195,9 +195,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.active_time.total\"}) / 3600", "step": 60, "label": "Hours" }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.active_time.total\", \"@resource.service.name\"=\"claude-code\"}) / 3600", "step": 60, "label": "Hours" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -208,9 +208,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.pull_request.count\"})", "step": 60, "label": "PRs" }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.pull_request.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "PRs" }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -221,9 +221,9 @@ Resources:
                 "view": "pie",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (language)({\"claude_code.code_edit_tool.decision\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (language)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -234,9 +234,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (decision)({\"claude_code.code_edit_tool.decision\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (decision)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -247,9 +247,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (tool_name)({\"claude_code.code_edit_tool.decision\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (tool_name)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -265,9 +265,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (department)({\"claude_code.token.usage\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (department)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -278,9 +278,9 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"team.id\")({\"claude_code.token.usage\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"team.id\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false } } }
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
