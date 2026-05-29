@@ -23,7 +23,7 @@ class Profile:
     schema_version: str = "2.0"  # Configuration schema version
     stack_names: dict[str, str] = field(default_factory=dict)
     monitoring_enabled: bool = True
-    monitoring_mode: str = "sidecar"  # "sidecar" (local collector) or "central" (ECS Fargate)
+    monitoring_mode: str = "central"  # "sidecar" (local collector) or "central" (ECS Fargate)
     monitoring_config: dict[str, Any] = field(default_factory=dict)
     analytics_enabled: bool = True  # Analytics pipeline for user metrics
     metrics_log_group: str = "/aws/claude-code/metrics"
@@ -187,6 +187,11 @@ class Profile:
             # If distribution was enabled but no type specified, default to presigned-s3
             if "distribution_type" not in data or data["distribution_type"] is None:
                 data["distribution_type"] = "presigned-s3"
+
+        # Ensure monitoring_mode defaults to "central" for existing profiles
+        # (new profiles created via init will explicitly set "sidecar")
+        if "monitoring_mode" not in data:
+            data["monitoring_mode"] = "central"
 
         # Set default cross-region profile if not present
         if "cross_region_profile" not in data:

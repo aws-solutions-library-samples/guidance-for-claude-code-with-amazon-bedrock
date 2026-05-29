@@ -119,11 +119,13 @@ class DeployCommand(Command):
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "cowork-dashboard":
-                if profile.monitoring_enabled:
-                    stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
-                else:
+                if not profile.monitoring_enabled:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+                if getattr(profile, "monitoring_mode", "central") == "sidecar":
+                    console.print("[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]")
+                    return 1
+                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
             elif stack_arg == "analytics":
                 if profile.monitoring_enabled:
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
@@ -247,7 +249,8 @@ class DeployCommand(Command):
 
             if should_delete:
                 console.print("\n[bold]Cleaning up orphaned stacks...[/bold]\n")
-                for stack_type, stack_name, _status in orphaned_stacks:
+                # Delete in reverse deployment order (dependents first)
+                for stack_type, stack_name, _status in reversed(orphaned_stacks):
                     try:
                         console.print(f"[yellow]Deleting {stack_type} stack: {stack_name}...[/yellow]")
                         cf_manager.delete_stack(stack_name)
@@ -777,7 +780,6 @@ class DeployCommand(Command):
                     "cowork-dashboard", f"{profile.identity_pool_name}-cowork-dashboard"
                 )
                 params = [
-                    f"MetricsLogGroup={profile.metrics_log_group}",
                     f"MetricsRegion={profile.aws_region}",
                 ]
                 return deploy_with_cf(
@@ -1076,7 +1078,6 @@ class DeployCommand(Command):
             template = project_root / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
             stack_name = profile.stack_names.get("cowork-dashboard", f"{profile.identity_pool_name}-cowork-dashboard")
             params = [
-                f"MetricsLogGroup={profile.metrics_log_group}",
                 f"MetricsRegion={region}",
             ]
             print_deploy_cmd(template, stack_name, params)
@@ -1341,6 +1342,7 @@ class DeployCommand(Command):
             "networking": "VPC Networking",
             "monitoring": "OpenTelemetry Collector",
             "dashboard": "CloudWatch Dashboard",
+            "cowork-dashboard": "CoWork CloudWatch Dashboard",
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
             "codebuild": "CodeBuild",
