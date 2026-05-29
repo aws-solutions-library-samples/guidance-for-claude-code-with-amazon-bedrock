@@ -17,7 +17,7 @@ def detect_provider_type_secure(domain: str) -> str:
         domain: The provider domain URL or hostname
 
     Returns:
-        Provider type: "okta", "auth0", "azure", "cognito", or "oidc"
+        Provider type: "okta", "auth0", "azure", "cognito", "google", or "oidc"
     """
     if not domain:
         return "oidc"
@@ -50,6 +50,8 @@ def detect_provider_type_secure(domain: str) -> str:
             return "cognito"
         elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
             return "cognito"
+        elif hostname_lower == "accounts.google.com":
+            return "google"
         else:
             return "oidc"
     except Exception:

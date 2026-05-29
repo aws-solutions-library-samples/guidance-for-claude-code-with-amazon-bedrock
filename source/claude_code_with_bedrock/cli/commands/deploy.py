@@ -380,6 +380,8 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "google": "bedrock-auth-google.yaml",
+                    "generic": "bedrock-auth-generic.yaml",
                 }
 
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
@@ -996,6 +998,8 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "google": "bedrock-auth-google.yaml",
+                    "generic": "bedrock-auth-generic.yaml",
                 }
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
                 template = project_root / "deployment" / "infrastructure" / template_file
