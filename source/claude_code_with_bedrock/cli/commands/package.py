@@ -668,13 +668,14 @@ class PackageCommand(Command):
                 self.line(f"  Building <comment>{output_name}</comment>...")
 
                 env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml)
+                # flags stripped Go binaries. The .syso PE version-info files in
+                # cmd/*/ are auto-linked by the Go compiler to help further.
+                ldflags = "" if plat == "windows" else "-s -w"
                 cmd = [
                     "go", "build",
-                    # -trimpath strips the builder's absolute module/source
-                    # paths from the resulting binary. Without it, `strings`
-                    # on the shipped binary reveals the builder's HOME path.
                     "-trimpath",
-                    "-ldflags", "-s -w",
+                    "-ldflags", ldflags,
                     "-o", str(output_path),
                     f"./cmd/{binary}/",
                 ]
@@ -2091,6 +2092,23 @@ RUN pyinstaller \
                 )
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
+
+        # Add Generic OIDC endpoint fields (CyberArk, PingFederate, Keycloak, ForgeRock, etc.)
+        if profile.provider_type == "generic":
+            for field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+                "oidc_thumbprint",
+            ):
+                value = getattr(profile, field, None)
+                if value:
+                    config[profile_name][field] = value
+
+        # Add custom redirect port if configured
+        if getattr(profile, "redirect_port", None):
+            config[profile_name]["redirect_port"] = profile.redirect_port
 
         # Add quota enforcement settings if configured
         if getattr(profile, "quota_api_endpoint", None):
