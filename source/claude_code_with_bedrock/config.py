@@ -30,6 +30,7 @@ class Profile:
     data_retention_days: int = 90
     firehose_buffer_interval: int = 900
     analytics_debug_mode: bool = False
+    lake_formation_enabled: bool = False  # Account uses Lake Formation; grant LF perms to Firehose role
     allowed_bedrock_regions: list[str] = field(default_factory=list)
     cross_region_profile: str | None = None  # Cross-region profile: "us", "europe", "apac"
     selected_model: str | None = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")

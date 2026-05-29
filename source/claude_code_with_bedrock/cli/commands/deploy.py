@@ -734,6 +734,7 @@ class DeployCommand(Command):
                     f"DataRetentionDays={profile.data_retention_days}",
                     f"FirehoseBufferInterval={profile.firehose_buffer_interval}",
                     f"DebugMode={str(profile.analytics_debug_mode).lower()}",
+                    f"LakeFormationEnabled={str(getattr(profile, 'lake_formation_enabled', False)).lower()}",
                 ]
                 return deploy_with_cf(template, stack_name, params, task_description="Deploying analytics pipeline...")
 
@@ -1012,6 +1013,7 @@ class DeployCommand(Command):
                 f"DataRetentionDays={profile.data_retention_days}",
                 f"FirehoseBufferInterval={profile.firehose_buffer_interval}",
                 f"DebugMode={str(profile.analytics_debug_mode).lower()}",
+                f"LakeFormationEnabled={str(getattr(profile, 'lake_formation_enabled', False)).lower()}",
             ]
             print_deploy_cmd(template, stack_name, params)
 

@@ -980,6 +980,20 @@ class InitCommand(Command):
                         config["analytics"] = {}
                     config["analytics"]["enabled"] = False
 
+                    console.print("")
+                    console.print("[dim]Lake Formation: enable this only if your account already uses[/dim]")
+                    console.print("[dim]AWS Lake Formation to manage Glue Data Catalog access.[/dim]")
+                    console.print("[dim]When enabled, the stack grants the Firehose delivery role the LF[/dim]")
+                    console.print("[dim]permissions it needs on the analytics database and table;[/dim]")
+                    console.print("[dim]otherwise Firehose Parquet conversion fails with[/dim]")
+                    console.print("[dim]'Insufficient Lake Formation permission(s)'.[/dim]")
+                    console.print("[dim]The deploying principal must be a Data Lake Admin.[/dim]")
+                    lake_formation_enabled = questionary.confirm(
+                        "Is Lake Formation enabled in this account?",
+                        default=config.get("analytics", {}).get("lake_formation_enabled", False),
+                    ).ask()
+                    config["analytics"]["lake_formation_enabled"] = lake_formation_enabled
+
                 # Quota monitoring configuration (both modes)
                 console.print("\n[bold]Quota Monitoring[/bold]")
                 console.print("Track per-user token consumption, set limits, and receive alerts")
@@ -1971,6 +1985,7 @@ class InitCommand(Command):
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
             ),
+            lake_formation_enabled=config_data.get("analytics", {}).get("lake_formation_enabled", False),
             allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
             cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
             selected_model=config_data["aws"].get("selected_model"),
@@ -2373,7 +2388,10 @@ class InitCommand(Command):
 
             # Add analytics configuration if present
             if hasattr(profile, "analytics_enabled"):
-                existing_config["analytics"] = {"enabled": profile.analytics_enabled}
+                existing_config["analytics"] = {
+                    "enabled": profile.analytics_enabled,
+                    "lake_formation_enabled": getattr(profile, "lake_formation_enabled", False),
+                }
 
             # Preserve confidential client configuration if present
             # client_secret is never written to config — it lives in the OS keyring
