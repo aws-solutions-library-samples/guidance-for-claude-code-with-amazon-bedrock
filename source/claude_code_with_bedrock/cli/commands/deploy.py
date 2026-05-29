@@ -169,7 +169,10 @@ class DeployCommand(Command):
             if getattr(profile, "sso_enabled", True):
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
-            # Deploy distribution after networking if it's landing-page type
+            # Deploy networking before distribution if landing-page type needs it
+            if profile.enable_distribution and getattr(profile, "distribution_type", "") == "landing-page":
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))            
+
             if profile.enable_distribution:
                 stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
 
@@ -178,7 +181,7 @@ class DeployCommand(Command):
                 monitoring_mode = getattr(profile, "monitoring_mode", "central")
                 if monitoring_mode == "central":
                     vpc_config = profile.monitoring_config or {}
-                    if vpc_config.get("create_vpc", True):
+                    if vpc_config.get("create_vpc", True) and ("networking", "VPC Networking for OTEL Collector") not in stacks_to_deploy:
                         stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
                     stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
                     stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
