@@ -393,6 +393,8 @@ class InitCommand(Command):
                     elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
                         # Handle cognito-idp.{region}.amazonaws.com format (commercial and GovCloud)
                         provider_type = "cognito"
+                    elif hostname_lower == "accounts.google.com":
+                        provider_type = "google"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
             except Exception:
@@ -411,6 +413,7 @@ class InitCommand(Command):
                         questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
                         questionary.Choice("Auth0", value="auth0"),
                         questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                        questionary.Choice("Google", value="google"),
                         questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
                     ],
                     instruction="(Used to select the correct CloudFormation template)",
@@ -1178,6 +1181,7 @@ class InitCommand(Command):
                 questionary.Choice("Azure AD / Entra ID", value="azure"),
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                questionary.Choice("Google", value="google"),
             ]
 
             idp_provider = questionary.select(

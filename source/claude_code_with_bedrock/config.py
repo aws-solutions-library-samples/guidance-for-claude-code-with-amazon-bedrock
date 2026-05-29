@@ -36,7 +36,7 @@ class Profile:
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "generic"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
 
     # Generic OIDC provider configuration (provider_type == "generic")
@@ -173,6 +173,8 @@ class Profile:
                             data["provider_type"] = "azure"
                         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                             data["provider_type"] = "cognito"
+                        elif hostname_lower == "accounts.google.com":
+                            data["provider_type"] = "google"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 

@@ -124,7 +124,7 @@ class ProfileValidator:
 
         # Validate provider type if specified
         provider_type = profile_data.get("provider_type")
-        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito", "generic"]:
+        if provider_type and provider_type not in ["okta", "auth0", "azure", "cognito", "google", "generic"]:
             warnings.append(f"Unknown provider_type: {provider_type}")
 
         # Conditional validation: Cognito requires user_pool_id
