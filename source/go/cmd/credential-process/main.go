@@ -536,20 +536,35 @@ func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
 		debugPrint("Cached id_token is expired, silent refresh not possible")
 		return nil
 	}
-	authResult := &oidc.AuthResult{IDToken: token, TokenClaims: claims}
-	creds, err := a.getAWSCredentials(authResult)
-	if err != nil {
-		debugPrint("Silent refresh failed, will require browser auth: %v", err)
+	// Use a short timeout for silent refresh — if STS is slow, fall through to browser auth
+	done := make(chan *federation.AWSCredentials, 1)
+	go func() {
+		authResult := &oidc.AuthResult{IDToken: token, TokenClaims: claims}
+		creds, err := a.getAWSCredentials(authResult)
+		if err != nil {
+			debugPrint("Silent refresh failed, will require browser auth: %v", err)
+			done <- nil
+			return
+		}
+		done <- creds
+	}()
+	select {
+	case creds := <-done:
+		if creds == nil {
+			return nil
+		}
+		if saveErr := a.saveCredentials(creds); saveErr != nil {
+			debugPrint("Failed to save silently-refreshed credentials: %v", saveErr)
+		}
+		// Re-save monitoring token to refresh its expiry tracking
+		_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
+			token, map[string]interface{}(claims))
+		debugPrint("Silent credential refresh succeeded")
+		return creds
+	case <-time.After(10 * time.Second):
+		debugPrint("Silent refresh timed out (10s), falling through to browser auth")
 		return nil
 	}
-	if saveErr := a.saveCredentials(creds); saveErr != nil {
-		debugPrint("Failed to save silently-refreshed credentials: %v", saveErr)
-	}
-	// Re-save monitoring token to refresh its expiry tracking
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		token, map[string]interface{}(claims))
-	debugPrint("Silent credential refresh succeeded")
-	return creds
 }
 
 func (a *credentialApp) shouldRecheckQuota() bool {
