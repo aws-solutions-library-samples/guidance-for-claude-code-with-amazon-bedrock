@@ -448,15 +448,15 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 			TokenURL:     a.cfg.OIDCTokenEndpoint,
 		}
 	}
-	return oidc.Authenticate(
-		a.cfg.ProviderDomain,
-		a.cfg.ClientID,
-		a.providerType,
-		a.cfg.OktaAuthServerID, // "" or "default" -> default CAS; anything else rewrites endpoints
-		a.redirectPort,
-		confidential,
-		generic,
-	)
+	return oidc.Authenticate(oidc.AuthOptions{
+		ProviderDomain:   a.cfg.ProviderDomain,
+		ClientID:         a.cfg.ClientID,
+		ProviderType:     a.providerType,
+		OktaAuthServerID: a.cfg.OktaAuthServerID,
+		RedirectPort:     a.redirectPort,
+		Confidential:     confidential,
+		Generic:          generic,
+	})
 }
 
 // resolveConfidentialAuth loads Azure confidential-client material -- either a
