@@ -1,6 +1,6 @@
 # ABOUTME: Lambda function for real-time quota checking before credential issuance
 # ABOUTME: Returns allowed/blocked status based on user quota policy and current usage
-# ABOUTME: Requires JWT authentication - extracts user identity from API Gateway JWT Authorizer claims
+# ABOUTME: Extracts user identity from JWT claims (OIDC) or IAM caller ARN (IDC) for quota enforcement
 
 import json
 import boto3
@@ -53,27 +53,38 @@ def lambda_handler(event, context):
         JSON response with allowed status and usage details
     """
     try:
-        # Extract validated claims from API Gateway JWT Authorizer
-        # The JWT Authorizer validates the token before Lambda is invoked
+        # Extract user identity from either JWT claims (OIDC) or IAM caller identity (IDC)
+        email = None
+        groups = []
+
+        # Path 1: JWT Authorizer (OIDC users)
         authorizer_context = event.get("requestContext", {}).get("authorizer", {})
         jwt_claims = authorizer_context.get("jwt", {}).get("claims", {})
 
-        # Email from validated JWT claims (secure - no parameter tampering possible)
-        email = jwt_claims.get("email")
+        if jwt_claims:
+            email = jwt_claims.get("email")
+            groups = extract_groups_from_claims(jwt_claims)
 
-        # Extract groups from various possible JWT claims
-        groups = extract_groups_from_claims(jwt_claims)
+        # Path 2: IAM identity (IDC users) — extract email from caller ARN
+        # ARN format: arn:aws:sts::ACCOUNT:assumed-role/AWSReservedSSO_.../user@company.com
+        if not email:
+            identity = event.get("requestContext", {}).get("identity", {})
+            caller_arn = identity.get("caller", "") or identity.get("userArn", "")
+            if "/" in caller_arn:
+                session_name = caller_arn.split("/")[-1]
+                if "@" in session_name:
+                    email = session_name
+                    print(f"Identity resolved from IAM ARN: {email}")
 
         if not email:
-            # JWT is valid but missing email claim
-            # Security: Default to fail-closed (block) unless explicitly configured to allow
-            print(f"JWT missing email claim. Available claims: {list(jwt_claims.keys())}")
+            # Neither JWT nor IAM identity resolved
+            print(f"No user identity found. JWT claims: {list(jwt_claims.keys())}")
             allow_missing_email = MISSING_EMAIL_ENFORCEMENT != "block"
             return build_response(200, {
-                "error": "No email claim in JWT token",
+                "error": "No user identity found (no JWT email claim or IAM session name)",
                 "allowed": allow_missing_email,
-                "reason": "missing_email_claim",
-                "message": "JWT token does not contain email claim" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
+                "reason": "missing_identity",
+                "message": "Could not resolve user identity" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
             })
 
         # 1. Resolve the effective quota policy for this user

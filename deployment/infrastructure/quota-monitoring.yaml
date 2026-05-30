@@ -59,6 +59,10 @@ Parameters:
     Type: String
     Description: OIDC client ID (audience) for JWT validation
 
+
+Conditions:
+  HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
+
 Resources:
   # DynamoDB table for quota policies (user, group, default levels)
   QuotaPolicies:
@@ -295,6 +299,7 @@ Resources:
 
   # JWT Authorizer for OIDC token validation
   QuotaCheckAuthorizer:
+    Condition: HasJwtAuth
     Type: AWS::ApiGatewayV2::Authorizer
     Properties:
       ApiId: !Ref QuotaCheckApi
@@ -316,15 +321,25 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check (JWT authenticated)
-  QuotaCheckRoute:
+  # Route for GET /check — JWT when OIDC configured, IAM when IDC/none
+  QuotaCheckRouteJWT:
     Type: AWS::ApiGatewayV2::Route
+    Condition: HasJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
       AuthorizerId: !Ref QuotaCheckAuthorizer
       AuthorizationType: JWT
+
+  QuotaCheckRouteIAM:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: !Not [HasJwtAuth]
+    Properties:
+      ApiId: !Ref QuotaCheckApi
+      RouteKey: 'GET /check'
+      Target: !Sub 'integrations/${QuotaCheckIntegration}'
+      AuthorizationType: AWS_IAM
 
   # Default stage with auto-deploy
   QuotaCheckStage:
