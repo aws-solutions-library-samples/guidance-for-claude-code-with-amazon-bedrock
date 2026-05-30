@@ -453,6 +453,27 @@ class DeployCommand(Command):
                             f"CognitoUserPoolDomain={cognito_domain}",
                         ]
                     )
+                elif provider_type == "google":
+                    params.extend(
+                        [
+                            f"GoogleDomain={profile.provider_domain}",
+                            f"GoogleClientId={profile.client_id}",
+                        ]
+                    )
+                elif provider_type == "generic":
+                    if not (profile.oidc_issuer_url and profile.oidc_thumbprint):
+                        console.print(
+                            "[red]Generic OIDC provider requires oidc_issuer_url and oidc_thumbprint."
+                            " Re-run `ccwb init` to configure them.[/red]"
+                        )
+                        return 1
+                    params.extend(
+                        [
+                            f"OidcIssuerUrl={profile.oidc_issuer_url}",
+                            f"OidcClientId={profile.client_id}",
+                            f"OidcThumbprintList={profile.oidc_thumbprint}",
+                        ]
+                    )
 
                 # Use profile regions, or fall back to all known Bedrock regions
                 bedrock_regions = profile.allowed_bedrock_regions
