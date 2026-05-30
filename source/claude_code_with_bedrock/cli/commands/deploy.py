@@ -443,6 +443,13 @@ class DeployCommand(Command):
                             f"CognitoUserPoolDomain={cognito_domain}",
                         ]
                     )
+                elif provider_type == "google":
+                    params.extend(
+                        [
+                            f"GoogleDomain={profile.provider_domain}",
+                            f"GoogleClientId={profile.client_id}",
+                        ]
+                    )
                 elif provider_type == "generic":
                     if not (profile.oidc_issuer_url and profile.oidc_thumbprint):
                         console.print(
