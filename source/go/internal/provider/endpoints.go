@@ -60,6 +60,14 @@ var Configs = map[string]Config{
 		ResponseType:      "code",
 		ResponseMode:      "query",
 	},
+	"generic": {
+		Name:              "Generic OIDC",
+		AuthorizeEndpoint: "", // Unused — full URLs come from ProfileConfig
+		TokenEndpoint:     "", // Unused — full URLs come from ProfileConfig
+		Scopes:            "openid profile email",
+		ResponseType:      "code",
+		ResponseMode:      "query",
+	},
 }
 
 // ConfigFor returns the OIDC configuration for a provider, applying per-

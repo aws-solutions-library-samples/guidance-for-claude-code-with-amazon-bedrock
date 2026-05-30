@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "ClaudeCode": {
+      "provider_domain": "abc1234.id.cyberark.cloud",
+      "client_id": "bedrock-cli-prod",
+      "provider_type": "generic",
+      "aws_region": "us-east-1",
+      "credential_storage": "keyring",
+      "federation_type": "direct",
+      "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockFederatedRole",
+      "max_session_duration": 43200,
+      "oidc_issuer_url": "https://abc1234.id.cyberark.cloud",
+      "oidc_authorization_endpoint": "https://abc1234.id.cyberark.cloud/OAuth2/Authorize/myapp",
+      "oidc_token_endpoint": "https://abc1234.id.cyberark.cloud/OAuth2/Token/myapp",
+      "oidc_jwks_uri": "https://abc1234.id.cyberark.cloud/OAuth2/Keys/myapp",
+      "oidc_thumbprint": "9e99a48a9960b14926bb7f3b02e22da2b0ab7280",
+      "redirect_port": 8401
+    }
+  }
+}
