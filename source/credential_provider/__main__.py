@@ -71,6 +71,14 @@ PROVIDER_CONFIGS = {
         "response_type": "code",
         "response_mode": "query",
     },
+    "google": {
+        "name": "Google",
+        "authorize_endpoint": "/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "scopes": "openid profile email",
+        "response_type": "code",
+        "response_mode": "query",
+    },
     # Generic OIDC: paths come from the profile (oidc_authorization_endpoint /
     # oidc_token_endpoint), so we leave these as empty placeholders.
     "generic": {
@@ -327,11 +335,13 @@ class MultiProviderAuth:
             elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                 # Cognito User Pool domain format: my-domain.auth.{region}.amazoncognito.com
                 return "cognito"
+            elif hostname_lower == "accounts.google.com":
+                return "google"
             else:
                 # Fail with clear error for unknown providers
                 raise ValueError(
                     f"Unable to auto-detect provider type for domain '{domain}'. "
-                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool. "
+                    f"Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool, Google. "
                     f"Please check your provider domain configuration."
                 )
         except ValueError:
@@ -1013,10 +1023,13 @@ class MultiProviderAuth:
 
         # Build token endpoint URL (configured value wins for generic OIDC)
         configured_token = self.config.get("oidc_token_endpoint")
+        token_endpoint = self.provider_config["token_endpoint"]
         if configured_token:
             token_url = configured_token
+        elif token_endpoint.startswith("https://"):
+            token_url = token_endpoint
         else:
-            token_url = f"{base_url}{self.provider_config['token_endpoint']}"
+            token_url = f"{base_url}{token_endpoint}"
 
         # Confidential client: inject client_secret or certificate assertion
         if self.config.get("client_certificate_path") and self.config.get("client_certificate_key_path"):

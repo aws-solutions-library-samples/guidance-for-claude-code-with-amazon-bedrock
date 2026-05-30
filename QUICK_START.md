@@ -50,6 +50,7 @@ This guide covers the **AWS infrastructure** side of the deployment. It assumes 
 | **Okta** | [Okta Setup Guide](assets/docs/providers/okta-setup.md) |
 | **Microsoft Entra ID (Azure AD)** | [Microsoft Entra ID Setup Guide](assets/docs/providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [Auth0 Setup Guide](assets/docs/providers/auth0-setup.md) |
+| **Google** | [Google Setup Guide](assets/docs/providers/google-oidc-setup.md) |
 | **AWS Cognito User Pool** | [Cognito User Pool Setup Guide](assets/docs/providers/cognito-user-pool-setup.md) |
 | **PingFederate, Keycloak, ForgeRock, or other generic OIDC** | [Generic OIDC Setup Guide](assets/docs/providers/generic-oidc-setup.md) |
 

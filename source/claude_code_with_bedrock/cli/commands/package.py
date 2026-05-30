@@ -1944,6 +1944,11 @@ RUN pyinstaller \
         if hasattr(profile, "selected_model") and profile.selected_model:
             config[profile_name]["selected_model"] = profile.selected_model
 
+        # Google OAuth requires client_secret for server-side token exchange (PKCE alone
+        # is insufficient for the installed-app flow used by the credential-process binary).
+        if getattr(profile, "provider_type", None) == "google" and getattr(profile, "client_secret", None):
+            config[profile_name]["client_secret"] = profile.client_secret
+
         # Add confidential client fields for Azure AD if present.
         # client_secret is never written to config.json — it lives in the OS keyring.
         # End users set it with: credential-process --set-client-secret --profile <profile>

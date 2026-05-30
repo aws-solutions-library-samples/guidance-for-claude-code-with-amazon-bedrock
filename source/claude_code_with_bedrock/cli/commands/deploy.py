@@ -373,6 +373,7 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "google": "bedrock-auth-google.yaml",
                     "generic": "bedrock-auth-generic.yaml",
                 }
 
@@ -443,6 +444,13 @@ class DeployCommand(Command):
                             f"CognitoUserPoolId={profile.cognito_user_pool_id}",
                             f"CognitoUserPoolClientId={profile.client_id}",
                             f"CognitoUserPoolDomain={cognito_domain}",
+                        ]
+                    )
+                elif provider_type == "google":
+                    params.extend(
+                        [
+                            f"GoogleDomain={profile.provider_domain}",
+                            f"GoogleClientId={profile.client_id}",
                         ]
                     )
                 elif provider_type == "generic":
@@ -912,6 +920,7 @@ class DeployCommand(Command):
                     "auth0": "bedrock-auth-auth0.yaml",
                     "azure": "bedrock-auth-azure.yaml",
                     "cognito": "bedrock-auth-cognito-pool.yaml",
+                    "google": "bedrock-auth-google.yaml",
                     "generic": "bedrock-auth-generic.yaml",
                 }
                 template_file = template_map.get(provider_type, "bedrock-auth-okta.yaml")
