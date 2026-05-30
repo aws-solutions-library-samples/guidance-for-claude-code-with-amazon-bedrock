@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cost estimator Lambda — computes per-model token cost from CloudWatch metrics'
+
+Parameters:
+  MetricsNamespace:
+    Type: String
+    Default: ClaudeCode
+    Description: CloudWatch metrics namespace
+
+  ScheduleExpression:
+    Type: String
+    Default: 'rate(1 hour)'
+    Description: How often to run cost estimation
+
+Resources:
+  CostEstimatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-cost-estimator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CloudWatchMetricsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                Resource: '*'
+
+  CostEstimatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-cost-estimator'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CostEstimatorRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          METRICS_NAMESPACE: !Ref MetricsNamespace
+      Code:
+        ZipFile: |
+          # Placeholder — actual code is in lambda-functions/cost_estimator/index.py
+          # Deployed via aws cloudformation package --s3-bucket
+          def lambda_handler(event, context):
+              return {"statusCode": 200}
+
+  CostEstimatorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-cost-schedule'
+      Description: Trigger cost estimation hourly
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Id: CostEstimatorTarget
+          Arn: !GetAtt CostEstimatorFunction.Arn
+
+  CostEstimatorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CostEstimatorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CostEstimatorSchedule.Arn
+
+Outputs:
+  CostEstimatorFunctionArn:
+    Description: ARN of the cost estimator Lambda
+    Value: !GetAtt CostEstimatorFunction.Arn
+
+  ScheduleArn:
+    Description: ARN of the EventBridge schedule rule
+    Value: !GetAtt CostEstimatorSchedule.Arn
