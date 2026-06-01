@@ -19,9 +19,9 @@
 # and adds ~/claude-code-with-bedrock/bin to PATH via the appropriate shell rc.
 #
 # OPTING OUT:
-#   Per-invocation:  use the absolute path to the real claude binary directly, e.g.
-#                    ~/.local/bin/claude (Anthropic native installer) or
-#                    $(npm config get prefix)/bin/claude (npm install).
+#   Per-invocation:  use the absolute path to the real claude binary directly
+#                    (the binary installed by the "AI For Everyone" package),
+#                    typically ~/.local/bin/claude.
 #                    Do NOT use `which -a claude | tail -1` — that is unreliable when
 #                    more than two claude entries exist on PATH.
 #   Permanently:     remove the claude-otel-path line from your shell rc and restart
@@ -129,10 +129,11 @@ _cc_detect_git_repo() {
 # Find the real claude binary before we do anything else.
 _real_claude="$(_cc_real_claude)"
 if [ -z "$_real_claude" ]; then
-    printf 'claude shim: could not find the real claude binary on PATH\n' >&2
-    printf 'Install Claude Code via the Anthropic native installer (recommended):\n' >&2
-    printf '  https://claude.ai/download\n' >&2
-    printf 'or via npm: npm install -g @anthropic-ai/claude-code\n' >&2
+    printf 'claude shim: could not find the real claude binary on PATH.\n' >&2
+    printf 'The Claude Code binary is installed by the "AI For Everyone" package,\n' >&2
+    printf 'separate from this "Claude Code Auth" package. (Re)install "AI For Everyone"\n' >&2
+    printf 'and restart your terminal. Setup guide:\n' >&2
+    printf '  https://app.notion.com/p/Claude-Code-for-Everyone-User-Onboarding-Guide-2b03c6b5fdc18076b33be1ab6713e80d#2f63c6b5fdc180cb8e16c1f093909b83\n' >&2
     exit 127
 fi
 
