@@ -652,6 +652,7 @@ class DistributeCommand(Command):
             # Installation scripts
             "install.sh",
             "install.bat",
+            "claude",
             # Configuration
             "config.json",
             "README.md",

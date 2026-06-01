@@ -73,6 +73,54 @@ class CleanupCommand(Command):
         if claude_settings.exists():
             items_to_remove.append(("File", str(claude_settings), "Claude Code telemetry settings"))
 
+        # Check for OTEL PATH line in shell rc files (new shim installer uses 'claude-otel-path'
+        # marker; old sourced-function installer used 'claude-otel-wrapper' — clean up both).
+        # Use anchored patterns that match only the installer-written line shapes, not bare
+        # substrings that could accidentally match unrelated user lines.
+        _OTEL_PATH_MARKER = "claude-otel-path"
+        _OTEL_WRAPPER_MARKER = "claude-otel-wrapper"  # legacy marker from old installs
+        # Installer-written line shapes (anchored match for deletion):
+        #   new:    export PATH="$HOME/claude-code-with-bedrock/bin:$PATH"  # claude-otel-path
+        #   legacy: [ -f "…/claude-otel-wrapper.sh" ] && source …  # claude-otel-wrapper
+        _OTEL_PATH_LINE_ANCHOR = "claude-code-with-bedrock/bin"   # present only in the installer PATH line
+        _OTEL_WRAPPER_LINE_ANCHOR = "claude-otel-wrapper.sh"      # present only in the legacy source line
+        # Installer comment prefix — used to remove the preceding comment during cleanup.
+        _OTEL_COMMENT_PREFIX = "# Claude Code OTEL"
+
+        def _is_otel_path_line(line: str) -> bool:
+            """Return True iff this line is an installer-written OTEL PATH / wrapper entry."""
+            return (
+                (_OTEL_PATH_MARKER in line and _OTEL_PATH_LINE_ANCHOR in line)
+                or (_OTEL_WRAPPER_MARKER in line and _OTEL_WRAPPER_LINE_ANCHOR in line)
+            )
+
+        def _file_has_otel_line(content: str) -> bool:
+            return any(_is_otel_path_line(l) for l in content.splitlines(keepends=True))
+
+        rc_files_with_otel = []
+        for rc_path in [
+            Path.home() / ".zshrc",
+            Path.home() / ".bashrc",
+            Path.home() / ".bash_profile",
+            Path.home() / ".profile",
+        ]:
+            if rc_path.exists():
+                try:
+                    with open(rc_path) as f:
+                        content = f.read()
+                    if _file_has_otel_line(content):
+                        rc_files_with_otel.append(rc_path)
+                        items_to_remove.append(
+                            ("Shell rc", str(rc_path), "Claude Code OTEL PATH / wrapper line")
+                        )
+                except OSError:
+                    pass
+
+        # Check for fish conf.d drop-in
+        fish_conf = Path.home() / ".config" / "fish" / "conf.d" / "claude-otel-path.fish"
+        if fish_conf.exists():
+            items_to_remove.append(("File", str(fish_conf), "Claude Code OTEL fish PATH config"))
+
         if not items_to_remove:
             console.print("[green]No authentication components found to clean up.[/green]")
             return 0
@@ -149,6 +197,49 @@ class CleanupCommand(Command):
                     console.print(f"✓ Removed empty directory {claude_dir}")
             except Exception as e:
                 console.print(f"[red]✗ Failed to remove Claude settings: {e}[/red]")
+
+        # Remove OTEL PATH / wrapper lines from shell rc files.
+        # Handles both the new 'claude-otel-path' marker and the legacy 'claude-otel-wrapper' marker.
+        # Only remove lines that match the anchored installer-line shapes (not bare substring).
+        # Also remove the preceding installer comment (starts with _OTEL_COMMENT_PREFIX)
+        # and any blank line before it, so uninstall leaves the rc file byte-identical.
+        for rc_path in rc_files_with_otel:
+            try:
+                with open(rc_path) as f:
+                    lines = f.readlines()
+                new_lines = []
+                for line in lines:
+                    if _is_otel_path_line(line):
+                        # Remove the installer comment line immediately before this one.
+                        # The comment may or may not contain a marker — match by prefix text.
+                        while (
+                            new_lines
+                            and new_lines[-1].strip().startswith("#")
+                            and (
+                                _OTEL_PATH_MARKER in new_lines[-1]
+                                or _OTEL_WRAPPER_MARKER in new_lines[-1]
+                                or new_lines[-1].strip().startswith(_OTEL_COMMENT_PREFIX)
+                            )
+                        ):
+                            new_lines.pop()
+                        # Remove an orphaned blank line left before the comment block.
+                        if new_lines and new_lines[-1].strip() == "":
+                            new_lines.pop()
+                    else:
+                        new_lines.append(line)
+                with open(rc_path, "w") as f:
+                    f.writelines(new_lines)
+                console.print(f"✓ Removed OTEL PATH line from {rc_path}")
+            except Exception as e:
+                console.print(f"[red]✗ Failed to update {rc_path}: {e}[/red]")
+
+        # Remove fish conf.d drop-in
+        if fish_conf.exists():
+            try:
+                fish_conf.unlink()
+                console.print(f"✓ Removed {fish_conf}")
+            except Exception as e:
+                console.print(f"[red]✗ Failed to remove {fish_conf}: {e}[/red]")
 
         console.print("\n[green]Cleanup completed![/green]")
 

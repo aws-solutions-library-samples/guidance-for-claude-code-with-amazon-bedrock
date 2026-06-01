@@ -6,6 +6,7 @@
 import json
 import os
 import platform
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -338,6 +339,10 @@ class PackageCommand(Command):
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
         self._create_installer(output_dir, profile, built_executables, built_otel_helpers)
+
+        # Create OTEL claude shim (executable placed in bin/ on PATH; works in any shell)
+        console.print("[cyan]Creating OTEL claude shim...[/cyan]")
+        self._create_wrapper(output_dir)
 
         # Create documentation
         console.print("[cyan]Creating documentation...[/cyan]")
@@ -1921,6 +1926,78 @@ echo "✓ Wrote [profile ClaudeCode] to ~/.aws/config"
 echo "Setting up OpenTelemetry resource attributes..."
 ~/claude-code-with-bedrock/credential-process --setup-otel-attrs
 
+# Install OTEL claude shim (adds git.repo to telemetry for any shell)
+mkdir -p ~/claude-code-with-bedrock/bin
+cp claude ~/claude-code-with-bedrock/bin/claude
+chmod +x ~/claude-code-with-bedrock/bin/claude
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  xattr -r -d com.apple.quarantine ~/claude-code-with-bedrock/bin/claude 2>/dev/null || true
+fi
+echo "✓ Claude shim installed"
+
+# Ensure ~/claude-code-with-bedrock/bin is on PATH (rustup-style, per shell)
+PATH_LINE='export PATH="$HOME/claude-code-with-bedrock/bin:$PATH"  # claude-otel-path'
+PATH_MARKER='claude-otel-path'
+
+SHELL_NAME="$(basename "${{SHELL:-}}")"
+RC_FILE=""
+case "$SHELL_NAME" in
+  zsh)  RC_FILE="$HOME/.zshrc" ;;
+  bash) RC_FILE="$HOME/.bashrc" ;;
+esac
+
+# bash on macOS — login shells read .bash_profile, not .bashrc.
+# Write to both so PATH is set regardless of login vs non-login interactive shell.
+BASH_PROFILE_FILE=""
+if [ "$SHELL_NAME" = "bash" ] && [[ "$OSTYPE" == "darwin"* ]]; then
+  BASH_PROFILE_FILE="$HOME/.bash_profile"
+fi
+
+_add_path_to_rc() {{
+  local rc="$1"
+  touch "$rc"
+  if ! grep -qF "$PATH_MARKER" "$rc"; then
+    printf '\\n# Claude Code OTEL shim (adds git.repo to telemetry)\\n%s\\n' "$PATH_LINE" >> "$rc"
+    echo "✓ PATH configured in $rc"
+    echo "  Restart your shell or run: source $rc"
+  else
+    echo "✓ PATH already configured in $rc"
+  fi
+}}
+
+if [ "$SHELL_NAME" = "fish" ]; then
+  FISH_CONF_DIR="$HOME/.config/fish/conf.d"
+  FISH_CONF="$FISH_CONF_DIR/claude-otel-path.fish"
+  mkdir -p "$FISH_CONF_DIR"
+  if [ ! -f "$FISH_CONF" ]; then
+    printf '# Claude Code OTEL shim PATH (adds git.repo to telemetry)\\nfish_add_path $HOME/claude-code-with-bedrock/bin\\n' > "$FISH_CONF"
+    echo "✓ PATH configured for fish in $FISH_CONF"
+    echo "  Start a new fish session to activate"
+  else
+    echo "✓ fish PATH already configured in $FISH_CONF"
+  fi
+elif [ -n "$RC_FILE" ]; then
+  _add_path_to_rc "$RC_FILE"
+  # On macOS bash, also add to .bash_profile for login shells.
+  if [ -n "$BASH_PROFILE_FILE" ]; then
+    _add_path_to_rc "$BASH_PROFILE_FILE"
+  fi
+else
+  # POSIX fallback: also try ~/.profile for login shells
+  PROFILE="$HOME/.profile"
+  touch "$PROFILE"
+  if ! grep -qF "$PATH_MARKER" "$PROFILE"; then
+    printf '\\n# Claude Code OTEL shim (adds git.repo to telemetry)\\n%s\\n' "$PATH_LINE" >> "$PROFILE"
+    echo "✓ PATH configured in $PROFILE (login shells)"
+    echo "  Restart your shell or run: . $PROFILE"
+  else
+    echo "✓ PATH already configured in $PROFILE"
+  fi
+  echo "⚠ Unrecognized shell ($SHELL_NAME). If the above did not work, add this"
+  echo "  line manually to your shell rc file:"
+  echo "  $PATH_LINE"
+fi
+
 # Apply Claude Desktop (CoWork 3P) configuration profile on macOS if present.
 # `open` launches System Settings > Profiles so the user can review and click
 # Install. macOS does not allow silent installation of unsigned configuration
@@ -1955,6 +2032,25 @@ echo
             self._create_windows_installer(output_dir, profile)
 
         return installer_path
+
+    def _create_wrapper(self, output_dir: Path) -> Path:
+        """Copy the OTEL claude shim into the distribution package.
+
+        The source of truth is source/wrapper/claude.
+        It is a POSIX sh executable that, on every invocation, reads per-user
+        identity attrs from ~/claude-code-with-bedrock/otel-identity (written by
+        credential-process) and detects git.repo from the cwd, then execs the real
+        claude binary with OTEL_RESOURCE_ATTRIBUTES set for that process only.
+        Because it is a real executable (not a sourced function) it works under
+        any shell once ~/claude-code-with-bedrock/bin is on PATH.
+        """
+        # Resolve relative to this file: source/claude_code_with_bedrock/cli/commands/package.py
+        # → go up 4 levels to source/, then into wrapper/
+        source_file = Path(__file__).parent.parent.parent.parent / "wrapper" / "claude"
+        wrapper_path = output_dir / "claude"
+        shutil.copy2(source_file, wrapper_path)
+        wrapper_path.chmod(0o755)  # executable shim, not sourced
+        return wrapper_path
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
@@ -2365,8 +2461,6 @@ Available metrics include:
                                 "OTEL_LOGS_EXPORTER": "otlp",
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-                                # Add basic OTEL resource attributes for multi-team support
-                                "OTEL_RESOURCE_ATTRIBUTES": "department=engineering,team.id=default,cost_center=default,organization=default",
                             }
                         )
 

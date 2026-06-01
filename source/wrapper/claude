@@ -1,0 +1,156 @@
+#!/bin/sh
+# claude — per-invocation OTEL_RESOURCE_ATTRIBUTES injection shim for Claude Code.
+#
+# This is an EXECUTABLE SHIM (not a sourced function). Place it in a directory
+# that appears before the real claude binary on PATH, e.g.:
+#   ~/claude-code-with-bedrock/bin/claude
+#
+# On every invocation it:
+#   1. Reads per-user identity from ~/claude-code-with-bedrock/otel-identity
+#      (written by credential-process at install / re-auth).
+#   2. Detects the current git org/repo from $PWD.
+#   3. Exports OTEL_RESOURCE_ATTRIBUTES = identity + git.repo for this process only.
+#   4. Execs the real claude binary found later on PATH (never itself).
+#
+# Because this is a real executable, it works under ANY shell (bash, zsh, fish,
+# nushell, tcsh, sh, …) and in IDE-spawned non-login shells — no rc sourcing needed.
+#
+# INSTALLATION: install.sh places this file at ~/claude-code-with-bedrock/bin/claude
+# and adds ~/claude-code-with-bedrock/bin to PATH via the appropriate shell rc.
+#
+# OPTING OUT:
+#   Per-invocation:  use the absolute path to the real claude binary directly, e.g.
+#                    ~/.local/bin/claude (Anthropic native installer) or
+#                    $(npm config get prefix)/bin/claude (npm install).
+#                    Do NOT use `which -a claude | tail -1` — that is unreliable when
+#                    more than two claude entries exist on PATH.
+#   Permanently:     remove the claude-otel-path line from your shell rc and restart
+#                    your shell.
+#
+# COVERAGE NOTE:
+#   Fires for any session where ~/claude-code-with-bedrock/bin appears on PATH — interactive
+#   terminals, IDE integrated terminals that inherit the login environment, etc.
+#   Sessions in environments where PATH is not inherited (some IDE extension launch modes,
+#   Claude Desktop) will bypass this shim. Measure the gap in Honeycomb by filtering
+#   events where git.repo is absent.
+
+_CC_OTEL_IDENTITY_FILE="${CC_OTEL_IDENTITY_FILE:-$HOME/claude-code-with-bedrock/otel-identity}"
+
+# _cc_real_claude — find the first `claude` binary on PATH that is not this shim.
+# Recursion avoidance: resolve our own directory AND our own path, then walk PATH
+# skipping any candidate that resolves to the same directory or the same file.
+_cc_real_claude() {
+    # Resolve the canonical directory and path of this script (POSIX-safe).
+    _shim_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P 2>/dev/null)" || _shim_dir=""
+    # Build the shim's own canonical path for file-identity comparison (second guard).
+    if [ -n "$_shim_dir" ]; then
+        _shim_self="$_shim_dir/$(basename "$0")"
+    else
+        _shim_self=""
+    fi
+
+    # Walk colon-separated PATH entries looking for a `claude` that is not us.
+    _saved_ifs="$IFS"
+    IFS=':'
+    for _dir in $PATH; do
+        IFS="$_saved_ifs"
+        [ -z "$_dir" ] && _dir="."
+        _candidate="$_dir/claude"
+
+        # Guard 1: skip if this directory resolves to the shim's own directory.
+        if [ -n "$_shim_dir" ]; then
+            _candidate_dir="$(cd "$_dir" 2>/dev/null && pwd -P 2>/dev/null)" || _candidate_dir=""
+            [ "$_candidate_dir" = "$_shim_dir" ] && { IFS=':'; continue; }
+        fi
+
+        if [ -f "$_candidate" ] && [ -x "$_candidate" ]; then
+            # Guard 2: skip if the candidate resolves to the shim's own file,
+            # even when shim-dir resolution failed (defense-in-depth against fork bomb).
+            if [ -n "$_shim_self" ]; then
+                _candidate_real="$(cd "$(dirname "$_candidate")" 2>/dev/null && pwd -P 2>/dev/null)/$(basename "$_candidate")" || _candidate_real=""
+                [ "$_candidate_real" = "$_shim_self" ] && { IFS=':'; continue; }
+            fi
+            printf '%s' "$_candidate"
+            IFS="$_saved_ifs"
+            return 0
+        fi
+        IFS=':'
+    done
+    IFS="$_saved_ifs"
+    return 1
+}
+
+# _cc_detect_git_repo DIR — prints "org/repo" (or toplevel dirname fallback), escaped for
+# use as a W3C Baggage / OTEL_RESOURCE_ATTRIBUTES value (backslash, comma, equals escaped).
+# Prints nothing if DIR is not inside a git work-tree.
+# Uses only POSIX sh constructs (no [[ ]], no BASH_REMATCH).
+_cc_detect_git_repo() {
+    _dir="${1:-.}"
+    git -C "$_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+    _repo_id=""
+    # Try origin first; fall back to the first available remote.
+    _remote_url="$(git -C "$_dir" remote get-url origin 2>/dev/null)" || true
+    if [ -z "$_remote_url" ]; then
+        _first_remote="$(git -C "$_dir" remote 2>/dev/null | head -1)" || true
+        [ -n "$_first_remote" ] && _remote_url="$(git -C "$_dir" remote get-url "$_first_remote" 2>/dev/null)" || true
+    fi
+
+    if [ -n "$_remote_url" ]; then
+        # SCP-style SSH:  git@host:org/repo.git
+        case "$_remote_url" in
+            git@*:*)
+                _repo_id="${_remote_url#*:}"
+                ;;
+            # URL-style: covers https://, ssh://, git+ssh://, and other RFC-3986 schemes.
+            # Strip scheme and authority (everything up to and including the third slash).
+            *://*/*)
+                _repo_id="$(printf '%s' "$_remote_url" | sed 's|^[A-Za-z][A-Za-z0-9+.-]*://[^/]*/||')"
+                ;;
+        esac
+        # Strip trailing .git
+        _repo_id="${_repo_id%.git}"
+    fi
+
+    if [ -z "$_repo_id" ]; then
+        _toplevel="$(git -C "$_dir" rev-parse --show-toplevel 2>/dev/null)" || true
+        [ -n "$_toplevel" ] && _repo_id="$(basename "$_toplevel")"
+    fi
+
+    if [ -n "$_repo_id" ]; then
+        # Escape the value per OTEL Baggage spec: backslash first, then comma, then equals.
+        _repo_id="$(printf '%s' "$_repo_id" | sed 's/\\/\\\\/g; s/,/\\,/g; s/=/\\=/g')"
+        printf '%s' "$_repo_id"
+    fi
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+# Find the real claude binary before we do anything else.
+_real_claude="$(_cc_real_claude)"
+if [ -z "$_real_claude" ]; then
+    printf 'claude shim: could not find the real claude binary on PATH\n' >&2
+    printf 'Install Claude Code via the Anthropic native installer (recommended):\n' >&2
+    printf '  https://claude.ai/download\n' >&2
+    printf 'or via npm: npm install -g @anthropic-ai/claude-code\n' >&2
+    exit 127
+fi
+
+# 1. Read per-user identity from the cache file written by credential-process.
+#    credential-process never writes git.repo into this file, so no stripping needed.
+_identity=""
+[ -r "$_CC_OTEL_IDENTITY_FILE" ] && _identity="$(cat "$_CC_OTEL_IDENTITY_FILE" 2>/dev/null)"
+
+# 2. Detect git org/repo from the current directory.
+_git_repo="$(_cc_detect_git_repo "$PWD" 2>/dev/null)"
+
+# 3. Compose OTEL_RESOURCE_ATTRIBUTES = identity + git.repo (if in a repo).
+_attrs="$_identity"
+[ -n "$_git_repo" ] && _attrs="${_attrs:+$_attrs,}git.repo=${_git_repo}"
+
+# 4. Exec the real claude with the composed value (per-process only, no shell mutation).
+if [ -n "$_attrs" ]; then
+    OTEL_RESOURCE_ATTRIBUTES="$_attrs" exec "$_real_claude" "$@"
+else
+    exec "$_real_claude" "$@"
+fi

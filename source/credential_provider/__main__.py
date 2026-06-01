@@ -750,18 +750,57 @@ class MultiProviderAuth:
                 raise Exception(f"Failed to fetch env overrides from Secrets Manager: {error_msg}")
 
     def _update_claude_otel_attributes(self, attributes):
-        settings_path = Path.home() / ".claude" / "settings.json"
-        if settings_path.exists():
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-        else:
-            settings = {}
-        if "env" not in settings:
-            settings["env"] = {}
-        settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] = attributes
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=2)
-        self._debug_print(f"Updated Claude settings with OTEL attributes: {attributes[:100]}...")
+        import tempfile
+
+        # Write identity to a cache file that the launch wrapper reads at session start.
+        # Atomic write (os.replace via temp file) avoids torn reads by concurrent wrapper launches.
+        # Runs on re-auth (when cached AWS credentials expire) and at install (--setup-otel-attrs).
+        cache_dir = Path.home() / "claude-code-with-bedrock"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        identity_path = cache_dir / "otel-identity"
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=".otel-identity-tmp-")
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                f.write(attributes)
+            os.replace(tmp_path, identity_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        # Windows: also write identity into settings.json env so Windows users retain
+        # identity-level telemetry (no launch wrapper on Windows yet).
+        if os.name == "nt":
+            settings_path = Path.home() / ".claude" / "settings.json"
+            if settings_path.exists():
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+            else:
+                settings = {}
+            if "env" not in settings:
+                settings["env"] = {}
+            settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] = attributes
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+
+        # Migration: strip any stale OTEL_RESOURCE_ATTRIBUTES from settings.json
+        # (self-healing for users who had it set by earlier installs).
+        # Runs on re-auth and at install so no separate cleanup script is needed; idempotent.
+        if os.name != "nt":
+            settings_path = Path.home() / ".claude" / "settings.json"
+            if settings_path.exists():
+                try:
+                    with open(settings_path, "r") as f:
+                        settings = json.load(f)
+                    if settings.get("env", {}).pop("OTEL_RESOURCE_ATTRIBUTES", None) is not None:
+                        with open(settings_path, "w") as f:
+                            json.dump(settings, f, indent=2)
+                except Exception:
+                    pass  # Never fail credential refresh due to a settings cleanup error
+
+        self._debug_print(f"Updated OTEL identity cache: {attributes[:100]}...")
 
     def _merge_claude_env_settings(self, env_overrides):
         """Merge env_overrides into ~/.claude/settings.json["env"].
