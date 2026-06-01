@@ -697,16 +697,16 @@ Or build for specific platforms:
 
 ```bash
 # Using pre-built Go binaries (recommended — no build tools needed)
-poetry run ccwb package --prebuilt
+poetry run ccwb package --go
 
 # macOS only
-poetry run ccwb package --prebuilt --target-platform macos-arm64
+poetry run ccwb package --go --target-platform macos-arm64
 
 # Windows only (no CodeBuild needed with Go)
-poetry run ccwb package --prebuilt --target-platform windows
+poetry run ccwb package --go --target-platform windows
 
 # Linux only
-poetry run ccwb package --prebuilt --target-platform linux-x64
+poetry run ccwb package --go --target-platform linux-x64
 ```
 
 Packages are created in `dist/` directory:

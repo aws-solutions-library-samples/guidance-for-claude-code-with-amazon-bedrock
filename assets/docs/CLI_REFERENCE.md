@@ -244,8 +244,7 @@ poetry run ccwb package [options]
   - `linux-arm64` - Linux ARM64 (Graviton, etc.)
   - `windows` - Windows x64
   - `all` - All 5 platforms
-- `--prebuilt` - Use pre-built Go binaries (recommended, no build tools needed)
-- `--go` - Cross-compile Go binaries locally (requires Go installed)
+- `--go` - Cross-compile Go binaries locally (requires Go 1.24+ installed)
 - `--distribute` - Upload package and generate distribution URL
 - `--expires-hours <hours>` - Distribution URL expiration in hours (with --distribute) [default: "48"]
 - `--profile <name>` - Configuration profile to use [default: active profile]
@@ -253,23 +252,22 @@ poetry run ccwb package [options]
 
 **What it does:**
 
-1. Copies pre-built native Go binaries from `source/go/prebuilt/` (with `--prebuilt`)
+1. Cross-compiles native Go binaries for all selected platforms (with `--go`)
 2. Creates `config.json` with federation config read from the admin profile
 3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint
-4. Copies generic installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
+4. Creates installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
 5. Outputs to `dist/{profile}/{timestamp}/`
 
 **Build Modes:**
 
 | Mode | Flag | Requirements | Best for |
 |---|---|---|---|
-| **Pre-built** | `--prebuilt` | None (binaries in repo) | Most admins — no build tools needed |
-| **Go cross-compile** | `--go` | Go installed | Developers updating binaries |
-| **Legacy** | (default) | PyInstaller, Docker, CodeBuild | Backward compatibility |
+| **Go cross-compile** (recommended) | `--go` | Go 1.24+ installed | All admins — fast, all platforms from one machine |
+| **Legacy** | (default) | PyInstaller, Docker, CodeBuild | Backward compatibility with Python binaries |
 
 **Platform Support (Go Cross-Compilation):**
 
-With `--prebuilt` or `--go`, all 5 platforms are always available regardless of the admin's OS. No Docker, CodeBuild, x86 venvs, or platform-specific toolchains needed.
+With `--go`, all 5 platforms are always available regardless of the admin's OS. No Docker, CodeBuild, x86 venvs, or platform-specific toolchains needed.
 
 - **macOS ARM64**: Native Apple Silicon binary (~9 MB)
 - **macOS Intel**: Native x86-64 binary (~10 MB)
@@ -278,10 +276,6 @@ With `--prebuilt` or `--go`, all 5 platforms are always available regardless of 
 - **Windows x64**: Native PE with embedded version info (~14 MB, unstripped for Defender compatibility)
 
 **Offline Packaging:**
-
-After running `ccwb deploy` once (which saves stack outputs to the profile), `ccwb package --prebuilt` requires **zero network access**. All data comes from:
-- Pre-built binaries in the git repo (`source/go/prebuilt/latest/`)
-- Profile JSON (`~/.ccwb/profiles/{name}.json`) with federation config + OTel endpoint
 
 **Legacy mode platform details (PyInstaller / Nuitka / Docker):**
 
@@ -312,7 +306,7 @@ To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM6
 
 `ccwb` creates an isolated per-arch build environment at `~/.ccwb/build-venvs/` on first cross-arch build (~30s). Subsequent runs reuse it.
 
-(With `--prebuilt`, cross-arch builds are unnecessary — all platforms ship prebuilt.)
+(With `--go`, cross-arch builds are unnecessary — Go cross-compiles all platforms natively.)
 
 **Behavior when universal2 Python is not installed:**
 

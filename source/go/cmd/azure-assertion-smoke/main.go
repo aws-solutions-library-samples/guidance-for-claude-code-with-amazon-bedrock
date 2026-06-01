@@ -3,7 +3,7 @@
 // Package main — Azure certificate-mode client-assertion smoke binary.
 //
 // NOT SHIPPED. The `testhelper` build tag keeps it out of every normal build:
-// `go build ./...`, `make all`, `ccwb package --go`, and `ccwb package --prebuilt`
+// `go build ./...`, `make all`, `ccwb package --go`, and `ccwb package --go`
 // all ignore this file. Build explicitly with:
 //
 //	go build -tags testhelper -o azure-assertion-smoke ./cmd/azure-assertion-smoke

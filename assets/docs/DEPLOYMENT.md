@@ -75,13 +75,12 @@ poetry run ccwb package --target-platform=linux      # Linux via Docker
 
 | Mode | Flag | Requirements | Best for |
 |---|---|---|---|
-| **Pre-built** (recommended) | `--prebuilt` | None | Most admins — no build tools needed |
-| **Go cross-compile** | `--go` | Go installed | Developers updating binaries |
-| **Legacy** | (none) | PyInstaller, Docker, CodeBuild | Backward compatibility only |
+| **Go cross-compile** (recommended) | `--go` | Go 1.24+ installed | All admins — fast, all platforms from one machine |
+| **Legacy** | (none) | PyInstaller, Docker, CodeBuild | Backward compatibility with Python binaries |
 
-With `--prebuilt`, all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows) are always available. No Docker, CodeBuild, or platform-specific toolchains required.
+With `--go`, all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows) are always available regardless of the admin's OS. No Docker, CodeBuild, or platform-specific toolchains required.
 
-This command reads federation configuration from the admin profile (saved during `ccwb deploy`), copies pre-built native Go binaries from the repo, and generates customer-specific `config.json` and `settings.json` files. No AWS access or build tools are needed for this step.
+This command reads federation configuration from the admin profile (saved during `ccwb deploy`), cross-compiles native Go binaries, and generates customer-specific `config.json` and `settings.json` files.
 
 **Legacy build mode (PyInstaller / Nuitka / Docker):**
 
@@ -120,7 +119,7 @@ On first cross-arch build, `ccwb` creates an isolated build environment at `~/.c
 
 Without universal2 Python: `--target-platform=all` skips the cross-arch target with a note and continues normally. Explicitly requesting the cross-arch target (e.g. `--target-platform=macos-intel` on Apple Silicon) fails with a clear error pointing to the python.org installer.
 
-(Cross-arch builds are not needed with `--prebuilt` — all prebuilt binaries ship for every platform.)
+(Cross-arch builds are not needed with `--go` — Go cross-compiles all platforms natively.)
 
 The resulting `dist/` folder contains everything users need:
 
