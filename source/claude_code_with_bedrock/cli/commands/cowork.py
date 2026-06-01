@@ -14,7 +14,6 @@ from claude_code_with_bedrock.cli.utils.cowork_3p import (
     add_monitoring_config,
     build_mdm_config,
     derive_model_aliases,
-    generate_credential_helper_wrapper,
     generate_json,
     generate_mobileconfig,
     generate_reg_file,
@@ -60,12 +59,6 @@ class CoworkGenerateCommand(Command):
             description="Comma-separated model aliases (default: auto-detect from profile)",
             flag=False,
             default=None,
-        ),
-        option(
-            "credential-helper-ttl",
-            description="Credential helper cache TTL in seconds (default: 3600)",
-            flag=False,
-            default="3600",
         ),
     ]
 
@@ -114,8 +107,6 @@ class CoworkGenerateCommand(Command):
         else:
             model_aliases = derive_model_aliases()
 
-        credential_helper_ttl = int(self.option("credential-helper-ttl"))
-
         console.print(f"\n[dim]Profile: {profile_name}[/dim]")
         console.print(f"[dim]Bedrock region: {bedrock_region}[/dim]")
         console.print(f"[dim]Models: {', '.join(model_aliases)}[/dim]")
@@ -126,12 +117,7 @@ class CoworkGenerateCommand(Command):
             bedrock_region=bedrock_region,
             model_aliases=model_aliases,
             profile_name=profile_name,
-            credential_helper_ttl=credential_helper_ttl,
         )
-
-        # Generate the credential helper script CoWork will call
-        wrapper_path = generate_credential_helper_wrapper(profile_name, bedrock_region)
-        console.print(f"[dim]Credential helper: {wrapper_path}[/dim]")
 
         # Add monitoring OTLP endpoint if available
         add_monitoring_config(mdm_config, profile, console)

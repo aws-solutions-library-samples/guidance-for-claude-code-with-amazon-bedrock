@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Claude Code monitoring dashboard with embedded custom widget Lambda functions'
+Description: 'Claude Code monitoring dashboard using native PromQL widgets over OTLP-ingested metrics'
 
 Parameters:
   DashboardName:
@@ -7,492 +7,12 @@ Parameters:
     Default: ClaudeCodeDashboard
     Description: Name for the CloudWatch dashboard
 
-  MetricsLogGroup:
-    Type: String
-    Default: /aws/claude-code/metrics
-    Description: CloudWatch Log Group containing Claude Code metrics
-
   MetricsRegion:
     Type: String
-    Default: ""
-    Description: Region where metrics log group exists (defaults to deploy region if empty)
-
-Conditions:
-  UseDefaultRegion: !Equals [!Ref MetricsRegion, ""]
+    Default: us-east-1
+    Description: Region where OTLP metrics are ingested
 
 Resources:
-  # DynamoDB Table for Metrics Storage
-  MetricsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: ClaudeCodeMetrics
-      BillingMode: PAY_PER_REQUEST # On-demand scaling
-      AttributeDefinitions:
-        - AttributeName: pk
-          AttributeType: S
-        - AttributeName: sk
-          AttributeType: S
-        - AttributeName: gsi1pk
-          AttributeType: S
-        - AttributeName: gsi1sk
-          AttributeType: S
-        - AttributeName: gsi2pk
-          AttributeType: S
-        - AttributeName: gsi2sk
-          AttributeType: S
-        - AttributeName: gsi3pk
-          AttributeType: S
-        - AttributeName: gsi3sk
-          AttributeType: S
-      KeySchema:
-        - AttributeName: pk
-          KeyType: HASH
-        - AttributeName: sk
-          KeyType: RANGE
-      GlobalSecondaryIndexes:
-        - IndexName: UserActivityIndex
-          KeySchema:
-            - AttributeName: gsi1pk
-              KeyType: HASH
-            - AttributeName: gsi1sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-        - IndexName: MetricTypeIndex
-          KeySchema:
-            - AttributeName: gsi2pk
-              KeyType: HASH
-            - AttributeName: gsi2sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-        - IndexName: MonthlyIndex
-          KeySchema:
-            - AttributeName: gsi3pk
-              KeyType: HASH
-            - AttributeName: gsi3sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-      Tags:
-        - Key: Name
-          Value: ClaudeCodeMetrics
-        - Key: Purpose
-          Value: Dashboard metrics storage
-
-  QueryUtilsLayer:
-    Type: AWS::Lambda::LayerVersion
-    Properties:
-      LayerName: ClaudeCode-QueryUtils
-      Description: Shared utilities for rate limiting CloudWatch queries
-      Content: ./lambda-functions/layer/
-      CompatibleRuntimes:
-        - python3.11
-        - python3.12
-      LicenseInfo: MIT
-
-  MetricsUtilsLayer:
-    Type: AWS::Lambda::LayerVersion
-    Properties:
-      LayerName: ClaudeCode-MetricsUtils
-      Description: Shared utilities for querying CloudWatch Metrics
-      Content: ./lambda-functions/layer/
-      CompatibleRuntimes:
-        - python3.11
-        - python3.12
-      LicenseInfo: MIT
-
-  CustomWidgetRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: CloudWatchLogsQuery
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:StartQuery
-                  - logs:GetQueryResults
-                  - logs:StopQuery
-                  - logs:DescribeLogGroups
-                Resource: '*'
-        - PolicyName: ServiceQuotasAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - servicequotas:GetServiceQuota
-                  - servicequotas:ListServiceQuotas
-                Resource: '*'
-        - PolicyName: CloudWatchMetricsAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - cloudwatch:GetMetricStatistics
-                  - cloudwatch:GetMetricData
-                  - cloudwatch:ListMetrics
-                Resource: '*'
-        - PolicyName: DynamoDBReadAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:Query
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Scan
-                Resource:
-                  - !GetAtt MetricsTable.Arn
-                  - !Sub '${MetricsTable.Arn}/index/*'
-
-  MetricsAggregatorRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: CloudWatchLogsAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:StartQuery
-                  - logs:GetQueryResults
-                  - logs:StopQuery
-                  - logs:DescribeLogGroups
-                  - logs:DescribeLogStreams
-                Resource: '*'
-        - PolicyName: CloudWatchMetricsPublish
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricData
-                Resource: '*'
-        - PolicyName: DynamoDBAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:BatchWriteItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:GetItem
-                Resource:
-                  - !GetAtt MetricsTable.Arn
-
-  MetricsAggregatorFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-MetricsAggregator
-      Description: Aggregates Claude Code logs into CloudWatch Metrics
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Role: !GetAtt MetricsAggregatorRole.Arn
-      Timeout: 120
-      MemorySize: 512
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-          METRICS_TABLE: !Ref MetricsTable
-      Code: ./lambda-functions/metrics_aggregator/
-
-  MetricsAggregatorScheduleRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: ClaudeCode-MetricsAggregator-Schedule
-      Description: Trigger metrics aggregation every 5 minutes
-      ScheduleExpression: 'rate(5 minutes)'
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt MetricsAggregatorFunction.Arn
-          Id: MetricsAggregatorTarget
-          RetryPolicy:
-            MaximumRetryAttempts: 2
-
-  MetricsAggregatorSchedulePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref MetricsAggregatorFunction
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt MetricsAggregatorScheduleRule.Arn
-
-  TotalTokensWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-TotalTokens
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-          METRICS_ONLY: 'true'
-      Code: ./lambda-functions/total_tokens/
-
-  OperationsCountWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-OperationsCount
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/operations_count/
-
-  ActiveUsersWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-ActiveUsers
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-          METRICS_ONLY: 'true'
-          METRICS_TABLE: !Ref MetricsTable
-      Code: ./lambda-functions/active_users/
-
-  TokenByModelWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-TokenByModel
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/token_by_model/
-
-  CacheEfficiencyWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-CacheEfficiency
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-          METRICS_ONLY: 'true'
-      Code: ./lambda-functions/cache_efficiency/
-
-  TopUsersWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-TopUsers
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-          METRICS_ONLY: 'true'
-          METRICS_TABLE: !Ref MetricsTable
-      Code: ./lambda-functions/top_users/
-
-  OperationsByTypeWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-OperationsByType
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/operations_by_type/
-
-  TokenUsageByTypeWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-TokenUsageByType
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/token_usage_by_type/
-
-  CodeGenerationByLanguageWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-CodeGenByLanguage
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/code_generation_by_language/
-
-  LinesOfCodeWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-LinesOfCode
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/lines_of_code/
-
-  CommitsWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-Commits
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/commits/
-
-  CodeAcceptanceWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-CodeAcceptance
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/code_acceptance/
-
-  ActiveHoursWidget:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: ClaudeCode-Widget-ActiveHours
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt CustomWidgetRole.Arn
-      Timeout: 60
-      Layers:
-        - !Ref QueryUtilsLayer
-        - !Ref MetricsUtilsLayer
-      Environment:
-        Variables:
-          METRICS_LOG_GROUP: !Ref MetricsLogGroup
-          METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-      Code: ./lambda-functions/active_hours/
-
-  # ModelQuotaUsageWidget:
-  #   Type: AWS::Lambda::Function
-  #   Properties:
-  #     FunctionName: ClaudeCode-Widget-ModelQuotaUsage
-  #     Runtime: python3.11
-  #     Handler: index.lambda_handler
-  #     Role: !GetAtt CustomWidgetRole.Arn
-  #     Timeout: 60
-  #     Layers:
-  #       - !Ref QueryUtilsLayer
-  #       - !Ref MetricsUtilsLayer
-  #     Environment:
-  #       Variables:
-  #         METRICS_LOG_GROUP: !Ref MetricsLogGroup
-  #         METRICS_REGION: !If [UseDefaultRegion, !Ref "AWS::Region", !Ref MetricsRegion]
-  #         METRICS_ONLY: 'true'
-  #         METRICS_TABLE: !Ref MetricsTable
-  #     Code: ./lambda-functions/model_quota_usage/
-
-  # CloudWatch Dashboard
   Dashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
@@ -501,372 +21,310 @@ Resources:
         {
           "widgets": [
             {
-              "type": "custom",
-              "x": 0,
-              "y": 2,
-              "width": 6,
-              "height": 4,
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": { "markdown": "## Overview", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "endpoint": "${TotalTokensWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Total Tokens Used"
+                "title": "Total Tokens Used",
+                "view": "number",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Tokens" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 6,
-              "y": 2,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 6, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "endpoint": "${ActiveUsersWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Active Users"
+                "title": "Active Users",
+                "view": "number",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Users" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 12,
-              "y": 2,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 12, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "endpoint": "${OperationsCountWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Operations Count"
+                "title": "Sessions",
+                "view": "number",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Sessions" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 18,
-              "y": 2,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 18, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "endpoint": "${CacheEfficiencyWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Cache Efficiency"
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 6,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "ClaudeCode", "ActiveUsers", { "stat": "Sum" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Active Users Over Time",
-                "period": 300,
-                "yAxis": {
-                  "left": {
-                    "min": 0
-                  }
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12,
-              "y": 6,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "ClaudeCode", "LinesAdded", { "stat": "Sum", "label": "Lines Added" } ],
-                  [ ".", "LinesRemoved", { "stat": "Sum", "label": "Lines Removed" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Lines Added/Removed Over Time",
-                "period": 300,
-                "yAxis": {
-                  "left": {
-                    "min": 0
-                  }
-                },
-                "colors": [
-                  "#10b981",
-                  "#ef4444"
-                ]
-              }
-            },
-            {
-              "type": "log",
-              "x": 0,
-              "y": 12,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "query": "SOURCE '/aws/claude-code/metrics' | fields @timestamp, @message | filter @message like /claude_code.token.usage/ | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | stats sum(tokens) as total_tokens by bin(5m)",
-                "region": "${AWS::Region}",
-                "title": "Token Usage Over Time",
-                "queryLanguage": "cwli",
-                "view": "timeSeries"
-              }
-            },
-            {
-              "type": "log",
-              "x": 12,
-              "y": 12,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "query": "SOURCE '/aws/claude-code/metrics' | filter @message like /claude_code.token.usage/ | parse @message /\"model\":\"(?<model>[^\"]*)\"/  | parse @message /\"claude_code.token.usage\":(?<tokens>[0-9.]+)/ | fields bin(5m) as time, if(model like /opus-4-6/, tokens, 0) as opus_4_6, if(model like /opus-4-1/, tokens, 0) as opus_4_1, if(model like /opus-4-20250514|opus-4-0/, tokens, 0) as opus_4, if(model like /sonnet-4-5/, tokens, 0) as sonnet_4_5, if(model like /sonnet-4-[^5]|sonnet-4-20250514/, tokens, 0) as sonnet_4, if(model like /3[-.]7.*sonnet/, tokens, 0) as sonnet_3_7, if(model like /3[-.]5.*haiku/, tokens, 0) as haiku_3_5 | stats sum(opus_4_6) as Opus_4_6, sum(opus_4_1) as Opus_4_1, sum(opus_4) as Opus_4, sum(sonnet_4_5) as Sonnet_4_5, sum(sonnet_4) as Sonnet_4, sum(sonnet_3_7) as Sonnet_3_7, sum(haiku_3_5) as Haiku_3_5 by time",
-                "region": "${AWS::Region}",
-                "title": "Token Usage by Model Over Time",
-                "queryLanguage": "cwli",
-                "view": "timeSeries",
-                "stacked": false
-              }
-            },
-            {
-              "type": "custom",
-              "x": 0,
-              "y": 18,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "endpoint": "${TopUsersWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Top Users by Token Usage"
-              }
-            },
-            {
-              "type": "custom",
-              "x": 12,
-              "y": 18,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "endpoint": "${TokenByModelWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Token Usage by Model"
-              }
-            },
-            {
-              "type": "custom",
-              "x": 0,
-              "y": 24,
-              "width": 8,
-              "height": 6,
-              "properties": {
-                "endpoint": "${CodeGenerationByLanguageWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Code Generation by Language"
-              }
-            },
-            {
-              "type": "custom",
-              "x": 8,
-              "y": 24,
-              "width": 8,
-              "height": 6,
-              "properties": {
-                "endpoint": "${TokenUsageByTypeWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Token Usage by Type"
-              }
-            },
-            {
-              "type": "custom",
-              "x": 16,
-              "y": 24,
-              "width": 8,
-              "height": 6,
-              "properties": {
-                "endpoint": "${OperationsByTypeWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Operations by Type"
+                "title": "Cache Hit Rate",
+                "view": "number",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\", \"@resource.service.name\"=\"claude-code\"}) / sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}) * 100", "step": 60, "label": "%" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
               "type": "text",
-              "x": 0,
-              "y": 30,
-              "width": 24,
-              "height": 2,
+              "x": 0, "y": 6, "width": 24, "height": 2,
+              "properties": { "markdown": "## Token Usage", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 8, "width": 12, "height": 6,
               "properties": {
-                "markdown": "## Developer Productivity Metrics",
-                "background": "transparent"
+                "title": "Token Usage Over Time",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "total", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Total Tokens" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 0,
-              "y": 32,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 12, "y": 8, "width": 12, "height": 6,
               "properties": {
-                "endpoint": "${LinesOfCodeWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Lines of Code"
+                "title": "Token Usage by Type",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "input", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"input\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Input" },
+                  { "id": "output", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"output\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Output" },
+                  { "id": "cache", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheRead\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Cache Read" },
+                  { "id": "cacheCreate", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", type=\"cacheCreation\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Cache Creation" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 6,
-              "y": 32,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 0, "y": 14, "width": 12, "height": 6,
               "properties": {
-                "endpoint": "${CommitsWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Commits"
+                "title": "Token Usage by Model",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 12,
-              "y": 32,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 12, "y": 14, "width": 12, "height": 6,
               "properties": {
-                "endpoint": "${CodeAcceptanceWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Code Acceptance"
+                "title": "Top Users by Token Usage",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "custom",
-              "x": 18,
-              "y": 32,
-              "width": 6,
-              "height": 4,
+              "type": "chart",
+              "x": 0, "y": 20, "width": 12, "height": 6,
               "properties": {
-                "endpoint": "${ActiveHoursWidget.Arn}",
-                "updateOn": {
-                  "refresh": true,
-                  "resize": true,
-                  "timeRange": true
-                },
-                "title": "Active Hours"
+                "title": "Estimated Cost by User (USD)",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 20, "width": 12, "height": 6,
+              "properties": {
+                "title": "Active Users Over Time",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Active Users" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 26, "width": 24, "height": 2,
+              "properties": { "markdown": "## Developer Productivity", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 28, "width": 6, "height": 6,
+              "properties": {
+                "title": "Lines of Code",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "added", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"added\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Added" },
+                  { "id": "removed", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.lines_of_code.count\", type=\"removed\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Removed" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 6, "y": 28, "width": 6, "height": 6,
+              "properties": {
+                "title": "Commits",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.commit.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "Commits" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 28, "width": 6, "height": 6,
+              "properties": {
+                "title": "Active Hours",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.active_time.total\", \"@resource.service.name\"=\"claude-code\"}) / 3600", "step": 60, "label": "Hours" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 18, "y": 28, "width": 6, "height": 6,
+              "properties": {
+                "title": "Pull Requests",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.pull_request.count\", \"@resource.service.name\"=\"claude-code\"})", "step": 60, "label": "PRs" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 34, "width": 8, "height": 6,
+              "properties": {
+                "title": "Code Generation by Language",
+                "view": "pie",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (language)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 8, "y": 34, "width": 8, "height": 6,
+              "properties": {
+                "title": "Code Edit Decisions",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (decision)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 16, "y": 34, "width": 8, "height": 6,
+              "properties": {
+                "title": "Code Edits by Tool",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (tool_name)({\"claude_code.code_edit_tool.decision\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 40, "width": 24, "height": 2,
+              "properties": { "markdown": "## Organizational Breakdown", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 42, "width": 12, "height": 6,
+              "properties": {
+                "title": "Token Usage by Department",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (department)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 42, "width": 12, "height": 6,
+              "properties": {
+                "title": "Token Usage by Team",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"team.id\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 48, "width": 24, "height": 2,
+              "properties": { "markdown": "## Bedrock API Health", "background": "transparent" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 50, "width": 8, "height": 6,
+              "properties": {
+                "metrics": [
+                  [ { "expression": "SELECT SUM(InvocationThrottles) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "throttles", "region": "${MetricsRegion}" } ]
+                ],
+                "period": 300,
+                "title": "Bedrock Throttles by Model",
+                "yAxis": { "left": { "min": 0 } }, "view": "timeSeries", "stacked": false,
+                "region": "${MetricsRegion}"
               }
             },
             {
               "type": "metric",
-              "x": 0,
-              "y": 36,
-              "width": 12,
-              "height": 4,
+              "x": 8, "y": 50, "width": 8, "height": 6,
               "properties": {
                 "metrics": [
-                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", { "stat": "Sum", "label": "Throttles (us-east-2)", "region": "us-east-2" } ],
-                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationClientErrors", { "stat": "Sum", "label": "Client Errors (us-east-2)", "region": "us-east-2" } ],
-                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationServerErrors", { "stat": "Sum", "label": "Server Errors (us-east-2)", "region": "us-east-2" } ]
+                  [ { "expression": "SELECT SUM(InvocationClientErrors) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "client_errors", "region": "${MetricsRegion}" } ]
                 ],
                 "period": 300,
-                "stat": "Sum",
-                "region": "us-east-1",
-                "title": "Bedrock API Errors",
-                "yAxis": {
-                  "left": {
-                    "min": 0
-                  }
-                },
-                "view": "timeSeries",
-                "stacked": false
+                "title": "Bedrock Client Errors by Model",
+                "yAxis": { "left": { "min": 0 } }, "view": "timeSeries", "stacked": false,
+                "region": "${MetricsRegion}"
               }
             },
             {
               "type": "metric",
-              "x": 12,
-              "y": 36,
-              "width": 12,
-              "height": 4,
+              "x": 16, "y": 50, "width": 8, "height": 6,
               "properties": {
                 "metrics": [
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 US (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "eu.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 EU (eu-central-1)", "region": "eu-central-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "eu.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 EU (eu-west-1)", "region": "eu-west-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "au.anthropic.claude-opus-4-6-v1", { "stat": "Sum", "label": "Opus 4.6 AU (ap-southeast-2)", "region": "ap-southeast-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-1-20250805-v1:0", { "stat": "Sum", "label": "Opus 4.1 (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-opus-4-20250514-v1:0", { "stat": "Sum", "label": "Opus 4 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-west-2)", "region": "us-west-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (us-east-2)", "region": "us-east-2" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (eu-central-1)", "region": "eu-central-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (eu-west-1)", "region": "eu-west-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (ap-northeast-1)", "region": "ap-northeast-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", { "stat": "Sum", "label": "Sonnet 4.5 (ap-southeast-1)", "region": "ap-southeast-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-sonnet-4-20250514-v1:0", { "stat": "Sum", "label": "Sonnet 4 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "us.anthropic.claude-3-7-sonnet-20250219-v1:0", { "stat": "Sum", "label": "Sonnet 3.7 (us-east-1)", "region": "us-east-1" } ],
-                  [ "AWS/Bedrock", "InvocationThrottles", "ModelId", "anthropic.claude-3-5-haiku-20241022-v1:0", { "stat": "Sum", "label": "Haiku 3.5 (us-east-1)", "region": "us-east-1" } ]
+                  [ { "expression": "SELECT SUM(InvocationServerErrors) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "server_errors", "region": "${MetricsRegion}" } ]
                 ],
                 "period": 300,
-                "stat": "Sum",
-                "region": "us-east-1",
-                "title": "Throttles by Model",
-                "yAxis": {
-                  "left": {
-                    "min": 0
-                  }
-                },
-                "view": "timeSeries",
-                "stacked": false
+                "title": "Bedrock Server Errors by Model",
+                "yAxis": { "left": { "min": 0 } }, "view": "timeSeries", "stacked": false,
+                "region": "${MetricsRegion}"
               }
             }
           ]
@@ -876,19 +334,3 @@ Outputs:
   DashboardURL:
     Description: Direct URL to the CloudWatch dashboard
     Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
-
-  LogsInsightsURL:
-    Description: URL to CloudWatch Logs Insights
-    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:logs-insights'
-
-  MetricsTableArn:
-    Description: ARN of the ClaudeCodeMetrics DynamoDB table
-    Value: !GetAtt MetricsTable.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-MetricsTableArn'
-
-  MetricsAggregatorRoleName:
-    Description: Name of the MetricsAggregatorRole for cross-stack permissions
-    Value: !Ref MetricsAggregatorRole
-    Export:
-      Name: !Sub '${AWS::StackName}-MetricsAggregatorRoleName'

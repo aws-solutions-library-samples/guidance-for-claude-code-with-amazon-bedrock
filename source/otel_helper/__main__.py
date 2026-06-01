@@ -242,11 +242,11 @@ def get_cache_path():
 
 
 def read_cached_headers():
-    """Read cached OTEL headers if they exist.
+    """Read cached OTEL headers if they exist and Bearer token is still valid.
 
-    User attributes (email, team, etc.) don't change between sessions,
-    so cached headers are served regardless of token expiry. Headers are
-    refreshed opportunistically when a valid token is available.
+    Returns cached headers only if the JWT Bearer token hasn't expired yet.
+    This ensures telemetry requests to the ALB don't get 401 errors while
+    preserving user attribution headers that don't change between sessions.
     """
     try:
         cache_path = get_cache_path()
@@ -257,6 +257,21 @@ def read_cached_headers():
         headers = cached.get("headers")
         if not headers:
             return None
+
+        # Check if Bearer token in headers is still valid
+        token_exp = cached.get("token_exp")
+        if token_exp:
+            now = int(time.time())
+            # Add 60-second buffer to avoid race conditions (same as credential-provider)
+            if token_exp - now <= 60:
+                logger.debug(f"Cached JWT token expired or expires soon (exp={token_exp}, now={now})")
+                return None
+            logger.debug(f"Cached JWT token still valid (expires in {token_exp - now}s)")
+        else:
+            # No token_exp means old cache format (pre-fix) - refresh to be safe
+            logger.debug("Cache has no token_exp field, refreshing")
+            return None
+
         logger.debug("Using cached OTEL headers")
         return headers
     except Exception as e:
@@ -708,6 +723,66 @@ def run_proxy(target_url: str, port: int = 4318):
     server.serve_forever()
 
 
+def ensure_collector_running():
+    """Ensure the OTel collector sidecar is running (if installed).
+
+    Uses a dedicated <profile>-collector AWS profile so the Go SDK resolves
+    credentials via credential_process rather than static creds in
+    ~/.aws/credentials that can't auto-refresh.
+    """
+    import platform as platform_mod
+
+    install_dir = Path.home() / "claude-code-with-bedrock"
+    collector_binary = install_dir / ("otelcol.exe" if platform_mod.system() == "Windows" else "otelcol")
+    collector_config = install_dir / "collector-config.yaml"
+    pid_file = install_dir / "collector.pid"
+
+    if not collector_binary.exists() or not collector_config.exists():
+        return
+
+    # Check if already running
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            if platform_mod.system() == "Windows":
+                # os.kill(pid, 0) raises OSError on Windows even for running processes
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    capture_output=True, text=True,
+                )
+                if str(pid) in result.stdout:
+                    return  # already running
+            else:
+                os.kill(pid, 0)  # signal 0 = check if alive
+                return  # already running
+        except (ProcessLookupError, ValueError, OSError):
+            pass  # stale PID file
+
+    # Launch collector with the -collector profile
+    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector"}
+
+    cache_dir = Path.home() / ".claude-code-session"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    log_file = cache_dir / "collector.log"
+
+    try:
+        with open(log_file, "a") as lf:
+            kwargs = {"stdout": lf, "stderr": lf, "env": collector_env}
+            if platform_mod.system() == "Windows":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen(
+                [str(collector_binary), "--config", str(collector_config)],
+                **kwargs,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.debug(f"Started collector sidecar (PID {proc.pid})")
+    except Exception as e:
+        logger.debug(f"Failed to start collector sidecar: {e}")
+
+
 def main():
     """Main function to generate OTEL headers"""
     args = parse_args()
@@ -717,12 +792,16 @@ def main():
         run_proxy(args.proxy, port=args.proxy_port)
         return 0
 
+    # Ensure collector sidecar is running (no-op if not installed)
+    ensure_collector_running()
+
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:
         cached_headers = read_cached_headers()
         if cached_headers:
             print(json.dumps(cached_headers))
             return 0
+        logger.info("Cache expired or missing, refreshing via credential-process")
 
     # Try to get token from environment first (fastest, set by credential_provider/__main__.py)
     token = None

@@ -262,6 +262,15 @@ class InitCommand(Command):
                 "deployment; developer packages work without it)[/dim]"
             )
 
+        go_present = self._check_go_version()
+        if go_present:
+            console.print("  [green]✓[/green] Go 1.23+ installed [dim](used for OTEL collector sidecar build)[/dim]")
+        else:
+            console.print(
+                "  [yellow]⚠[/yellow] Go 1.23+ not found [dim](optional — only needed for building "
+                "the OpenTelemetry collector sidecar)[/dim]"
+            )
+
         # Bedrock access is optional (deployment user may not have direct Bedrock permissions)
         if region:
             bedrock_access = check_bedrock_access(region)
@@ -522,10 +531,11 @@ class InitCommand(Command):
                 provider_type = questionary.select(
                     "Select your identity provider type:",
                     choices=[
-                        questionary.Choice("Okta (or generic OIDC)", value="okta"),
+                        questionary.Choice("Okta", value="okta"),
                         questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
                         questionary.Choice("Auth0", value="auth0"),
                         questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                        questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
                     ],
                     instruction="(Used to select the correct CloudFormation template)",
                 ).ask()
@@ -565,6 +575,126 @@ class InitCommand(Command):
 
                 if not cognito_user_pool_id:
                     return None
+
+            # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP):
+            # we cannot infer endpoint paths or the JWKS thumbprint from the domain,
+            # so we try OIDC discovery first and fall through to manual entry on failure.
+            oidc_issuer_url = None
+            oidc_authorization_endpoint = None
+            oidc_token_endpoint = None
+            oidc_jwks_uri = None
+            oidc_thumbprint = None
+            if provider_type == "generic":
+                from claude_code_with_bedrock.cli.utils.oidc_discovery import (
+                    OidcDiscoveryError,
+                    compute_jwks_thumbprint,
+                    discover_oidc_endpoints,
+                )
+
+                console.print("\n[bold]Generic OIDC Configuration[/bold]")
+                console.print(
+                    "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
+                    "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
+                )
+
+                # Construct issuer URL from the domain entered earlier; let the user override.
+                default_issuer = (
+                    provider_domain if provider_domain.startswith(("http://", "https://"))
+                    else f"https://{provider_domain}"
+                ).rstrip("/")
+
+                oidc_issuer_url = questionary.text(
+                    "OIDC issuer URL:",
+                    validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
+                    default=config.get("oidc_issuer_url", default_issuer),
+                    instruction="(must match the 'iss' claim in tokens)",
+                ).ask()
+                if not oidc_issuer_url:
+                    return None
+                oidc_issuer_url = oidc_issuer_url.rstrip("/")
+
+                # Attempt discovery — pre-fill defaults but always let the user confirm/override.
+                discovered: dict[str, str] = {}
+                console.print(f"[dim]Querying {oidc_issuer_url}/.well-known/openid-configuration ...[/dim]")
+                try:
+                    discovered = discover_oidc_endpoints(oidc_issuer_url)
+                    console.print("[green]✓ Discovery succeeded.[/green]")
+                    if discovered.get("issuer") and discovered["issuer"].rstrip("/") != oidc_issuer_url:
+                        console.print(
+                            f"[yellow]Note: discovery reports issuer={discovered['issuer']}, "
+                            f"which differs from {oidc_issuer_url}. Tokens must match the "
+                            f"discovered value.[/yellow]"
+                        )
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Discovery failed: {e}[/yellow]")
+                    console.print("[dim]Falling back to manual entry.[/dim]")
+
+                oidc_authorization_endpoint = questionary.text(
+                    "Authorization endpoint:",
+                    validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
+                    default=(
+                        discovered.get("authorization_endpoint")
+                        or config.get("oidc_authorization_endpoint")
+                        or f"{oidc_issuer_url}/as/authorization.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_authorization_endpoint:
+                    return None
+
+                oidc_token_endpoint = questionary.text(
+                    "Token endpoint:",
+                    validate=lambda x: bool(x) or "Token endpoint cannot be empty",
+                    default=(
+                        discovered.get("token_endpoint")
+                        or config.get("oidc_token_endpoint")
+                        or f"{oidc_issuer_url}/as/token.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_token_endpoint:
+                    return None
+
+                oidc_jwks_uri = questionary.text(
+                    "JWKS URI:",
+                    validate=lambda x: bool(x) or "JWKS URI cannot be empty",
+                    default=(
+                        discovered.get("jwks_uri")
+                        or config.get("oidc_jwks_uri")
+                        or f"{oidc_issuer_url}/pf/JWKS"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not oidc_jwks_uri:
+                    return None
+
+                # Try to auto-compute the JWKS leaf-cert thumbprint via TLS handshake.
+                # Falls back to manual entry on any failure (firewall, hostname mismatch, etc.).
+                computed_thumbprint = ""
+                console.print(f"[dim]Fetching TLS certificate from {oidc_jwks_uri} ...[/dim]")
+                try:
+                    computed_thumbprint = compute_jwks_thumbprint(oidc_jwks_uri)
+                    console.print(f"[green]✓ Computed thumbprint: {computed_thumbprint}[/green]")
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Could not compute thumbprint automatically: {e}[/yellow]")
+                    console.print(
+                        "[dim]Compute manually with: echo | openssl s_client -servername <host> "
+                        "-connect <host>:443 2>/dev/null | openssl x509 -fingerprint -sha1 -noout[/dim]"
+                    )
+
+                oidc_thumbprint = questionary.text(
+                    "JWKS TLS cert SHA-1 thumbprint:",
+                    validate=lambda x: (
+                        bool(x and len(x.replace(":", "")) == 40 and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", "")))
+                        or "Thumbprint must be 40 hex characters (colons optional)"
+                    ),
+                    default=computed_thumbprint or config.get("oidc_thumbprint", ""),
+                    instruction="(40 hex chars, colons optional — confirm or replace)",
+                ).ask()
+                if not oidc_thumbprint:
+                    return None
+                # Normalize: strip colons, lowercase
+                oidc_thumbprint = oidc_thumbprint.replace(":", "").lower()
 
             client_id = questionary.text(
                 "Enter your OIDC Client ID:",
@@ -663,6 +793,41 @@ class InitCommand(Command):
             if not credential_storage:
                 return None
 
+            # OAuth callback port configuration
+            console.print("\n[bold]OAuth Callback Port[/bold]")
+            console.print(
+                "The credential provider listens on a local port to receive the OAuth callback "
+                "from your identity provider. This port must match the redirect URI registered "
+                "in your IdP application (e.g., http://localhost:8400/callback)."
+            )
+            console.print(
+                "  • If port 8400 is already used by another application on your users' machines "
+                "(e.g., Commvault, HashiCorp Vault), choose a different port."
+            )
+            console.print(
+                "  • The port you choose here must also be registered as a valid redirect URI "
+                "in your IdP application configuration.\n"
+            )
+
+            use_custom_port = questionary.confirm(
+                "Use a custom OAuth callback port? (default: 8400)",
+                default=False,
+            ).ask()
+
+            if use_custom_port:
+                redirect_port_str = questionary.text(
+                    "Enter OAuth callback port:",
+                    validate=lambda x: (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535",
+                    default=str(config.get("redirect_port", 8400)),
+                    instruction="(must match the port in your IdP's registered redirect URI)",
+                ).ask()
+                if redirect_port_str:
+                    config["redirect_port"] = int(redirect_port_str)
+                    console.print(
+                        f"[dim]  Remember to register http://localhost:{redirect_port_str}/callback "
+                        f"as a redirect URI in your IdP application.[/dim]"
+                    )
+
             # Preserve existing okta settings, only update domain/client_id
             if "okta" not in config:
                 config["okta"] = {}
@@ -672,6 +837,12 @@ class InitCommand(Command):
             config["provider_type"] = provider_type
             if cognito_user_pool_id:
                 config["cognito_user_pool_id"] = cognito_user_pool_id
+            if provider_type == "generic":
+                config["oidc_issuer_url"] = oidc_issuer_url
+                config["oidc_authorization_endpoint"] = oidc_authorization_endpoint
+                config["oidc_token_endpoint"] = oidc_token_endpoint
+                config["oidc_jwks_uri"] = oidc_jwks_uri
+                config["oidc_thumbprint"] = oidc_thumbprint
 
             # Ask about federation type
             console.print("\n[cyan]Federation Type Selection[/cyan]")
@@ -791,106 +962,151 @@ class InitCommand(Command):
                 config["monitoring"] = {}
             config["monitoring"]["enabled"] = enable_monitoring
 
-            # If monitoring is enabled, configure VPC
+            # If monitoring is enabled, choose mode and configure
             if enable_monitoring:
-                # Pass existing vpc_config if available
-                existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
-                vpc_config = self._configure_vpc(
-                    config.get("aws", {}).get("region", get_current_region()), existing_vpc_config
+                console.print("\n[bold]Monitoring Collector Mode[/bold]")
+                console.print(
+                    "\n[cyan]Sidecar (Recommended):[/cyan]\n"
+                    "  [green]+[/green] No server infrastructure needed\n"
+                    "  [green]+[/green] Simpler setup, lower cost\n"
+                    "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
+                    "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
+                    "  [yellow]-[/yellow] Each machine manages its own collector process\n"
+                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
                 )
-                if not vpc_config:
-                    return None
-                config["monitoring"]["vpc_config"] = vpc_config
+                console.print(
+                    "[cyan]Central:[/cyan]\n"
+                    "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
+                    "  [green]+[/green] Single collector for all users — centralized management\n"
+                    "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
+                    "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
+                    "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
+                    "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
+                    "  [yellow]-[/yellow] Requires network connectivity to collector endpoint\n"
+                )
+                monitoring_mode = questionary.select(
+                    "Monitoring mode:",
+                    choices=[
+                        questionary.Choice(
+                            "Sidecar collector (Recommended — runs locally, no server infra)",
+                            value="sidecar",
+                        ),
+                        questionary.Choice(
+                            "Central collector (ECS Fargate — server-side, optional Athena SQL pipeline)",
+                            value="central",
+                        ),
+                    ],
+                    default=config.get("monitoring", {}).get("mode", "sidecar"),
+                ).ask()
+                config["monitoring"]["mode"] = monitoring_mode
 
-                # Optional: Configure HTTPS with custom domain
-                console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
+                if monitoring_mode == "central":
+                    # Central mode: VPC, HTTPS, analytics configuration
+                    existing_vpc_config = config.get("monitoring", {}).get("vpc_config")
+                    vpc_config = self._configure_vpc(
+                        config.get("aws", {}).get("region", get_current_region()), existing_vpc_config
+                    )
+                    if not vpc_config:
+                        return None
+                    config["monitoring"]["vpc_config"] = vpc_config
 
-                # Check if HTTPS is already configured
-                existing_custom_domain = config["monitoring"].get("custom_domain")
-                existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                already_configured = bool(existing_custom_domain and existing_zone_id)
-                has_existing_domain = bool(existing_custom_domain)
+                    # Optional: Configure HTTPS with custom domain
+                    console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
 
-                if has_existing_domain:
-                    console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
+                    existing_custom_domain = config["monitoring"].get("custom_domain")
+                    existing_zone_id = config["monitoring"].get("hosted_zone_id")
+                    already_configured = bool(existing_custom_domain and existing_zone_id)
 
-                enable_https = questionary.confirm("Enable HTTPS with custom domain?", default=has_existing_domain).ask()
+                    if already_configured:
+                        console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
 
-                if enable_https:
-                    custom_domain = questionary.text(
-                        "Enter custom domain name (e.g., telemetry.company.com):",
-                        validate=lambda x: len(x) > 0 and "." in x,
-                        default=existing_custom_domain if existing_custom_domain else "",
+                    enable_https = questionary.confirm(
+                        "Enable HTTPS with custom domain?", default=already_configured
                     ).ask()
 
-                    # Save the domain immediately — regardless of what happens with
-                    # hosted zone lookup. This is the root cause of "domain never saves":
-                    # previously the domain was only written inside the if hosted_zones
-                    # block, so any Route53 failure silently discarded the user's input.
-                    config["monitoring"]["custom_domain"] = custom_domain
-
-                    # Get Route53 hosted zones
-                    hosted_zones, zones_error = self._get_hosted_zones()
-                    if hosted_zones:
-                        zone_choices = [
-                            f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
-                        ]
-
-                        # Pre-select existing zone if available
-                        default_zone = None
-                        if existing_zone_id:
-                            for choice in zone_choices:
-                                if existing_zone_id in choice:
-                                    default_zone = choice
-                                    break
-
-                        selected_zone = questionary.select(
-                            "Select Route53 hosted zone for the domain:",
-                            choices=zone_choices,
-                            default=default_zone if default_zone else zone_choices[0],
+                    if enable_https:
+                        custom_domain = questionary.text(
+                            "Enter custom domain name (e.g., telemetry.company.com):",
+                            validate=lambda x: len(x) > 0 and "." in x,
+                            default=existing_custom_domain if existing_custom_domain else "",
                         ).ask()
 
-                        # Extract zone ID
-                        zone_id = selected_zone.split("(")[-1].rstrip(")")
-                        config["monitoring"]["hosted_zone_id"] = zone_id
-                        console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
+                        config["monitoring"]["custom_domain"] = custom_domain
+
+                        hosted_zones, zones_error = self._get_hosted_zones()
+                        if hosted_zones:
+                            zone_choices = [
+                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})"
+                                for zone in hosted_zones
+                            ]
+
+                            default_zone = None
+                            if existing_zone_id:
+                                for choice in zone_choices:
+                                    if existing_zone_id in choice:
+                                        default_zone = choice
+                                        break
+
+                            selected_zone = questionary.select(
+                                "Select Route53 hosted zone for the domain:",
+                                choices=zone_choices,
+                                default=default_zone if default_zone else zone_choices[0],
+                            ).ask()
+
+                            zone_id = selected_zone.split("(")[-1].rstrip(")")
+                            config["monitoring"]["hosted_zone_id"] = zone_id
+                            console.print(
+                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
+                            )
+                        else:
+                            if zones_error:
+                                console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
+                            else:
+                                console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
+                            console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                            manual_zone_id = questionary.text(
+                                "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                                default=existing_zone_id if existing_zone_id else "",
+                            ).ask()
+                            if manual_zone_id and manual_zone_id.strip():
+                                config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                            else:
+                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                     else:
-                        if zones_error:
-                            console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
-                        else:
-                            console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
-                        console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
-                        manual_zone_id = questionary.text(
-                            "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
-                            default=existing_zone_id if existing_zone_id else "",
-                        ).ask()
-                        if manual_zone_id and manual_zone_id.strip():
-                            config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                            console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
-                        else:
-                            console.print(f"[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                        config["monitoring"]["custom_domain"] = None
+                        config["monitoring"]["hosted_zone_id"] = None
+
+                    # Analytics configuration (central mode only)
+                    console.print("\n[bold]Analytics Pipeline[/bold]")
+                    console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
+                    enable_analytics = questionary.confirm(
+                        "Enable analytics?",
+                        default=config.get("analytics", {}).get("enabled", True),
+                    ).ask()
+
+                    if "analytics" not in config:
+                        config["analytics"] = {}
+                    config["analytics"]["enabled"] = enable_analytics
+
+                    if enable_analytics:
+                        console.print(
+                            "[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack"
+                        )
+
                 else:
-                    # User disabled HTTPS, clear any existing config
+                    # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
+                    console.print(
+                        "[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar"
+                    )
+                    config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
+                    if "analytics" not in config:
+                        config["analytics"] = {}
+                    config["analytics"]["enabled"] = False
 
-                # Analytics configuration (only if monitoring is enabled)
-                console.print("\n[bold]Analytics Pipeline[/bold]")
-                console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
-                enable_analytics = questionary.confirm(
-                    "Enable analytics?",
-                    default=config.get("analytics", {}).get("enabled", True),
-                ).ask()
-
-                # Preserve existing analytics settings, only update enabled flag
-                if "analytics" not in config:
-                    config["analytics"] = {}
-                config["analytics"]["enabled"] = enable_analytics
-
-                if enable_analytics:
-                    console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
-
-                # Quota monitoring configuration (only if monitoring is enabled)
+                # Quota monitoring configuration (both modes)
                 console.print("\n[bold]Quota Monitoring[/bold]")
                 console.print("Track per-user token consumption, set limits, and receive alerts")
                 console.print("when users approach or exceed their quotas.")
@@ -1467,8 +1683,118 @@ class InitCommand(Command):
                 f"Cross-Region ({profile_description})"
             )
 
+            # Optional: Application Inference Profiles
+            has_saved_arns = any(
+                config.get("aws", {}).get(k)
+                for k in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]
+            )
+            use_inference_profiles = questionary.confirm(
+                "Configure Application Inference Profiles?",
+                default=has_saved_arns,
+            ).ask()
+
+            if use_inference_profiles:
+                from claude_code_with_bedrock.validators import ProfileValidator
+
+                console.print("[dim]Provide an inference profile ARN for each model tier (press Enter to skip).[/dim]")
+
+                for tier_name, config_key in [
+                    ("Opus", "inference_profile_opus_arn"),
+                    ("Sonnet", "inference_profile_sonnet_arn"),
+                    ("Haiku", "inference_profile_haiku_arn"),
+                ]:
+                    saved_arn = config.get("aws", {}).get(config_key)
+                    while True:
+                        arn = questionary.text(
+                            f"  {tier_name} inference profile ARN:",
+                            default=saved_arn or "",
+                        ).ask()
+
+                        if arn is None:  # User cancelled
+                            config["aws"][config_key] = None
+                            break
+
+                        if not arn.strip():
+                            config["aws"][config_key] = None
+                            break
+
+                        error = ProfileValidator.validate_application_inference_profile_arn(arn)
+                        if error:
+                            console.print(f"[red]{error}[/red]")
+                            continue
+
+                        config["aws"][config_key] = arn.strip()
+                        console.print(f"[green]✓[/green] {tier_name} inference profile configured")
+                        break
+            else:
+                config["aws"]["inference_profile_opus_arn"] = None
+                config["aws"]["inference_profile_sonnet_arn"] = None
+                config["aws"]["inference_profile_haiku_arn"] = None
+
             # Save progress
             progress.save_step("bedrock_complete", config)
+
+        # Resource Tags (optional)
+        console.print("\n[bold blue]Resource Tags (Optional)[/bold blue]")
+        console.print("─" * 30)
+        console.print("[dim]Tags are applied to all deployed CloudFormation stacks.[/dim]")
+
+        add_tags = questionary.confirm(
+            "Would you like to add resource tags?",
+            default=bool(config.get("tags")),
+        ).ask()
+
+        if add_tags:
+            existing_tags = dict(config.get("tags", {}))
+            tags = {}
+
+            # Let user confirm/edit existing tags first
+            if existing_tags:
+                console.print("[dim]Existing tags (edit value or leave empty to remove):[/dim]")
+                for key, value in existing_tags.items():
+                    tag_value = questionary.text(
+                        f"  {key}:",
+                        default=value,
+                    ).ask()
+                    if tag_value is None:
+                        return None
+                    if tag_value:
+                        tags[key] = tag_value
+                        console.print(f"[green]✓[/green] Tag: {key}={tag_value}")
+                    else:
+                        console.print(f"[yellow]✗[/yellow] Removed tag: {key}")
+
+            # Then allow adding new tags
+            while True:
+                tag_key = questionary.text(
+                    "New tag key (empty to finish):",
+                    default="",
+                ).ask()
+                tag_key = (tag_key or "").strip()
+                if not tag_key:
+                    break
+                if tag_key.lower().startswith("aws:"):
+                    console.print("[red]✗ Tag keys cannot start with 'aws:' (reserved by AWS)[/red]")
+                    continue
+                if len(tag_key) > 128:
+                    console.print("[red]✗ Tag key exceeds 128 character limit[/red]")
+                    continue
+                tag_value = questionary.text(
+                    f"Value for '{tag_key}':",
+                    default=tags.get(tag_key, ""),
+                ).ask()
+                if tag_value is None:
+                    break
+                if len(tag_value) > 256:
+                    console.print("[red]✗ Tag value exceeds 256 character limit[/red]")
+                    continue
+                tags[tag_key] = tag_value
+                console.print(f"[green]✓[/green] Tag: {tag_key}={tag_value}")
+            config["tags"] = tags
+        elif add_tags is None:
+            return None
+        else:
+            config["tags"] = config.get("tags", {})
 
         return config
 
@@ -1515,6 +1841,10 @@ class InitCommand(Command):
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
+            mode = config.get("monitoring", {}).get("mode", "sidecar")
+            mode_label = "Central (ECS Fargate)" if mode == "central" else "Sidecar (local collector)"
+            table.add_row("Monitoring Mode", mode_label)
+
             quota_config = config.get("quota", {})
             if quota_config.get("enabled", False):
                 monthly = quota_config.get("monthly_limit", 225000000)
@@ -1529,12 +1859,17 @@ class InitCommand(Command):
                 table.add_row("Quota Monitoring", quota_status)
             else:
                 table.add_row("Quota Monitoring", "✗ Disabled")
-            table.add_row(
-                "Analytics Pipeline", "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled"
-            )
 
-        # Show VPC config if monitoring is enabled
-        if config.get("monitoring", {}).get("enabled"):
+            if mode == "central":
+                table.add_row(
+                    "Athena SQL Pipeline",
+                    "✓ Enabled" if config.get("analytics", {}).get("enabled", True) else "✗ Disabled",
+                )
+            else:
+                table.add_row("Athena SQL Pipeline", "N/A (sidecar mode — PromQL dashboards included)")
+
+        # Show VPC config if monitoring is enabled in central mode
+        if config.get("monitoring", {}).get("enabled") and config.get("monitoring", {}).get("mode", "sidecar") == "central":
             vpc_config = config.get("monitoring", {}).get("vpc_config", {})
             if vpc_config.get("create_vpc"):
                 table.add_row("Monitoring VPC", "New VPC will be created")
@@ -1551,6 +1886,12 @@ class InitCommand(Command):
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
 
+        # Show application inference profiles if configured
+        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+            arn = config["aws"].get(key)
+            if arn:
+                table.add_row(f"{tier} Inference Profile", arn)
+
         # Show cross-region profile
         cross_region_profile = config["aws"].get("cross_region_profile", "us")
         profile_display = {
@@ -1566,6 +1907,10 @@ class InitCommand(Command):
             table.add_row("AWS Account", account_id)
         else:
             table.add_row("AWS Account", "[yellow]Unable to determine[/yellow]")
+
+        # Show resource tags
+        if config.get("tags"):
+            table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
         console.print(table)
 
@@ -1587,13 +1932,18 @@ class InitCommand(Command):
         else:
             console.print("• No authentication stack (existing AWS credentials will be used)")
         if config.get("monitoring", {}).get("enabled"):
-            console.print("• CloudWatch dashboards for usage monitoring")
-            console.print("• OpenTelemetry collector for metrics aggregation")
-            console.print("• ECS cluster and load balancer for collector")
-            if config.get("analytics", {}).get("enabled", True):
-                console.print("• Kinesis Firehose for analytics data streaming")
-                console.print("• S3 bucket for analytics data storage")
-                console.print("• Glue catalog and Athena tables for analytics")
+            mode = config.get("monitoring", {}).get("mode", "sidecar")
+            if mode == "central":
+                console.print("• CloudWatch dashboards for usage monitoring")
+                console.print("• OpenTelemetry collector for metrics aggregation")
+                console.print("• ECS cluster and load balancer for collector")
+                if config.get("analytics", {}).get("enabled", True):
+                    console.print("• Kinesis Firehose for analytics data streaming")
+                    console.print("• S3 bucket for analytics data storage")
+                    console.print("• Glue catalog and Athena tables for analytics")
+            else:
+                console.print("• Local OTEL Collector sidecar (no server infrastructure)")
+                console.print("• CloudWatch PromQL dashboard for metrics visualization")
             if config.get("quota", {}).get("enabled", False):
                 console.print("• DynamoDB tables for quota tracking")
                 console.print("• Lambda function for quota checking")
@@ -1766,6 +2116,7 @@ class InitCommand(Command):
             identity_pool_name=config_data["aws"]["identity_pool_name"],
             stack_names=config_data["aws"]["stacks"],
             monitoring_enabled=config_data["monitoring"]["enabled"],
+            monitoring_mode=config_data.get("monitoring", {}).get("mode", "sidecar"),
             monitoring_config=monitoring_config,
             analytics_enabled=(
                 config_data.get("analytics", {}).get("enabled", True)
@@ -1776,8 +2127,16 @@ class InitCommand(Command):
             cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
             selected_model=config_data["aws"].get("selected_model"),
             selected_source_region=config_data["aws"].get("selected_source_region"),
+            inference_profile_opus_arn=config_data["aws"].get("inference_profile_opus_arn"),
+            inference_profile_sonnet_arn=config_data["aws"].get("inference_profile_sonnet_arn"),
+            inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
             provider_type=config_data.get("provider_type"),
             cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
+            oidc_issuer_url=config_data.get("oidc_issuer_url"),
+            oidc_authorization_endpoint=config_data.get("oidc_authorization_endpoint"),
+            oidc_token_endpoint=config_data.get("oidc_token_endpoint"),
+            oidc_jwks_uri=config_data.get("oidc_jwks_uri"),
+            oidc_thumbprint=config_data.get("oidc_thumbprint"),
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             sso_enabled=sso_enabled,
@@ -1812,6 +2171,8 @@ class InitCommand(Command):
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
+            tags=config_data.get("tags", {}),
+            redirect_port=config_data.get("redirect_port"),
         )
 
         config.add_profile(profile)
@@ -1856,6 +2217,20 @@ class InitCommand(Command):
         import sys
 
         return sys.version_info >= (3, 10)
+
+    def _check_go_version(self) -> bool:
+        """Check if Go >= 1.23 is installed (needed for OTEL collector build)."""
+        try:
+            result = subprocess.run(["go", "version"], capture_output=True, text=True)
+            if result.returncode != 0:
+                return False
+            match = re.search(r"go(\d+)\.(\d+)", result.stdout)
+            if not match:
+                return False
+            major, minor = int(match.group(1)), int(match.group(2))
+            return (major, minor) >= (1, 23)
+        except Exception:
+            return False
 
     def _get_bedrock_regions(self) -> list[str]:
         """Get list of regions where Bedrock is available."""
@@ -2073,6 +2448,7 @@ class InitCommand(Command):
                 },
                 "monitoring": {
                     "enabled": profile.monitoring_enabled,
+                    "mode": getattr(profile, "monitoring_mode", "central"),
                     "vpc_config": vpc_config,
                     "custom_domain": profile.monitoring_config.get("custom_domain")
                     if profile.monitoring_config
@@ -2099,6 +2475,17 @@ class InitCommand(Command):
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:
                 existing_config["cognito_user_pool_id"] = profile.cognito_user_pool_id
 
+            # Add Generic OIDC fields if present
+            for oidc_field in (
+                "oidc_issuer_url",
+                "oidc_authorization_endpoint",
+                "oidc_token_endpoint",
+                "oidc_jwks_uri",
+                "oidc_thumbprint",
+            ):
+                if getattr(profile, oidc_field, None):
+                    existing_config[oidc_field] = getattr(profile, oidc_field)
+
             # Add selected model if present
             if hasattr(profile, "selected_model") and profile.selected_model:
                 existing_config["aws"]["selected_model"] = profile.selected_model
@@ -2106,6 +2493,11 @@ class InitCommand(Command):
             # Add cross-region profile if present
             if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
                 existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
+
+            # Add application inference profile ARNs if present
+            for arn_key in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]:
+                if getattr(profile, arn_key, None):
+                    existing_config["aws"][arn_key] = getattr(profile, arn_key)
 
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
@@ -2152,6 +2544,10 @@ class InitCommand(Command):
             if hasattr(profile, "selected_source_region") and profile.selected_source_region:
                 existing_config["aws"]["selected_source_region"] = profile.selected_source_region
 
+            # Add resource tags if present
+            if hasattr(profile, "tags") and profile.tags:
+                existing_config["tags"] = profile.tags
+
             return existing_config
 
         except Exception:
@@ -2180,6 +2576,12 @@ class InitCommand(Command):
             from claude_code_with_bedrock.models import get_all_model_display_names
             model_names = get_all_model_display_names()
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
+
+        # Show application inference profiles if configured
+        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+            arn = config["aws"].get(key)
+            if arn:
+                console.print(f"• {tier} Inference Profile: [cyan]{arn}[/cyan]")
 
         # Show cross-region profile
         cross_region_profile = config["aws"].get("cross_region_profile", "us")
