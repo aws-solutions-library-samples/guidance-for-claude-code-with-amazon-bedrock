@@ -65,7 +65,7 @@ func ReadCachedHeaders(profile string) (map[string]string, error) {
 		return nil, fmt.Errorf("cache schema %d < %d; refreshing", entry.SchemaVersion, currentCacheSchemaVersion)
 	}
 
-	if len(entry.Headers) == 0 {
+	if entry.Headers == nil {
 		return nil, fmt.Errorf("cache empty")
 	}
 

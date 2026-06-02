@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -122,6 +123,68 @@ func TestWriteCachedHeaders_StampsSchemaVersion(t *testing.T) {
 	// Read back successfully -- write path must stamp the current schema version.
 	if _, err := ReadCachedHeaders(profile); err != nil {
 		t.Fatalf("freshly-written cache should read clean, got: %v", err)
+	}
+}
+
+func TestReadCachedHeaders_EmptyHeadersMapIsHit(t *testing.T) {
+	// Regression: len(entry.Headers)==0 was treated as a cache miss, forcing a
+	// full credential-process round-trip on every turn when the server legitimately
+	// returns {} (anonymous / no-attribute mode). Must be a hit.
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	profile := "empty-headers"
+	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	emptyJSON := `{"schema_version":` + fmt.Sprintf("%d", currentCacheSchemaVersion) +
+		`,"headers":{},"token_exp":` + timeFutureStr() + `,"cached_at":1000}`
+	path := filepath.Join(cacheDir, profile+"-otel-headers.json")
+	if err := os.WriteFile(path, []byte(emptyJSON), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	headers, err := ReadCachedHeaders(profile)
+	if err != nil {
+		t.Fatalf("empty headers map should be a cache hit, got error: %v", err)
+	}
+	if headers == nil {
+		t.Fatal("expected non-nil map for empty headers hit")
+	}
+}
+
+func TestWriteTwiceOverwritesCacheFile(t *testing.T) {
+	// Regression: on Windows os.Rename raises FileExistsError when the
+	// destination already exists; the Go atomicWrite uses os.Rename too and
+	// would have silently failed, leaving the cache permanently stale.
+	// os.Rename on Windows now calls MoveFileExW with MOVEFILE_REPLACE_EXISTING
+	// so this is safe, but keep the test to catch any future regression.
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	profile := "overwrite-test"
+	first := map[string]string{"x-user-email": "first@example.com"}
+	second := map[string]string{"x-user-email": "second@example.com"}
+	exp := time.Now().Unix() + 3600
+
+	if err := WriteCachedHeaders(profile, first, exp); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := WriteCachedHeaders(profile, second, exp); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	cached, err := ReadCachedHeaders(profile)
+	if err != nil {
+		t.Fatalf("read after second write: %v", err)
+	}
+	if cached["x-user-email"] != "second@example.com" {
+		t.Errorf("x-user-email = %q, want second@example.com", cached["x-user-email"])
 	}
 }
 
