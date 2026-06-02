@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0-beta.2] - 2026-05-28
 
+## [2.4.0] - 2026-05-22 - OTLP-First Metrics
+
+### Added
+
+- **Sidecar monitoring mode**: New "sidecar" collector option during `ccwb init` — runs a local OTel collector on each dev machine, no ECS/VPC infrastructure needed
+- **Monitoring mode backward compatibility**: Existing profiles without `monitoring_mode` default to "central", preserving current behavior on upgrade without re-running init
+
 ### Changed
 
 - **OTLP-first monitoring**: OTEL Collector now exports to CloudWatch OTLP endpoint (for PromQL dashboards). EMF export is conditionally added only when analytics is enabled, controlled by the `EnableAnalytics` CloudFormation parameter.
