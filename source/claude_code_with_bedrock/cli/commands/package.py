@@ -646,7 +646,7 @@ class PackageCommand(Command):
         executables = []
         otel_helpers = []
 
-        binaries_to_build = ["credential-process"]
+        binaries_to_build = ["credential-process", "credential-refresher"]
         if monitoring_enabled:
             binaries_to_build.append("otel-helper")
 
@@ -683,6 +683,8 @@ class PackageCommand(Command):
                     raise RuntimeError(f"Go build failed for {output_name}:\n{result.stderr}")
 
                 if binary == "credential-process":
+                    executables.append((plat, output_path))
+                elif binary == "credential-refresher":
                     executables.append((plat, output_path))
                 else:
                     otel_helpers.append((plat, output_path))
@@ -2775,9 +2777,14 @@ Available metrics include:
             if not include_coauthored_by:
                 settings["includeCoAuthoredBy"] = False
 
-            # Add awsAuthRefresh for session-based credential storage
+            # Add awsAuthRefresh for session-based credential storage.
+            # The refresher daemon keeps ~/.aws/credentials fresh in the background,
+            # but awsAuthRefresh is still needed as a fallback for initial bootstrap
+            # and edge cases where the daemon isn't running.
             if profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
+                # Also set AWS_PROFILE so the SDK reads creds directly from file
+                settings["env"]["AWS_PROFILE"] = profile_name
 
             # Add ANTHROPIC_MODEL if user selected a model during init
             if hasattr(profile, "selected_model") and profile.selected_model:
