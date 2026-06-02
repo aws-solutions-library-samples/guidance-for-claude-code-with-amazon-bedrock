@@ -597,21 +597,21 @@ _CLAUDE_MODELS_RAW = {
                     "eu-central-1",  # Frankfurt
                     "eu-central-2",  # Zurich
                     "eu-north-1",  # Stockholm
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Spain
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-2",  # Spain
                 ],
                 "destination_regions": [
                     "eu-central-1",
                     "eu-central-2",
                     "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
-                    "eu-south-2",
-                    "eu-south-2",
                 ],
             },
             "jp": {
@@ -643,7 +643,7 @@ _CLAUDE_MODELS_RAW = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
+                    "eu-south-1",  # Milan
                     "eu-south-2",  # Spain
                     # Asia Pacific
                     "ap-southeast-3",  # Jakarta
@@ -672,7 +672,7 @@ _CLAUDE_MODELS_RAW = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
-                    "eu-south-2",
+                    "eu-south-1",
                     "eu-south-2",
                     # Asia Pacific
                     "ap-southeast-3",
