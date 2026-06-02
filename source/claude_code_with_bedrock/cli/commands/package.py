@@ -2381,12 +2381,36 @@ import json
 print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region', '$DEFAULT_REGION'))
 ")
 
-    # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+    # Get credential storage mode from config.json
+    CRED_STORAGE=$($PYTHON -c "
+import json
+print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('credential_storage', 'session'))
+" 2>/dev/null || echo "session")
+
+    if [ "$CRED_STORAGE" = "session" ]; then
+        # Session mode: SDK reads ~/.aws/credentials directly (no credential_process)
+        # The refresher daemon keeps the credentials file fresh
+        cat >> ~/.aws/config << EOF
+[profile $PROFILE_NAME]
+region = $PROFILE_REGION
+EOF
+        # Bootstrap initial credentials
+        echo "  Bootstrapping initial credentials..."
+        $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME > /dev/null 2>&1 || true
+        # Start credential-refresher daemon if available
+        if [ -x $HOME/claude-code-with-bedrock/credential-refresher ]; then
+            $HOME/claude-code-with-bedrock/credential-refresher --profile $PROFILE_NAME --once 2>/dev/null || true
+            nohup $HOME/claude-code-with-bedrock/credential-refresher --profile $PROFILE_NAME >> ~/.claude-code-session/refresher-$PROFILE_NAME.log 2>&1 &
+            echo "  ✓ Started credential-refresher daemon (pid $!)"
+        fi
+    else
+        # Keyring mode: use credential_process for per-request auth
+        cat >> ~/.aws/config << EOF
 [profile $PROFILE_NAME]
 credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
+    fi
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
@@ -2779,12 +2803,14 @@ Available metrics include:
 
             # Add awsAuthRefresh for session-based credential storage.
             # The refresher daemon keeps ~/.aws/credentials fresh in the background,
-            # but awsAuthRefresh is still needed as a fallback for initial bootstrap
-            # and edge cases where the daemon isn't running.
+            # so we DON'T set AWS_CREDENTIAL_PROCESS (which would spawn the helper
+            # on every request). Instead, the SDK reads creds from the file via
+            # AWS_PROFILE. awsAuthRefresh is the safety net for expired creds.
             if profile.credential_storage == "session":
+                # Remove AWS_CREDENTIAL_PROCESS — let SDK read file directly
+                del settings["env"]["AWS_CREDENTIAL_PROCESS"]
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
-                # Also set AWS_PROFILE so the SDK reads creds directly from file
-                settings["env"]["AWS_PROFILE"] = profile_name
+                # AWS_PROFILE is already set above — SDK reads ~/.aws/credentials directly
 
             # Add ANTHROPIC_MODEL if user selected a model during init
             if hasattr(profile, "selected_model") and profile.selected_model:
