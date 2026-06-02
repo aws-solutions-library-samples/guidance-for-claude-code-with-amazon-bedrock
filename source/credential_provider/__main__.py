@@ -430,23 +430,28 @@ class MultiProviderAuth:
         except Exception as e:
             self._debug_print(f"Could not clear keyring monitoring token: {e}")
 
-        # Clear credentials file (for session storage mode)
-        try:
-            credentials_path = Path.home() / ".aws" / "credentials"
-            if credentials_path.exists():
-                # Replace with expired dummy credentials instead of deleting
-                # This preserves the file for other profiles
-                expired_creds = {
-                    "Version": 1,
-                    "AccessKeyId": "EXPIRED",
-                    "SecretAccessKey": "EXPIRED",
-                    "SessionToken": "EXPIRED",
-                    "Expiration": "2000-01-01T00:00:00Z",
-                }
-                self.save_to_credentials_file(expired_creds, self.profile)
-                cleared_items.append("credentials file")
-        except Exception as e:
-            self._debug_print(f"Could not clear credentials file: {e}")
+        # Clear credentials file — session storage mode only.
+        # In keyring mode the shared credentials file is not the source of truth, and
+        # boto3 resolves ~/.aws/credentials BEFORE credential_process in ~/.aws/config.
+        # An EXPIRED stanza here would shadow the real credential_process line and
+        # break Claude Desktop's inferenceBedrockProfile lookup with a 403 forever.
+        if self.credential_storage == "session":
+            try:
+                credentials_path = Path.home() / ".aws" / "credentials"
+                if credentials_path.exists():
+                    # Replace with expired dummy credentials instead of deleting
+                    # This preserves the file for other profiles
+                    expired_creds = {
+                        "Version": 1,
+                        "AccessKeyId": "EXPIRED",
+                        "SecretAccessKey": "EXPIRED",
+                        "SessionToken": "EXPIRED",
+                        "Expiration": "2000-01-01T00:00:00Z",
+                    }
+                    self.save_to_credentials_file(expired_creds, self.profile)
+                    cleared_items.append("credentials file")
+            except Exception as e:
+                self._debug_print(f"Could not clear credentials file: {e}")
 
         # Clear monitoring token from session directory
         session_dir = Path.home() / ".claude-code-session"

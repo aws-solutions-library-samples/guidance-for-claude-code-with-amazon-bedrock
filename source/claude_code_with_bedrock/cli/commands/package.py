@@ -347,6 +347,11 @@ class PackageCommand(Command):
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by)
 
+        # Always generate Claude Desktop (CoWork 3P) MDM configuration. The files are
+        # cheap to produce and harmless on machines without Claude Desktop installed.
+        console.print("[cyan]Generating Claude Desktop (CoWork 3P) MDM configuration...[/cyan]")
+        self._generate_cowork_3p_mdm_config(output_dir, profile)
+
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
@@ -367,6 +372,12 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+        if (output_dir / "cowork-3p.mobileconfig").exists():
+            console.print("  • cowork-3p.mobileconfig - Claude Desktop MDM profile (macOS)")
+        if (output_dir / "cowork-3p.reg").exists():
+            console.print("  • cowork-3p.reg - Claude Desktop registry file (Windows)")
+        if (output_dir / "cowork-3p-config.json").exists():
+            console.print("  • cowork-3p-config.json - Claude Desktop MDM configuration (JSON)")
 
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
@@ -1872,8 +1883,15 @@ echo
 echo "Configuring AWS profile..."
 mkdir -p ~/.aws
 
-# Remove old profile if exists
+# Remove old [profile ClaudeCode] stanza if it exists in ~/.aws/config
 sed -i.bak '/^\[profile ClaudeCode\]$/,/^\[/{{/^\[profile ClaudeCode\]$/d;/^\[/!d;}}' ~/.aws/config 2>/dev/null || true
+
+# Purge any stale [ClaudeCode] stanza from ~/.aws/credentials. boto3 resolves
+# the shared credentials file BEFORE credential_process in ~/.aws/config, so a
+# leftover EXPIRED block (written by older builds during logout / token expiry)
+# would shadow credential_process and break Claude Desktop's
+# inferenceBedrockProfile lookup with a 403 InvalidClientTokenId.
+sed -i.bak '/^\[ClaudeCode\]$/,/^\[/{{/^\[ClaudeCode\]$/d;/^\[/!d;}}' ~/.aws/credentials 2>/dev/null || true
 
 # Get region from package settings (for Bedrock calls, not infrastructure)
 if [ -f "claude-settings/settings.json" ]; then
@@ -1882,12 +1900,36 @@ else
     REGION="{profile.aws_region}"
 fi
 
-# Add new profile
-aws configure set region $REGION --profile ClaudeCode
+# Append [profile ClaudeCode] with credential_process so Claude Desktop can
+# authenticate via the same binary as Claude Code CLI.
+cat >> ~/.aws/config <<EOF
+
+[profile ClaudeCode]
+credential_process = $HOME/claude-code-with-bedrock/credential-process --profile ClaudeCode
+region = $REGION
+EOF
+echo "✓ Wrote [profile ClaudeCode] to ~/.aws/config"
 
 # Setup OTEL resource attributes in Claude settings
 echo "Setting up OpenTelemetry resource attributes..."
 ~/claude-code-with-bedrock/credential-process --setup-otel-attrs
+
+# Apply Claude Desktop (CoWork 3P) configuration profile on macOS if present.
+# `open` launches System Settings > Profiles so the user can review and click
+# Install. macOS does not allow silent installation of unsigned configuration
+# profiles outside MDM enrollment; the JP fleet's Jamf push handles this
+# automatically, so most users won't see the prompt.
+if [[ "$OSTYPE" == "darwin"* ]] && [ -f "cowork-3p.mobileconfig" ]; then
+    echo
+    echo "Applying Claude Desktop configuration profile..."
+    if open "cowork-3p.mobileconfig" 2>/dev/null; then
+        echo "✓ Claude Desktop configuration profile opened in System Settings"
+        echo "  → Click 'Install' to complete Claude Desktop setup"
+    else
+        echo "⚠️  Could not open cowork-3p.mobileconfig automatically"
+        echo "   Double-click the file to install it manually"
+    fi
+fi
 
 echo
 echo "======================================"
@@ -1999,6 +2041,13 @@ echo Configuring AWS profile...
 REM Remove existing profile if it exists
 aws configure set credential_process "" --profile ClaudeCode 2>nul
 
+REM Purge any stale [ClaudeCode] stanza from %USERPROFILE%\.aws\credentials. boto3
+REM resolves the shared credentials file BEFORE credential_process in
+REM %USERPROFILE%\.aws\config, so a leftover EXPIRED block (from older builds
+REM during logout / token expiry) would shadow credential_process and break
+REM Claude Desktop's inferenceBedrockProfile lookup with a 403 InvalidClientTokenId.
+powershell -NoProfile -Command "$awsCreds = Join-Path $env:USERPROFILE '.aws\credentials'; if (Test-Path $awsCreds) {{ $existing = Get-Content $awsCreds -Raw; $pattern = '(?ms)^\[ClaudeCode\].*?(?=^\[|\Z)'; $cleaned = [regex]::Replace($existing, $pattern, ''); Set-Content -Path $awsCreds -Value $cleaned.TrimStart() -NoNewline -Encoding ASCII }}" 2>nul
+
 REM Set new credential process
 aws configure set credential_process "\"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe\"" --profile ClaudeCode
 
@@ -2023,6 +2072,21 @@ if %errorlevel% equ 0 (
 REM Setup OTEL resource attributes in Claude settings
 echo Setting up OpenTelemetry resource attributes...
 "%USERPROFILE%\claude-code-with-bedrock\credential-process.exe" --setup-otel-attrs >nul 2>&1
+
+REM Apply Claude Desktop (CoWork 3P) registry policy if shipped. Delete the policy
+REM key first so stale values from an older install (e.g. inferenceCredentialHelper
+REM pointing at a path that does not exist) do not linger alongside the new config —
+REM regedit /s only adds/updates keys, never deletes.
+if exist "cowork-3p.reg" (
+    echo Applying Claude Desktop registry settings...
+    reg delete "HKCU\SOFTWARE\Policies\Claude" /f >nul 2>&1
+    regedit /s "cowork-3p.reg"
+    if %errorlevel% neq 0 (
+        echo WARNING: Failed to apply Claude Desktop registry settings
+    ) else (
+        echo OK Claude Desktop registry settings applied
+    )
+)
 
 echo.
 echo ======================================
@@ -2236,9 +2300,12 @@ Available metrics include:
             if not include_coauthored_by:
                 settings["includeCoAuthoredBy"] = False
 
-            # Add awsAuthRefresh for session-based credential storage
-            if profile.credential_storage == "session":
-                settings["awsAuthRefresh"] = "~/claude-code-with-bedrock/credential-process"
+            # Configure awsAuthRefresh regardless of credential storage mode. This
+            # keeps the SDK's in-memory credential cache warm so the synchronous
+            # credential_process fallback (in ~/.aws/config) rarely fires on the
+            # request path — preserving SmartNews PR #3's protection against the
+            # CLI timeout/stampede pattern.
+            settings["awsAuthRefresh"] = "~/claude-code-with-bedrock/credential-process"
 
             # Add selected model as environment variable if available
             if hasattr(profile, "selected_model") and profile.selected_model:
@@ -2320,3 +2387,31 @@ Available metrics include:
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")
+
+    def _generate_cowork_3p_mdm_config(self, output_dir: Path, profile, profile_name: str = "ClaudeCode") -> None:
+        """Generate Claude Desktop (CoWork 3P) MDM configuration files.
+
+        Produces cowork-3p-config.json, cowork-3p.mobileconfig (macOS) and
+        cowork-3p.reg (Windows) under ``output_dir``. The MDM payload sets
+        ``inferenceBedrockProfile = ClaudeCode`` so Claude Desktop reuses the
+        same boto3 named-profile auth pipeline that Claude Code CLI uses —
+        no extra credential helper binary required.
+
+        Failures are non-fatal: a warning is logged and packaging continues.
+        """
+        from claude_code_with_bedrock.cli.utils.cowork_3p import (
+            build_mdm_config,
+            derive_model_aliases,
+            generate_all,
+        )
+
+        console = Console()
+        try:
+            mdm_config = build_mdm_config(
+                bedrock_region=self._get_bedrock_region_for_profile(profile),
+                model_aliases=derive_model_aliases(),
+                profile_name=profile_name,
+            )
+            generate_all(output_dir, mdm_config, console)
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not generate CoWork 3P MDM config: {e}[/yellow]")
