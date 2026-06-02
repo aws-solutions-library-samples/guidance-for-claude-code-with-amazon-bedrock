@@ -219,6 +219,31 @@ class TestReadCachedHeadersRoundTrip:
 
         assert result == headers
 
+    def test_write_twice_overwrites_cache_file(self, tmp_path, monkeypatch):
+        """write_cached_headers must succeed on the second call when cache already exists.
+
+        os.rename() on Windows raises FileExistsError when the destination file
+        already exists (unlike POSIX which replaces atomically). Using os.replace()
+        fixes this — the second write must overwrite, not silently fail.
+        """
+        import otel_helper.__main__ as mod
+
+        cache_file = tmp_path / "ClaudeCode-otel-headers.json"
+        monkeypatch.setattr(mod, "get_cache_path", lambda: cache_file)
+
+        first_headers = {"x-user-email": "first@example.com"}
+        second_headers = {"x-user-email": "second@example.com"}
+
+        mod.write_cached_headers(first_headers, int(time.time()) + 3600)
+        mod.write_cached_headers(second_headers, int(time.time()) + 3600)
+
+        result = mod.read_cached_headers()
+        assert result == second_headers, (
+            f"Cache still contains first headers after second write. "
+            f"Ensure os.replace() is used instead of os.rename() so the "
+            f"destination file is atomically overwritten on Windows."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Fix 3 — get_aws_caller_identity: STS client must use short timeouts
