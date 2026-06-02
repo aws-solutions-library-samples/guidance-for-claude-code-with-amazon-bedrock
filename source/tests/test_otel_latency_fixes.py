@@ -225,8 +225,13 @@ class TestReadCachedHeadersRoundTrip:
         os.rename() on Windows raises FileExistsError when the destination file
         already exists (unlike POSIX which replaces atomically). Using os.replace()
         fixes this — the second write must overwrite, not silently fail.
+
+        We simulate Windows behaviour by patching os.replace to raise
+        FileExistsError on the first call, so this regression is caught on POSIX
+        CI and doesn't require a Windows runner to stay green.
         """
-        import otel_helper.__main__ as mod
+        import os as _os
+        import otel_helper.__main__ as mod  # noqa: F811 – needed for monkeypatch target
 
         cache_file = tmp_path / "ClaudeCode-otel-headers.json"
         monkeypatch.setattr(mod, "get_cache_path", lambda: cache_file)
@@ -235,6 +240,17 @@ class TestReadCachedHeadersRoundTrip:
         second_headers = {"x-user-email": "second@example.com"}
 
         mod.write_cached_headers(first_headers, int(time.time()) + 3600)
+
+        # Patch os.rename to raise FileExistsError when dest exists (Windows behavior).
+        # If the code reverts to os.rename(), the second write silently fails and
+        # the cache is permanently stale. os.replace() does not have this problem.
+        def _windows_rename(src, dst):
+            if _os.path.exists(dst):
+                raise FileExistsError(f"[WinError 183] simulated: '{dst}'")
+            _os.rename(src, dst)
+
+        monkeypatch.setattr(mod.os, "rename", _windows_rename)
+
         mod.write_cached_headers(second_headers, int(time.time()) + 3600)
 
         result = mod.read_cached_headers()

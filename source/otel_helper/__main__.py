@@ -261,7 +261,7 @@ def read_cached_headers():
         with open(cache_path, encoding="utf-8") as f:
             cached = json.load(f)
         headers = cached.get("headers")
-        if headers is None:
+        if not isinstance(headers, dict):
             return None
 
         # Check if Bearer token in headers is still valid
