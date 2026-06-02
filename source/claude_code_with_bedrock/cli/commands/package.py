@@ -2379,12 +2379,30 @@ import json
 print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region', '$DEFAULT_REGION'))
 ")
 
-    # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+    # Get credential storage mode
+    CRED_STORAGE=$($PYTHON -c "
+import json
+print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('credential_storage', 'session'))
+" 2>/dev/null || echo "session")
+
+    if [ "$CRED_STORAGE" = "session" ]; then
+        # Session mode: SDK reads ~/.aws/credentials directly.
+        # No credential_process in config — awsAuthRefresh handles expiry.
+        cat >> ~/.aws/config << EOF
+[profile $PROFILE_NAME]
+region = $PROFILE_REGION
+EOF
+        # Bootstrap initial credentials into ~/.aws/credentials
+        echo "  Bootstrapping credentials..."
+        $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME > /dev/null 2>&1 || true
+    else
+        # Keyring mode: credential_process is called per-request by the SDK
+        cat >> ~/.aws/config << EOF
 [profile $PROFILE_NAME]
 credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
+    fi
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
@@ -2775,8 +2793,13 @@ Available metrics include:
             if not include_coauthored_by:
                 settings["includeCoAuthoredBy"] = False
 
-            # Add awsAuthRefresh for session-based credential storage
+            # Add awsAuthRefresh for session-based credential storage.
+            # In session mode, we remove AWS_CREDENTIAL_PROCESS so the SDK reads
+            # ~/.aws/credentials directly (zero per-request subprocess overhead).
+            # awsAuthRefresh fires only when creds expire — it runs credential-process
+            # once to refresh, then the SDK resumes reading from the file.
             if profile.credential_storage == "session":
+                del settings["env"]["AWS_CREDENTIAL_PROCESS"]
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add ANTHROPIC_MODEL if user selected a model during init
