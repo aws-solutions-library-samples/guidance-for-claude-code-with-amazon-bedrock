@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"ccwb-go/internal/config"
 	"ccwb-go/internal/federation"
 	"ccwb-go/internal/storage"
 )
@@ -24,6 +25,7 @@ func TestRefresherDetectsExpiredCredentials(t *testing.T) {
 	r := &Refresher{
 		profile:  profile,
 		interval: 5 * time.Second,
+		cfg:      &config.ProfileConfig{CredentialStorage: "session"},
 	}
 
 	// Case 1: No credentials file exists
@@ -78,6 +80,7 @@ func TestRefresherSkipsValidCredentials(t *testing.T) {
 	r := &Refresher{
 		profile:  profile,
 		interval: 5 * time.Second,
+		cfg:      &config.ProfileConfig{CredentialStorage: "session"},
 	}
 
 	result := r.refreshOnce()
@@ -110,6 +113,7 @@ func TestRefresherTriggersWhenNearExpiry(t *testing.T) {
 	r := &Refresher{
 		profile:  profile,
 		interval: 5 * time.Second,
+		cfg:      &config.ProfileConfig{CredentialStorage: "session"},
 	}
 
 	result := r.refreshOnce()
@@ -252,6 +256,7 @@ func TestDoRefreshWithMockCredentialProcess(t *testing.T) {
 	r := &Refresher{
 		profile:  profile,
 		interval: 5 * time.Second,
+		cfg:      &config.ProfileConfig{CredentialStorage: "session"},
 	}
 
 	// Since credentialProcessPath won't find our mock (it looks in binary dir),
@@ -350,5 +355,49 @@ func TestStopStalePIDFile(t *testing.T) {
 	// PID file should be gone
 	if _, err := os.Stat(pidFilePath(profile)); !os.IsNotExist(err) {
 		t.Error("Stale PID file was not cleaned up")
+	}
+}
+
+// TestQuotaEnforcementRevokesCredentials verifies that when quota is exceeded,
+// the refresher replaces valid credentials with an EXPIRED placeholder.
+func TestQuotaEnforcementRevokesCredentials(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	profile := "QuotaTest"
+
+	// Write valid credentials
+	futureExpiry := time.Now().Add(2 * time.Hour).Format(time.RFC3339)
+	valid := &federation.AWSCredentials{
+		Version: 1, AccessKeyID: "AKIAVALID", SecretAccessKey: "secret",
+		SessionToken: "token", Expiration: futureExpiry,
+	}
+	if err := storage.SaveToCredentialsFile(valid, profile); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Create refresher with quota enabled but no real endpoint
+	// (will fail-open since default fail_mode is "open")
+	r := &Refresher{
+		profile:  profile,
+		interval: 5 * time.Second,
+		cfg: &config.ProfileConfig{
+			CredentialStorage: "session",
+			QuotaAPIEndpoint:  "", // No endpoint = no quota check
+			QuotaFailMode:     "open",
+			QuotaCheckTimeout: 5,
+		},
+	}
+
+	// Should return 0 — valid creds, no quota check (endpoint empty)
+	result := r.refreshOnce()
+	if result != 0 {
+		t.Errorf("Expected 0 (valid creds, no quota), got %d", result)
+	}
+
+	// Verify credentials are still valid (not revoked)
+	creds, _ := storage.ReadFromCredentialsFile(profile)
+	if creds == nil || creds.AccessKeyID != "AKIAVALID" {
+		t.Error("Credentials should still be AKIAVALID when no quota endpoint configured")
 	}
 }

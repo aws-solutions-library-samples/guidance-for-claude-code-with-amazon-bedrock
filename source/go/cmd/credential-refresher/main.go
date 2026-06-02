@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"ccwb-go/internal/config"
+	"ccwb-go/internal/federation"
+	"ccwb-go/internal/quota"
 	"ccwb-go/internal/storage"
 	"ccwb-go/internal/version"
 )
@@ -74,6 +76,7 @@ func main() {
 	refresher := &Refresher{
 		profile:  profile,
 		interval: time.Duration(*intervalFlag) * time.Second,
+		cfg:      cfg,
 	}
 
 	if *oneShot {
@@ -96,6 +99,7 @@ func main() {
 type Refresher struct {
 	profile  string
 	interval time.Duration
+	cfg      *config.ProfileConfig
 }
 
 // run starts the refresh loop, stopping on SIGTERM/SIGINT.
@@ -146,7 +150,23 @@ func (r *Refresher) refreshOnce() int {
 		return r.doRefresh()
 	}
 
-	// Creds are valid
+	// Creds are valid — now enforce quota if configured
+	if r.cfg != nil && r.cfg.QuotaAPIEndpoint != "" {
+		token, _ := storage.GetMonitoringToken(r.profile, r.cfg.CredentialStorage)
+		if token != "" {
+			qr := quota.Check(r.cfg.QuotaAPIEndpoint, token, r.cfg.QuotaCheckTimeout, r.cfg.QuotaFailMode)
+			if !qr.Allowed {
+				fmt.Fprintf(os.Stderr, "credential-refresher: quota exceeded for profile '%s': %s\n", r.profile, qr.Message)
+				// Revoke credentials to force awsAuthRefresh (which also checks quota)
+				expired := &federation.AWSCredentials{
+					Version: 1, AccessKeyID: "EXPIRED", SecretAccessKey: "EXPIRED",
+					SessionToken: "EXPIRED", Expiration: "2000-01-01T00:00:00Z",
+				}
+				_ = storage.SaveToCredentialsFile(expired, r.profile)
+				return 1
+			}
+		}
+	}
 	return 0
 }
 
