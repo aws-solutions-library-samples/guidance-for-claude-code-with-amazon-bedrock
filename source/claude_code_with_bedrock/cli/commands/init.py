@@ -1748,24 +1748,31 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        sso_enabled = config.get("sso_enabled", True)
+        if sso_enabled:
+            okta_config = config.get("okta", {})
+            okta_domain = okta_config.get("domain", "")
+            okta_client_id = okta_config.get("client_id", "")
+            table.add_row("OIDC Provider", okta_domain or "—")
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    okta_client_id[:20] + "..."
+                    if len(okta_client_id) > 20
+                    else (okta_client_id or "—")
+                ),
+            )
 
-        table.add_row(
-            "Credential Storage",
-            (
-                "Keyring (OS secure storage)"
-                if config.get("credential_storage") == "keyring"
-                else "Session Files (temporary)"
-            ),
-        )
+            table.add_row(
+                "Credential Storage",
+                (
+                    "Keyring (OS secure storage)"
+                    if config.get("credential_storage") == "keyring"
+                    else "Session Files (temporary)"
+                ),
+            )
+        else:
+            table.add_row("SSO Authentication", "Disabled (IAM credentials used)")
         table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
         table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
         table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
@@ -2183,9 +2190,12 @@ class InitCommand(Command):
             params = []
 
         # Update with our values
+        sso_enabled = config.get("sso_enabled", True)
+        okta_domain = config.get("okta", {}).get("domain", "none") if sso_enabled else "none"
+        okta_client_id = config.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
         param_map = {
-            "OktaDomain": config["okta"]["domain"],
-            "OktaClientId": config["okta"]["client_id"],
+            "OktaDomain": okta_domain,
+            "OktaClientId": okta_client_id,
             "IdentityPoolName": config["aws"]["identity_pool_name"],
             "AllowedBedrockRegions": ",".join(config["aws"]["allowed_bedrock_regions"]),
             "EnableMonitoring": "true" if config["monitoring"]["enabled"] else "false",
@@ -2468,7 +2478,10 @@ class InitCommand(Command):
         """Show summary of existing deployment."""
         console = Console()
 
-        console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        if config.get("sso_enabled", True) and "okta" in config and "domain" in config["okta"]:
+            console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        else:
+            console.print("• SSO Authentication: [cyan]Disabled (IAM credentials used)[/cyan]")
 
         # Show Cognito-specific fields if using Cognito User Pool
         if "cognito_user_pool_id" in config:
