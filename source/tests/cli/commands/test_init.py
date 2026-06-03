@@ -425,6 +425,90 @@ class TestNamedFunctionsIntegration:
         assert callable(init_module.validate_cognito_user_pool_id)
 
 
+class TestSsoDisabledRendering:
+    """Regression tests for issue #430.
+
+    Ensure the wizard does not crash with KeyError: 'okta' when SSO is
+    disabled. The okta key is only populated by the OIDC flow, so methods
+    that render or persist it must guard against its absence.
+    """
+
+    @pytest.fixture
+    def cmd(self):
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+        return InitCommand()
+
+    @pytest.fixture
+    def base_aws(self):
+        return {
+            "region": "us-east-1",
+            "identity_pool_name": "demo-pool",
+            "allowed_bedrock_regions": ["us-east-1"],
+            "stacks": {},
+        }
+
+    def test_review_configuration_without_okta_key_does_not_raise(self, cmd, base_aws):
+        config = {
+            "sso_enabled": False,
+            "credential_storage": "session",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        # Must not raise KeyError: 'okta'
+        assert cmd._review_configuration(config) is True
+
+    def test_review_configuration_sso_enabled_still_renders_okta(self, cmd, base_aws):
+        config = {
+            "sso_enabled": True,
+            "okta": {"domain": "company.okta.com", "client_id": "abcdef1234567890abcdef"},
+            "credential_storage": "keyring",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        assert cmd._review_configuration(config) is True
+
+    def test_show_existing_deployment_without_okta_key_does_not_raise(self, cmd, base_aws):
+        config = {
+            "sso_enabled": False,
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        # Must not raise KeyError: 'okta'
+        cmd._show_existing_deployment(config)
+
+    def test_update_parameters_file_without_okta_key_writes_none(self, cmd, base_aws, tmp_path):
+        import json
+
+        params_file = tmp_path / "params.json"
+        config = {
+            "sso_enabled": False,
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        cmd._update_parameters_file(params_file, config)
+
+        with open(params_file) as f:
+            params = json.load(f)
+        param_map = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_map["OktaDomain"] == "none"
+        assert param_map["OktaClientId"] == "none"
+
+    def test_review_configuration_with_empty_okta_dict_does_not_raise(self, cmd, base_aws):
+        """Edge case: SSO enabled but the user cancelled before entering a domain.
+
+        Config can end up with `okta: {}`. The defensive .get() chain must
+        handle this without raising KeyError on missing 'domain' / 'client_id'.
+        """
+        config = {
+            "sso_enabled": True,
+            "okta": {},  # OIDC flow started but cancelled before fields were set
+            "credential_storage": "session",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        assert cmd._review_configuration(config) is True
+
+
 if __name__ == "__main__":
     # Run the tests
     pytest.main([__file__, "-v"])
