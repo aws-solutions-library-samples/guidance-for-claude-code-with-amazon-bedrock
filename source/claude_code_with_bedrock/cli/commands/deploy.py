@@ -821,6 +821,9 @@ class DeployCommand(Command):
                 # default is 'false' to match the opt-in intent of this field.
                 enable_finegrained_quotas = profile.enable_finegrained_quotas
 
+                # Sidecar bypass detection: opt-in detective control (default off).
+                enable_bypass_detection = getattr(profile, "enable_bypass_detection", False)
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"WarningThreshold80={warning_80}",
@@ -831,6 +834,7 @@ class DeployCommand(Command):
                     f"OidcIssuerUrl={oidc_issuer_url}",
                     f"OidcClientId={oidc_client_id}",
                     f"EnableFinegrainedQuotas={str(enable_finegrained_quotas).lower()}",
+                    f"EnableBypassDetection={str(enable_bypass_detection).lower()}",
                 ]
 
                 # Package the template using AWS CLI
@@ -1088,6 +1092,7 @@ class DeployCommand(Command):
                 f"OidcIssuerUrl={profile.provider_domain}",
                 f"OidcClientId={profile.client_id}",
                 f"EnableFinegrainedQuotas={str(profile.enable_finegrained_quotas).lower()}",
+                f"EnableBypassDetection={str(getattr(profile, 'enable_bypass_detection', False)).lower()}",
             ]
             print_deploy_cmd("/tmp/quota-monitoring-packaged.yaml", stack_name, params)
 

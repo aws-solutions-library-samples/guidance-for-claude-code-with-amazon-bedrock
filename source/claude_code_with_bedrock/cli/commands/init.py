@@ -1119,11 +1119,34 @@ class InitCommand(Command):
                     ).ask()
                     config["quota"]["check_interval"] = int(check_interval)
 
+                    # Sidecar bypass detection (opt-in compliance/audit control)
+                    monitoring_mode = config.get("monitoring", {}).get("mode", "sidecar")
+                    if monitoring_mode == "sidecar":
+                        console.print("\n[bold]Sidecar Bypass Detection[/bold]")
+                        console.print("Quota usage is measured from telemetry sent by the local OTEL sidecar.")
+                        console.print("If a user stops the sidecar, their usage is not counted toward quotas.")
+                        console.print(
+                            "[dim]This opt-in detective control joins CloudTrail Bedrock activity against[/dim]"
+                        )
+                        console.print(
+                            "[dim]reported telemetry to flag users invoking Bedrock without a running sidecar.[/dim]"
+                        )
+                        enable_bypass_detection = questionary.confirm(
+                            "Enable sidecar bypass detection (CloudWatch metrics + SNS alerts)?",
+                            default=config.get("quota", {}).get("enable_bypass_detection", False),
+                        ).ask()
+                        config["quota"]["enable_bypass_detection"] = enable_bypass_detection
+                    else:
+                        # Central mode runs the collector server-side; users can't stop it.
+                        config["quota"]["enable_bypass_detection"] = False
+
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
                     console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
                     console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
                     console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
+                    if config["quota"].get("enable_bypass_detection"):
+                        console.print("  • Sidecar bypass detection: enabled")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -2050,6 +2073,7 @@ class InitCommand(Command):
             "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
+            "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),

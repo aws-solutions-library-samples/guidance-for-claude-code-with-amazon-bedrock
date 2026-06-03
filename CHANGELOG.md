@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Sidecar bypass detection**: New opt-in detective control (sidecar mode) that flags users invoking Amazon Bedrock without a running OTEL sidecar. A scheduled Lambda joins tamper-proof CloudTrail Bedrock activity against per-user OTEL-reported usage (point reads, no table scan), publishes per-user `ClaudeCode/SidecarHealth` CloudWatch metrics, and sends SNS alerts. Configurable via `ccwb init` or the `EnableBypassDetection` quota-stack parameter (disabled by default).
+
 ## [3.0.0-beta.2] - 2026-05-28
 
 ### Fixed
