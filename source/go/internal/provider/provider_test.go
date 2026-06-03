@@ -137,3 +137,37 @@ func TestConfigFor_DoesNotMutateConfigsMap(t *testing.T) {
 		t.Errorf("Configs[okta] was mutated: before=%q after=%q", before, after)
 	}
 }
+
+func TestIsKnown_Generic(t *testing.T) {
+	if !IsKnown("generic") {
+		t.Error("IsKnown(\"generic\") = false, want true")
+	}
+}
+
+func TestConfigFor_GenericProvider(t *testing.T) {
+	got := ConfigFor("generic", "")
+	if got.Name != "Generic OIDC" {
+		t.Errorf("ConfigFor(generic).Name = %q, want \"Generic OIDC\"", got.Name)
+	}
+	if got.Scopes != "openid profile email" {
+		t.Errorf("ConfigFor(generic).Scopes = %q, want \"openid profile email\"", got.Scopes)
+	}
+	if got.ResponseType != "code" {
+		t.Errorf("ConfigFor(generic).ResponseType = %q, want \"code\"", got.ResponseType)
+	}
+}
+
+func TestDetect_CyberArk(t *testing.T) {
+	// CyberArk Identity domains should not match any named provider
+	domains := []string{
+		"abc1234.id.cyberark.cloud",
+		"company.my.idaptive.app",
+		"auth.cyberark.com",
+	}
+	for _, d := range domains {
+		got := Detect(d)
+		if got != "oidc" {
+			t.Errorf("Detect(%q) = %q, want \"oidc\" (should not match a named provider)", d, got)
+		}
+	}
+}

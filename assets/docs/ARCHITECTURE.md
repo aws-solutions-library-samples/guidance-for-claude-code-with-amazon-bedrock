@@ -104,9 +104,9 @@ Our implementation returns credentials in the exact format required by the AWS C
 
 The packaging and distribution system bridges the gap between IT administrators who deploy infrastructure and end users who need simple, foolproof installation. The `ccwb package` command creates a self-contained distribution that includes everything users need without requiring technical expertise.
 
-The packaging system uses pre-built native Go binaries stored in `source/go/prebuilt/`. These are generic — they contain zero customer-specific data and work for all deployments. Go cross-compilation produces binaries for all 5 platforms from a single machine, replacing the previous PyInstaller (macOS/Linux) and Nuitka/CodeBuild (Windows) build pipeline.
+The packaging system uses Go cross-compilation (`ccwb package --go`) to produce native statically-linked binaries for all 5 platforms from a single machine, replacing the previous PyInstaller (macOS/Linux) and Nuitka/CodeBuild (Windows) build pipeline. The binaries are generic — they contain zero customer-specific data and work for all deployments.
 
-The `ccwb package --prebuilt` command copies these binaries and generates customer-specific `config.json` (with federation config, quota settings) and `settings.json` (with Bedrock model, OTel endpoint) from the admin's profile. No Go, Docker, CodeBuild, or even AWS access is needed for packaging — all required data is saved in the profile during `ccwb deploy`.
+The `ccwb package --go` command cross-compiles the binaries and generates customer-specific `config.json` (with federation config, quota settings) and `settings.json` (with Bedrock model, OTel endpoint) from the admin's profile. Only Go 1.24+ is required — no Docker, CodeBuild, or platform-specific toolchains needed.
 
 The package embeds the configuration created during deployment, including the federation identifier (role ARN or identity pool ID) read from the profile. Generic install scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`) read profile names and regions from `config.json` at install time, so they work for any customer without regeneration.
 

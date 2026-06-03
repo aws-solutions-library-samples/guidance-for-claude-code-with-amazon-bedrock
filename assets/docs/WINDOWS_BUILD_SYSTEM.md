@@ -10,7 +10,7 @@ Native Go binaries replace the previous PyInstaller/Nuitka build pipeline. Key a
 - **Cross-compile from any OS**: All 5 platforms built from a single `make all` command
 - **No CodeBuild needed**: Eliminates 3 CodeBuild projects and 30+ minute Windows builds
 - **4x smaller**: ~14 MB vs ~60-80 MB for credential-process
-- **Pre-built binaries**: Stored in `source/go/prebuilt/` — no build tools needed for packaging
+- **Fast cross-compilation**: All 5 platforms built in ~10 seconds from any machine with Go installed
 
 ### Windows-Specific Build Requirements
 
@@ -24,12 +24,11 @@ Windows binaries have special requirements to avoid Defender cloud ML (Wacatac.B
 
 | Path | Command | Requires | Runs on Windows admin? |
 |---|---|---|---|
-| **Pre-built** (recommended) | `ccwb package --prebuilt` | Nothing — binaries already in the repo at `source/go/prebuilt/v2.0.0/` | ✅ Yes, natively |
-| **Go cross-compile via ccwb** | `ccwb package --go` | Go 1.22+ installed | ✅ Yes, natively |
-| **Go cross-compile via Makefile** | `cd source/go && make all` | Go 1.22+ and a Unix shell (Git Bash, WSL, or macOS/Linux) | ⚠️ **No** — see below |
+| **Go cross-compile via ccwb** (recommended) | `ccwb package --go` | Go 1.24+ installed | ✅ Yes, natively |
+| **Go cross-compile via Makefile** | `cd source/go && make all` | Go 1.24+ and a Unix shell (Git Bash, WSL, or macOS/Linux) | ⚠️ **No** — see below |
 | **Legacy** (default when no flag) | `ccwb package` | PyInstaller + Docker (Linux builds) + CodeBuild (Windows builds) | ⚠️ Partial — native Windows Nuitka works; Linux builds need Docker |
 
-**Pass `--prebuilt` explicitly to avoid the legacy path.** Bare `ccwb package` falls back to PyInstaller/Nuitka/Docker/CodeBuild, which is much heavier and more fragile than `--prebuilt`. Most customer admins should standardize on `ccwb package --prebuilt`.
+**Pass `--go` explicitly to avoid the legacy path.** Bare `ccwb package` falls back to PyInstaller/Nuitka/Docker/CodeBuild, which is much heavier and more fragile. Most admins should standardize on `ccwb package --go`.
 
 ### Building Windows binaries (cross-compile, any admin OS)
 
@@ -53,11 +52,9 @@ Verified working from macOS Apple Silicon: all 10 binaries (5 platforms × 2 bin
 
 ### Building on a Windows machine
 
-**`ccwb package --prebuilt` works natively on Windows** — it's pure Python `shutil.copy2()` of the prebuilt binaries already in the repo. No Go, no shell dependency, no toolchain. **This is the recommended path for Windows admins — always pass `--prebuilt` explicitly.**
+**`ccwb package --go` works natively on Windows** — Python subprocess calls `go build` directly and passes env vars as a dict (not shell syntax), with cross-platform `pathlib.Path` handling. Requires only Go 1.24+ installed and on `PATH`. **This is the recommended path for Windows admins.**
 
 Bare `ccwb package` (no flag) falls back to the legacy PyInstaller/Nuitka/Docker/CodeBuild path, which on Windows requires CodeBuild to be enabled during `ccwb init` and takes 12-15 minutes per build.
-
-**`ccwb package --go` also works natively on Windows** — Python subprocess calls `go build` directly and passes env vars as a dict (not shell syntax), with cross-platform `pathlib.Path` handling. Requires only Go 1.22+ installed and on `PATH`.
 
 **`make all` does NOT work on native Windows cmd.exe or PowerShell.** The Makefile uses Unix-only shell constructs (`mkdir -p`, `rm -rf`). Options if you must use the Makefile on Windows:
 
@@ -79,7 +76,7 @@ go build -trimpath -ldflags "-s -w" -o bin\credential-process-linux-x64 .\cmd\cr
 # ...etc
 ```
 
-**Recommended path for Windows admins**: always pass `ccwb package --prebuilt` explicitly. Only rebuild binaries if you've modified the Go source, in which case `ccwb package --go` handles the cross-compile without needing `make`.
+**Recommended path for Windows admins**: always pass `ccwb package --go` explicitly. The Makefile is only needed if you want to build outside of the `ccwb` tooling.
 
 ### Verification
 

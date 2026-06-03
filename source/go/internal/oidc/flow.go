@@ -18,6 +18,13 @@ type AuthResult struct {
 	TokenClaims jwt.Claims
 }
 
+// GenericEndpoints carries absolute endpoint URLs for Generic OIDC providers.
+// Pass nil for named providers (Okta, Auth0, Azure, Cognito).
+type GenericEndpoints struct {
+	AuthorizeURL string
+	TokenURL     string
+}
+
 // Authenticate performs the full OIDC authorization code flow with PKCE.
 // oktaAuthServerID is the Okta Custom Authorization Server id for tenants
 // whose CAS isn't named "default". Pass "" (or "default") for every other
@@ -26,7 +33,10 @@ type AuthResult struct {
 // confidential is optional Azure-AD confidential-client material (client_secret
 // or certificate-signed client_assertion). Pass nil for public-client flows --
 // Okta, Auth0, Cognito, and Azure "public" mode all use the PKCE-only path.
-func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth) (*AuthResult, error) {
+//
+// generic carries absolute endpoint URLs for Generic OIDC providers (CyberArk,
+// PingFederate, Keycloak, ForgeRock, etc.). Pass nil for named providers.
+func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth, generic *GenericEndpoints) (*AuthResult, error) {
 	provCfg := provider.ConfigFor(providerType, oktaAuthServerID)
 	if provCfg.Name == "" {
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
@@ -48,13 +58,6 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", redirectPort)
 
-	// Build base URL
-	domain := providerDomain
-	if providerType == "azure" && strings.HasSuffix(domain, "/v2.0") {
-		domain = domain[:len(domain)-5]
-	}
-	baseURL := "https://" + domain
-
 	// Build authorization URL
 	params := url.Values{
 		"client_id":             {clientID},
@@ -70,7 +73,20 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 		params.Set("response_mode", "query")
 		params.Set("prompt", "select_account")
 	}
-	authURL := baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
+
+	var authURL, tokenURL string
+	if generic != nil && providerType == "generic" {
+		authURL = generic.AuthorizeURL + "?" + params.Encode()
+		tokenURL = generic.TokenURL
+	} else {
+		domain := providerDomain
+		if providerType == "azure" && strings.HasSuffix(domain, "/v2.0") {
+			domain = domain[:len(domain)-5]
+		}
+		baseURL := "https://" + domain
+		authURL = baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
+		tokenURL = baseURL + provCfg.TokenEndpoint
+	}
 
 	// Start callback server
 	resultCh, srv, err := StartCallbackServer(redirectPort, state)
@@ -93,7 +109,6 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 	}
 
 	// Exchange code for tokens
-	tokenURL := baseURL + provCfg.TokenEndpoint
 	tokenResp, err := ExchangeCode(tokenURL, result.Code, redirectURI, clientID, pkce.CodeVerifier, confidential)
 	if err != nil {
 		return nil, err

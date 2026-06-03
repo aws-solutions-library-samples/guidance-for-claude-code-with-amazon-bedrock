@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"ccwb-go/internal/config"
@@ -72,11 +73,21 @@ func main() {
 	// Resolve provider type
 	providerType := resolveProviderType(cfg)
 
+	// Resolve redirect port: REDIRECT_PORT env > config.json > 8400
+	redirectPort := 8400
+	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+			redirectPort = p
+		}
+	} else if cfg.RedirectPort > 0 {
+		redirectPort = cfg.RedirectPort
+	}
+
 	app := &credentialApp{
 		profile:      profile,
 		cfg:          cfg,
 		providerType: providerType,
-		redirectPort: 8400,
+		redirectPort: redirectPort,
 	}
 
 	if *clearCache {
@@ -133,7 +144,8 @@ func resolveProviderType(cfg *config.ProfileConfig) string {
 	detected := provider.Detect(cfg.ProviderDomain)
 	if detected == "oidc" {
 		fmt.Fprintf(os.Stderr, "Error: Unable to auto-detect provider type for domain '%s'.\n", cfg.ProviderDomain)
-		fmt.Fprintln(os.Stderr, "Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool.")
+		fmt.Fprintln(os.Stderr, "Known providers: Okta, Auth0, Microsoft/Azure, AWS Cognito User Pool, Generic OIDC.")
+		fmt.Fprintln(os.Stderr, "Set provider_type to \"generic\" in config.json for custom OIDC providers.")
 		os.Exit(1)
 	}
 	return detected
@@ -365,7 +377,23 @@ func (a *credentialApp) run() int {
 		return 0
 	}
 
-	// Authenticate
+	// Try silent refresh using cached id_token before opening browser
+	if creds := a.trySilentRefresh(); creds != nil {
+		if a.cfg.QuotaAPIEndpoint != "" {
+			token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+			if token != "" {
+				qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
+				if !qr.Allowed {
+					printQuotaBlocked(qr)
+					return 1
+				}
+			}
+		}
+		outputJSON(creds)
+		return 0
+	}
+
+	// Authenticate with OIDC provider (browser popup)
 	debugPrint("Authenticating with %s for profile '%s'...", a.providerType, a.profile)
 	authResult, err := a.authenticate()
 	if err != nil {
@@ -413,6 +441,13 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	var generic *oidc.GenericEndpoints
+	if a.providerType == "generic" {
+		generic = &oidc.GenericEndpoints{
+			AuthorizeURL: a.cfg.OIDCAuthorizationEndpoint,
+			TokenURL:     a.cfg.OIDCTokenEndpoint,
+		}
+	}
 	return oidc.Authenticate(
 		a.cfg.ProviderDomain,
 		a.cfg.ClientID,
@@ -420,6 +455,7 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 		a.cfg.OktaAuthServerID, // "" or "default" -> default CAS; anything else rewrites endpoints
 		a.redirectPort,
 		confidential,
+		generic,
 	)
 }
 
@@ -481,6 +517,39 @@ func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AW
 		a.cfg.AWSRegion, a.cfg.IdentityPoolID, a.cfg.ProviderDomain,
 		a.providerType, auth.IDToken, auth.TokenClaims,
 	)
+}
+
+func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
+	token, err := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+	if err != nil || token == "" {
+		debugPrint("No valid cached id_token for silent refresh")
+		return nil
+	}
+	debugPrint("Found valid cached id_token, attempting silent credential refresh...")
+	claims, err := jwt.DecodePayload(token)
+	if err != nil {
+		debugPrint("Failed to decode cached id_token: %v", err)
+		return nil
+	}
+	// Check if the id_token itself is expired
+	if exp := claims.GetFloat("exp"); exp > 0 && int64(exp) < time.Now().Unix() {
+		debugPrint("Cached id_token is expired, silent refresh not possible")
+		return nil
+	}
+	authResult := &oidc.AuthResult{IDToken: token, TokenClaims: claims}
+	creds, err := a.getAWSCredentials(authResult)
+	if err != nil {
+		debugPrint("Silent refresh failed, will require browser auth: %v", err)
+		return nil
+	}
+	if saveErr := a.saveCredentials(creds); saveErr != nil {
+		debugPrint("Failed to save silently-refreshed credentials: %v", saveErr)
+	}
+	// Re-save monitoring token to refresh its expiry tracking
+	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
+		token, map[string]interface{}(claims))
+	debugPrint("Silent credential refresh succeeded")
+	return creds
 }
 
 func (a *credentialApp) shouldRecheckQuota() bool {
