@@ -735,8 +735,27 @@ class PackageCommand(Command):
         # Windows builds use Nuitka via CodeBuild
         if target_platform == "windows":
             if current_system == "windows":
-                # Native Windows build with Nuitka
-                return self._build_native_executable_nuitka(output_dir, "windows")
+                # Try native Windows build with Nuitka first
+                try:
+                    return self._build_native_executable_nuitka(output_dir, "windows")
+                except RuntimeError as e:
+                    # Check if this is a Nuitka availability issue (not a compilation failure)
+                    error_msg = str(e)
+                    nuitka_unavailable = (
+                        "Nuitka not found" in error_msg
+                        or "MinGW" in error_msg
+                        or "FATAL: Only this specific gcc" in error_msg
+                    )
+                    if nuitka_unavailable:
+                        # Nuitka is not properly configured, fall back to CodeBuild
+                        console = Console()
+                        console.print(f"[yellow]Local build unavailable: {error_msg.split(chr(10))[0]}[/yellow]")
+                        console.print("[cyan]Falling back to AWS CodeBuild...[/cyan]")
+                        self._build_windows_via_codebuild(output_dir)
+                        return None  # CodeBuild async build started
+                    else:
+                        # Re-raise other RuntimeErrors (actual build failures)
+                        raise
             else:
                 # Use CodeBuild for Windows builds on non-Windows platforms
                 # Don't return - just start the build and continue
