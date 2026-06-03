@@ -549,7 +549,37 @@ class MultiProviderAuth:
 
         # Clear monitoring token from keyring
         try:
-            if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+            if platform.system() == "Windows":
+                # Chunked format: expire the meta and overwrite every chunk so the
+                # real token is not left recoverable. Also clear any legacy entry.
+                meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
+                cleared_monitoring = False
+                if meta_json:
+                    try:
+                        count = json.loads(meta_json).get("count", 0)
+                    except Exception:
+                        count = 0
+                    for idx in range(1, count + 1):
+                        entry = f"{self.profile}-monitoring-{idx}"
+                        if keyring.get_password("claude-code-with-bedrock", entry):
+                            keyring.set_password("claude-code-with-bedrock", entry, "EXPIRED")
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-monitoring-meta",
+                        json.dumps({"count": 0, "expires": 0, "email": "", "profile": self.profile}),
+                    )
+                    cleared_monitoring = True
+                # Legacy single-entry monitoring token (pre-chunk installs)
+                if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-monitoring",
+                        json.dumps({"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}),
+                    )
+                    cleared_monitoring = True
+                if cleared_monitoring:
+                    cleared_items.append("keyring monitoring token")
+            elif keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
                 # Replace with expired dummy token
                 expired_token = json.dumps(
                     {"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}  # Expired timestamp
@@ -651,6 +681,98 @@ class MultiProviderAuth:
         except Exception as e:
             self._debug_print(f"Could not clear STS credentials: {e}")
 
+    # Per-entry chunk size for the Windows monitoring-token split. Windows
+    # Credential Manager caps a single entry at CRED_MAX_CREDENTIAL_BLOB_SIZE
+    # (5*512 = 2560 bytes), and the keyring backend stores values as UTF-16LE
+    # (2 bytes/char), so the practical limit is ~1280 chars. A real Azure
+    # id_token (~1.3KB) exceeds this, so it must be split. 1000 leaves headroom.
+    _MONITORING_CHUNK_SIZE = 1000
+
+    def _save_monitoring_keyring_windows(self, token_data):
+        """Persist the monitoring token to Windows keyring as N size-bounded chunks.
+
+        A single Credential Manager entry cannot hold a full id_token (see
+        _MONITORING_CHUNK_SIZE), so the token string is split across
+        {profile}-monitoring-1..N entries with a {profile}-monitoring-meta entry
+        holding the chunk count plus small fields (expires/email/profile) that
+        callers need without reassembling the token.
+        """
+        token = token_data["token"]
+        size = self._MONITORING_CHUNK_SIZE
+        chunks = [token[i : i + size] for i in range(0, len(token), size)] or [""]
+
+        written = []
+        try:
+            for idx, chunk in enumerate(chunks, start=1):
+                entry = f"{self.profile}-monitoring-{idx}"
+                keyring.set_password("claude-code-with-bedrock", entry, chunk)
+                written.append(entry)
+            keyring.set_password(
+                "claude-code-with-bedrock",
+                f"{self.profile}-monitoring-meta",
+                json.dumps(
+                    {
+                        "count": len(chunks),
+                        "expires": token_data.get("expires", 0),
+                        "email": token_data.get("email", ""),
+                        "profile": token_data.get("profile", self.profile),
+                    }
+                ),
+            )
+        except Exception:
+            # Roll back any partial write so a later read can't reassemble a
+            # truncated token (the all-or-nothing read guard also covers this).
+            for entry in written:
+                try:
+                    keyring.delete_password("claude-code-with-bedrock", entry)
+                except Exception:
+                    pass
+            raise
+
+        # Remove a legacy single-entry monitoring token so stale data can't shadow
+        # the chunked entries on read.
+        try:
+            if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+                keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+        except Exception:
+            pass
+
+    def _read_monitoring_keyring_windows(self):
+        """Reassemble the monitoring token from Windows keyring chunks.
+
+        Returns the token_data dict, or None if no valid chunk set is present.
+        Falls back to a legacy single {profile}-monitoring entry for installs
+        that predate the chunked format.
+        """
+        meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
+        if not meta_json:
+            # Backward compatibility: try the legacy single-entry format.
+            legacy = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+            if not legacy:
+                return None
+            return json.loads(legacy)
+
+        meta = json.loads(meta_json)
+        count = meta.get("count", 0)
+        if not count:
+            return None
+
+        chunks = []
+        for idx in range(1, count + 1):
+            chunk = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
+            # All-or-nothing guard: a missing chunk means an incomplete/partial
+            # write; never return a truncated token.
+            if chunk is None:
+                return None
+            chunks.append(chunk)
+
+        return {
+            "token": "".join(chunks),
+            "expires": meta.get("expires", 0),
+            "email": meta.get("email", ""),
+            "profile": meta.get("profile", self.profile),
+        }
+
     def save_monitoring_token(self, id_token, token_claims):
         """Save ID token for monitoring authentication"""
         try:
@@ -663,8 +785,17 @@ class MultiProviderAuth:
             }
 
             if self.credential_storage == "keyring":
-                # Store monitoring token in keyring
-                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", json.dumps(token_data))
+                if platform.system() == "Windows":
+                    # Windows Credential Manager rejects a full id_token in one
+                    # entry (~1280 char limit); split into chunks. See
+                    # _save_monitoring_keyring_windows.
+                    self._save_monitoring_keyring_windows(token_data)
+                else:
+                    # macOS Keychain / Secret Service have no small per-entry
+                    # limit; store as a single entry.
+                    keyring.set_password(
+                        "claude-code-with-bedrock", f"{self.profile}-monitoring", json.dumps(token_data)
+                    )
             else:
                 # Save to session directory alongside credentials
                 session_dir = Path.home() / ".claude-code-session"
@@ -696,13 +827,19 @@ class MultiProviderAuth:
                 return env_token
 
             if self.credential_storage == "keyring":
-                # Retrieve from keyring
-                token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                if platform.system() == "Windows":
+                    # Reassemble from chunked entries (with legacy fallback).
+                    token_data = self._read_monitoring_keyring_windows()
+                    if not token_data:
+                        return None
+                else:
+                    # Retrieve from keyring (single entry on macOS/Linux)
+                    token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
 
-                if not token_json:
-                    return None
+                    if not token_json:
+                        return None
 
-                token_data = json.loads(token_json)
+                    token_data = json.loads(token_json)
             else:
                 # Check session file
                 session_dir = Path.home() / ".claude-code-session"
@@ -945,8 +1082,17 @@ class MultiProviderAuth:
         )
         return token
 
-    def authenticate_oidc(self):
-        """Perform OIDC authentication with PKCE"""
+    def authenticate_oidc(self, lock_socket=None):
+        """Perform OIDC authentication with PKCE.
+
+        Args:
+            lock_socket: An optional socket already bound to the redirect port by
+                the caller's lock check. Reusing it keeps the port continuously
+                held from the lock check through the callback, closing the TOCTOU
+                window where a concurrent credential-process could bind the freed
+                port and open a second browser. If None, a fresh server socket is
+                bound here (legacy behavior).
+        """
         state = secrets.token_urlsafe(16)
         nonce = secrets.token_urlsafe(16)
 
@@ -1008,7 +1154,15 @@ class MultiProviderAuth:
 
         # Setup callback server
         auth_result = {"code": None, "error": None}
-        server = HTTPServer(("127.0.0.1", self.redirect_port), self._create_callback_handler(state, auth_result))
+        handler = self._create_callback_handler(state, auth_result)
+        if lock_socket is not None:
+            # Reuse the caller's already-bound lock socket so the port is never
+            # released between the lock check and the callback (no TOCTOU gap).
+            server = HTTPServer(("127.0.0.1", self.redirect_port), handler, bind_and_activate=False)
+            server.socket = lock_socket
+            lock_socket.listen(5)
+        else:
+            server = HTTPServer(("127.0.0.1", self.redirect_port), handler)
 
         # Start server in background
         server_thread = threading.Thread(target=server.handle_request)
@@ -1402,16 +1556,17 @@ class MultiProviderAuth:
     def authenticate_for_monitoring(self):
         """Authenticate specifically for monitoring token (no AWS credential output)"""
         try:
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Try to acquire port lock by testing if we can bind to it.
+            # Keep the socket BOUND (don't close it) so the port is held
+            # continuously through authenticate_oidc — see run() for the rationale.
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
+                lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with monitoring authentication")
             except OSError as e:
+                lock_socket.close()
                 if e.errno == errno.EADDRINUSE:
                     self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
 
                     self._wait_for_auth_completion()
                     token = self.get_monitoring_token()
@@ -1421,12 +1576,18 @@ class MultiProviderAuth:
                         self._debug_print("Authentication timeout or failed in another process")
                         return None
                 else:
-                    test_socket.close()
                     raise
 
-            # Authenticate with OIDC provider
-            self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
-            id_token, token_claims = self.authenticate_oidc()
+            # From here we own the port lock; ensure it is always released.
+            try:
+                # Authenticate with OIDC provider (reuse the bound lock socket).
+                self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
+                id_token, token_claims = self.authenticate_oidc(lock_socket=lock_socket)
+            finally:
+                try:
+                    lock_socket.close()
+                except Exception:
+                    pass
 
             # Get AWS credentials (we need them but won't output them)
             self._debug_print("Exchanging token for AWS credentials...")
@@ -1521,10 +1682,20 @@ class MultiProviderAuth:
         """Get token claims from cached monitoring token for quota re-check."""
         try:
             if self.credential_storage == "keyring":
-                token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
-                if token_json:
-                    token_data = json.loads(token_json)
-                    return {"email": token_data.get("email", "")}
+                if platform.system() == "Windows":
+                    # Email lives in the meta entry; no need to reassemble chunks.
+                    meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
+                    if meta_json:
+                        return {"email": json.loads(meta_json).get("email", "")}
+                    # Legacy single-entry fallback
+                    token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                    if token_json:
+                        return {"email": json.loads(token_json).get("email", "")}
+                else:
+                    token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                    if token_json:
+                        token_data = json.loads(token_json)
+                        return {"email": token_data.get("email", "")}
             else:
                 session_dir = Path.home() / ".claude-code-session"
                 token_file = session_dir / f"{self.profile}-monitoring.json"
@@ -2000,16 +2171,18 @@ class MultiProviderAuth:
                 print(json.dumps(cached))  # noqa: S105
                 return 0
 
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Try to acquire port lock by testing if we can bind to it.
+            # Keep the socket BOUND (don't close it) so the port is held
+            # continuously through authenticate_oidc — closing it here would open
+            # a TOCTOU window for a concurrent credential-process to also auth.
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
+                lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with authentication")
             except OSError as e:
+                lock_socket.close()
                 if e.errno == errno.EADDRINUSE:
                     self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
 
                     cached = self._wait_for_auth_completion()
                     if cached:
@@ -2019,34 +2192,44 @@ class MultiProviderAuth:
                         self._debug_print("Authentication timeout or failed in another process")
                         return 1
                 else:
-                    test_socket.close()
                     raise
 
-            # Check cache again (another process might have just finished)
-            cached = self.get_cached_credentials()
-            if cached:
-                print(json.dumps(cached))  # noqa: S105
-                return 0
+            # From here we own the port lock; ensure it is always released.
+            try:
+                # Check cache again (another process might have just finished)
+                cached = self.get_cached_credentials()
+                if cached:
+                    print(json.dumps(cached))  # noqa: S105
+                    return 0
 
-            # Try silent refresh using cached id_token before opening browser
-            silent_creds, id_token, token_claims = self._try_silent_refresh()
-            if silent_creds:
-                # Check quota if configured (reuse token/claims already fetched above)
-                if self._should_check_quota():
-                    if id_token and token_claims:
-                        quota_result = self._check_quota(token_claims, id_token)
-                        self._save_quota_check_timestamp()
-                        if not quota_result.get("allowed", True):
-                            return self._handle_quota_blocked(quota_result)
-                        else:
-                            self._handle_quota_warning(quota_result)
+                # Try silent refresh using cached id_token before opening browser
+                silent_creds, id_token, token_claims = self._try_silent_refresh()
+                if silent_creds:
+                    # Check quota if configured (reuse token/claims already fetched above)
+                    if self._should_check_quota():
+                        if id_token and token_claims:
+                            quota_result = self._check_quota(token_claims, id_token)
+                            self._save_quota_check_timestamp()
+                            if not quota_result.get("allowed", True):
+                                return self._handle_quota_blocked(quota_result)
+                            else:
+                                self._handle_quota_warning(quota_result)
 
-                print(json.dumps(silent_creds))
-                return 0
+                    print(json.dumps(silent_creds))
+                    return 0
 
-            # Authenticate with OIDC provider (browser popup - only when id_token is also expired)
-            self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
-            id_token, token_claims = self.authenticate_oidc()
+                # Authenticate with OIDC provider (browser popup - only when id_token is also expired).
+                # Hand the still-bound lock socket to the OAuth callback server so
+                # the port is never released between the lock check and the callback.
+                self._debug_print(
+                    f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'..."
+                )
+                id_token, token_claims = self.authenticate_oidc(lock_socket=lock_socket)
+            finally:
+                try:
+                    lock_socket.close()
+                except Exception:
+                    pass
 
             # Check quota before issuing credentials (if configured)
             if self._should_check_quota():

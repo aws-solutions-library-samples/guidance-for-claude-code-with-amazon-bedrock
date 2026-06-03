@@ -124,10 +124,16 @@ class DistributeCommand(Command):
                 if not timestamp_dir.is_dir():
                     continue
 
-                # Detect platforms
-                platforms = self._detect_platforms(timestamp_dir)
-                if not platforms:
+                # Check if this looks like a valid package directory (has config files)
+                has_config = (timestamp_dir / "config.json").exists()
+                has_install = (timestamp_dir / "install.sh").exists() or (timestamp_dir / "install.bat").exists()
+
+                if not (has_config or has_install):
+                    # Not a package directory, skip
                     continue
+
+                # Detect platforms (may be empty for CodeBuild-only packages)
+                platforms = self._detect_platforms(timestamp_dir)
 
                 # Calculate size
                 size = sum(f.stat().st_size for f in timestamp_dir.rglob("*") if f.is_file())
