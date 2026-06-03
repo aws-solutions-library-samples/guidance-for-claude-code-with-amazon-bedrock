@@ -38,6 +38,7 @@ class Profile:
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
+    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).

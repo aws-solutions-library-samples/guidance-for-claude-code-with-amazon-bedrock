@@ -41,8 +41,8 @@ __version__ = "1.0.0"
 PROVIDER_CONFIGS = {
     "okta": {
         "name": "Okta",
-        "authorize_endpoint": "/oauth2/v1/authorize",
-        "token_endpoint": "/oauth2/v1/token",
+        "authorize_endpoint": "/oauth2/{auth_server}/v1/authorize",
+        "token_endpoint": "/oauth2/{auth_server}/v1/token",
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -112,7 +112,20 @@ class MultiProviderAuth:
                 f"Unknown provider type '{self.provider_type}'. "
                 f"Valid providers: {', '.join(PROVIDER_CONFIGS.keys())}"
             )
-        self.provider_config = PROVIDER_CONFIGS[self.provider_type]
+        self.provider_config = dict(PROVIDER_CONFIGS[self.provider_type])
+
+        # For Okta, resolve the authorization server in endpoint paths.
+        # "default" = Okta custom auth server (free/developer plans).
+        # Empty string with trailing slash removed = Org auth server (paid plans).
+        if self.provider_type == "okta":
+            auth_server = self.config.get("okta_auth_server", "")
+            if auth_server:
+                self.provider_config["authorize_endpoint"] = self.provider_config["authorize_endpoint"].format(auth_server=auth_server)
+                self.provider_config["token_endpoint"] = self.provider_config["token_endpoint"].format(auth_server=auth_server)
+            else:
+                # Org auth server (paid plans) — no auth server ID in path
+                self.provider_config["authorize_endpoint"] = "/oauth2/v1/authorize"
+                self.provider_config["token_endpoint"] = "/oauth2/v1/token"
 
         # OAuth callback port — also used for inter-process locking.
         # Precedence: REDIRECT_PORT env var > config.json redirect_port > default 8400
