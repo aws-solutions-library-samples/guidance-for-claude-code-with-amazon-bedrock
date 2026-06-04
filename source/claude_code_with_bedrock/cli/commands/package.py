@@ -584,7 +584,7 @@ class PackageCommand(Command):
                     console.print("[red]No recent builds found. Start a build with 'poetry run ccwb package'[/red]")
                     return 1
 
-                with open(build_info_file) as f:
+                with open(build_info_file, encoding="utf-8") as f:
                     build_info = json.load(f)
                     build_id = build_info["build_id"]
                     console.print(f"[dim]Checking latest build: {build_id}[/dim]")
@@ -1583,7 +1583,7 @@ RUN pyinstaller \
 
             build_info_file = Path.home() / ".claude-code" / "latest-build.json"
             build_info_file.parent.mkdir(exist_ok=True)
-            with open(build_info_file, "w") as f:
+            with open(build_info_file, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "build_id": build_id,
@@ -2155,7 +2155,7 @@ RUN pyinstaller \
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
 
         config_path = output_dir / "config.json"
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         return config_path
 
@@ -2977,7 +2977,7 @@ Available metrics include:
 
             # Save settings.json
             settings_path = claude_dir / "settings.json"
-            with open(settings_path, "w") as f:
+            with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
 
             console.print("[dim]Created Claude Code settings for Bedrock configuration[/dim]")

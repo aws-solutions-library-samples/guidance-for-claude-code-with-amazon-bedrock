@@ -30,7 +30,7 @@ def fixture_path(request):
 
 def test_historical_config_loads(fixture_path: Path) -> None:
     """Every historical config.json fixture must load into a Profile without error."""
-    with open(fixture_path) as f:
+    with open(fixture_path, encoding="utf-8") as f:
         data = json.load(f)
 
     profile = Profile.from_dict(data)

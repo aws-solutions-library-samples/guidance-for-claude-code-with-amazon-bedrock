@@ -257,7 +257,7 @@ def read_cached_headers():
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
-        with open(cache_path) as f:
+        with open(cache_path, encoding="utf-8") as f:
             cached = json.load(f)
         headers = cached.get("headers")
         if not headers:
