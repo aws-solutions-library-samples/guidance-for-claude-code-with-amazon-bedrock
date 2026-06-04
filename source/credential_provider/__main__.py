@@ -1159,6 +1159,8 @@ class MultiProviderAuth:
             # Reuse the caller's already-bound lock socket so the port is never
             # released between the lock check and the callback (no TOCTOU gap).
             server = HTTPServer(("127.0.0.1", self.redirect_port), handler, bind_and_activate=False)
+            # Close the default socket created by TCPServer.__init__ to avoid fd leak
+            server.socket.close()
             server.socket = lock_socket
             lock_socket.listen(5)
         else:
@@ -1560,6 +1562,7 @@ class MultiProviderAuth:
             # Keep the socket BOUND (don't close it) so the port is held
             # continuously through authenticate_oidc — see run() for the rationale.
             lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with monitoring authentication")
@@ -2176,6 +2179,7 @@ class MultiProviderAuth:
             # continuously through authenticate_oidc — closing it here would open
             # a TOCTOU window for a concurrent credential-process to also auth.
             lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with authentication")
