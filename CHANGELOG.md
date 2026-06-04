@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0-beta.2] - 2026-05-28
 
+### Fixed
+
+- **otel-helper empty-headers contract**: Both the Go and Python otel-helpers now always print a JSON object (`{}` when no monitoring token is available) and exit 0, fixing the recurring "otelHeadersHelper did not return a valid value" log and dropped telemetry batch that occurred on every export cycle when a user was unauthenticated (e.g. before first login, after token expiry, or on headless/CI hosts). Telemetry then exports unattributed — never with fabricated identity — until the user authenticates, at which point real per-user attribution resumes on the next helper invocation
+- **otel-helper per-turn latency**: Eliminated a credential-process round-trip on every turn by serving cached headers from `~/.claude-code-session`, with atomic cache writes that are safe on Windows. An empty-headers result is cached with a short (120s) TTL and is guarded so it can never overwrite still-valid populated attribution; once authenticated, attribution resumes on the next helper invocation (bounded by Claude Code's headers-helper debounce, default 29 min)
+
 ## [2.4.0] - 2026-05-22 - OTLP-First Metrics
 
 ### Added

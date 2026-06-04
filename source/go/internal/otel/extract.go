@@ -159,8 +159,11 @@ func ExtractUserInfoWithTagKey(claims jwt.Claims, tagKey string) UserInfo {
 	// BillingCode / etc). We still store the value in info.Project because
 	// the downstream OTel header / dashboard dimension is "project" — that's
 	// our internal convention, not AWS state. Intentionally left empty when
-	// absent so FormatHeaders omits x-project and the collector falls back
-	// to the resource attribute `project=default`.
+	// absent so FormatHeaders omits x-project; the static `project=default`
+	// value baked into OTEL_RESOURCE_ATTRIBUTES at packaging time then carries
+	// the dimension. (The collector does not map x-project from request
+	// metadata, so omitting the header simply leaves that static default in
+	// place rather than triggering any collector-side fallback.)
 	info.Project = ExtractPrincipalTag(claims, tagKey)
 
 	// Technical fields

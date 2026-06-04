@@ -9,12 +9,29 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ccwb-go/internal/config"
 	"ccwb-go/internal/jwt"
 	"ccwb-go/internal/otel"
 	"ccwb-go/internal/version"
 )
+
+// emptyHeadersCacheTTLSeconds bounds how long THIS binary serves an empty-headers
+// result from the file cache before it retries credential-process. It is short
+// enough that retrying is cheap (a credential-process cache hit is ~20ms) yet
+// long enough to keep telemetry export off the credential-process hot path
+// during a sustained unauthenticated window. It is kept above the shell shim's
+// 60s token_exp skew so the shim and binary agree on freshness.
+//
+// NOTE on end-to-end recovery: this TTL bounds when the *helper* refreshes, not
+// when Claude Code asks again. Claude Code invokes otelHeadersHelper at startup
+// and then on a debounce (default 29 min, CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS).
+// So after the user authenticates, attribution returns on the next helper
+// invocation — effectively min(Claude Code's debounce, this TTL on a fresh
+// invocation). With the default debounce the practical recovery is governed by
+// that interval, not by 120s; lowering this const alone will NOT speed it up.
+const emptyHeadersCacheTTLSeconds = 120
 
 var (
 	logger  = log.New(os.Stderr, "", log.LstdFlags)
@@ -70,16 +87,22 @@ func run(testMode bool) int {
 		var err error
 		token, err = getTokenViaCredentialProcess(profile)
 		if err != nil || token == "" {
-			debugPrint("Could not obtain authentication token")
-			return 1
+			// No token available. Claude Code's otelHeadersHelper contract
+			// requires a valid JSON object on stdout; exiting non-zero (or with
+			// empty stdout) makes it log "otelHeadersHelper did not return a
+			// valid value" on every export cycle and drop the telemetry batch.
+			// Emit empty headers instead so export proceeds unattributed.
+			debugPrint("Could not obtain authentication token; emitting empty headers")
+			return emitEmptyHeaders(profile, testMode)
 		}
 	}
 
 	// Decode JWT and extract user info
 	claims, err := jwt.DecodePayload(token)
 	if err != nil {
-		debugPrint("Error decoding JWT: %v", err)
-		return 1
+		// Same contract as above: a malformed token must not crash the helper.
+		debugPrint("Error decoding JWT: %v; emitting empty headers", err)
+		return emitEmptyHeaders(profile, testMode)
 	}
 
 	// Resolve the cost-attribution tag key from config.json. Absent / empty
@@ -110,6 +133,40 @@ func run(testMode bool) int {
 		outputJSON(headers)
 	}
 
+	return 0
+}
+
+// emitEmptyHeaders satisfies Claude Code's otelHeadersHelper contract when no
+// usable token is available: it prints a valid (empty) JSON object and returns
+// success so telemetry export continues instead of failing every cycle.
+//
+// It also caches the empty result with a short TTL so subsequent turns serve
+// from the file cache (Layer 1) rather than re-spawning credential-process on
+// every export — the same per-turn latency this binary is designed to avoid.
+// In test mode it only prints, leaving the cache untouched.
+func emitEmptyHeaders(profile string, testMode bool) int {
+	headers := map[string]string{}
+	if testMode {
+		printTestOutput(otel.UserInfo{}, headers)
+		return 0
+	}
+	// Only cache the empty result when we can confirm we won't clobber valid
+	// attribution. Reaching here means Layer 1 reported a miss, but a miss can
+	// also be a transient read failure (a Windows AV lock or a torn read) over a
+	// perfectly good populated entry; writing {} in that window would erase real
+	// attribution for the whole TTL. EmptyHeadersWriteSafe re-checks the cache
+	// and only authorizes the write when the file is absent or genuinely
+	// empty/stale. When it isn't safe we still emit {} (the contract is what
+	// matters this turn) but leave the existing entry intact so the next turn
+	// serves the good attribution from Layer 1.
+	if otel.EmptyHeadersWriteSafe(profile) {
+		if err := otel.WriteCachedHeaders(profile, headers, time.Now().Unix()+emptyHeadersCacheTTLSeconds); err != nil {
+			debugPrint("Failed to cache empty headers: %v", err)
+		}
+	} else {
+		debugPrint("Skipping empty-headers cache write to preserve existing attribution")
+	}
+	outputJSON(headers)
 	return 0
 }
 
