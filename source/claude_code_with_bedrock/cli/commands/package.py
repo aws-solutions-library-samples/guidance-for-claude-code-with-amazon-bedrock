@@ -462,6 +462,9 @@ class PackageCommand(Command):
                 return 1
         else:
             for platform_name in platforms_to_build:
+                # Initialize so the `executable_path is None` checks below are safe even if
+                # _build_executable() raises before assigning (UnboundLocalError, PR #320 bug 1).
+                executable_path = None
                 # Build credential process
                 console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
                 try:
