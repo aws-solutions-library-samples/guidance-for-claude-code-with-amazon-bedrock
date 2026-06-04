@@ -905,8 +905,29 @@ def main():
 
     except Exception as e:
         logger.error(f"Error processing token: {e}")
-        # Return failure on error - Claude Code should handle this gracefully
-        return 1
+        # Claude Code's otelHeadersHelper contract requires a valid JSON object
+        # on stdout; exiting non-zero (or printing nothing) makes it log
+        # "otelHeadersHelper did not return a valid value" on every export cycle
+        # and drop the telemetry batch. Emit empty headers instead so export
+        # proceeds unattributed. (TEST_MODE prints its own human-readable output
+        # above, so only emit JSON in normal mode.)
+        #
+        # This is deliberately NOT a behavioural mirror of the Go helper's
+        # emitEmptyHeaders, and we intentionally do not cache {} here:
+        #   * The Go binary reaches its empty-headers path for the *common*
+        #     no-token case, so it caches {} (short TTL) to keep credential-
+        #     process off the per-turn hot path.
+        #   * This Python path handles the no-token case differently — it falls
+        #     through to anonymous mode above (get_aws_caller_identity ->
+        #     create_anonymous_user_info), which produces *populated* STS-derived
+        #     attribution and caches that. This except block is only the
+        #     last-resort guard for an unexpected failure (e.g. a malformed JWT
+        #     or an STS error). Caching {} here would suppress that anonymous
+        #     attribution for the whole TTL on the next turn, so we print {} for
+        #     this cycle only and leave the cache untouched to retry next time.
+        if not TEST_MODE:
+            print(json.dumps({}))
+        return 0
 
     return 0
 

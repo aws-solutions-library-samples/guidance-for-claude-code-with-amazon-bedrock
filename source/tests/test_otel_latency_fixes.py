@@ -421,3 +421,43 @@ class TestGetAwsCallerIdentityTimeoutConfig:
             f"Expected boto3.client to be called once due to caching, "
             f"but it was called {mock_boto3.client.call_count} times."
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — main() must honor Claude Code's otelHeadersHelper contract on error:
+# always emit a valid JSON object to stdout and exit 0, never exit 1 with empty
+# stdout (which logs "otelHeadersHelper did not return a valid value" every
+# export cycle). Mirrors the Go helper's emitEmptyHeaders behavior.
+# ---------------------------------------------------------------------------
+
+
+class TestMainErrorPathEmitsValidJson:
+    """The except block in main() must print {} and return 0, not return 1."""
+
+    def test_exception_emits_empty_json_and_exit_zero(self, capsys, monkeypatch):
+        import otel_helper.__main__ as mod
+
+        # Force a token so we take the JWT branch, then blow up inside the try.
+        monkeypatch.setattr(mod, "TEST_MODE", False, raising=False)
+        monkeypatch.setattr(mod, "ANONYMOUS_MODE", False, raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_MONITORING_TOKEN", "dummy-token")
+        monkeypatch.setattr(mod, "parse_args", lambda: _ns(proxy=None, proxy_port=4318))
+        monkeypatch.setattr(mod, "ensure_collector_running", lambda: None)
+        monkeypatch.setattr(mod, "read_cached_headers", lambda: None)
+        # Raise after the token is obtained, before any stdout is printed.
+        monkeypatch.setattr(
+            mod, "decode_jwt_payload", lambda _t: (_ for _ in ()).throw(ValueError("boom"))
+        )
+
+        rc = mod.main()
+
+        assert rc == 0, "error path must exit 0 to satisfy the helper contract"
+        out = capsys.readouterr().out.strip()
+        assert out == "{}", f"expected empty JSON object on stdout, got: {out!r}"
+
+
+def _ns(**kwargs):
+    """Tiny argparse.Namespace stand-in for patching parse_args."""
+    import argparse
+
+    return argparse.Namespace(**kwargs)
