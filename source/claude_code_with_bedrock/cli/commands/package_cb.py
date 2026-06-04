@@ -339,7 +339,7 @@ class PackageCbCommand(Command):
 
             first_build_id = next(iter(build_ids.values()))
             first_project = first_build_id.split(":")[0]
-            with open(build_info_file, "w") as f:
+            with open(build_info_file, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "build_id": first_build_id,
@@ -479,7 +479,7 @@ class PackageCbCommand(Command):
                     console.print("[yellow]Warning: Could not fetch monitoring stack outputs[/yellow]")
 
             settings_path = claude_dir / "settings.json"
-            with open(settings_path, "w") as f:
+            with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
 
             console.print("[dim]Created Claude Code settings for Bedrock configuration[/dim]")

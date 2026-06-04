@@ -38,7 +38,7 @@ class TestPackageCommandCrossRegion:
             config_path = command._create_config(output_dir, profile, "test-identity-pool-id")
 
             # Read and verify the config
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert "ClaudeCode" in config
@@ -77,7 +77,7 @@ class TestPackageCommandCrossRegion:
             config_path = command._create_config(output_dir, profile, "test-pool-id")
 
             # Read and verify
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             # Should default to 'us'
@@ -108,7 +108,7 @@ class TestPackageCommandCrossRegion:
             )
 
             # Read installer and check region extraction
-            with open(installer_path) as f:
+            with open(installer_path, encoding="utf-8") as f:
                 installer_content = f.read()
 
             # Should extract region from Claude settings first, then fallback to profile region
