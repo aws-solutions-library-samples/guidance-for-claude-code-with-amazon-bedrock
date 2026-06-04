@@ -710,6 +710,10 @@ class DeployCommand(Command):
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
                             params.append(f"OidcClientId={profile.client_id}")
 
+                # Pass analytics flag to control dual-export (OTLP + EMF)
+                analytics_enabled = "true" if getattr(profile, "analytics_enabled", True) else "false"
+                params.append(f"EnableAnalytics={analytics_enabled}")
+
                 console.print(f"[dim]Using parameters: {params}[/dim]")
                 result = deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."
@@ -733,69 +737,10 @@ class DeployCommand(Command):
             elif stack_type == "dashboard":
                 template = project_root / "deployment" / "infrastructure" / "claude-code-dashboard.yaml"
                 stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
-
-                # Get S3 bucket from networking stack for packaging
-                s3_stack_name = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
-                s3_outputs = get_stack_outputs(s3_stack_name, profile.aws_region)
-
-                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
-                    console.print("[red]Error: S3 bucket for packaging not found[/red]")
-                    console.print(
-                        "[yellow]The networking stack must be deployed first with the artifacts bucket.[/yellow]"
-                    )
-                    console.print("Run: [cyan]ccwb deploy networking[/cyan]")
-                    return 1
-
-                s3_bucket = s3_outputs["CfnArtifactsBucket"]
-
-                # Package the template using AWS CLI (simple and reliable!)
-                task = progress.add_task("Packaging dashboard Lambda functions...", total=None)
-
-                try:
-                    # Create temp file for packaged template
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-                        packaged_template_path = f.name
-
-                    # Run AWS CLI package command
-                    cmd = [
-                        "aws",
-                        "cloudformation",
-                        "package",
-                        "--template-file",
-                        str(template),
-                        "--s3-bucket",
-                        s3_bucket,
-                        "--s3-prefix",
-                        "claude-code/dashboard",
-                        "--output-template-file",
-                        packaged_template_path,
-                        "--region",
-                        profile.aws_region,
-                    ]
-
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-
-                    if result.returncode != 0:
-                        console.print(f"[red]Failed to package template: {result.stderr}[/red]")
-                        return 1
-
-                    progress.update(
-                        task, description="Dashboard Lambda functions packaged successfully", completed=True
-                    )
-
-                    # Deploy the packaged template with MetricsRegion parameter
-                    params = [f"MetricsRegion={profile.aws_region}"]
-                    return deploy_with_cf(
-                        packaged_template_path, stack_name, params, task_description="Deploying monitoring dashboard..."
-                    )
-
-                finally:
-                    # Clean up temp file
-                    if "packaged_template_path" in locals():
-                        try:
-                            os.unlink(packaged_template_path)
-                        except Exception:
-                            pass
+                params = [f"MetricsRegion={profile.aws_region}"]
+                return deploy_with_cf(
+                    template, stack_name, params, task_description="Deploying monitoring dashboard..."
+                )
 
             elif stack_type == "cowork-dashboard":
                 template = project_root / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
@@ -824,18 +769,6 @@ class DeployCommand(Command):
                 template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
                 stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
 
-                # Get MetricsTable ARN from dashboard stack outputs
-                dashboard_stack_name = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
-                dashboard_outputs = get_stack_outputs(dashboard_stack_name, profile.aws_region)
-
-                if not dashboard_outputs or not dashboard_outputs.get("MetricsTableArn"):
-                    console.print(
-                        f"[red]Could not get MetricsTable ARN from dashboard stack {dashboard_stack_name}[/red]"
-                    )
-                    console.print("[yellow]The dashboard stack must be deployed first.[/yellow]")
-                    console.print("Run: [cyan]ccwb deploy dashboard[/cyan]")
-                    return 1
-
                 # Get S3 bucket from s3bucket stack for packaging
                 s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
                 s3_outputs = get_stack_outputs(s3_stack, profile.aws_region)
@@ -856,13 +789,8 @@ class DeployCommand(Command):
                 warning_80 = getattr(profile, "warning_threshold_80", int(monthly_limit * 0.8))
                 warning_90 = getattr(profile, "warning_threshold_90", int(monthly_limit * 0.9))
 
-                metrics_aggregator_role = dashboard_outputs.get(
-                    "MetricsAggregatorRoleName", "claude-code-auth-dashboard-MetricsAggregatorRole-*"
-                )
-
                 # Get OIDC configuration for JWT authentication
                 if profile.provider_type == "cognito":
-                    # Cognito issuer uses cognito-idp endpoint, not the hosted UI domain
                     pool_id = getattr(profile, "cognito_user_pool_id", "")
                     if pool_id:
                         pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
@@ -874,10 +802,8 @@ class DeployCommand(Command):
                         )
                 else:
                     oidc_issuer_url = profile.provider_domain
-                    # Ensure issuer URL has https:// prefix
                     if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
                         oidc_issuer_url = f"https://{oidc_issuer_url}"
-                # Auth0 tokens include trailing slash in iss claim, so authorizer must match
                 if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
                     oidc_issuer_url = f"{oidc_issuer_url}/"
                 oidc_client_id = profile.client_id
@@ -888,8 +814,6 @@ class DeployCommand(Command):
 
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
-                    f"MetricsTableArn={dashboard_outputs['MetricsTableArn']}",
-                    f"MetricsAggregatorRoleName={metrics_aggregator_role}",
                     f"WarningThreshold80={warning_80}",
                     f"WarningThreshold90={warning_90}",
                     f"DailyTokenLimit={daily_limit or 0}",
@@ -936,16 +860,9 @@ class DeployCommand(Command):
                     )
 
                     # Deploy the packaged template
-                    result = deploy_with_cf(
+                    return deploy_with_cf(
                         packaged_template_path, stack_name, params, task_description="Deploying quota monitoring..."
                     )
-
-                    # Update metrics aggregator Lambda environment if successful
-                    if result == 0:
-                        self._update_metrics_aggregator_env(profile, stack_name, console)
-                        self._create_default_quota_policy(profile, stack_name, console)
-
-                    return result
 
                 finally:
                     # Clean up temp file
