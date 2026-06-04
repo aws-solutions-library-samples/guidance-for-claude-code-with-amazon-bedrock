@@ -417,7 +417,7 @@ class TestOtelHelperContract:
         source_file = OTEL_DIR / "__main__.py"
         content = source_file.read_text(encoding="utf-8")
         # Must have a fallback that prints {} (empty headers) and exits 0
-        assert 'print("{}")' in content or "print('{}')" in content, (
+        assert 'print("{}")' in content or "print('{}')" in content or 'json.dumps({})' in content, (
             "otel_helper must emit empty JSON object on error path "
             "to satisfy Claude Code's otelHeadersHelper contract"
         )
