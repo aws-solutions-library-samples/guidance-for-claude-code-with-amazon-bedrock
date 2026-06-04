@@ -296,7 +296,12 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump({"headers": headers, "token_exp": token_exp, "cached_at": int(time.time())}, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(cache_path))
+            # os.replace (not os.rename) so the destination is atomically
+            # overwritten if it already exists. On Windows os.rename raises
+            # FileExistsError (WinError 183) when the target exists, which
+            # silently broke cache refresh and forced a slow credential-process
+            # call on every invocation.
+            os.replace(tmp_path, str(cache_path))
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -308,7 +313,9 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump(headers, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(raw_path))
+            # os.replace for atomic overwrite (see note above; os.rename fails
+            # on Windows when the destination already exists).
+            os.replace(tmp_path, str(raw_path))
         except Exception:
             os.unlink(tmp_path)
             raise
