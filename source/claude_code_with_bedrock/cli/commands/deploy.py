@@ -789,24 +789,8 @@ class DeployCommand(Command):
                 warning_80 = getattr(profile, "warning_threshold_80", int(monthly_limit * 0.8))
                 warning_90 = getattr(profile, "warning_threshold_90", int(monthly_limit * 0.9))
 
-                # Get OIDC configuration for JWT authentication
-                if profile.provider_type == "cognito":
-                    pool_id = getattr(profile, "cognito_user_pool_id", "")
-                    if pool_id:
-                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
-                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
-                    else:
-                        raise ValueError(
-                            "Cognito User Pool ID is required for quota monitoring JWT authentication. "
-                            "Please set cognito_user_pool_id in your profile configuration."
-                        )
-                else:
-                    oidc_issuer_url = profile.provider_domain
-                    if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
-                        oidc_issuer_url = f"https://{oidc_issuer_url}"
-                if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
-                    oidc_issuer_url = f"{oidc_issuer_url}/"
-                oidc_client_id = profile.client_id
+                # Get OIDC configuration for JWT authentication (only when SSO is enabled)
+                oidc_issuer_url, oidc_client_id = self._resolve_oidc_config(profile)
 
                 # Pass explicitly so the profile is the source of truth; the CF template
                 # default is 'false' to match the opt-in intent of this field.
@@ -1309,3 +1293,32 @@ class DeployCommand(Command):
             console.print(f"[yellow]Warning: Could not verify ECS service linked role: {str(e)}[/yellow]")
             console.print("[dim]If deployment fails, manually create the role with:[/dim]")
             console.print("[dim]aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com[/dim]")
+
+    def _resolve_oidc_config(self, profile) -> tuple:
+        """Resolve OIDC issuer URL and client ID for quota JWT authentication.
+
+        Returns ("", "") when SSO is disabled — the CF template's HasJwtAuth
+        condition will disable the JWT authorizer and use an open route instead.
+        """
+        if not getattr(profile, "sso_enabled", True):
+            return "", ""
+
+        if profile.provider_type == "cognito":
+            pool_id = getattr(profile, "cognito_user_pool_id", "")
+            if not pool_id:
+                raise ValueError(
+                    "Cognito User Pool ID is required for quota monitoring JWT authentication. "
+                    "Please set cognito_user_pool_id in your profile configuration."
+                )
+            pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+            issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+        else:
+            issuer_url = profile.provider_domain
+            if issuer_url and not issuer_url.startswith(("http://", "https://")):
+                issuer_url = f"https://{issuer_url}"
+
+        # Auth0 tokens include trailing slash in iss claim, so authorizer must match
+        if profile.provider_type == "auth0" and issuer_url and not issuer_url.endswith("/"):
+            issuer_url += "/"
+
+        return issuer_url, profile.client_id
