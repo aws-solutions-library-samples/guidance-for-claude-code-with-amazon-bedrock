@@ -14,6 +14,20 @@ from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationMana
 from claude_code_with_bedrock.config import Config
 
 
+# All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
+# Keep in sync with deploy.py's stack types when adding new stacks.
+DESTROYABLE_STACKS = [
+    "analytics",
+    "quota",
+    "cowork-dashboard",
+    "dashboard",
+    "monitoring",
+    "networking",
+    "s3bucket",
+    "auth",
+]
+
+
 class DestroyCommand(Command):
     name = "destroy"
     description = "Remove deployed AWS infrastructure"
@@ -21,7 +35,7 @@ class DestroyCommand(Command):
     arguments = [
         argument(
             "stack",
-            description="Specific stack to destroy (auth/networking/monitoring/dashboard/analytics)",
+            description=f"Specific stack to destroy ({'/'.join(DESTROYABLE_STACKS)})",
             optional=True,
         )
     ]
@@ -64,15 +78,15 @@ class DestroyCommand(Command):
 
         stacks_to_destroy = []
         if stack_arg:
-            if stack_arg in ["auth", "networking", "monitoring", "dashboard", "analytics", "s3bucket", "quota"]:
+            if stack_arg in DESTROYABLE_STACKS:
                 stacks_to_destroy.append(stack_arg)
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print("Valid stacks: auth, networking, monitoring, dashboard, analytics, s3bucket, quota")
+                console.print(f"Valid stacks: {', '.join(DESTROYABLE_STACKS)}")
                 return 1
         else:
-            # Destroy all stacks in reverse order
-            stacks_to_destroy = ["analytics", "quota", "dashboard", "monitoring", "networking", "s3bucket", "auth"]
+            # Destroy all stacks in reverse dependency order
+            stacks_to_destroy = list(DESTROYABLE_STACKS)
 
         # Show what will be destroyed
         console.print(
