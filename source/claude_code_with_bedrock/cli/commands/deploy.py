@@ -133,6 +133,15 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
+                if not getattr(profile, "sso_enabled", True):
+                    console.print(
+                        "[yellow]Quota monitoring requires SSO authentication "
+                        "(per-user JWT tokens) and cannot be deployed when SSO is disabled.[/yellow]"
+                    )
+                    console.print(
+                        "[dim]See issue #454. Re-run 'ccwb init' with SSO enabled to use quota monitoring.[/dim]"
+                    )
+                    return 1
                 if profile.monitoring_enabled:
                     if getattr(profile, "quota_monitoring_enabled", False):
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
@@ -205,8 +214,21 @@ class DeployCommand(Command):
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
                 # Check if quota monitoring is enabled
+                # Quota enforcement requires SSO — the API Gateway JWT authorizer
+                # has no valid issuer URL otherwise. Skip with a warning rather
+                # than letting CloudFormation fail mid-deploy (issue #454).
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                    if getattr(profile, "sso_enabled", True):
+                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                    else:
+                        console.print(
+                            "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
+                            "SSO authentication (per-user JWT tokens) but SSO is disabled in this profile.[/yellow]"
+                        )
+                        console.print(
+                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. "
+                            "See issue #454.[/dim]"
+                        )
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))

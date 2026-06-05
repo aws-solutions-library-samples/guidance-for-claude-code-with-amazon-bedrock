@@ -990,23 +990,38 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                console.print("\n[bold]Quota Monitoring[/bold]")
-                console.print("Track per-user token consumption, set limits, and receive alerts")
-                console.print("when users approach or exceed their quotas.")
-                console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
-                console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
-                enable_quota_monitoring = questionary.confirm(
-                    "Enable quota monitoring?",
-                    default=config.get("quota", {}).get("enabled", True),
-                ).ask()
+                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
+                # the API Gateway authorizer cannot validate requests without one.
+                # Skip the prompt entirely when SSO is disabled (issue #454).
+                if not config.get("sso_enabled", True):
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = False
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print(
+                        "[dim]Skipped — quota monitoring requires SSO authentication "
+                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
+                    )
+                else:
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print("Track per-user token consumption, set limits, and receive alerts")
+                    console.print("when users approach or exceed their quotas.")
+                    console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
+                    console.print(
+                        "[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]"
+                    )
+                    enable_quota_monitoring = questionary.confirm(
+                        "Enable quota monitoring?",
+                        default=config.get("quota", {}).get("enabled", True),
+                    ).ask()
 
-                # Preserve existing quota settings, only update enabled flag
-                if "quota" not in config:
-                    config["quota"] = {}
-                config["quota"]["enabled"] = enable_quota_monitoring
+                    # Preserve existing quota settings, only update enabled flag
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = enable_quota_monitoring
 
-                if enable_quota_monitoring:
-                    console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
+                    if enable_quota_monitoring:
+                        console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
 
                     # Monthly token limit
                     console.print("\n[bold]Monthly Limit[/bold]")
