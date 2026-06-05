@@ -653,7 +653,14 @@ def run_proxy(target_url: str, port: int = 4318):
             caller_identity = get_aws_caller_identity()
             user_info = create_anonymous_user_info(caller_identity)
 
-        return format_as_headers_dict(user_info)
+        headers = format_as_headers_dict(user_info)
+
+        # Include Bearer token for ALB JWT validation.
+        # The proxy forwards to the remote ALB which may have jwt-validation enabled.
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+
+        return headers
 
     # Pre-fetch headers once at startup; refresh on each request so token
     # rotations are picked up without restarting the proxy.
@@ -886,7 +893,7 @@ def main():
             print("\n========================")
         else:
             # Normal mode: Output as JSON (flat object with string values)
-            # Cache headers for future calls (avoids credential-process on next invocation)
+            # Cache attribution headers only — never persist Bearer token to disk.
             if token:
                 token_exp = payload.get("exp")
                 if token_exp:
@@ -896,6 +903,13 @@ def main():
             else:
                 # Anonymous mode: cache with a synthetic TTL (5 minutes)
                 write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
+
+            # Add Bearer token AFTER cache write — output only, never persisted.
+            # Enables ALB JWT validation (PR #129 / issue #126) while keeping
+            # the sensitive token out of the plaintext cache file.
+            if token:
+                headers_dict["authorization"] = f"Bearer {token}"
+
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

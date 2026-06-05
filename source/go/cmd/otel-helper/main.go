@@ -73,6 +73,13 @@ func run(testMode bool) int {
 		headers, err := otel.ReadCachedHeaders(profile)
 		if err == nil && headers != nil {
 			debugPrint("Using cached OTEL headers (token still valid)")
+			// Resolve a Bearer token for ALB JWT validation.
+			// Try env var (free) then credential-process cache (fast ~20ms).
+			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" {
+				headers["authorization"] = "Bearer " + t
+			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
+				headers["authorization"] = "Bearer " + t
+			}
 			outputJSON(headers)
 			return 0
 		}
@@ -119,9 +126,13 @@ func run(testMode bool) int {
 	headers := otel.FormatHeaders(userInfo)
 
 	if testMode {
+		// Include bearer in test output for visibility
+		headers["authorization"] = "Bearer " + token
 		printTestOutput(userInfo, headers)
 	} else {
-		// Cache headers for future calls
+		// Cache attribution headers only — never persist the Bearer token to disk.
+		// The token is sensitive and the cache file has weaker protection than
+		// the keyring/credential-process chain that issued it.
 		tokenExp := int64(claims.GetFloat("exp"))
 		if tokenExp > 0 {
 			if err := otel.WriteCachedHeaders(profile, headers, tokenExp); err != nil {
@@ -130,6 +141,11 @@ func run(testMode bool) int {
 		} else {
 			debugPrint("JWT has no exp claim, skipping cache write")
 		}
+
+		// Add Bearer token AFTER cache write — output only, never persisted.
+		// This enables ALB JWT validation (PR #129 / issue #126) while keeping
+		// the sensitive token out of the plaintext cache file.
+		headers["authorization"] = "Bearer " + token
 		outputJSON(headers)
 	}
 

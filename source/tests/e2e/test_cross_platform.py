@@ -654,3 +654,94 @@ class TestProfilePreservation:
             "init.py wizard_fields must include model_alias so it's preserved "
             "when re-running ccwb init (added in PR #278)"
         )
+# Server/Client Auth Contract Alignment
+# ---------------------------------------------------------------------------
+
+GO_OTEL_HELPER = SOURCE_ROOT / "go" / "cmd" / "otel-helper" / "main.go"
+PY_OTEL_HELPER = SOURCE_ROOT / "otel_helper" / "__main__.py"
+
+
+class TestAuthContractAlignment:
+    """Static analysis guards for server/client authentication contracts.
+
+    Prevents the class of bug where server-side auth is added (e.g. ALB JWT
+    validation) without the corresponding client-side implementation (e.g.
+    otel-helper outputting a Bearer token). These mismatches cause silent
+    failures that are hard to diagnose in production.
+
+    Bugs this prevents:
+    - PR #129: ALB JWT validation added but otel-helper never sent Bearer token
+    """
+
+    def test_alb_jwt_auth_has_go_helper_bearer_output(self):
+        """If otel-collector.yaml has jwt-validation, Go otel-helper must output authorization header."""
+        template = DEPLOYMENT_DIR / "otel-collector.yaml"
+        content = template.read_text(encoding="utf-8")
+
+        if "jwt-validation" not in content:
+            pytest.skip("No JWT validation configured in otel-collector.yaml")
+
+        helper_code = GO_OTEL_HELPER.read_text(encoding="utf-8")
+        assert '"authorization"' in helper_code, (
+            "otel-collector.yaml has jwt-validation action but Go otel-helper "
+            "does not output an 'authorization' header. "
+            "Server/client auth contract mismatch — ALB will reject all OTLP requests. "
+            "See issue #126, PR #129."
+        )
+
+    def test_alb_jwt_auth_has_python_helper_bearer_output(self):
+        """If otel-collector.yaml has jwt-validation, Python otel-helper must output authorization header."""
+        template = DEPLOYMENT_DIR / "otel-collector.yaml"
+        content = template.read_text(encoding="utf-8")
+
+        if "jwt-validation" not in content:
+            pytest.skip("No JWT validation configured in otel-collector.yaml")
+
+        helper_code = PY_OTEL_HELPER.read_text(encoding="utf-8")
+        assert '"authorization"' in helper_code or "'authorization'" in helper_code, (
+            "otel-collector.yaml has jwt-validation action but Python otel-helper "
+            "does not output an 'authorization' header. "
+            "Server/client auth contract mismatch — ALB will reject all OTLP requests. "
+            "See issue #126, PR #129."
+        )
+
+    def test_bearer_token_not_in_cache_write(self):
+        """otel-helper must NOT persist Bearer tokens to the cache file.
+
+        The cache stores attribution headers (x-user-*) which are low-sensitivity.
+        Bearer tokens are high-sensitivity credentials that should only exist in
+        process memory and stdout output, never in plaintext files on disk.
+        """
+        helper_code = GO_OTEL_HELPER.read_text(encoding="utf-8")
+        lines = helper_code.splitlines()
+
+        # In the main auth flow (not Layer 1 cache hit), WriteCachedHeaders
+        # must appear BEFORE the authorization header is added to output.
+        # Look for the pattern: WriteCachedHeaders(profile, headers, ...)
+        # followed later by headers["authorization"] = "Bearer " + token
+        # and then outputJSON(headers)
+        main_cache_write_line = None
+        main_auth_line = None
+        in_main_flow = False
+
+        for i, line in enumerate(lines):
+            # The main flow starts after "Cache attribution headers only"
+            if "Cache attribution headers only" in line:
+                in_main_flow = True
+            if in_main_flow:
+                if "WriteCachedHeaders" in line and main_cache_write_line is None:
+                    main_cache_write_line = i
+                if '"authorization"' in line and "Bearer" in line and main_auth_line is None:
+                    main_auth_line = i
+
+        assert main_cache_write_line is not None, (
+            "Expected 'WriteCachedHeaders' in main auth flow of otel-helper"
+        )
+        assert main_auth_line is not None, (
+            "Expected authorization header assignment in main auth flow of otel-helper"
+        )
+        assert main_cache_write_line < main_auth_line, (
+            f"Bearer token (line {main_auth_line}) must be added AFTER "
+            f"WriteCachedHeaders (line {main_cache_write_line}) — "
+            f"sensitive tokens must never be persisted to the cache file on disk."
+        )
