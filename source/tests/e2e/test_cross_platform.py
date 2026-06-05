@@ -522,3 +522,63 @@ class TestDestroyCommand:
             "destroy.py must define DESTROYABLE_STACKS constant to avoid "
             "forgetting stacks in one list but not the other"
         )
+
+
+# ---------------------------------------------------------------------------
+# CloudFormation Template Validation
+# ---------------------------------------------------------------------------
+
+DEPLOYMENT_DIR = SOURCE_ROOT.parent / "deployment" / "infrastructure"
+
+
+class TestCfnTemplateValidation:
+    """Static analysis guards for CloudFormation auth templates.
+
+    Prevents invalid IAM action namespaces and unused conditions from
+    being re-introduced.
+
+    Bugs this prevents:
+    - #375: bedrock-auth templates use invalid 'bedrock-runtime:' action prefix
+    """
+
+    def test_no_invalid_bedrock_runtime_namespace(self):
+        """Auth templates must not use 'bedrock-runtime:' — correct namespace is 'bedrock:'.
+
+        The AWS IAM service authorization reference places all Bedrock actions
+        (InvokeModel, Converse, etc.) under the 'bedrock:' namespace. The
+        'bedrock-runtime:' prefix is invalid and causes IAM policy evaluation
+        to silently ignore those actions.
+        """
+        templates = list(DEPLOYMENT_DIR.glob("bedrock-auth-*.yaml"))
+        assert len(templates) >= 3, (
+            f"Expected at least 3 bedrock-auth-*.yaml templates, found {len(templates)}. "
+            f"Check DEPLOYMENT_DIR: {DEPLOYMENT_DIR}"
+        )
+        for tmpl in templates:
+            content = tmpl.read_text(encoding="utf-8")
+            assert "bedrock-runtime:" not in content, (
+                f"{tmpl.name} contains invalid 'bedrock-runtime:' IAM action prefix. "
+                f"Use 'bedrock:' namespace instead. See issue #375."
+            )
+
+    def test_no_unreferenced_govcloud_condition(self):
+        """Auth templates should not define IsGovCloud if it's unused.
+
+        Unused conditions trigger cfn-lint W8001 and add confusion.
+        If IsGovCloud is needed in the future, it should also be referenced.
+        """
+        templates = list(DEPLOYMENT_DIR.glob("bedrock-auth-*.yaml"))
+        for tmpl in templates:
+            content = tmpl.read_text(encoding="utf-8")
+            # If IsGovCloud is defined, it must be referenced somewhere
+            if "IsGovCloud:" in content and "!Or" in content.split("IsGovCloud:")[1][:50]:
+                # It's a condition definition — check it's actually used
+                lines = content.split("\n")
+                references = [
+                    l for l in lines
+                    if "IsGovCloud" in l and "!Condition IsGovCloud" in l
+                ]
+                assert len(references) > 0, (
+                    f"{tmpl.name} defines 'IsGovCloud' condition but never references it. "
+                    f"Remove unused conditions to fix cfn-lint W8001."
+                )
