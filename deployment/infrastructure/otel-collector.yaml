@@ -238,7 +238,7 @@ Resources:
               AdditionalClaims: !If
                 - HasOidcClientId
                 - - Name: aud
-                    Format: string-array
+                    Format: single-string
                     Values:
                       - !Ref OidcClientId
                 - !Ref AWS::NoValue
