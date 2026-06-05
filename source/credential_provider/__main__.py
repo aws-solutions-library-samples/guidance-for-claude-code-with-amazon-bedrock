@@ -2182,6 +2182,12 @@ class MultiProviderAuth:
 
         Used when sso_enabled=false — no OIDC browser flow, just surface whatever
         credentials boto3 already has resolved for the caller.
+
+        Note: Expiration is omitted because we cannot reliably determine the
+        actual expiry of ambient credentials. The AWS SDK will cache these
+        until they fail, at which point the user must re-authenticate
+        (e.g. 'aws sso login'). This matches the credential-process spec:
+        omitting Expiration means "credentials do not expire."
         """
         session = boto3.Session()
         creds = session.get_credentials()
@@ -2191,6 +2197,11 @@ class MultiProviderAuth:
             return 1
 
         frozen = creds.get_frozen_credentials()
+        if not frozen.access_key:
+            print("Error: ambient credentials resolved but access key is empty. "
+                  "Check your AWS CLI configuration or run 'aws sso login'.", file=sys.stderr)
+            return 1
+
         output = {
             "Version": 1,
             "AccessKeyId": frozen.access_key,
