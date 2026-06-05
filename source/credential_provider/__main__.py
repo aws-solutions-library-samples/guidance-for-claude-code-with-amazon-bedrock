@@ -103,6 +103,12 @@ class MultiProviderAuth:
 
         self.config = self._load_config()
 
+        # SSO-disabled profiles use the ambient credential chain (e.g. AWS Identity Center).
+        # Skip all OIDC/Cognito setup — nothing below is needed.
+        self.sso_enabled = self.config.get("sso_enabled", True)
+        if not self.sso_enabled:
+            return
+
         # Determine provider type from domain
         self.provider_type = self._determine_provider_type()
 
@@ -248,6 +254,11 @@ class MultiProviderAuth:
         else:
             # Old format for backward compatibility
             profile_config = file_config.get(self.profile, {})
+
+        # SSO-disabled profiles skip OIDC validation entirely — credentials come
+        # from the ambient chain (AWS Identity Center, instance profile, env vars).
+        if not profile_config.get("sso_enabled", True):
+            return profile_config
 
         # Auto-detect federation type based on configuration
         self._detect_federation_type(profile_config)
@@ -2166,8 +2177,47 @@ class MultiProviderAuth:
             self._debug_print(f"Silent refresh failed, will require browser auth: {e}")
             return None, None, None
 
+    def _run_passthrough(self):
+        """Emit credentials from the ambient AWS credential chain (Identity Center, env vars, instance profile).
+
+        Used when sso_enabled=false — no OIDC browser flow, just surface whatever
+        credentials boto3 already has resolved for the caller.
+
+        Note: Expiration is omitted because we cannot reliably determine the
+        actual expiry of ambient credentials. The AWS SDK will cache these
+        until they fail, at which point the user must re-authenticate
+        (e.g. 'aws sso login'). This matches the credential-process spec:
+        omitting Expiration means "credentials do not expire."
+        """
+        session = boto3.Session()
+        creds = session.get_credentials()
+        if creds is None:
+            print("Error: sso_enabled=false but no ambient AWS credentials found. "
+                  "Log in via 'aws sso login' first.", file=sys.stderr)
+            return 1
+
+        frozen = creds.get_frozen_credentials()
+        if not frozen.access_key:
+            print("Error: ambient credentials resolved but access key is empty. "
+                  "Check your AWS CLI configuration or run 'aws sso login'.", file=sys.stderr)
+            return 1
+
+        output = {
+            "Version": 1,
+            "AccessKeyId": frozen.access_key,
+            "SecretAccessKey": frozen.secret_key,
+        }
+        if frozen.token:
+            output["SessionToken"] = frozen.token
+
+        print(json.dumps(output))
+        return 0
+
     def run(self):
         """Main execution flow"""
+        if not getattr(self, "sso_enabled", True):
+            return self._run_passthrough()
+
         try:
             # Check cache first
             cached = self.get_cached_credentials()
