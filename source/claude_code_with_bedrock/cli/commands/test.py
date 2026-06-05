@@ -232,7 +232,10 @@ class TestCommand(Command):
 
             # Set up temporary AWS profile for testing
             test_profile = f"ccwb-test-{uuid.uuid4().hex[:8]}"
-            credential_command = f"/bin/sh -c 'CCWB_PROFILE={test_profile_name} {credential_binary}'"
+            # Pass the profile via --profile flag (cross-platform, no shell wrapper).
+            # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
+            # exist on Windows, so the --profile flag is used instead.
+            credential_command = f"{credential_binary} --profile {test_profile_name}"
             subprocess.run(
                 ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
                 capture_output=True,
@@ -271,9 +274,10 @@ class TestCommand(Command):
         console.print(f"[dim]Using temporary profile: {test_profile}[/dim]")
 
         # Configure the test profile
-        # Set environment variable to tell credential binary which profile to use from config.json
-        # Use shell to set environment variable
-        credential_command = f"/bin/sh -c 'CCWB_PROFILE={test_profile_name} {credential_binary}'"
+        # Pass the profile via --profile flag (cross-platform, no shell wrapper).
+        # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
+        # exist on Windows, so the --profile flag is used instead.
+        credential_command = f"{credential_binary} --profile {test_profile_name}"
         aws_config_result = subprocess.run(
             ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
             capture_output=True,
