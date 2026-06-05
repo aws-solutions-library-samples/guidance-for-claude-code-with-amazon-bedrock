@@ -454,3 +454,44 @@ class TestInstallerScriptSafety:
         if "install.bat" in content or "install_bat" in content:
             # Just verify the template section exists
             assert "config" in content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Post-Deploy Hook Guards (prevent accidental removal of critical calls)
+# ---------------------------------------------------------------------------
+
+
+class TestDeployPostHooks:
+    """Regression guards for deploy.py post-deploy hooks."""
+
+    def test_quota_deploy_calls_create_default_policy(self):
+        """Quota deploy must seed default policy on success (regression from #439)."""
+        deploy_file = CLI_DIR / "cli" / "commands" / "deploy.py"
+        content = deploy_file.read_text(encoding="utf-8")
+        # Find quota deploy section
+        quota_idx = content.find('stack_type == "quota"')
+        assert quota_idx != -1, "deploy.py must have a quota deploy branch"
+        quota_section = content[quota_idx:]
+        assert "_create_default_quota_policy" in quota_section, (
+            "quota deploy path must call _create_default_quota_policy after successful deploy. "
+            "Without this, fine-grained quota mode has no default cap on fresh deployments. "
+            "See issue #440."
+        )
+
+    def test_create_default_quota_policy_method_exists(self):
+        """The _create_default_quota_policy method must exist in deploy.py."""
+        deploy_file = CLI_DIR / "cli" / "commands" / "deploy.py"
+        content = deploy_file.read_text(encoding="utf-8")
+        assert "def _create_default_quota_policy" in content, (
+            "_create_default_quota_policy method removed from deploy.py — "
+            "this breaks fresh fine-grained quota deployments"
+        )
+
+    def test_no_stale_metrics_table_arn_reference(self):
+        """deploy.py must not reference MetricsTableArn (removed in OTLP refactor)."""
+        deploy_file = CLI_DIR / "cli" / "commands" / "deploy.py"
+        content = deploy_file.read_text(encoding="utf-8")
+        assert "MetricsTableArn" not in content, (
+            "deploy.py still references MetricsTableArn which was removed from "
+            "quota-monitoring.yaml in the OTLP architecture refactor"
+        )

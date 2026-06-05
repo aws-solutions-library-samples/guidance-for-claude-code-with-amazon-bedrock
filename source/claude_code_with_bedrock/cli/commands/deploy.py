@@ -860,9 +860,15 @@ class DeployCommand(Command):
                     )
 
                     # Deploy the packaged template
-                    return deploy_with_cf(
+                    result = deploy_with_cf(
                         packaged_template_path, stack_name, params, task_description="Deploying quota monitoring..."
                     )
+
+                    # Seed default quota policy on successful deploy
+                    if result == 0:
+                        self._create_default_quota_policy(profile, stack_name, console)
+
+                    return result
 
                 finally:
                     # Clean up temp file
@@ -1054,8 +1060,6 @@ class DeployCommand(Command):
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [
                 f"MonthlyTokenLimit={monthly_limit}",
-                f"MetricsTableArn=<MetricsTableArn from {dashboard_stack}>",
-                f"MetricsAggregatorRoleName=<MetricsAggregatorRoleName from {dashboard_stack}>",
                 f"WarningThreshold80={getattr(profile, 'warning_threshold_80', int(monthly_limit * 0.8))}",
                 f"WarningThreshold90={getattr(profile, 'warning_threshold_90', int(monthly_limit * 0.9))}",
                 f"DailyTokenLimit={daily_limit or 0}",
@@ -1184,52 +1188,6 @@ class DeployCommand(Command):
                     if quota_outputs.get("QuotaTableName"):
                         profile.user_quota_metrics_table = quota_outputs["QuotaTableName"]
                     config.save_profile(profile)
-
-    def _update_metrics_aggregator_env(self, profile, quota_stack_name: str, console: Console) -> None:
-        """Update metrics aggregator Lambda environment variable to include quota table."""
-        try:
-            import boto3
-
-            # Get the quota table name from the quota stack outputs
-            quota_outputs = get_stack_outputs(quota_stack_name, profile.aws_region)
-            if not quota_outputs or not quota_outputs.get("QuotaTableName"):
-                console.print("[yellow]Warning: Could not get quota table name from stack outputs[/yellow]")
-                return
-
-            quota_table_name = quota_outputs["QuotaTableName"]
-
-            # Get the metrics aggregator function name
-            metrics_aggregator_name = "ClaudeCode-MetricsAggregator"
-
-            console.print(f"[dim]Updating {metrics_aggregator_name} environment variables...[/dim]")
-
-            # Update the Lambda function environment variables
-            lambda_client = boto3.client("lambda", region_name=profile.aws_region)
-
-            try:
-                lambda_client.update_function_configuration(
-                    FunctionName=metrics_aggregator_name,
-                    Environment={
-                        "Variables": {
-                            "METRICS_LOG_GROUP": profile.metrics_log_group,
-                            "METRICS_REGION": profile.aws_region,
-                            "METRICS_TABLE": "ClaudeCodeMetrics",
-                            "QUOTA_TABLE": quota_table_name,
-                        }
-                    },
-                )
-                console.print("[green]✓ Updated metrics aggregator to enable quota tracking[/green]")
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Failed to update metrics aggregator environment variables: {str(e)}[/yellow]"
-                )
-                console.print(
-                    f"[dim]You may need to manually add QUOTA_TABLE={quota_table_name} "
-                    f"to the metrics aggregator Lambda[/dim]"
-                )
-
-        except Exception as e:
-            console.print(f"[yellow]Warning: Error updating metrics aggregator: {str(e)}[/yellow]")
 
     def _create_default_quota_policy(self, profile, quota_stack_name: str, console: Console) -> None:
         """Auto-create default quota policy in DynamoDB after quota stack deployment."""
