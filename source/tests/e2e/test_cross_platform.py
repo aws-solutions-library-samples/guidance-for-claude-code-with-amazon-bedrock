@@ -582,3 +582,36 @@ class TestCfnTemplateValidation:
                     f"{tmpl.name} defines 'IsGovCloud' condition but never references it. "
                     f"Remove unused conditions to fix cfn-lint W8001."
                 )
+
+
+class TestSsoEnabledConsistency:
+    """Static analysis guards for sso_enabled checks.
+
+    All getattr/get calls for sso_enabled must default to True for backward
+    compatibility. A single False default could break existing SSO deployments.
+    """
+
+    def test_no_sso_enabled_default_false_in_source(self):
+        """No source file should use sso_enabled with a False default."""
+        import re
+
+        # Patterns that would indicate wrong default
+        bad_patterns = [
+            re.compile(r'getattr\([^,]+,\s*["\']sso_enabled["\'],\s*False\)'),
+            re.compile(r'\.get\(["\']sso_enabled["\'],\s*False\)'),
+        ]
+
+        source_files = list(CLI_DIR.rglob("*.py"))
+        violations = []
+
+        for src in source_files:
+            content = src.read_text(encoding="utf-8")
+            for pattern in bad_patterns:
+                matches = pattern.findall(content)
+                if matches:
+                    violations.append(f"{src.name}: {matches}")
+
+        assert not violations, (
+            f"Found sso_enabled with default=False (must be True for backward compat):\n"
+            + "\n".join(violations)
+        )

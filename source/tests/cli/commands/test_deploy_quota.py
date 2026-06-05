@@ -101,3 +101,77 @@ class TestDeployQuotaCommand:
             key, value = param.split("=")
             assert key in ["MonthlyTokenLimit", "WarningThreshold80", "WarningThreshold90"]
             assert int(value) > 0
+
+
+class TestResolveOidcConfig:
+    """Regression tests for OIDC config resolution with SSO disabled.
+
+    Prevents issue #287: quota deploy crash when sso_enabled=False
+    because no valid JWT issuer URL exists.
+    """
+
+    @pytest.fixture
+    def command(self):
+        return DeployCommand()
+
+    def test_sso_disabled_returns_empty_strings(self, command):
+        """When SSO is disabled, OIDC config must return empty strings (no crash)."""
+        profile = Mock()
+        profile.sso_enabled = False
+        issuer, client_id = command._resolve_oidc_config(profile)
+        assert issuer == ""
+        assert client_id == ""
+
+    def test_sso_enabled_okta_returns_valid_issuer(self, command):
+        """Okta provider returns https:// prefixed domain."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "okta"
+        profile.provider_domain = "company.okta.com"
+        profile.client_id = "abc123"
+        issuer, client_id = command._resolve_oidc_config(profile)
+        assert issuer == "https://company.okta.com"
+        assert client_id == "abc123"
+
+    def test_sso_enabled_cognito_returns_pool_url(self, command):
+        """Cognito provider returns cognito-idp issuer URL."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "cognito"
+        profile.cognito_user_pool_id = "us-east-1_abc123"
+        profile.aws_region = "us-east-1"
+        profile.client_id = "cogclient"
+        issuer, client_id = command._resolve_oidc_config(profile)
+        assert issuer == "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123"
+        assert client_id == "cogclient"
+
+    def test_sso_enabled_cognito_no_pool_id_raises(self, command):
+        """Cognito without pool_id must raise ValueError (not crash with None)."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "cognito"
+        profile.cognito_user_pool_id = ""
+        with pytest.raises(ValueError, match="Cognito User Pool ID is required"):
+            command._resolve_oidc_config(profile)
+
+    def test_sso_enabled_auth0_appends_slash(self, command):
+        """Auth0 issuer URL must end with trailing slash (matches iss claim)."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "auth0"
+        profile.provider_domain = "company.auth0.com"
+        profile.client_id = "auth0client"
+        issuer, client_id = command._resolve_oidc_config(profile)
+        assert issuer == "https://company.auth0.com/"
+        assert client_id == "auth0client"
+
+    def test_sso_enabled_azure_no_trailing_slash(self, command):
+        """Azure issuer URL must NOT have trailing slash."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "azure"
+        profile.provider_domain = "login.microsoftonline.com/tenant-id/v2.0"
+        profile.client_id = "azureclient"
+        issuer, client_id = command._resolve_oidc_config(profile)
+        assert issuer == "https://login.microsoftonline.com/tenant-id/v2.0"
+        assert not issuer.endswith("/")
