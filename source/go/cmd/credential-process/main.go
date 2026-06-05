@@ -522,6 +522,12 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 // installs stay portable across machines. Returns nil for public-client flows.
 func (a *credentialApp) resolveConfidentialAuth() (*oidc.ConfidentialAuth, error) {
 	if a.providerType != "azure" {
+		// Non-Azure providers: use client_secret from config.json if present.
+		// Google Desktop OAuth requires this for token exchange (Google documents
+		// it as non-confidential for installed apps). Other providers use PKCE-only.
+		if a.cfg.ClientSecret != "" {
+			return &oidc.ConfidentialAuth{ClientSecret: a.cfg.ClientSecret}, nil
+		}
 		return nil, nil
 	}
 	mode := a.cfg.AzureAuthMode

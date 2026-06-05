@@ -737,6 +737,24 @@ sso_registration_scopes = sso:account:access"""
             client_certificate_path = None
             client_certificate_key_path = None
 
+            # Google Desktop OAuth requires a client_secret for token exchange.
+            # Google documents this as non-confidential for installed/native apps,
+            # so we store it in config.json (not the OS keyring).
+            if provider_type == "google":
+                console.print("\n[bold]Client Secret[/bold]")
+                console.print(
+                    "Google OAuth requires a client secret for desktop applications.\n"
+                    "Find it in Google Cloud Console → Credentials → your OAuth client.\n"
+                    "[dim]Note: Google considers desktop app secrets non-confidential.[/dim]"
+                )
+                client_secret = questionary.password(
+                    "Client secret (from Google Cloud Console):",
+                    validate=lambda x: bool(x) or "Client secret is required for Google OAuth",
+                ).ask()
+                if not client_secret:
+                    return None
+                config["client_secret"] = client_secret
+
             if provider_type == "azure":
                 console.print("\n[bold]Azure AD Authentication Mode[/bold]")
                 console.print(
