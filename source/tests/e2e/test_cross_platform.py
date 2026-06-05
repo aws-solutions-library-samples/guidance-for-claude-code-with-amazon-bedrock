@@ -495,3 +495,30 @@ class TestDeployPostHooks:
             "deploy.py still references MetricsTableArn which was removed from "
             "quota-monitoring.yaml in the OTLP architecture refactor"
         )
+
+
+# ---------------------------------------------------------------------------
+# Destroy Command Completeness
+# ---------------------------------------------------------------------------
+
+
+class TestDestroyCommand:
+    """Regression guards for destroy command stack coverage."""
+
+    def test_cowork_dashboard_in_destroyable_stacks(self):
+        """cowork-dashboard must be destroyable (deployed via ccwb deploy cowork-dashboard)."""
+        destroy_file = CLI_DIR / "cli" / "commands" / "destroy.py"
+        content = destroy_file.read_text(encoding="utf-8")
+        assert "cowork-dashboard" in content, (
+            "destroy.py must include cowork-dashboard in DESTROYABLE_STACKS — "
+            "it can be deployed but must also be cleanable. See issue #347."
+        )
+
+    def test_destroyable_stacks_constant_exists(self):
+        """Destroy command must use a DESTROYABLE_STACKS constant (single source of truth)."""
+        destroy_file = CLI_DIR / "cli" / "commands" / "destroy.py"
+        content = destroy_file.read_text(encoding="utf-8")
+        assert "DESTROYABLE_STACKS" in content, (
+            "destroy.py must define DESTROYABLE_STACKS constant to avoid "
+            "forgetting stacks in one list but not the other"
+        )
