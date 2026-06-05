@@ -550,25 +550,27 @@ class MultiProviderAuth:
         # Clear monitoring token from keyring
         try:
             if platform.system() == "Windows":
-                # Chunked format: expire the meta and overwrite every chunk so the
+                # Chunked format: overwrite every chunk and reset the meta so the
                 # real token is not left recoverable. Also clear any legacy entry.
-                meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
                 cleared_monitoring = False
+                # Reset meta to count:0 BEFORE scrubbing chunks so an interrupted clear
+                # leaves the read gated to None rather than reassembling stale chunks.
+                meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
                 if meta_json:
-                    try:
-                        count = json.loads(meta_json).get("count", 0)
-                    except Exception:
-                        count = 0
-                    for idx in range(1, count + 1):
-                        entry = f"{self.profile}-monitoring-{idx}"
-                        if keyring.get_password("claude-code-with-bedrock", entry):
-                            keyring.set_password("claude-code-with-bedrock", entry, "EXPIRED")
                     keyring.set_password(
                         "claude-code-with-bedrock",
                         f"{self.profile}-monitoring-meta",
                         json.dumps({"count": 0, "expires": 0, "email": "", "profile": self.profile}),
                     )
                     cleared_monitoring = True
+                # Scan actual chunk entries from index 1 rather than trusting
+                # meta.count: this also scrubs orphans from a larger prior token and
+                # a meta-less set left by a crash mid-save.
+                idx = 1
+                while keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}") is not None:
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}", "EXPIRED")
+                    cleared_monitoring = True
+                    idx += 1
                 # Legacy single-entry monitoring token (pre-chunk installs)
                 if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
                     keyring.set_password(
@@ -728,6 +730,17 @@ class MultiProviderAuth:
                 except Exception:
                     pass
             raise
+
+        # Purge orphaned higher-index chunks left by a previous, larger token so no
+        # plaintext tail survives a shrink. Chunks are written contiguously 1..N, so
+        # scanning until the first gap is safe.
+        try:
+            idx = len(chunks) + 1
+            while keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}") is not None:
+                keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
+                idx += 1
+        except Exception:
+            pass
 
         # Remove a legacy single-entry monitoring token so stale data can't shadow
         # the chunked entries on read.
@@ -1562,7 +1575,11 @@ class MultiProviderAuth:
             # Keep the socket BOUND (don't close it) so the port is held
             # continuously through authenticate_oidc — see run() for the rationale.
             lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # SO_REUSEADDR lets a TIME_WAIT socket be rebound on POSIX (the macOS/Linux
+            # fix from review). On Windows it instead lets a SECOND ACTIVE listener bind
+            # the same port, which would defeat the inter-process port lock — guard it off.
+            if platform.system() != "Windows":
+                lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with monitoring authentication")
@@ -2179,7 +2196,11 @@ class MultiProviderAuth:
             # continuously through authenticate_oidc — closing it here would open
             # a TOCTOU window for a concurrent credential-process to also auth.
             lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # SO_REUSEADDR lets a TIME_WAIT socket be rebound on POSIX (the macOS/Linux
+            # fix from review). On Windows it instead lets a SECOND ACTIVE listener bind
+            # the same port, which would defeat the inter-process port lock — guard it off.
+            if platform.system() != "Windows":
+                lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 lock_socket.bind(("127.0.0.1", self.redirect_port))
                 self._debug_print("Port available, proceeding with authentication")
