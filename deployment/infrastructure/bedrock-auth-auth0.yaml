@@ -64,7 +64,6 @@ Conditions:
   # Partition-aware conditions for Cognito Identity service principals
   IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
   IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
-  IsGovCloud: !Or [!Condition IsGovCloudWest, !Condition IsGovCloudEast]
 
 Resources:
   # ===============================================
@@ -105,10 +104,6 @@ Resources:
               - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
             Resource:
               - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
               - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
@@ -124,10 +119,6 @@ Resources:
               - 'bedrock:CallWithBearerToken'
               - 'bedrock:ListFoundationModels'
               - 'bedrock:ListInferenceProfiles'
-              - 'bedrock-runtime:InvokeModel'
-              - 'bedrock-runtime:InvokeModelWithResponseStream'
-              - 'bedrock-runtime:ConverseStream'
-              - 'bedrock-runtime:Converse'
             Resource:
               - !Sub 'arn:${AWS::Partition}:bedrock:::foundation-model/*'
           - Sid: AllowBedrockListRegional
