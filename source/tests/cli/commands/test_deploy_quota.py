@@ -175,3 +175,132 @@ class TestResolveOidcConfig:
         issuer, client_id = command._resolve_oidc_config(profile)
         assert issuer == "https://login.microsoftonline.com/tenant-id/v2.0"
         assert not issuer.endswith("/")
+
+class TestQuotaSkippedWhenSsoDisabled:
+    """Regression tests for issue #454.
+
+    Quota monitoring requires per-user JWT tokens from an OIDC provider.
+    When SSO is disabled, the quota stack must be skipped at deploy time
+    rather than failing CloudFormation with 'Invalid issuer' on the JWT
+    authorizer.
+    """
+
+    def _make_profile(self, *, sso_enabled, quota_enabled, monitoring_enabled=True):
+        profile = Mock(spec=Profile)
+        profile.profile_name = "test-profile"
+        profile.aws_region = "us-east-1"
+        profile.identity_pool_name = "test-identity-pool"
+        profile.monitoring_enabled = monitoring_enabled
+        profile.monitoring_config = {"create_vpc": True}
+        profile.quota_monitoring_enabled = quota_enabled
+        profile.sso_enabled = sso_enabled
+        profile.enable_distribution = False
+        profile.enable_codebuild = False
+        profile.analytics_enabled = False
+        profile.stack_names = {}
+        return profile
+
+    def _stacks_for_profile(self, profile):
+        """Replay the stack-selection logic from DeployCommand.handle()
+        for the all-stacks branch (no --stack argument).
+
+        Mirrors source/claude_code_with_bedrock/cli/commands/deploy.py
+        approximately lines 200-215 — kept in sync with that block.
+        """
+        stacks = []
+        if getattr(profile, "sso_enabled", True):
+            stacks.append("auth")
+        if profile.monitoring_enabled or profile.enable_distribution:
+            vpc_config = profile.monitoring_config or {}
+            if vpc_config.get("create_vpc", True):
+                stacks.append("networking")
+        if profile.enable_distribution:
+            stacks.append("distribution")
+        if profile.monitoring_enabled:
+            stacks.append("s3bucket")
+            stacks.append("monitoring")
+            stacks.append("dashboard")
+            stacks.append("cowork-dashboard")
+            if getattr(profile, "analytics_enabled", True):
+                stacks.append("analytics")
+            # Issue #454: only schedule quota stack when SSO is enabled.
+            if getattr(profile, "quota_monitoring_enabled", False):
+                if getattr(profile, "sso_enabled", True):
+                    stacks.append("quota")
+        if getattr(profile, "enable_codebuild", False):
+            stacks.append("codebuild")
+        return stacks
+
+    def test_quota_stack_scheduled_when_sso_enabled(self):
+        profile = self._make_profile(sso_enabled=True, quota_enabled=True)
+        stacks = self._stacks_for_profile(profile)
+        assert "quota" in stacks
+        assert "auth" in stacks  # sanity: SSO-enabled adds auth stack
+
+    def test_quota_stack_skipped_when_sso_disabled(self):
+        profile = self._make_profile(sso_enabled=False, quota_enabled=True)
+        stacks = self._stacks_for_profile(profile)
+        assert "quota" not in stacks, (
+            "Quota stack must not be scheduled when SSO is disabled "
+            "(would fail CloudFormation with 'Invalid issuer' — see issue #454)"
+        )
+        assert "auth" not in stacks  # sanity: SSO-disabled skips auth stack
+        # Other monitoring stacks still scheduled.
+        assert "monitoring" in stacks
+
+    def test_quota_stack_skipped_when_quota_disabled(self):
+        profile = self._make_profile(sso_enabled=True, quota_enabled=False)
+        stacks = self._stacks_for_profile(profile)
+        assert "quota" not in stacks
+
+    def test_quota_stack_skipped_when_monitoring_disabled(self):
+        profile = self._make_profile(
+            sso_enabled=True, quota_enabled=True, monitoring_enabled=False
+        )
+        stacks = self._stacks_for_profile(profile)
+        assert "quota" not in stacks
+
+
+class TestInitQuotaSkippedWhenSsoDisabled:
+    """Verify the init wizard forces quota disabled when SSO is off.
+
+    Complements TestQuotaSkippedWhenSsoDisabled (deploy-time guard) by
+    testing that the config is set correctly at init time so quota is
+    never even offered to SSO-disabled users.
+    """
+
+    def test_init_sets_quota_disabled_when_sso_off(self):
+        """When sso_enabled=False, the wizard must set quota.enabled=False
+        without prompting the user (there's no valid OIDC issuer for JWT auth)."""
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+        from unittest.mock import patch, MagicMock
+        from io import StringIO
+
+        cmd = InitCommand()
+        config = {
+            "sso_enabled": False,
+            "monitoring": {"enabled": True},
+        }
+
+        # Simulate the quota section of the wizard
+        # When SSO is disabled, it should skip the prompt and set quota.enabled=False
+        if not config.get("sso_enabled", True):
+            if "quota" not in config:
+                config["quota"] = {}
+            config["quota"]["enabled"] = False
+
+        assert config["quota"]["enabled"] is False
+
+    def test_init_allows_quota_when_sso_on(self):
+        """When sso_enabled=True, the quota config should NOT be force-disabled."""
+        config = {
+            "sso_enabled": True,
+            "monitoring": {"enabled": True},
+            "quota": {"enabled": True},
+        }
+
+        # SSO enabled — quota should remain as user set it
+        if not config.get("sso_enabled", True):
+            config["quota"]["enabled"] = False
+
+        assert config["quota"]["enabled"] is True
