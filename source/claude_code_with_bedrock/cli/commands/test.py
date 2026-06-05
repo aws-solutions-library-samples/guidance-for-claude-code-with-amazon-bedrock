@@ -235,7 +235,9 @@ class TestCommand(Command):
             # Pass the profile via --profile flag (cross-platform, no shell wrapper).
             # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
             # exist on Windows, so the --profile flag is used instead.
-            credential_command = f"{credential_binary} --profile {test_profile_name}"
+            # Quote the binary path so a space in it survives botocore's shell split
+            # (shlex on POSIX); the profile name is validated to [A-Za-z0-9-] so needs none.
+            credential_command = f'"{credential_binary}" --profile {test_profile_name}'
             subprocess.run(
                 ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
                 capture_output=True,
@@ -277,7 +279,9 @@ class TestCommand(Command):
         # Pass the profile via --profile flag (cross-platform, no shell wrapper).
         # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
         # exist on Windows, so the --profile flag is used instead.
-        credential_command = f"{credential_binary} --profile {test_profile_name}"
+        # Quote the binary path so a space in it survives botocore's shell split
+        # (shlex on POSIX); the profile name is validated to [A-Za-z0-9-] so needs none.
+        credential_command = f'"{credential_binary}" --profile {test_profile_name}'
         aws_config_result = subprocess.run(
             ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
             capture_output=True,
