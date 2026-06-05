@@ -14,8 +14,9 @@ import (
 
 // AuthResult holds the result of a successful OIDC authentication.
 type AuthResult struct {
-	IDToken     string
-	TokenClaims jwt.Claims
+	IDToken      string
+	RefreshToken string
+	TokenClaims  jwt.Claims
 }
 
 // GenericEndpoints carries absolute endpoint URLs for Generic OIDC providers.
@@ -126,7 +127,8 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 	}
 
 	return &AuthResult{
-		IDToken:     tokenResp.IDToken,
-		TokenClaims: claims,
+		IDToken:      tokenResp.IDToken,
+		RefreshToken: tokenResp.RefreshToken,
+		TokenClaims:  claims,
 	}, nil
 }
