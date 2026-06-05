@@ -64,8 +64,6 @@ jobs:
 
       - name: Run tests
         working-directory: source
-        # Windows may still have edge-case encoding issues in test fixtures
-        continue-on-error: ${{ matrix.os == 'windows-latest' }}
         run: poetry run pytest tests/ -v --tb=short --junitxml=test-results.xml
 
       - name: Upload test results
@@ -74,6 +72,114 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
           path: source/test-results.xml
+
+  cross-platform-lint:
+    name: Cross-Platform Safety Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect platform-sensitive patterns
+        run: |
+          set +e
+          ERRORS=0
+          WARNINGS=0
+
+          # Get changed Python files (vs base branch for PRs, vs previous commit for pushes)
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="HEAD~1"
+          fi
+          CHANGED_PY=$(git diff --name-only "$BASE"...HEAD -- '*.py' 2>/dev/null || git diff --name-only HEAD~1 -- '*.py')
+
+          if [ -z "$CHANGED_PY" ]; then
+            echo "✓ No Python files changed"
+            exit 0
+          fi
+
+          echo "Scanning changed files for cross-platform issues:"
+          echo "$CHANGED_PY"
+          echo "---"
+
+          for f in $CHANGED_PY; do
+            [ -f "$f" ] || continue
+
+            # 1. SO_REUSEADDR without platform guard (HIGH — causes silent behavioral differences)
+            if grep -n 'SO_REUSEADDR' "$f" > /tmp/matches 2>/dev/null; then
+              while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                # Check surrounding 3 lines for platform guard
+                CONTEXT=$(sed -n "$((LINE-3)),$((LINE+3))p" "$f")
+                if ! echo "$CONTEXT" | grep -qi 'platform\|sys\.platform\|windows\|posix'; then
+                  echo "::error file=$f,line=$LINE::SO_REUSEADDR without platform guard — has different semantics on Windows (allows port stealing)"
+                  ERRORS=$((ERRORS+1))
+                fi
+              done < /tmp/matches
+            fi
+
+            # 2. os.rename (HIGH — fails on Windows when target exists, use os.replace)
+            if grep -n 'os\.rename\b' "$f" > /tmp/matches 2>/dev/null; then
+              while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                # Skip if it's in a comment
+                LINE_CONTENT=$(sed -n "${LINE}p" "$f")
+                if echo "$LINE_CONTENT" | grep -q '^\s*#'; then continue; fi
+                echo "::error file=$f,line=$LINE::os.rename fails on Windows when target exists (WinError 183). Use os.replace for atomic overwrites."
+                ERRORS=$((ERRORS+1))
+              done < /tmp/matches
+            fi
+
+            # 3. open() without encoding= on text files (MEDIUM — charmap errors on Windows)
+            if grep -nP 'open\(' "$f" > /tmp/matches 2>/dev/null; then
+              while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                LINE_CONTENT=$(sed -n "${LINE}p" "$f")
+                # Skip binary modes, mock patches, comments, and lines with encoding
+                if echo "$LINE_CONTENT" | grep -qP "(encoding|'[rwa]b'|\"[rwa]b\"|mock_open|# |patch)"; then continue; fi
+                # Skip if it's in a with statement that has encoding on same/next line
+                NEXT_LINE=$(sed -n "$((LINE+1))p" "$f")
+                if echo "$NEXT_LINE" | grep -q 'encoding'; then continue; fi
+                # Only flag if it looks like a real file open (has a path-like argument)
+                if echo "$LINE_CONTENT" | grep -qP 'open\((.*path|.*file|.*\.yaml|.*\.json|.*\.txt|.*\.md|.*\.sh)'; then
+                  echo "::warning file=$f,line=$LINE::open() without explicit encoding= — may cause UnicodeDecodeError on Windows"
+                  WARNINGS=$((WARNINGS+1))
+                fi
+              done < /tmp/matches
+            fi
+
+            # 4. subprocess with shell=True (LOW — different shell on Windows)
+            if grep -n 'shell=True' "$f" > /tmp/matches 2>/dev/null; then
+              while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                LINE_CONTENT=$(sed -n "${LINE}p" "$f")
+                if echo "$LINE_CONTENT" | grep -q '^\s*#'; then continue; fi
+                echo "::warning file=$f,line=$LINE::subprocess shell=True uses cmd.exe on Windows (not bash). Verify command portability."
+                WARNINGS=$((WARNINGS+1))
+              done < /tmp/matches
+            fi
+          done
+
+          echo "---"
+          echo "Results: $ERRORS error(s), $WARNINGS warning(s)"
+
+          if [ $ERRORS -gt 0 ]; then
+            echo ""
+            echo "❌ $ERRORS cross-platform error(s) found that WILL break on Windows."
+            echo "   These must be fixed before merge."
+            exit 1
+          fi
+
+          if [ $WARNINGS -gt 0 ]; then
+            echo ""
+            echo "⚠️  $WARNINGS cross-platform warning(s). Review for Windows compatibility."
+          fi
+
+          echo "✓ No blocking cross-platform issues detected"
 
   cfn-lint:
     name: CloudFormation Lint
