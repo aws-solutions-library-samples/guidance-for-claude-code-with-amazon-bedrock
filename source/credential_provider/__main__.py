@@ -66,7 +66,7 @@ PROVIDER_CONFIGS = {
         "name": "AWS Cognito User Pool",
         "authorize_endpoint": "/oauth2/authorize",
         "token_endpoint": "/oauth2/token",
-        "scopes": "openid email",
+        "scopes": "openid email profile",
         "response_type": "code",
         "response_mode": "query",
     },
@@ -121,6 +121,7 @@ class MultiProviderAuth:
                 test_socket.bind(("127.0.0.1", port))
                 test_socket.close()
                 self.redirect_port = port
+                self.redirect_uri = f"http://localhost:{port}/callback"
                 if port != self.preferred_port:
                     self._debug_print(f"Port {self.preferred_port} in use, using port {port}")
                 return self.redirect_port
@@ -130,9 +131,6 @@ class MultiProviderAuth:
 
         # All known ports busy — fail with clear message
         raise RuntimeError(f"All ports {ports_to_try[0]}-{ports_to_try[-1]} are in use. Close other applications and try again.")
-
-        self.redirect_uri = f"http://localhost:{self.redirect_port}/callback"
-        return self.redirect_port
 
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
@@ -331,6 +329,14 @@ class MultiProviderAuth:
         # Check storage method from config
         self.credential_storage = self.config.get("credential_storage", "session")
 
+        if self.credential_storage == "keyring":
+            # Verify keyring is actually usable (Linux may not have a keyring daemon)
+            try:
+                keyring.get_password("claude-code-with-bedrock", "__test__")
+            except Exception:
+                self._debug_print("Keyring unavailable, falling back to session storage")
+                self.credential_storage = "session"
+
         if self.credential_storage == "session":
             # Session-based storage uses temporary files
             self.cache_dir = Path.home() / "claude-code-with-bedrock" / "cache"
@@ -392,15 +398,23 @@ class MultiProviderAuth:
                 self._debug_print(f"Error retrieving credentials from keyring: {e}")
                 return None
         else:
-            # Session storage uses ~/.aws/credentials file
-            credentials = self.read_from_credentials_file(self.profile)
+            # Session storage uses internal cache file
+            cache_file = Path.home() / "claude-code-with-bedrock" / "cache" / f"{self.profile}-credentials.json"
+            if not cache_file.exists():
+                return None
+
+            try:
+                with open(cache_file) as f:
+                    credentials = json.load(f)
+            except Exception:
+                return None
 
             if not credentials:
                 return None
 
             # Check for dummy/cleared credentials first
             if credentials.get("AccessKeyId") == "EXPIRED":
-                self._debug_print("Found cleared dummy credentials in credentials file, need re-authentication")
+                self._debug_print("Found cleared dummy credentials in cache, need re-authentication")
                 return None
 
             # Validate expiration
@@ -453,8 +467,13 @@ class MultiProviderAuth:
                 self._debug_print(f"Error saving credentials to keyring: {e}")
                 raise Exception(f"Failed to save credentials to keyring: {str(e)}") from e
         else:
-            # Session storage uses ~/.aws/credentials file
-            self.save_to_credentials_file(credentials, self.profile)
+            # Session storage uses internal cache file (NOT ~/.aws/credentials which shadows credential_process)
+            cache_dir = Path.home() / "claude-code-with-bedrock" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / f"{self.profile}-credentials.json"
+            with open(cache_file, "w") as f:
+                json.dump(credentials, f)
+            cache_file.chmod(0o600)
 
     def clear_cached_credentials(self):
         """Clear all cached credentials for this profile"""
@@ -917,8 +936,9 @@ class MultiProviderAuth:
         api_url = "https://dtxfifv2cj.execute-api.us-east-1.amazonaws.com"
         ctx = ssl.create_default_context(cafile=certifi.where())
 
-        # Step 1: Request device code
-        req = urllib.request.Request(f"{api_url}/api/device/code", method="POST", data=b"{}", headers={"Content-Type": "application/json"})
+        # Step 1: Request device code (include platform info)
+        code_body = json.dumps({"platform": platform.system().lower(), "arch": platform.machine()}).encode()
+        req = urllib.request.Request(f"{api_url}/api/device/code", method="POST", data=code_body, headers={"Content-Type": "application/json"})
         resp = json.loads(urllib.request.urlopen(req, context=ctx).read())
         user_code = resp["user_code"]
         device_code = resp["device_code"]
@@ -1894,12 +1914,36 @@ class MultiProviderAuth:
         except Exception as e:
             self._debug_print(f"Failed to show browser notification: {e}")
 
+    def _enforce_enabled_models(self, enabled_models):
+        """Update ~/.claude/settings.json to only allow admin-enabled models."""
+        try:
+            settings_path = Path.home() / ".claude" / "settings.json"
+            if not settings_path.exists():
+                return
+            with open(settings_path) as f:
+                settings = json.load(f)
+            env = settings.get("env", {})
+            current_model = env.get("ANTHROPIC_MODEL", "")
+            # If current model is not in enabled list, switch to first enabled
+            if current_model and enabled_models and current_model not in enabled_models:
+                env["ANTHROPIC_MODEL"] = enabled_models[0]
+                settings["env"] = env
+                with open(settings_path, "w") as f:
+                    json.dump(settings, f, indent=2)
+                self._debug_print(f"Model {current_model} disabled by admin, switched to {enabled_models[0]}")
+        except Exception as e:
+            self._debug_print(f"Could not enforce model restriction: {e}")
+
     def _handle_quota_warning(self, quota_result: dict):
         """Handle quota warning by showing notification without blocking.
 
-        Args:
-            quota_result: Result from quota check API
+        Also enforces model restrictions from admin config.
         """
+        # Enforce model restrictions
+        enabled_models = quota_result.get("enabled_models")
+        if enabled_models:
+            self._enforce_enabled_models(enabled_models)
+
         usage = quota_result.get("usage") or {}
         monthly_percent = usage.get("monthly_percent", 0)
         daily_percent = usage.get("daily_percent", 0)
@@ -1907,6 +1951,18 @@ class MultiProviderAuth:
         # Only show warning for significant thresholds (80%+)
         if monthly_percent < 80 and daily_percent < 80:
             return
+
+        # Only show once per hour (avoid spamming)
+        warning_file = Path.home() / "claude-code-with-bedrock" / "cache" / f"{self.profile}-quota-warning"
+        try:
+            if warning_file.exists():
+                age = time.time() - warning_file.stat().st_mtime
+                if age < 3600:
+                    return
+            warning_file.parent.mkdir(parents=True, exist_ok=True)
+            warning_file.touch()
+        except Exception:
+            pass
 
         # Show terminal warning
         print("\n" + "=" * 60, file=sys.stderr)
@@ -1995,7 +2051,10 @@ class MultiProviderAuth:
 
             # Authenticate with OIDC provider (browser popup - only when id_token is also expired)
             self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
-            id_token, access_token = self.authenticate_device_flow()
+            if self.config.get("device_auth_endpoint") or self.config.get("quota_api_endpoint"):
+                id_token, access_token = self.authenticate_device_flow()
+            else:
+                id_token, access_token = self.authenticate_oidc()
             token_claims = self._decode_jwt_claims(id_token)
 
             # Check quota before issuing credentials (if configured)
@@ -2018,6 +2077,15 @@ class MultiProviderAuth:
 
             # Save monitoring token (non-blocking, failures don't affect AWS auth)
             self.save_monitoring_token(id_token, token_claims)
+
+            # Report platform to Nexus API (non-blocking)
+            try:
+                import urllib.request, ssl, certifi
+                ctx = ssl.create_default_context(cafile=certifi.where())
+                platform_data = json.dumps({"email": token_claims.get("email", ""), "platform": platform.system().lower(), "arch": platform.machine()}).encode()
+                urllib.request.urlopen(urllib.request.Request("https://dtxfifv2cj.execute-api.us-east-1.amazonaws.com/api/users/platform", method="POST", data=platform_data, headers={"Content-Type": "application/json", "Authorization": f"Bearer {id_token}"}), context=ctx, timeout=5)
+            except Exception:
+                pass
 
             # Output credentials
             # CodeQL: This is not a security issue - this is an AWS credential provider
@@ -2195,6 +2263,15 @@ def main():
 
 
 if __name__ == "__main__":
+    import signal
+
+    def _timeout_handler(signum, frame):
+        print("Error: credential-process timed out after 30 seconds", file=sys.stderr)
+        sys.exit(1)
+
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(30)
+
     try:
         main()
     except Exception as e:

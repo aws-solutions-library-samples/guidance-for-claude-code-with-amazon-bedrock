@@ -18,6 +18,14 @@ Parameters:
     Type: String
     Default: "pc:92nbpajp068qmpcgk4dpgu490"
     Description: AWS Partner Revenue Measurement tag (do not change)
+  EnableCloudTrail:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Enable CloudTrail data events for Bedrock (logs every model invocation)
+
+Conditions:
+  CloudTrailEnabled: !Equals [!Ref EnableCloudTrail, "true"]
 
 Resources:
   # Cognito User Pool for this org's users
@@ -80,11 +88,13 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !GetAtt OIDCProvider.Arn
+              Federated: cognito-identity.amazonaws.com
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                "sts:ExternalId": !Ref OrganizationName
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              ForAnyValue:StringLike:
+                "cognito-identity.amazonaws.com:amr": authenticated
       Policies:
         - PolicyName: BedrockAccess
           PolicyDocument:
@@ -156,6 +166,23 @@ Resources:
         - Key: Project
           Value: AllCode-Nexus
 
+  # Cognito Identity Pool - exchanges tokens for AWS credentials
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub "${OrganizationName}-nexus-identity-pool"
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt BedrockRole.Arn
+
   # Nexus Connector - allows AllCode to read metrics
   NexusConnectorRole:
     Type: AWS::IAM::Role
@@ -191,6 +218,13 @@ Resources:
                   - !Sub "${MetricsTable.Arn}/index/*"
                   - !GetAtt PoliciesTable.Arn
                   - !Sub "${PoliciesTable.Arn}/index/*"
+              - Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStacks
+                  - ce:GetCostForecast
+                Resource: "*"
 
   # First admin user
   AdminUser:
@@ -204,6 +238,59 @@ Resources:
         - Name: email_verified
           Value: "true"
       DesiredDeliveryMediums: [EMAIL]
+
+
+  # CloudTrail for Bedrock data events
+  BedrockTrailBucket:
+    Type: AWS::S3::Bucket
+    Condition: CloudTrailEnabled
+    Properties:
+      BucketName: !Sub "${OrganizationName}-nexus-cloudtrail-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAfter90Days
+            Status: Enabled
+            ExpirationInDays: 90
+
+  BedrockTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CloudTrailEnabled
+    Properties:
+      Bucket: !Ref BedrockTrailBucket
+      PolicyDocument:
+        Statement:
+          - Sid: CloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt BedrockTrailBucket.Arn
+          - Sid: CloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${BedrockTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  BedrockCloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Condition: CloudTrailEnabled
+    DependsOn: BedrockTrailBucketPolicy
+    Properties:
+      TrailName: !Sub "${OrganizationName}-nexus-bedrock-trail"
+      IsLogging: true
+      S3BucketName: !Ref BedrockTrailBucket
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::Bedrock::Model
+              Values: ["arn:aws:bedrock"]
 
 Outputs:
   ConnectorRoleArn:
@@ -221,6 +308,9 @@ Outputs:
   BedrockRoleArn:
     Description: IAM Role for Bedrock access
     Value: !GetAtt BedrockRole.Arn
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID
+    Value: !Ref IdentityPool
   OrganizationName:
     Description: Your organization identifier
     Value: !Ref OrganizationName

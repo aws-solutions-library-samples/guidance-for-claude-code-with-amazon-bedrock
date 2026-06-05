@@ -163,6 +163,7 @@ def handle_provision_org(event):
     user_pool_id = body.get("userPoolId", "")
     client_id = body.get("clientId", "")
     provider_domain = body.get("providerDomain", "")
+    identity_pool_id = body.get("identityPoolId", "")
 
     if not org_name or not role_arn:
         return response(400, {"error": "orgName and roleArn are required"})
@@ -193,6 +194,7 @@ def handle_provision_org(event):
         "user_pool_id": user_pool_id,
         "client_id": client_id,
         "provider_domain": provider_domain,
+        "identity_pool_id": identity_pool_id,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -253,7 +255,7 @@ def handle_request_access(event):
 
 
 def handle_list_orgs(event):
-    """GET /api/orgs - list all organizations."""
+    """GET /api/orgs - list organizations."""
     result = orgs_table.scan(Limit=100)
     orgs = []
     for item in result.get("Items", []):
@@ -338,83 +340,169 @@ def handle_summary(event):
         if org_metrics is None:
             return response(200, {"activeUsers": 0, "monthlyTokens": 0, "orgQuotaPercent": 0, "topUsers": [], "tokenHistory": []})
 
-    now = datetime.now(timezone.utc)
-    cw = boto3.client("cloudwatch")
-
-    # Get total tokens (30 days) from CloudWatch
-    # Display: input + output only (what Anthropic shows)
-    # Cost: all types at their respective rates
-    PRICING = {"input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheCreation": 3.75}
-    try:
-        total_tokens = 0  # Display tokens (input + output only)
-        total_cost = 0.0  # Real cost (all types)
-        token_history_map = {}
-        for token_type, price_per_million in PRICING.items():
-            result = cw.get_metric_statistics(
-                Namespace="ClaudeCode",
-                MetricName="claude_code.token.usage",
-                Dimensions=[{"Name": "type", "Value": token_type}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
-                StartTime=now - timedelta(days=30),
-                EndTime=now,
-                Period=86400,
-                Statistics=["Sum"],
-            )
-            for p in result.get("Datapoints", []):
-                tokens = int(p["Sum"])
-                total_cost += (tokens / 1_000_000) * price_per_million
-                # Only count input + output for display
-                if token_type in ("input", "output"):
-                    total_tokens += tokens
-                    date = p["Timestamp"].strftime("%Y-%m-%d")
-                    token_history_map[date] = token_history_map.get(date, 0) + tokens
-        token_history = [{"date": k, "tokens": v} for k, v in sorted(token_history_map.items())]
-    except Exception:
-        total_tokens = 0
-        total_cost = 0.0
-        token_history = []
-
-    # Get per-user token usage from CloudWatch
-    # Note: per-user includes all token types (input+output+cache)
-    # We calculate proportional billable tokens based on org total
-    top_users = []
-    all_emails = set()
-    total_all_types = 0
-    try:
-        metrics = cw.list_metrics(Namespace="ClaudeCode", MetricName="claude_code.token.usage", Dimensions=[{"Name": "user.email"}])
-        user_emails = set()
-        for m in metrics.get("Metrics", []):
-            for d in m.get("Dimensions", []):
-                if d["Name"] == "user.email" and "@" in d["Value"] and "anonymous" not in d["Value"] and "example.com" not in d["Value"]:
-                    user_emails.add(d["Value"])
-
-        user_raw = {}
-        for email in list(user_emails)[:20]:
+    # Get org-specific user list for filtering
+    cognito_client = boto3.client("cognito-idp")
+    pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    org_user_emails = None  # None means no filter
+    if org_id != "allcode":
+        if pool_id:
             try:
-                user_result = cw.get_metric_statistics(
-                    Namespace="ClaudeCode",
-                    MetricName="claude_code.token.usage",
-                    Dimensions=[{"Name": "user.email", "Value": email}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
-                    StartTime=now - timedelta(days=30),
-                    EndTime=now,
-                    Period=2592000,
-                    Statistics=["Sum"],
-                )
-                user_tokens = int(sum(p.get("Sum", 0) for p in user_result.get("Datapoints", [])))
-                if user_tokens > 0:
-                    user_raw[email] = user_tokens
-                    total_all_types += user_tokens
-                    all_emails.add(email)
+                org_user_emails = set()
+                result = cognito_client.list_users_in_group(UserPoolId=pool_id, GroupName=f"org-{org_id}", Limit=60)
+                for user in result.get("Users", []):
+                    for attr in user.get("Attributes", []):
+                        if attr["Name"] == "email":
+                            org_user_emails.add(attr["Value"])
+            except Exception:
+                org_user_emails = set()
+    else:
+        # AllCode: exclude users in any org-* group
+        if pool_id:
+            try:
+                org_group_users = set()
+                groups = cognito_client.list_groups(UserPoolId=pool_id, Limit=60).get("Groups", [])
+                for g in groups:
+                    if g["GroupName"].startswith("org-"):
+                        members = cognito_client.list_users_in_group(UserPoolId=pool_id, GroupName=g["GroupName"], Limit=60)
+                        for u in members.get("Users", []):
+                            for attr in u.get("Attributes", []):
+                                if attr["Name"] == "email":
+                                    org_group_users.add(attr["Value"])
+                if org_group_users:
+                    org_user_emails = "EXCLUDE"  # special marker
             except Exception:
                 pass
 
-        # Calculate proportional billable tokens per user
-        for email, raw in sorted(user_raw.items(), key=lambda x: -x[1]):
-            proportion = raw / total_all_types if total_all_types > 0 else 0
-            billable = int(total_tokens * proportion)
-            top_users.append({"email": email, "tokens": billable})
+    # Parse optional month filter from query string
+    qs = event.get("queryStringParameters") or {}
+    month_param = qs.get("month", "")
 
+    now = datetime.now(timezone.utc)
+    cw = boto3.client("cloudwatch")
+
+    # Get total tokens and per-user data from UserQuotaMetrics (actual input+output)
+    # For dashboard: trailing 30 days (query current + previous month)
+    # For billing with month param: specific month only
+    if month_param:
+        months_to_query = [month_param]
+    else:
+        current_month = now.strftime("%Y-%m")
+        prev = now - timedelta(days=30)
+        prev_month = prev.strftime("%Y-%m")
+        months_to_query = list(set([current_month, prev_month]))
+
+    total_tokens = 0
+    total_cost = 0.0
+    top_users = []
+    all_emails = set()
+    token_history = []
+    try:
+        quota_metrics = boto3.resource("dynamodb").Table("UserQuotaMetrics")
+        all_items = []
+        for mp in months_to_query:
+            scan_result = quota_metrics.scan(
+                FilterExpression="sk = :sk",
+                ExpressionAttributeValues={":sk": f"MONTH#{mp}"},
+            )
+            all_items.extend(scan_result.get("Items", []))
+        total_all_tokens = 0
+        user_all_tokens = {}
+        user_billable = {}
+        for item in all_items:
+            email = item.get("email", "")
+            if not email or "example.com" in email or "anonymous" in email:
+                continue
+            # Filter by org if not allcode
+            # Filter by org
+            if org_user_emails == "EXCLUDE" and email in org_group_users:
+                continue
+            elif org_user_emails is not None and org_user_emails != "EXCLUDE" and email not in org_user_emails:
+                continue
+            inp = float(item.get("input_tokens", 0))
+            out = float(item.get("output_tokens", 0))
+            all_tok = float(item.get("total_tokens", 0))
+            billable = int(inp + out)
+            total_tokens += billable
+            total_all_tokens += all_tok
+            user_all_tokens[email] = user_all_tokens.get(email, 0) + all_tok
+            user_billable[email] = user_billable.get(email, 0) + billable
+            all_emails.add(email)
+        for email, billable in sorted(user_billable.items(), key=lambda x: -x[1]):
+            if billable > 0:
+                top_users.append({"email": email, "tokens": billable})
     except Exception:
         pass
+
+    # Get actual cost from AWS Cost Explorer
+    try:
+        ce = boto3.client("ce")
+        # Use selected month for Cost Explorer query
+        if month_param:
+            ce_start = f"{month_param}-01"
+            # End is first day of next month
+            y, m = int(month_param[:4]), int(month_param[5:7])
+            if m == 12:
+                ce_end = f"{y+1}-01-01"
+            else:
+                ce_end = f"{y}-{m+1:02d}-01"
+        else:
+            ce_start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+            ce_end = now.strftime("%Y-%m-%d")
+        ce_result = ce.get_cost_and_usage(
+            TimePeriod={"Start": ce_start, "End": ce_end},
+            Granularity="MONTHLY",
+            Metrics=["UnblendedCost"],
+            Filter={"Or": [{"Dimensions": {"Key": "SERVICE", "Values": [s]}} for s in [
+                "Amazon Bedrock", "Claude Opus 4.7 (Amazon Bedrock Edition)", "Claude Opus 4.6 (Amazon Bedrock Edition)",
+                "Claude Sonnet 4.5 (Amazon Bedrock Edition)", "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+                "Claude Sonnet 4 (Amazon Bedrock Edition)", "Claude Haiku 4.5 (Amazon Bedrock Edition)"]]}
+        )
+        for period in ce_result.get("ResultsByTime", []):
+            total_cost += float(period.get("Total", {}).get("UnblendedCost", {}).get("Amount", 0))
+    except Exception:
+        pass
+
+    # If Cost Explorer returns $0 (billing delay), estimate from actual token breakdown
+    if total_cost == 0 and total_tokens > 0:
+        # Use actual input/output/cache from the scanned items
+        total_inp = sum(float(item.get("input_tokens", 0)) for item in all_items if item.get("email", "") not in ("", "anonymous@example.com"))
+        total_out = sum(float(item.get("output_tokens", 0)) for item in all_items if item.get("email", "") not in ("", "anonymous@example.com"))
+        total_cache = sum(float(item.get("cache_tokens", 0)) for item in all_items if item.get("email", "") not in ("", "anonymous@example.com"))
+        total_cost = (total_inp / 1_000_000) * 3.0 + (total_out / 1_000_000) * 15.0 + (total_cache / 1_000_000) * 0.30
+
+    # Get token history from CloudWatch (daily trend) - for allcode org
+    if org_user_emails is None or org_user_emails == "EXCLUDE":
+        try:
+            cw = boto3.client("cloudwatch")
+            for token_type in ["input", "output"]:
+                result = cw.get_metric_statistics(
+                    Namespace="ClaudeCode", MetricName="claude_code.token.usage",
+                    Dimensions=[{"Name": "type", "Value": token_type}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
+                    StartTime=now - timedelta(days=30), EndTime=now, Period=86400, Statistics=["Sum"],
+                )
+                for p in result.get("Datapoints", []):
+                    date = p["Timestamp"].strftime("%Y-%m-%d")
+                    found = False
+                    for h in token_history:
+                        if h["date"] == date:
+                            h["tokens"] += int(p["Sum"])
+                            found = True
+                            break
+                    if not found:
+                        token_history.append({"date": date, "tokens": int(p["Sum"])})
+            token_history.sort(key=lambda x: x["date"])
+        except Exception:
+            pass
+    else:
+        # For org-filtered view, show total as single data point
+        if total_tokens > 0:
+            token_history = [{"date": now.strftime("%Y-%m-%d"), "tokens": total_tokens}]
+
+    # Add per-user cost (proportional to their share of total usage)
+    if total_cost > 0 and total_all_tokens > 0:
+        for u in top_users:
+            user_tok = user_all_tokens.get(u["email"], 0)
+            u["cost"] = round(total_cost * (user_tok / total_all_tokens), 2)
 
     return response(200, {
         "activeUsers": len(all_emails),
@@ -438,7 +526,21 @@ def handle_users(event):
     if pool_id:
         try:
             if org_id == "allcode":
-                # AllCode: show all users NOT in any org- group (or all users)
+                # AllCode: show all users NOT in any org- group
+                # First get users in org groups to exclude them
+                org_group_users = set()
+                try:
+                    groups = cognito.list_groups(UserPoolId=pool_id, Limit=60).get("Groups", [])
+                    for g in groups:
+                        if g["GroupName"].startswith("org-"):
+                            members = cognito.list_users_in_group(UserPoolId=pool_id, GroupName=g["GroupName"], Limit=60)
+                            for u in members.get("Users", []):
+                                for attr in u.get("Attributes", []):
+                                    if attr["Name"] == "email":
+                                        org_group_users.add(attr["Value"])
+                except Exception:
+                    pass
+
                 paginator = cognito.get_paginator("list_users")
                 for page in paginator.paginate(UserPoolId=pool_id, Limit=60):
                     for user in page.get("Users", []):
@@ -446,7 +548,7 @@ def handle_users(event):
                         for attr in user.get("Attributes", []):
                             if attr["Name"] == "email":
                                 email = attr["Value"]
-                        if email:
+                        if email and email not in org_group_users:
                             last_active_str = ""
                             if hasattr(user.get("UserLastModifiedDate", ""), "isoformat"):
                                 last_active_str = user["UserLastModifiedDate"].isoformat()
@@ -474,14 +576,43 @@ def handle_users(event):
                             "tokens": 0,
                             "last_active": last_active_str,
                             "status": "active" if user.get("UserStatus") == "CONFIRMED" else "inactive",
-                            "role": "org-admin",
+                            "role": "user",
                             "username": user.get("Username", ""),
                         }
+            # Check for org admins
+            try:
+                admin_group = f"org-{org_id}-admins"
+                admin_resp = cognito.list_users_in_group(UserPoolId=pool_id, GroupName=admin_group, Limit=60)
+                for user in admin_resp.get("Users", []):
+                    for attr in user.get("Attributes", []):
+                        if attr["Name"] == "email" and attr["Value"] in all_users:
+                            all_users[attr["Value"]]["role"] = "org-admin"
+            except Exception:
+                pass
         except Exception:
             pass
 
-    # For non-allcode orgs, return the users we found in their group
+    # For non-allcode orgs, overlay token data then return
     if org_id != "allcode":
+        now = datetime.now(timezone.utc)
+        current_month = now.strftime("%Y-%m")
+        prev_month = (now - timedelta(days=30)).strftime("%Y-%m")
+        months_to_query = list(set([current_month, prev_month]))
+        try:
+            quota_metrics = boto3.resource("dynamodb").Table("UserQuotaMetrics")
+            for mp in months_to_query:
+                scan_result = quota_metrics.scan(FilterExpression="sk = :sk", ExpressionAttributeValues={":sk": f"MONTH#{mp}"})
+                for item in scan_result.get("Items", []):
+                    email = item.get("email", "")
+                    if email in all_users:
+                        inp = float(item.get("input_tokens", 0))
+                        out = float(item.get("output_tokens", 0))
+                        all_users[email]["tokens"] = all_users[email].get("tokens", 0) + int(inp + out)
+                        lu = item.get("last_updated", "")
+                        if lu:
+                            all_users[email]["last_active"] = lu
+        except Exception:
+            pass
         users = [{"email": e, "monthlyTokens": d["tokens"], "lastActive": d["last_active"], "status": d["status"], "role": d.get("role", "user")} for e, d in all_users.items()]
         return response(200, {"users": users})
 
@@ -550,46 +681,54 @@ def handle_users(event):
             except Exception:
                 pass
 
-    # Overlay usage data from CloudWatch (accurate input+output tokens)
-    cw = boto3.client("cloudwatch")
+    # Get actual per-user token usage from UserQuotaMetrics (input + output only, trailing 30 days)
     now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    prev_month = (now - timedelta(days=30)).strftime("%Y-%m")
+    months_to_query = list(set([current_month, prev_month]))
     try:
-        # Get total billable tokens (input + output)
-        total_billable = 0
-        for token_type in ["input", "output"]:
-            r = cw.get_metric_statistics(
-                Namespace="ClaudeCode", MetricName="claude_code.token.usage",
-                Dimensions=[{"Name": "type", "Value": token_type}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
-                StartTime=now - timedelta(days=30), EndTime=now, Period=2592000, Statistics=["Sum"],
+        quota_metrics = boto3.resource("dynamodb").Table("UserQuotaMetrics")
+        all_items = []
+        for mp in months_to_query:
+            scan_result = quota_metrics.scan(
+                FilterExpression="sk = :sk",
+                ExpressionAttributeValues={":sk": f"MONTH#{mp}"},
             )
-            total_billable += int(sum(p.get("Sum", 0) for p in r.get("Datapoints", [])))
-
-        # Get per-user proportions
-        user_metrics = cw.list_metrics(Namespace="ClaudeCode", MetricName="claude_code.token.usage", Dimensions=[{"Name": "user.email"}])
-        total_all = 0
-        user_raw = {}
-        for m in user_metrics.get("Metrics", []):
-            for d in m.get("Dimensions", []):
-                if d["Name"] == "user.email" and "@" in d["Value"] and "anonymous" not in d["Value"] and "example.com" not in d["Value"]:
-                    email = d["Value"]
-                    r = cw.get_metric_statistics(
-                        Namespace="ClaudeCode", MetricName="claude_code.token.usage",
-                        Dimensions=[{"Name": "user.email", "Value": email}, {"Name": "OTelLib", "Value": "com.anthropic.claude_code"}],
-                        StartTime=now - timedelta(days=30), EndTime=now, Period=2592000, Statistics=["Sum"],
-                    )
-                    tokens = int(sum(p.get("Sum", 0) for p in r.get("Datapoints", [])))
-                    if tokens > 0:
-                        user_raw[email] = tokens
-                        total_all += tokens
-
-        # Apply proportional billable tokens to users
-        for email, raw in user_raw.items():
-            proportion = raw / total_all if total_all > 0 else 0
-            billable = int(total_billable * proportion)
+            all_items.extend(scan_result.get("Items", []))
+        # Aggregate per user across months
+        user_totals = {}
+        user_last_updated = {}
+        for item in all_items:
+            email = item.get("email", "")
+            if not email or "example.com" in email or "anonymous" in email:
+                continue
+            inp = float(item.get("input_tokens", 0))
+            out = float(item.get("output_tokens", 0))
+            user_totals[email] = user_totals.get(email, 0) + int(inp + out)
+            lu = item.get("last_updated", "")
+            if lu > user_last_updated.get(email, ""):
+                user_last_updated[email] = lu
+        for email, billable in user_totals.items():
             if email in all_users:
                 all_users[email]["tokens"] = billable
-            elif email not in org_users and "CONFIRMED" not in email:
-                all_users[email] = {"tokens": billable, "last_active": "", "status": "active", "role": "user", "username": ""}
+                if user_last_updated.get(email):
+                    all_users[email]["last_active"] = user_last_updated[email]
+            elif email not in org_users:
+                all_users[email] = {"tokens": billable, "last_active": user_last_updated.get(email, ""), "status": "active", "role": "user", "username": ""}
+    except Exception:
+        pass
+
+    # Fetch platform info for all users
+    platform_map = {}
+    try:
+        table = boto3.resource("dynamodb").Table(os.environ.get("METRICS_TABLE", "NexusMetrics"))
+        for email in all_users:
+            try:
+                item = table.get_item(Key={"pk": f"USER#{email}", "sk": "PLATFORM"}).get("Item", {})
+                if item:
+                    platform_map[email] = item.get("platform", "unknown")
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -601,6 +740,7 @@ def handle_users(event):
             "lastActive": data["last_active"],
             "status": data["status"],
             "role": data.get("role", "user"),
+            "platform": platform_map.get(email, "unknown"),
         })
 
     return response(200, {"users": sorted(users, key=lambda x: -x["monthlyTokens"])})
@@ -611,31 +751,25 @@ def handle_user_me(event):
     email = get_caller_email(event)
     org_id = _get_org_from_event(event)
 
-    # Get user's token usage from WINDOW#SUMMARY records
+    # Get user's actual token usage from UserQuotaMetrics (input + output only)
     now = datetime.now(timezone.utc)
-    thirty_days_ago = (now - timedelta(days=30)).isoformat()
-    one_day_ago = (now - timedelta(days=1)).isoformat()
-
-    result = {"Items": _query_all_metrics(thirty_days_ago)}
-
+    month_prefix = now.strftime("%Y-%m")
     monthly_tokens = 0
     daily_tokens = 0
-    for item in result.get("Items", []):
-        if "#WINDOW#SUMMARY" not in item.get("sk", ""):
-            continue
-        for u in item.get("top_users", []):
-            if isinstance(u, dict):
-                user_email = u.get("email", u.get("user", ""))
-                # Match by email or partial match (handle case differences)
-                if user_email and (user_email.lower() == email.lower() or email.lower() in user_email.lower()):
-                    tokens = int(u.get("tokens", 0))
-                    monthly_tokens += tokens
-                    if item.get("timestamp", "") >= one_day_ago:
-                        daily_tokens += tokens
-
-    # If no match found by email, user has no recorded usage
-    if monthly_tokens == 0:
-        pass  # Genuinely no usage for this user
+    try:
+        quota_metrics = boto3.resource("dynamodb").Table("UserQuotaMetrics")
+        item = quota_metrics.get_item(Key={"pk": f"USER#{email}", "sk": f"MONTH#{month_prefix}"}).get("Item", {})
+        if item:
+            inp = float(item.get("input_tokens", 0))
+            out = float(item.get("output_tokens", 0))
+            monthly_tokens = int(inp + out)
+            # Daily: apply same ratio to daily_tokens
+            total = float(item.get("total_tokens", 0))
+            ratio = monthly_tokens / total if total > 0 else 0
+            daily_raw = float(item.get("daily_tokens", 0))
+            daily_tokens = int(daily_raw * ratio)
+    except Exception:
+        pass
 
     # Get user's policy
     policy_result = policies_table.query(
@@ -698,23 +832,28 @@ def handle_models(event):
     except Exception:
         config = {}
 
+    all_models = [
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-opus-4-20250514-v1:0",
+        "us.anthropic.claude-opus-4-7",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ]
+    enabled = config.get("enabled_models", all_models)
+
     return response(200, {
         "selectedModel": config.get("selected_model", os.environ.get("SELECTED_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")),
         "region": config.get("region", os.environ.get("AWS_REGION", "us-east-1")),
         "crossRegionProfile": config.get("cross_region_profile", os.environ.get("CROSS_REGION_PROFILE", "us")),
-        "availableModels": [
-            "us.anthropic.claude-sonnet-4-20250514-v1:0",
-            "us.anthropic.claude-sonnet-4-6",
-            "us.anthropic.claude-opus-4-20250514-v1:0",
-            "us.anthropic.claude-opus-4-7",
-            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        ],
+        "availableModels": all_models,
+        "enabledModels": enabled,
     })
 
 
 def handle_update_models(event):
-    """PUT /api/config/models - update model configuration."""
+    """PUT /api/config/models - update model configuration and enforce via IAM."""
     body = json.loads(event.get("body", "{}"))
+    enabled_models = body.get("enabledModels", [])
 
     item = {
         "pk": "CONFIG#models",
@@ -722,8 +861,91 @@ def handle_update_models(event):
         "selected_model": body.get("selectedModel", ""),
         "region": body.get("region", "us-east-1"),
         "cross_region_profile": body.get("crossRegionProfile", "us"),
+        "enabled_models": enabled_models,
     }
     policies_table.put_item(Item=item)
+
+    # Update IAM policy to only allow enabled models
+    try:
+        iam = boto3.client("iam")
+        policy_arn = "arn:aws:iam::916587687563:policy/claude-code-auth-stack-BedrockAccessPolicy-4FU3jCRPH6D4"
+
+        # Build resource list from enabled models
+        if enabled_models:
+            resources = []
+            for model_id in enabled_models:
+                resources.append(f"arn:aws:bedrock:*::foundation-model/{model_id}")
+                resources.append(f"arn:aws:bedrock:*:*:inference-profile/{model_id}")
+                # Also allow cross-region variants
+                base = model_id.split("us.")[-1] if model_id.startswith("us.") else model_id
+                resources.append(f"arn:aws:bedrock:*::foundation-model/{base}")
+                resources.append(f"arn:aws:bedrock:*:*:inference-profile/us.{base}")
+                resources.append(f"arn:aws:bedrock:*:*:inference-profile/global.{base}")
+            resources = list(set(resources))
+        else:
+            resources = ["*"]
+
+        new_policy = json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AllowBedrockInvoke",
+                    "Effect": "Allow",
+                    "Action": [
+                        "bedrock:InvokeModel",
+                        "bedrock:InvokeModelWithResponseStream",
+                        "bedrock-runtime:InvokeModel",
+                        "bedrock-runtime:InvokeModelWithResponseStream",
+                        "bedrock-runtime:ConverseStream",
+                        "bedrock-runtime:Converse"
+                    ],
+                    "Resource": resources
+                },
+                {
+                    "Sid": "AllowBedrockMantle",
+                    "Effect": "Allow",
+                    "Action": ["bedrock-mantle:*"],
+                    "Resource": "*"
+                },
+                {
+                    "Sid": "AllowBedrockBearer",
+                    "Effect": "Allow",
+                    "Action": ["bedrock:CallWithBearerToken"],
+                    "Resource": "*"
+                },
+                {
+                    "Sid": "AllowBedrockList",
+                    "Effect": "Allow",
+                    "Action": [
+                        "bedrock:ListFoundationModels",
+                        "bedrock:GetFoundationModel",
+                        "bedrock:GetFoundationModelAvailability",
+                        "bedrock:ListInferenceProfiles",
+                        "bedrock:GetInferenceProfile"
+                    ],
+                    "Resource": "*"
+                },
+                {
+                    "Sid": "AllowCloudWatchMetrics",
+                    "Effect": "Allow",
+                    "Action": ["cloudwatch:PutMetricData"],
+                    "Resource": "*",
+                    "Condition": {"StringEquals": {"cloudwatch:namespace": ["ClaudeCode/Bedrock/Usage", "AWS/Bedrock"]}}
+                }
+            ]
+        })
+
+        # Delete old versions if at limit (max 5)
+        versions = iam.list_policy_versions(PolicyArn=policy_arn)["Versions"]
+        non_default = [v for v in versions if not v["IsDefaultVersion"]]
+        if len(versions) >= 5:
+            oldest = sorted(non_default, key=lambda v: v["CreateDate"])[0]
+            iam.delete_policy_version(PolicyArn=policy_arn, VersionId=oldest["VersionId"])
+
+        iam.create_policy_version(PolicyArn=policy_arn, PolicyDocument=new_policy, SetAsDefault=True)
+    except Exception as e:
+        return response(200, {"updated": True, "iam_error": str(e), **item})
+
     return response(200, {"updated": True, **item})
 
 
@@ -763,6 +985,20 @@ def handle_user_detail(event):
     })
 
 
+def handle_user_platform(event):
+    """POST /api/users/platform — credential-process reports OS after auth."""
+    body = json.loads(event.get("body", "{}") or "{}")
+    email = body.get("email", "")
+    plat = body.get("platform", "unknown")
+    arch = body.get("arch", "unknown")
+    if not email:
+        return response(400, {"error": "missing email"})
+    # Store in DynamoDB
+    table = boto3.resource("dynamodb").Table(os.environ.get("METRICS_TABLE", "NexusMetrics"))
+    table.put_item(Item={"pk": f"USER#{email}", "sk": "PLATFORM", "platform": plat, "arch": arch, "updated": datetime.now(timezone.utc).isoformat()})
+    return response(200, {"status": "ok"})
+
+
 def handle_create_user(event):
     """POST /api/users - create a new user in Cognito (sends invite email)."""
     body = json.loads(event.get("body", "{}"))
@@ -771,6 +1007,7 @@ def handle_create_user(event):
     if not email:
         return response(400, {"error": "Email is required"})
 
+    org_id = _get_org_from_event(event)
     cognito = boto3.client("cognito-idp")
     pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
 
@@ -785,21 +1022,39 @@ def handle_create_user(event):
             DesiredDeliveryMediums=["EMAIL"],
         )
 
-        # Add to admin group if role is admin
-        if role == "admin":
+        # Add to the correct org group
+        if org_id and org_id != "allcode":
+            group_name = f"org-{org_id}"
             try:
-                cognito.admin_add_user_to_group(
-                    UserPoolId=pool_id,
-                    Username=email,
-                    GroupName="claude-code-admins",
-                )
+                cognito.admin_add_user_to_group(UserPoolId=pool_id, Username=email, GroupName=group_name)
             except Exception:
-                pass  # Group might not exist yet
+                pass
+            # If admin role, also add to org admins group
+            if role == "admin":
+                try:
+                    cognito.create_group(UserPoolId=pool_id, GroupName=f"org-{org_id}-admins", Description=f"{org_id} org admins")
+                except Exception:
+                    pass  # Group may already exist
+                try:
+                    cognito.admin_add_user_to_group(UserPoolId=pool_id, Username=email, GroupName=f"org-{org_id}-admins")
+                except Exception:
+                    pass
+        elif role == "admin":
+            try:
+                cognito.admin_add_user_to_group(UserPoolId=pool_id, Username=email, GroupName="claude-code-admins")
+            except Exception:
+                pass
 
-        log_audit(get_caller_email(event), "create_user", email, f"role={role}")
+        log_audit(get_caller_email(event), "create_user", email, f"role={role}, org={org_id}")
         return response(201, {"email": email, "role": role, "status": "invited"})
     except Exception as e:
-        return response(400, {"error": str(e)})
+        err = str(e)
+        if "UsernameExistsException" in err:
+            return response(409, {"error": f"{email} has already been invited."})
+        elif "InvalidParameterException" in err:
+            return response(400, {"error": "Invalid email address format."})
+        else:
+            return response(400, {"error": f"Could not invite {email}. Please try again."})
 
 
 def handle_resend_invite(event):
@@ -920,29 +1175,27 @@ def handle_activity(event):
     """GET /api/users/me/activity - recent activity for current user."""
     email = get_caller_email(event)
     now = datetime.now(timezone.utc)
-    seven_days_ago = (now - timedelta(days=7)).isoformat()
 
-    # Get recent WINDOW#SUMMARY records with activity
-    result = {"Items": _query_all_metrics(seven_days_ago)}
-
+    # Get user's actual tokens from UserQuotaMetrics and apply ratio for daily
     activities = []
-    for item in result.get("Items", []):
-        sk = item.get("sk", "")
-        if "#WINDOW#SUMMARY" in sk and int(item.get("total_tokens", 0)) > 0:
-            # Check if this user is in top_users
-            for u in item.get("top_users", []):
-                if isinstance(u, dict):
-                    user_email = u.get("email", u.get("user", ""))
-                    if user_email and user_email.lower() == email.lower():
-                        activities.append({
-                            "timestamp": item.get("timestamp", ""),
-                            "tokens": int(u.get("tokens", 0)),
-                            "model": "",
-                            "type": "session",
-                        })
+    try:
+        quota_metrics = boto3.resource("dynamodb").Table("UserQuotaMetrics")
+        month_prefix = now.strftime("%Y-%m")
+        item = quota_metrics.get_item(Key={"pk": f"USER#{email}", "sk": f"MONTH#{month_prefix}"}).get("Item", {})
+        if item:
+            inp = float(item.get("input_tokens", 0))
+            out = float(item.get("output_tokens", 0))
+            billable = int(inp + out)
+            last_updated = item.get("last_updated", now.isoformat())
+            activities.append({
+                "timestamp": last_updated,
+                "tokens": billable,
+                "model": "",
+                "type": "session",
+            })
+    except Exception:
+        pass
 
-    # Sort by timestamp descending
-    activities.sort(key=lambda x: x["timestamp"], reverse=True)
     return response(200, {"activities": activities[:50]})
 
 
@@ -1121,17 +1374,6 @@ def handle_download(event):
             return response(500, {"error": str(e)})
 
     try:
-        # Check for org-specific package first
-        org_id = _get_org_from_event(event)
-        if org_id and org_id != "allcode":
-            org_prefix = f"packages/{org_id}/{platform}/"
-            org_result = s3.list_objects_v2(Bucket=bucket, Prefix=org_prefix)
-            org_zips = [o["Key"] for o in org_result.get("Contents", []) if o["Key"].endswith(".zip")]
-            if org_zips:
-                org_zips.sort(reverse=True)
-                url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": org_zips[0]}, ExpiresIn=3600)
-                return response(200, {"url": url, "filename": org_zips[0].split("/")[-1], "platform": platform})
-
         # Look for platform-specific package first
         platform_prefix = f"packages/{platform}/"
         result = s3.list_objects_v2(Bucket=bucket, Prefix=platform_prefix)
@@ -1229,7 +1471,9 @@ def handle_recent_activity(event):
     for item in result.get("Items", []):
         sk = item.get("sk", "")
         if "#WINDOW#SUMMARY" in sk:
-            tokens = int(item.get("total_tokens", 0))
+            inp = int(item.get("input_tokens", 0))
+            out = int(item.get("output_tokens", 0))
+            tokens = inp + out if (inp + out) > 0 else int(int(item.get("total_tokens", 0)) * 0.01)
             users = int(item.get("unique_users", 0))
             if tokens > 0:
                 activities.append({
@@ -1606,6 +1850,10 @@ def lambda_handler(event, context):
     # Create user
     if not handler and path == "/api/users" and method == "POST":
         handler = handle_create_user
+
+    # User platform report
+    if not handler and path == "/api/users/platform" and method == "POST":
+        handler = handle_user_platform
 
     # Model config update
     if not handler and path == "/api/config/models" and method == "PUT":

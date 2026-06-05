@@ -35,12 +35,19 @@ def handle_request_code(event):
     device_code = generate_device_code()
     expires_at = int(time.time()) + CODE_LIFETIME
 
+    # Parse platform info from request body
+    body = json.loads(event.get("body", "{}") or "{}")
+    platform_info = body.get("platform", "unknown")
+    arch = body.get("arch", "unknown")
+
     table.put_item(Item={
         "user_code": user_code,
         "device_code": device_code,
         "status": "pending",
         "expires_at": expires_at,
         "tokens": None,
+        "platform": platform_info,
+        "arch": arch,
     })
 
     return {

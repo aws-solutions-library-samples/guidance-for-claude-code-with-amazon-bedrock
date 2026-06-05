@@ -31,6 +31,7 @@ from pathlib import Path
 
 try:
     import boto3
+    from botocore.config import Config as BotocoreConfig
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
@@ -173,10 +174,15 @@ def extract_user_info(payload):
 
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
-                if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+                if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                     org_id = "okta"
                 elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
+                elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
+                    org_id = "cognito"
+                elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                    org_id = "cognito"
                 elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
         except Exception:
@@ -252,10 +258,10 @@ def read_cached_headers():
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
-        with open(cache_path) as f:
+        with open(cache_path, encoding="utf-8") as f:
             cached = json.load(f)
         headers = cached.get("headers")
-        if not headers:
+        if not isinstance(headers, dict):
             return None
 
         # Check if Bearer token in headers is still valid
@@ -291,7 +297,12 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump({"headers": headers, "token_exp": token_exp, "cached_at": int(time.time())}, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(cache_path))
+            # os.replace (not os.rename) so the destination is atomically
+            # overwritten if it already exists. On Windows os.rename raises
+            # FileExistsError (WinError 183) when the target exists, which
+            # silently broke cache refresh and forced a slow credential-process
+            # call on every invocation.
+            os.replace(tmp_path, str(cache_path))
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -303,7 +314,9 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump(headers, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(raw_path))
+            # os.replace for atomic overwrite (see note above; os.rename fails
+            # on Windows when the destination already exists).
+            os.replace(tmp_path, str(raw_path))
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -312,38 +325,8 @@ def write_cached_headers(headers, token_exp):
 
 
 def get_token_via_credential_process():
-    """Get monitoring token via credential-process or directly from keyring cache"""
+    """Get monitoring token via credential-process to avoid direct keychain access"""
     logger.info("Getting token via credential-process...")
-
-    # First try reading directly from keyring (avoids device flow browser prompt)
-    try:
-        import keyring
-        profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
-        # Try the monitoring token first
-        raw = keyring.get_password("claude-code-with-bedrock", f"{profile}-monitoring")
-        if raw:
-            # Token may be stored as JSON {"token": "..."} or raw JWT
-            try:
-                parsed = json.loads(raw)
-                token = parsed.get("token", raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                token = raw
-            if token and "." in token and token.count(".") == 2:
-                logger.info("Got monitoring token from keyring cache")
-                return token
-        # Fall back to credentials (contains ID token)
-        creds = keyring.get_password("claude-code-with-bedrock", f"{profile}-credentials")
-        if creds:
-            try:
-                creds_data = json.loads(creds)
-                id_token = creds_data.get("id_token", "")
-                if id_token and id_token.count(".") == 2:
-                    logger.info("Got ID token from keyring credentials cache")
-                    return id_token
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-    except Exception as e:
-        logger.debug(f"Keyring read failed: {e}")
 
     # Path to credential process - add .exe extension on Windows
     import platform
@@ -369,7 +352,7 @@ def get_token_via_credential_process():
             [credential_process, "--profile", profile, "--get-monitoring-token"],
             capture_output=True,
             text=True,
-            timeout=10,  # Short timeout - don't wait for browser auth
+            timeout=30,  # Reduced from 300s - fail open if auth can't complete quickly
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -380,7 +363,7 @@ def get_token_via_credential_process():
             return None
 
     except subprocess.TimeoutExpired:
-        logger.warning("Credential process timed out (likely needs browser auth)")
+        logger.warning("Credential process timed out")
         return None
     except Exception as e:
         logger.warning(f"Failed to get token via credential-process: {e}")
@@ -405,7 +388,10 @@ def get_aws_caller_identity():
         return cached["identity"]
 
     try:
-        sts_client = boto3.client('sts')
+        sts_client = boto3.client(
+            'sts',
+            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={'max_attempts': 0}),
+        )
         identity = sts_client.get_caller_identity()
 
         # Store in cache
@@ -753,6 +739,66 @@ def run_proxy(target_url: str, port: int = 4318):
     server.serve_forever()
 
 
+def ensure_collector_running():
+    """Ensure the OTel collector sidecar is running (if installed).
+
+    Uses a dedicated <profile>-collector AWS profile so the Go SDK resolves
+    credentials via credential_process rather than static creds in
+    ~/.aws/credentials that can't auto-refresh.
+    """
+    import platform as platform_mod
+
+    install_dir = Path.home() / "claude-code-with-bedrock"
+    collector_binary = install_dir / ("otelcol.exe" if platform_mod.system() == "Windows" else "otelcol")
+    collector_config = install_dir / "collector-config.yaml"
+    pid_file = install_dir / "collector.pid"
+
+    if not collector_binary.exists() or not collector_config.exists():
+        return
+
+    # Check if already running
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            if platform_mod.system() == "Windows":
+                # os.kill(pid, 0) raises OSError on Windows even for running processes
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    capture_output=True, text=True,
+                )
+                if str(pid) in result.stdout:
+                    return  # already running
+            else:
+                os.kill(pid, 0)  # signal 0 = check if alive
+                return  # already running
+        except (ProcessLookupError, ValueError, OSError):
+            pass  # stale PID file
+
+    # Launch collector with the -collector profile
+    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector"}
+
+    cache_dir = Path.home() / ".claude-code-session"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    log_file = cache_dir / "collector.log"
+
+    try:
+        with open(log_file, "a") as lf:
+            kwargs = {"stdout": lf, "stderr": lf, "env": collector_env}
+            if platform_mod.system() == "Windows":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen(
+                [str(collector_binary), "--config", str(collector_config)],
+                **kwargs,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.debug(f"Started collector sidecar (PID {proc.pid})")
+    except Exception as e:
+        logger.debug(f"Failed to start collector sidecar: {e}")
+
+
 def main():
     """Main function to generate OTEL headers"""
     args = parse_args()
@@ -762,10 +808,13 @@ def main():
         run_proxy(args.proxy, port=args.proxy_port)
         return 0
 
+    # Ensure collector sidecar is running (no-op if not installed)
+    ensure_collector_running()
+
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:
         cached_headers = read_cached_headers()
-        if cached_headers:
+        if cached_headers is not None:
             print(json.dumps(cached_headers))
             return 0
         logger.info("Cache expired or missing, refreshing via credential-process")
@@ -856,8 +905,29 @@ def main():
 
     except Exception as e:
         logger.error(f"Error processing token: {e}")
-        # Return failure on error - Claude Code should handle this gracefully
-        return 1
+        # Claude Code's otelHeadersHelper contract requires a valid JSON object
+        # on stdout; exiting non-zero (or printing nothing) makes it log
+        # "otelHeadersHelper did not return a valid value" on every export cycle
+        # and drop the telemetry batch. Emit empty headers instead so export
+        # proceeds unattributed. (TEST_MODE prints its own human-readable output
+        # above, so only emit JSON in normal mode.)
+        #
+        # This is deliberately NOT a behavioural mirror of the Go helper's
+        # emitEmptyHeaders, and we intentionally do not cache {} here:
+        #   * The Go binary reaches its empty-headers path for the *common*
+        #     no-token case, so it caches {} (short TTL) to keep credential-
+        #     process off the per-turn hot path.
+        #   * This Python path handles the no-token case differently — it falls
+        #     through to anonymous mode above (get_aws_caller_identity ->
+        #     create_anonymous_user_info), which produces *populated* STS-derived
+        #     attribution and caches that. This except block is only the
+        #     last-resort guard for an unexpected failure (e.g. a malformed JWT
+        #     or an STS error). Caching {} here would suppress that anonymous
+        #     attribution for the whole TTL on the next turn, so we print {} for
+        #     this cycle only and leave the cache untouched to retry next time.
+        if not TEST_MODE:
+            print(json.dumps({}))
+        return 0
 
     return 0
 

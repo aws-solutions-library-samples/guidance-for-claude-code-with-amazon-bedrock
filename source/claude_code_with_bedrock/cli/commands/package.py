@@ -1986,7 +1986,11 @@ if ! command -v aws &> /dev/null; then
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
         fi
         unzip -q /tmp/awscliv2.zip -d /tmp/aws-install
-        sudo /tmp/aws-install/aws/install
+        if command -v sudo &> /dev/null; then
+            sudo /tmp/aws-install/aws/install
+        else
+            /tmp/aws-install/aws/install
+        fi
         rm -rf /tmp/awscliv2.zip /tmp/aws-install
     fi
     if command -v aws &> /dev/null; then
