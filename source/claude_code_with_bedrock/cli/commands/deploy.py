@@ -879,6 +879,19 @@ class DeployCommand(Command):
                             pass
 
             elif stack_type == "codebuild":
+                # WINDOWS_SERVER_2022_CONTAINER is only available in select regions
+                codebuild_supported_regions = [
+                    "us-east-1", "us-east-2", "us-west-2",
+                    "eu-central-1", "eu-west-1",
+                    "ap-northeast-1", "ap-southeast-2",
+                    "sa-east-1",
+                ]
+                if profile.aws_region not in codebuild_supported_regions:
+                    console.print(
+                        f"[red]Windows CodeBuild is not available in {profile.aws_region}.[/red]\n"
+                        f"Supported regions: {', '.join(codebuild_supported_regions)}"
+                    )
+                    return 1
                 template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
                 stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]

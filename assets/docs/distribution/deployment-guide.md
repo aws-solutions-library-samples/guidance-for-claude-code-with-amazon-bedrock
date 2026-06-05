@@ -55,6 +55,11 @@ User → ALB (HTTPS) → OIDC Authentication (IdP) → Lambda → S3 (presigned 
   - Private subnets in 2+ availability zones (for Lambda)
   - Can be created via `ccwb deploy networking` or use existing VPC
 
+- **Route53 Hosted Zone (if using custom domain)**:
+
+  - Must be in the **same AWS account** as the deployment (ACM certificate validation creates DNS records directly)
+  - If your zone is in a separate account (e.g., Control Tower shared networking), migrate or delegate it to the deployment account first
+
 - **IdP Account with Admin Access**:
 
   - Ability to create web applications (OAuth2 confidential clients)

@@ -11,6 +11,7 @@ When you enable monitoring during deployment, the system collects and visualizes
 - Server-side OpenTelemetry collector running on ECS Fargate behind an ALB
 - Supports optional Athena SQL pipeline (EMF logs → Kinesis Firehose → S3 → Athena) for ad-hoc SQL queries
 - Requires VPC and networking infrastructure
+- Requires the `AWSServiceRoleForECS` service-linked role (created automatically by `ccwb deploy`; if deploying templates manually, create it first: `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`)
 - ~$30-50/month server cost
 - Best for: organizations wanting centralized metrics aggregation, IT-managed collector, or ad-hoc SQL queries via Athena
 
