@@ -119,6 +119,7 @@ class DestroyCommand(Command):
         console.print("\n[bold]Destroying stacks...[/bold]\n")
 
         all_failed_resources = []  # Collect failed resources from all stacks
+        all_retained_resources = []  # Collect intentionally retained resources
         stacks_with_failures = []
 
         for stack in stacks_to_destroy:
@@ -153,14 +154,28 @@ class DestroyCommand(Command):
                 if failed:
                     all_failed_resources.extend(failed)
                     stacks_with_failures.append(stack_name)
-                console.print(
-                    f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]\n"
-                )
+                    console.print(f"[yellow]⚠ {stack.capitalize()} stack — failed resources:[/yellow]")
+                    for r in failed:
+                        console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+                else:
+                    console.print(
+                        f"[yellow]⚠ {stack.capitalize()} stack has resources requiring manual cleanup[/yellow]"
+                    )
+                console.print()
             else:
-                console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+                # Check for silently retained resources (DeletionPolicy: Retain)
+                retained = self._get_retained_resources(stack_name, profile.aws_region)
+                if retained:
+                    all_retained_resources.extend(retained)
+                    console.print(f"[yellow]ℹ {stack.capitalize()} stack — retained resources (by policy):[/yellow]")
+                    for r in retained:
+                        console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+                    console.print()
+                else:
+                    console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 
         # Show cleanup summary at the end
-        self._show_cleanup_summary(all_failed_resources, stacks_with_failures, profile, console)
+        self._show_cleanup_summary(all_failed_resources, all_retained_resources, stacks_with_failures, profile, console)
 
         return 0
 
@@ -180,10 +195,15 @@ class DestroyCommand(Command):
             console.print(f"[yellow]Stack {stack_name} not found or already deleted[/yellow]")
             return 0
 
-        # If already in DELETE_FAILED, report it (don't retry)
+        # If already in DELETE_FAILED, pre-clean and retry
         if status == "DELETE_FAILED":
-            console.print(f"[yellow]Stack {stack_name} is in DELETE_FAILED state[/yellow]")
-            return 1  # Signal that manual cleanup is needed
+            console.print(f"[yellow]Stack {stack_name} is in DELETE_FAILED state, retrying after cleanup...[/yellow]")
+
+        # Pre-clean resources that block deletion (non-empty S3 buckets, Athena workgroups)
+        cf_manager.pre_cleanup_stack(
+            stack_name,
+            on_event=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+        )
 
         # Use progress indicator
         with Progress(
@@ -220,16 +240,32 @@ class DestroyCommand(Command):
         cf_manager = CloudFormationManager(region=region)
         return cf_manager.get_failed_resources(stack_name)
 
+    def _get_retained_resources(self, stack_name: str, region: str) -> list[dict]:
+        """Get resources silently retained (DeletionPolicy: Retain) during deletion."""
+        cf_manager = CloudFormationManager(region=region)
+        return cf_manager.get_retained_resources(stack_name)
+
     def _show_cleanup_summary(
         self,
         failed_resources: list[dict],
+        retained_resources: list[dict],
         stacks: list[str],
         profile,
         console: Console,
     ) -> None:
-        """Show cleanup instructions for failed resources."""
-        if not failed_resources and not stacks:
+        """Show cleanup instructions for failed and retained resources."""
+        if not failed_resources and not retained_resources and not stacks:
             console.print("\n[green]✓ All stacks destroyed successfully![/green]")
+            return
+
+        if retained_resources:
+            console.print("\n[bold]Retained resources (DeletionPolicy: Retain):[/bold]")
+            console.print("[dim]These were kept intentionally. Delete manually if no longer needed:[/dim]\n")
+            for r in retained_resources:
+                console.print(f"  • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
+            console.print()
+
+        if not failed_resources:
             return
 
         console.print("\n[yellow]⚠ Manual cleanup required for the following resources:[/yellow]\n")
