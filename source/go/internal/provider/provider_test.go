@@ -149,8 +149,8 @@ func TestConfigFor_GenericProvider(t *testing.T) {
 	if got.Name != "Generic OIDC" {
 		t.Errorf("ConfigFor(generic).Name = %q, want \"Generic OIDC\"", got.Name)
 	}
-	if got.Scopes != "openid profile email" {
-		t.Errorf("ConfigFor(generic).Scopes = %q, want \"openid profile email\"", got.Scopes)
+	if got.Scopes != "openid profile email offline_access" {
+		t.Errorf("ConfigFor(generic).Scopes = %q, want \"openid profile email offline_access\"", got.Scopes)
 	}
 	if got.ResponseType != "code" {
 		t.Errorf("ConfigFor(generic).ResponseType = %q, want \"code\"", got.ResponseType)
