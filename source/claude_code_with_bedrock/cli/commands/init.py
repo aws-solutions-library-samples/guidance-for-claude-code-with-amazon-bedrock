@@ -317,30 +317,169 @@ class InitCommand(Command):
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            # Skip the SSO toggle when updating an existing profile — preserve the saved value
-            if existing_config and "sso_enabled" in existing_config:
-                config["sso_enabled"] = existing_config["sso_enabled"]
+            # Skip the auth type selection when updating an existing profile — preserve the saved value
+            if existing_config and ("auth_type" in existing_config or "sso_enabled" in existing_config):
+                # Backward compatibility: derive auth_type from sso_enabled if not set
+                if "auth_type" not in existing_config:
+                    if existing_config.get("sso_enabled", True):
+                        config["auth_type"] = "oidc"
+                    else:
+                        config["auth_type"] = "none"
+                else:
+                    config["auth_type"] = existing_config["auth_type"]
+                config["sso_enabled"] = (config["auth_type"] == "oidc")
             else:
-                console.print("\n[bold]SSO Authentication[/bold]")
-                console.print("Enable Single Sign-On authentication via identity providers")
-                console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
-                console.print("\nWhen disabled:")
-                console.print("  • Uses AWS IAM roles for access control")
-                console.print("  • Metrics will use anonymous tracking based on IAM identity")
-                console.print("  • No user authentication required\n")
+                console.print("\n[bold]Authentication Configuration[/bold]")
+                console.print("Choose how users will authenticate to access Claude Code:")
+                console.print()
 
-                sso_enabled = questionary.confirm(
-                    "Enable SSO authentication?",
-                    default=config.get("sso_enabled", True),
+                auth_type = questionary.select(
+                    "Select authentication method:",
+                    choices=[
+                        questionary.Choice(
+                            "OIDC / Direct IdP (Okta, Azure AD, Auth0, Cognito, Google)",
+                            value="oidc"
+                        ),
+                        questionary.Choice(
+                            "AWS IAM Identity Center (SSO)",
+                            value="idc"
+                        ),
+                        questionary.Choice(
+                            "None (use existing AWS credentials)",
+                            value="none"
+                        )
+                    ],
+                    default=config.get("auth_type", "oidc"),
                 ).ask()
 
-                if sso_enabled is None:
+                if auth_type is None:
                     return None
 
-                config["sso_enabled"] = sso_enabled
+                config["auth_type"] = auth_type
+                config["sso_enabled"] = (auth_type == "oidc")
+
+        # IAM Identity Center Configuration
+        if not skip_okta and config.get("auth_type") == "idc":
+            console.print("\n[bold blue]AWS IAM Identity Center Configuration[/bold blue]")
+            console.print("─" * 40)
+            
+            # IDC start URL
+            idc_start_url = questionary.text(
+                "Enter your IAM Identity Center start URL:",
+                validate=lambda x: (
+                    (x.startswith("https://") and ".awsapps.com" in x) or
+                    "Start URL must begin with https:// and contain .awsapps.com"
+                ),
+                instruction="(e.g., https://company.awsapps.com/start)",
+                default=config.get("idc_start_url", ""),
+            ).ask()
+            
+            if not idc_start_url:
+                return None
+                
+            config["idc_start_url"] = idc_start_url.rstrip("/")
+            
+            # SSO region (extracted from start URL or asked separately)
+            try:
+                region_match = re.search(r'https://[^.]+\.awsapps\.com', idc_start_url)
+                if region_match:
+                    # Try to extract region from URL structure if possible
+                    suggested_region = config.get("aws", {}).get("region", "us-east-1")
+                else:
+                    suggested_region = "us-east-1"
+            except:
+                suggested_region = "us-east-1"
+                
+            sso_region = questionary.text(
+                "Enter your SSO region (where Identity Center is configured):",
+                validate=lambda x: (
+                    bool(x and re.match(r'^[a-z]{2}-[a-z]+-\d+$', x)) or
+                    "Invalid region format (e.g., us-east-1)"
+                ),
+                default=config.get("sso_region", suggested_region),
+            ).ask()
+            
+            if not sso_region:
+                return None
+                
+            config["sso_region"] = sso_region
+            
+            # AWS Account ID
+            account_id = questionary.text(
+                "Enter your AWS Account ID:",
+                validate=lambda x: (
+                    (len(x) == 12 and x.isdigit()) or
+                    "Account ID must be 12 digits"
+                ),
+                instruction="(12-digit AWS account number)",
+                default=config.get("idc_account_id", ""),
+            ).ask()
+            
+            if not account_id:
+                return None
+                
+            config["idc_account_id"] = account_id
+            
+            # Permission set name
+            permission_set = questionary.text(
+                "Enter the permission set name:",
+                validate=lambda x: bool(x) or "Permission set name cannot be empty",
+                default=config.get("idc_permission_set_name", "BedrockDeveloperAccess"),
+                instruction="(e.g., BedrockDeveloperAccess, PowerUserAccess)",
+            ).ask()
+            
+            if not permission_set:
+                return None
+                
+            config["idc_permission_set_name"] = permission_set
+            
+            # Generate AWS config block
+            session_name = f"ClaudeCode-{config.get('aws', {}).get('identity_pool_name', 'Default')}"
+            aws_region = config.get("aws", {}).get("region", "us-east-1")
+            
+            aws_config_block = f"""[profile ClaudeCode]
+sso_session = {session_name}
+sso_account_id = {account_id}
+sso_role_name = {permission_set}
+region = {aws_region}
+
+[sso-session {session_name}]
+sso_start_url = {idc_start_url}
+sso_region = {sso_region}
+sso_registration_scopes = sso:account:access"""
+            
+            console.print("\n[bold]AWS Configuration[/bold]")
+            console.print("Add this configuration to your ~/.aws/config file:\n")
+            console.print(f"[dim]{aws_config_block}[/dim]\n")
+            
+            append_config = questionary.confirm(
+                "Would you like to append this to ~/.aws/config automatically?",
+                default=True,
+            ).ask()
+            
+            if append_config:
+                try:
+                    import os
+                    aws_config_path = Path.home() / ".aws" / "config"
+                    aws_config_path.parent.mkdir(exist_ok=True)
+                    
+                    with open(aws_config_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n# Claude Code with Bedrock - IAM Identity Center\n")
+                        f.write(f"{aws_config_block}\n")
+                    
+                    console.print("[green]✓ Configuration appended to ~/.aws/config[/green]")
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not write to ~/.aws/config: {e}[/yellow]")
+                    console.print("Please add the configuration manually.")
+                    
+            console.print("\n[bold]Next Steps:[/bold]")
+            console.print("• Run: [cyan]aws sso login --profile ClaudeCode[/cyan]")
+            console.print("• Test access: [cyan]aws sts get-caller-identity --profile ClaudeCode[/cyan]")
+            console.print("• Then continue with: [cyan]poetry run ccwb deploy[/cyan]")
+            console.print()
 
         # OIDC Provider Configuration
-        if not skip_okta and config.get("sso_enabled", True):
+        if not skip_okta and config.get("auth_type") == "oidc":
             console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
             console.print("─" * 30)
 
@@ -992,15 +1131,15 @@ class InitCommand(Command):
                 # Quota monitoring configuration (both modes)
                 # Quota enforcement requires per-user JWT tokens from an OIDC provider —
                 # the API Gateway authorizer cannot validate requests without one.
-                # Skip the prompt entirely when SSO is disabled (issue #454).
-                if not config.get("sso_enabled", True):
+                # Skip the prompt entirely when auth_type is not OIDC (issue #454).
+                if config.get("auth_type") not in ("oidc",):
                     if "quota" not in config:
                         config["quota"] = {}
                     config["quota"]["enabled"] = False
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print(
-                        "[dim]Skipped — quota monitoring requires SSO authentication "
-                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
+                        "[dim]Skipped — quota monitoring requires OIDC authentication "
+                        "(per-user JWT tokens) and is disabled for IDC/none auth types.[/dim]"
                     )
                 else:
                     console.print("\n[bold]Quota Monitoring[/bold]")
@@ -2034,7 +2173,8 @@ class InitCommand(Command):
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
 
-        # Get SSO configuration or use defaults if SSO is disabled
+        # Get authentication configuration
+        auth_type = config_data.get("auth_type", "oidc")
         sso_enabled = config_data.get("sso_enabled", True)
         provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
@@ -2073,6 +2213,10 @@ class InitCommand(Command):
             federation_type=config_data.get("federation_type", "cognito"),
             max_session_duration=config_data.get("max_session_duration", 28800),
             sso_enabled=config_data.get("sso_enabled", True),
+            auth_type=config_data.get("auth_type", "oidc"),
+            idc_start_url=config_data.get("idc_start_url"),
+            idc_account_id=config_data.get("idc_account_id"),
+            idc_permission_set_name=config_data.get("idc_permission_set_name"),
             azure_auth_mode=config_data.get("azure_auth_mode"),
             client_certificate_path=config_data.get("client_certificate_path"),
             client_certificate_key_path=config_data.get("client_certificate_key_path"),
