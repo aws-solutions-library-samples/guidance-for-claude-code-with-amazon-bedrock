@@ -36,8 +36,8 @@ Thumbs.db
 .env
 .env.local
 
-# Claude Code settings
-.claude/
+# Claude Code settings (rules are tracked)
+# .claude/ directory should be committed
 
 #Claude Code plugin settings
 .claude-plugin
@@ -54,7 +54,6 @@ output.json
 # Local POC test scripts at repo root only -- not source/tests/test_*.py
 /test_*.py
 
-CLAUDE.md
 
 guidance-docs/
 parameters.json
