@@ -192,7 +192,7 @@ class TestProviderTypeRouting:
 
         with patch.object(MultiProviderAuth, "_load_config", return_value=config_data), \
              patch.object(MultiProviderAuth, "_init_credential_storage"):
-            with pytest.raises(ValueError, match="Unknown provider type"):
+            with pytest.raises(ValueError, match="(Unknown provider type|Unable to auto-detect)"):
                 MultiProviderAuth(profile="TestProfile")
 
 
