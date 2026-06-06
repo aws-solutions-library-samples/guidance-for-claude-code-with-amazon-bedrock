@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -156,46 +157,39 @@ func TestRun_PopulatedExpiredEntry_ServedNotRewritten(t *testing.T) {
 	}
 }
 
-// TestRun_WithToken_IncludesBearerHeader verifies that when a valid JWT token
-// is available, the output includes an "authorization" header with Bearer prefix
-// for ALB JWT validation (issue #126, PR #129).
+// TestRun_WithToken_IncludesBearerHeader verifies that when a valid JWT is
+// available, the output includes an "authorization" header with a Bearer prefix
+// for ALB JWT validation.
 func TestRun_WithToken_IncludesBearerHeader(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir)
 	t.Setenv("AWS_PROFILE", "ClaudeCode")
 
-	// Create a minimal valid JWT with email claim and future exp.
-	// Header: {"alg":"none","typ":"JWT"}
+	// Minimal valid JWT: header.payload.sig (alg:none, email+future exp)
+	// Header:  {"alg":"none","typ":"JWT"}
 	// Payload: {"email":"test@example.com","exp":9999999999,"sub":"user123"}
-	header := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"
-	payload := "eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJleHAiOjk5OTk5OTk5OTksInN1YiI6InVzZXIxMjMifQ"
-	sig := ""
-	token := header + "." + payload + "." + sig
-
+	token := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0" +
+		".eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJleHAiOjk5OTk5OTk5OTksInN1YiI6InVzZXIxMjMifQ" +
+		"."
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", token)
 
-	// Capture stdout
-	old := os.Stdout
 	r, w, _ := os.Pipe()
+	old := os.Stdout
 	os.Stdout = w
-
 	code := run(false)
-
 	w.Close()
 	os.Stdout = old
 
 	if code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
+		t.Fatalf("run() = %d, want 0", code)
 	}
 
 	var buf [4096]byte
 	n, _ := r.Read(buf[:])
-	output := string(buf[:n])
-
 	var headers map[string]string
-	if err := json.Unmarshal([]byte(output), &headers); err != nil {
-		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	if err := json.Unmarshal(buf[:n], &headers); err != nil {
+		t.Fatalf("output not valid JSON: %v\nraw: %s", err, buf[:n])
 	}
 
 	auth, ok := headers["authorization"]
@@ -203,17 +197,15 @@ func TestRun_WithToken_IncludesBearerHeader(t *testing.T) {
 		t.Fatal("output must include 'authorization' header for ALB JWT validation")
 	}
 	if auth != "Bearer "+token {
-		t.Errorf("authorization = %q, want 'Bearer %s'", auth, token)
+		t.Errorf("authorization = %q, want %q", auth, "Bearer "+token)
 	}
-
-	// Also verify attribution headers are present
 	if headers["x-user-email"] != "test@example.com" {
-		t.Errorf("x-user-email = %q, want 'test@example.com'", headers["x-user-email"])
+		t.Errorf("x-user-email = %q, want test@example.com", headers["x-user-email"])
 	}
 }
 
 // TestRun_NoToken_NoBearerInOutput verifies that when no token is available,
-// the empty-headers output does NOT contain an "authorization" key. Sending
+// the empty-headers output does NOT contain an "authorization" key — sending
 // "Bearer " (empty) would be worse than sending nothing.
 func TestRun_NoToken_NoBearerInOutput(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -222,21 +214,17 @@ func TestRun_NoToken_NoBearerInOutput(t *testing.T) {
 	t.Setenv("AWS_PROFILE", "ClaudeCode")
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "")
 
-	old := os.Stdout
 	r, w, _ := os.Pipe()
+	old := os.Stdout
 	os.Stdout = w
-
 	run(false)
-
 	w.Close()
 	os.Stdout = old
 
 	var buf [4096]byte
 	n, _ := r.Read(buf[:])
-	output := string(buf[:n])
-
 	var headers map[string]string
-	if err := json.Unmarshal([]byte(output), &headers); err != nil {
+	if err := json.Unmarshal(buf[:n], &headers); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
 	if _, ok := headers["authorization"]; ok {
@@ -244,37 +232,34 @@ func TestRun_NoToken_NoBearerInOutput(t *testing.T) {
 	}
 }
 
-// TestRun_BearerTokenNotInCacheFile verifies that the sensitive Bearer token
-// is never persisted to the cache file on disk — only attribution headers
-// (x-user-email, etc.) should be cached.
+// TestRun_BearerTokenNotInCacheFile verifies that the Bearer token is never
+// persisted to the otel-headers cache file — only attribution headers should
+// be cached.
 func TestRun_BearerTokenNotInCacheFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir)
 	t.Setenv("AWS_PROFILE", "ClaudeCode")
 
-	// Valid JWT with future exp
-	header := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"
-	payload := "eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJleHAiOjk5OTk5OTk5OTksInN1YiI6InVzZXIxMjMifQ"
-	token := header + "." + payload + "."
+	token := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0" +
+		".eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJleHAiOjk5OTk5OTk5OTksInN1YiI6InVzZXIxMjMifQ" +
+		"."
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", token)
 
 	// Suppress stdout
-	old := os.Stdout
 	_, w, _ := os.Pipe()
+	old := os.Stdout
 	os.Stdout = w
 	run(false)
 	w.Close()
 	os.Stdout = old
 
-	// Read the cache file
 	cachePath := filepath.Join(tmpDir, ".claude-code-session", "ClaudeCode-otel-headers.json")
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		t.Fatalf("cache file should exist: %v", err)
 	}
 
-	// Verify no Bearer token in cache
 	var entry struct {
 		Headers map[string]string `json:"headers"`
 	}
@@ -282,61 +267,60 @@ func TestRun_BearerTokenNotInCacheFile(t *testing.T) {
 		t.Fatalf("cache not valid JSON: %v", err)
 	}
 	if _, ok := entry.Headers["authorization"]; ok {
-		t.Error("cache file must NOT contain 'authorization' — Bearer token should only be in stdout output")
+		t.Error("Bearer token must NOT be in cache file — sensitive token must only be in stdout")
 	}
-	// But attribution headers should be cached
 	if entry.Headers["x-user-email"] != "test@example.com" {
-		t.Errorf("cache should contain attribution: x-user-email = %q", entry.Headers["x-user-email"])
+		t.Errorf("attribution should be cached: x-user-email = %q", entry.Headers["x-user-email"])
 	}
 }
 
 // TestRun_CacheHit_ResolvesTokenFromEnv verifies that when Layer 1 serves
-// cached headers, the output still includes a Bearer token (resolved from
-// the environment variable) for ALB JWT validation.
+// cached attribution headers, the output still includes a Bearer token resolved
+// from the environment variable.
 func TestRun_CacheHit_ResolvesTokenFromEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir)
 	t.Setenv("AWS_PROFILE", "ClaudeCode")
 
-	// Seed cache with valid attribution headers (far-future exp)
+	// Seed cache with valid attribution (far-future exp), no authorization header
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
-	os.MkdirAll(cacheDir, 0700)
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
 	cache := `{"schema_version":2,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
-	os.WriteFile(cachePath, []byte(cache), 0600)
+	if err := os.WriteFile(cachePath, []byte(cache), 0600); err != nil {
+		t.Fatal(err)
+	}
 
-	// Set env token for Layer 1 to resolve
 	envToken := "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJleHAiOjk5OTk5OTk5OTl9."
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", envToken)
 
-	old := os.Stdout
 	r, w, _ := os.Pipe()
+	old := os.Stdout
 	os.Stdout = w
-
 	code := run(false)
-
 	w.Close()
 	os.Stdout = old
 
 	if code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
+		t.Fatalf("run() = %d, want 0", code)
 	}
 
 	var buf [8192]byte
 	n, _ := r.Read(buf[:])
-	output := string(buf[:n])
-
 	var headers map[string]string
-	if err := json.Unmarshal([]byte(output), &headers); err != nil {
-		t.Fatalf("output not valid JSON: %v\noutput: %s", err, output)
+	if err := json.Unmarshal(buf[:n], &headers); err != nil {
+		t.Fatalf("output not valid JSON: %v\nraw: %s", err, buf[:n])
 	}
 
-	// Should have cached attribution
 	if headers["x-user-email"] != "cached@user.com" {
-		t.Errorf("x-user-email = %q, want 'cached@user.com'", headers["x-user-email"])
+		t.Errorf("x-user-email = %q, want cached@user.com", headers["x-user-email"])
 	}
-	// Should also have Bearer from env
+	if !strings.HasPrefix(headers["authorization"], "Bearer ") {
+		t.Errorf("authorization = %q, want 'Bearer <token>'", headers["authorization"])
+	}
 	if headers["authorization"] != "Bearer "+envToken {
 		t.Errorf("authorization = %q, want 'Bearer %s'", headers["authorization"], envToken)
 	}
