@@ -58,7 +58,7 @@ for _yaml_tag, _cfn_key in _CFN_TAGS.items():
 
 
 def _load_cfn_template(path: Path) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.load(f, Loader=_CfnLoader)
 
 

@@ -72,7 +72,7 @@ class TestConfigJsonRequiredFields:
                 output_dir, base_profile, "us-east-1:pool-id-123", "cognito", "ClaudeCode"
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             profile_config = config["ClaudeCode"]
@@ -99,7 +99,7 @@ class TestConfigJsonRequiredFields:
                 "ClaudeCode",
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             profile_config = config["ClaudeCode"]
@@ -122,7 +122,7 @@ class TestConfigJsonRequiredFields:
                 output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             # okta_auth_server is not written to config.json — it's used at auth
@@ -139,7 +139,7 @@ class TestConfigJsonRequiredFields:
                 output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert config["ClaudeCode"]["selected_model"] == base_profile.selected_model
@@ -154,7 +154,7 @@ class TestConfigJsonRequiredFields:
                 output_dir, base_profile, "us-east-1:pool-id", "cognito", "MyCustomProfile"
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert "MyCustomProfile" in config
@@ -173,7 +173,7 @@ class TestConfigJsonRequiredFields:
                 output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
             )
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert config["ClaudeCode"]["quota_api_endpoint"] == "https://api.example.com/quota"
@@ -195,7 +195,7 @@ class TestClaudeSettingsGeneration:
             settings_path = output_dir / "claude-settings" / "settings.json"
             assert settings_path.exists(), "claude-settings/settings.json not created"
 
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert settings["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
@@ -211,7 +211,7 @@ class TestClaudeSettingsGeneration:
             command._create_claude_settings(output_dir, base_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             # ANTHROPIC_MODEL is set to an alias (e.g. 'sonnet') not the raw model ID
@@ -238,7 +238,7 @@ class TestClaudeSettingsGeneration:
                 command._create_claude_settings(output_dir, otel_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert "otelHeadersHelper" in settings, \
@@ -256,7 +256,7 @@ class TestClaudeSettingsGeneration:
             command._create_claude_settings(output_dir, base_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert "otelHeadersHelper" not in settings
@@ -272,7 +272,7 @@ class TestClaudeSettingsGeneration:
             command._create_claude_settings(output_dir, base_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert "awsAuthRefresh" in settings
@@ -287,7 +287,7 @@ class TestClaudeSettingsGeneration:
             command._create_claude_settings(output_dir, base_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert "awsAuthRefresh" not in settings
@@ -304,7 +304,7 @@ class TestClaudeSettingsGeneration:
             command._create_claude_settings(output_dir, base_profile, profile_name="ClaudeCode")
 
             settings_path = output_dir / "claude-settings" / "settings.json"
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
             assert settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == base_profile.inference_profile_sonnet_arn
@@ -328,7 +328,7 @@ class TestCoworkConfigGeneration:
             output_dir = Path(tmpdir)
             json_path = generate_json(output_dir, mdm_config)
 
-            with open(json_path) as f:
+            with open(json_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert config["inferenceProvider"] == "bedrock"
@@ -353,7 +353,7 @@ class TestCoworkConfigGeneration:
             output_dir = Path(tmpdir)
             mc_path = generate_mobileconfig(output_dir, mdm_config)
 
-            content = mc_path.read_text()
+            content = mc_path.read_text(encoding="utf-8")
 
             # Must be parseable XML
             tree = ET.fromstring(content)
@@ -379,7 +379,7 @@ class TestCoworkConfigGeneration:
             output_dir = Path(tmpdir)
             reg_path = generate_reg_file(output_dir, mdm_config)
 
-            content = reg_path.read_text()
+            content = reg_path.read_text(encoding="utf-8")
 
             assert "Windows Registry Editor Version 5.00" in content
             assert r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude" in content
@@ -403,7 +403,7 @@ class TestCoworkConfigGeneration:
             output_dir = Path(tmpdir)
             json_path = generate_json(output_dir, mdm_config)
 
-            with open(json_path) as f:
+            with open(json_path, encoding="utf-8") as f:
                 config = json.load(f)
 
             assert config["otlpEndpoint"] == "https://collector.example.com:4318"
@@ -427,7 +427,7 @@ class TestInstallerScripts:
                 [],
             )
 
-            content = installer_path.read_text()
+            content = installer_path.read_text(encoding="utf-8")
 
             # Must set up AWS profile
             assert "aws configure" in content or "credential_process" in content
@@ -448,7 +448,7 @@ class TestInstallerScripts:
                 [("macos-arm64", Path("otel-helper-macos-arm64"))],
             )
 
-            content = installer_path.read_text()
+            content = installer_path.read_text(encoding="utf-8")
 
             # Must reference otel-helper setup
             assert "otel-helper" in content
@@ -473,6 +473,6 @@ class TestInstallerScripts:
             bat_path = output_dir / "install.bat"
             assert bat_path.exists(), "install.bat not generated for Windows"
 
-            content = bat_path.read_text()
+            content = bat_path.read_text(encoding="utf-8")
             assert "credential-process" in content
             assert r"\.claude" in content or ".claude" in content
