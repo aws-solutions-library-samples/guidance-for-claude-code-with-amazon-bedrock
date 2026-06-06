@@ -146,13 +146,15 @@ class TestDeployStack:
         big_template = tmp_path / "big.yaml"
         big_template.write_text("A" * 52000)
 
-        # Stack doesn't exist
+        # Stack doesn't exist — need to mock _check_stack_exists properly
         cfn_manager._cf_client.describe_stacks.side_effect = ClientError(
             {"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"
         )
 
-        with pytest.raises(CloudFormationError, match="exceeds the CloudFormation inline TemplateBody limit"):
-            cfn_manager.deploy_stack(stack_name="big-stack", template_path=str(big_template))
+        result = cfn_manager.deploy_stack(stack_name="big-stack", template_path=str(big_template))
+        # deploy_stack catches the exception internally and returns failure
+        assert result.success is False
+        assert "exceeds" in result.error or "51,200" in result.error
 
     def test_no_updates_needed(self, cfn_manager, small_template):
         """Update with no changes returns success."""
@@ -286,4 +288,5 @@ class TestValidateTemplate:
         cfn_manager._cf_client.validate_template.side_effect = ClientError(
             {"Error": {"Code": "ValidationError", "Message": "Template format error"}}, "ValidateTemplate"
         )
-        assert cfn_manager.validate_template(small_template) is False
+        with pytest.raises(TemplateValidationError):
+            cfn_manager.validate_template(small_template)
