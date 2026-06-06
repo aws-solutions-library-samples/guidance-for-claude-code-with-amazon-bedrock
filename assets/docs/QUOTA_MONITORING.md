@@ -540,7 +540,9 @@ The Quota Check API is a secured HTTP endpoint that validates user quotas before
 
 The API requires JWT authentication using your OIDC provider's tokens:
 
-- **Authentication**: JWT token in `Authorization: Bearer <token>` header
+> **IAM Identity Center users**: Quota enforcement uses IAM SigV4 authentication instead of JWT. See [IAM Identity Center Setup](providers/iam-identity-center-setup.md#quota-enforcement) for details.
+
+- **Authentication**: JWT token in `Authorization: Bearer <token>` header (OIDC) or SigV4-signed request (IDC)
 - **Validation**: API Gateway JWT Authorizer validates the token against your OIDC provider
 - **User Identity**: Email and group membership extracted from validated JWT claims (no query parameters)
 
@@ -646,8 +648,8 @@ Configure in your profile:
 ## Current Limitations
 
 - Quotas reset on calendar month/day (UTC timezone)
-- Requires email claim in JWT tokens
-- Group membership requires JWT group claims from identity provider
+- Requires email claim in JWT tokens, or email as IAM session name for Identity Center users (see [IAM Identity Center Setup](providers/iam-identity-center-setup.md#quota-enforcement))
+- Group membership requires JWT group claims from identity provider (not available for IDC users — user-level policies only)
 - Enforcement only at credential issuance (see [Enforcement Timing](#enforcement-timing) for mitigation)
 
 ## Future Enhancements
