@@ -35,31 +35,23 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # Bedrock model invocation
-          - Effect: Allow
+          - Sid: AllowBedrockInvokeRegional
+            Effect: Allow
             Action:
               - 'bedrock:InvokeModel'
               - 'bedrock:InvokeModelWithResponseStream'
-            Resource: !Split
-              - ','
-              - !Sub
-                - 'arn:aws:bedrock:${inner}:*:foundation-model/*'
-                - inner: !Join
-                  - ':*:foundation-model/*,arn:aws:bedrock:'
-                  - !Ref AllowedBedrockRegions
-          # Bedrock runtime access
-          - Effect: Allow
-            Action:
-              - 'bedrock-runtime:*'
-            Resource: !Split
-              - ','
-              - !Sub
-                - 'arn:aws:bedrock:${inner}:*:*'
-                - inner: !Join
-                  - ':*:*,arn:aws:bedrock:'
-                  - !Ref AllowedBedrockRegions
-          # Bedrock model information (required for model listings)
-          - Effect: Allow
+              - 'bedrock:CallWithBearerToken'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockModelInfo
+            Effect: Allow
             Action:
               - 'bedrock:GetFoundationModel'
               - 'bedrock:ListFoundationModels'
@@ -67,7 +59,8 @@ Resources:
           # CloudWatch Logs (if monitoring enabled)
           - !If
             - MonitoringEnabled
-            - Effect: Allow
+            - Sid: AllowCloudWatchLogs
+              Effect: Allow
               Action:
                 - 'logs:CreateLogGroup'
                 - 'logs:CreateLogStream'
@@ -86,29 +79,19 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # Trust policy for IAM Identity Center
+          # Trust policy for IAM Identity Center service
           - Effect: Allow
             Principal:
               Service: 'sso.amazonaws.com'
             Action: 'sts:AssumeRole'
-          # Trust policy for reserved SSO roles (AWSReservedSSO_*)
+          # Trust policy for SSO-assumed roles (role chaining from Permission Set)
           - Effect: Allow
             Principal:
               AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
             Action: 'sts:AssumeRole'
             Condition:
-              StringLike:
-                'aws:userid': 'AIDACKCEVSQ6C2EXAMPLE:*'
-              StringEquals:
-                'aws:RequestedRegion': !Ref 'AWS::Region'
-          # Alternative trust for SSO session roles
-          - Effect: Allow
-            Principal:
-              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:saml-provider/AWSSSO_*'
-            Action: 'sts:AssumeRoleWithSAML'
-            Condition:
-              StringEquals:
-                'SAML:aud': 'https://signin.aws.amazon.com/saml'
+              ArnLike:
+                'aws:PrincipalArn': !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-reserved/sso.amazonaws.com/*'
       ManagedPolicyArns:
         - !Ref BedrockAccessPolicy
       # Optional CloudWatch access for monitoring
