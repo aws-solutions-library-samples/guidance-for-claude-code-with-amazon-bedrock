@@ -26,6 +26,24 @@ from claude_code_with_bedrock.cli.utils.cf_exceptions import (
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.config import Config
 
+# Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
+#   login.microsoftonline.com/{tenant-id}/v2.0
+#   https://login.microsoftonline.com/{tenant-id}
+#   {tenant-id} (bare GUID)
+_AZURE_GUID_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _extract_azure_tenant_id(domain: str) -> str:
+    """Extract Azure AD tenant GUID from provider domain or URL.
+
+    Supports: full URLs, domain/tenant/v2.0, or bare GUIDs.
+    Returns the bare GUID, or the original input if no GUID found.
+    """
+    match = _AZURE_GUID_PATTERN.search(domain)
+    return match.group(0) if match else domain
+
 
 class DeployCommand(Command):
     name = "deploy"
@@ -436,23 +454,8 @@ class DeployCommand(Command):
                         ]
                     )
                 elif provider_type == "azure":
-                    # Azure uses tenant ID (GUID) instead of full domain
-                    # Support multiple input formats:
-                    # - login.microsoftonline.com/{tenant-id}/v2.0
-                    # - login.microsoftonline.com/{tenant-id}
-                    # - {tenant-id} (just the GUID)
-                    # - https://login.microsoftonline.com/{tenant-id}/v2.0
-
-                    # Extract GUID using regex pattern matching
-                    guid_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                    match = re.search(guid_pattern, profile.provider_domain)
-
-                    if match:
-                        tenant_id = match.group(0)
-                    else:
-                        # If no GUID found, use the provider_domain as-is
-                        # (in case user provided just the GUID but in unexpected format)
-                        tenant_id = profile.provider_domain
+                    # Azure uses tenant ID (GUID) — extract from provider_domain URL
+                    tenant_id = _extract_azure_tenant_id(profile.provider_domain)
 
                     params.extend(
                         [
@@ -574,7 +577,7 @@ class DeployCommand(Command):
                         # Extract tenant ID from domain or use full domain
                         params.extend(
                             [
-                                f"AzureTenantId={profile.distribution_idp_domain}",
+                                f"AzureTenantId={_extract_azure_tenant_id(profile.distribution_idp_domain or '')}",
                                 f"AzureClientId={profile.distribution_idp_client_id}",
                                 f"AzureClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]
@@ -972,9 +975,7 @@ class DeployCommand(Command):
                 elif provider_type == "auth0":
                     params.extend([f"Auth0Domain={profile.provider_domain}", f"Auth0ClientId={profile.client_id}"])
                 elif provider_type == "azure":
-                    guid_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                    match = re.search(guid_pattern, profile.provider_domain)
-                    tenant_id = match.group(0) if match else profile.provider_domain
+                    tenant_id = _extract_azure_tenant_id(profile.provider_domain)
                     params.extend([f"AzureTenantId={tenant_id}", f"AzureClientId={profile.client_id}"])
                 elif provider_type == "cognito":
                     cognito_domain = (
