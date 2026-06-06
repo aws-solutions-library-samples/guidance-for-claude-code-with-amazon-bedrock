@@ -25,7 +25,7 @@ class TestRunPassthrough:
         """Output includes Version, AccessKeyId, SecretAccessKey, SessionToken."""
         output = {
             "Version": 1,
-            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",  # pragma: allowlist secret
             "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             "SessionToken": "FwoGZXIvYXdzEBY...",
         }
@@ -41,7 +41,7 @@ class TestRunPassthrough:
         """When token is None (long-lived IAM keys), SessionToken must not appear."""
         output = {
             "Version": 1,
-            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",  # pragma: allowlist secret
             "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         }
         assert "SessionToken" not in output
@@ -50,7 +50,7 @@ class TestRunPassthrough:
         """Output must be valid JSON parseable by AWS SDK."""
         output = {
             "Version": 1,
-            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",  # pragma: allowlist secret
             "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             "SessionToken": "token123",
         }
@@ -70,7 +70,7 @@ class TestRunPassthrough:
         """
         output = {
             "Version": 1,
-            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+            "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",  # pragma: allowlist secret
             "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         }
         # Per https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html

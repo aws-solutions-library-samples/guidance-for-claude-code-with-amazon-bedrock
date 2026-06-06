@@ -12,8 +12,11 @@ func TestWriteAndReadCachedHeaders(t *testing.T) {
 	// Use a temp dir for testing
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "test-profile"
 	headers := map[string]string{
@@ -50,8 +53,11 @@ func TestWriteAndReadCachedHeaders(t *testing.T) {
 func TestReadCachedHeaders_ExpiredTokenStillReturnsHeaders(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "expired-profile"
 	headers := map[string]string{"x-user-email": "test@example.com"}
@@ -72,8 +78,11 @@ func TestReadCachedHeaders_ExpiredTokenStillReturnsHeaders(t *testing.T) {
 func TestReadCachedHeaders_Missing(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	_, err := ReadCachedHeaders("nonexistent")
 	if err == nil {
@@ -87,8 +96,11 @@ func TestReadCachedHeaders_OldSchemaIsMiss(t *testing.T) {
 	// re-extracts headers including any newly-added keys (x-project in v2).
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "legacy"
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
@@ -112,8 +124,11 @@ func TestReadCachedHeaders_OldSchemaIsMiss(t *testing.T) {
 func TestWriteCachedHeaders_StampsSchemaVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "versioned"
 	headers := map[string]string{"x-project": "Alpha"}
@@ -132,8 +147,11 @@ func TestReadCachedHeaders_EmptyHeadersMapIsHit(t *testing.T) {
 	// returns {} (anonymous / no-attribute mode). Must be a hit.
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "empty-headers"
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
@@ -163,8 +181,11 @@ func TestReadCachedHeaders_ExpiredEmptyHeadersIsMiss(t *testing.T) {
 	// past expiry (see other tests); only the empty result is time-bounded.
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "expired-empty"
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
@@ -190,8 +211,11 @@ func TestReadCachedHeaders_PopulatedHeadersServedPastExpiry(t *testing.T) {
 	// Only the empty-headers case is time-bounded.
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "expired-populated"
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
@@ -222,8 +246,11 @@ func TestWriteTwiceOverwritesCacheFile(t *testing.T) {
 	// so this is safe, but keep the test to catch any future regression.
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "overwrite-test"
 	first := map[string]string{"x-user-email": "first@example.com"}
@@ -252,8 +279,11 @@ func TestReadCachedHeaders_UntimedEmptyHeadersIsMiss(t *testing.T) {
 	// hit — otherwise attribution could never recover. It must read as a miss.
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	profile := "untimed-empty"
 	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
@@ -281,8 +311,11 @@ func TestEmptyHeadersWriteSafe(t *testing.T) {
 	t.Run("absent file is safe", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 		os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 		defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 		if !EmptyHeadersWriteSafe("no-such-profile") {
 			t.Error("absent cache file should be safe to write")
 		}
@@ -291,8 +324,11 @@ func TestEmptyHeadersWriteSafe(t *testing.T) {
 	t.Run("populated current-schema entry is NOT safe", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 		os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 		defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 		profile := "good"
 		dir := filepath.Join(tmpDir, cacheDirName)
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -311,8 +347,11 @@ func TestEmptyHeadersWriteSafe(t *testing.T) {
 	t.Run("empty current-schema entry is safe", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 		os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 		defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 		profile := "empty"
 		dir := filepath.Join(tmpDir, cacheDirName)
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -331,8 +370,11 @@ func TestEmptyHeadersWriteSafe(t *testing.T) {
 	t.Run("stale-schema entry is safe", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 		os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 		defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 		profile := "stale"
 		dir := filepath.Join(tmpDir, cacheDirName)
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -352,8 +394,11 @@ func TestEmptyHeadersWriteSafe(t *testing.T) {
 	t.Run("unparseable entry is NOT safe", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 		os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 		defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 		profile := "garbage"
 		dir := filepath.Join(tmpDir, cacheDirName)
 		if err := os.MkdirAll(dir, 0700); err != nil {
