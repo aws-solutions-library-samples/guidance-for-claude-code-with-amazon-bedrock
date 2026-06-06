@@ -2420,6 +2420,7 @@ if [ -f "$OTEL_BINARY" ]; then
     echo "Installing OTEL helper..."
     cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
     chmod +x ~/claude-code-with-bedrock/otel-helper
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
     echo "✓ OTEL helper installed"
 fi
 
