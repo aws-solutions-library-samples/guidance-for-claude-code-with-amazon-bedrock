@@ -86,6 +86,17 @@ class Profile:
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
     sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
+    # Authentication type — explicit three-way classification
+    # "oidc"  = OIDC/Direct IdP path (Okta, Azure AD, Auth0, Cognito, Google) — default
+    # "idc"   = AWS IAM Identity Center path
+    # "none"  = no SSO, use existing AWS credentials directly
+    auth_type: str = "oidc"
+
+    # IAM Identity Center specific fields (only populated when auth_type == "idc")
+    idc_start_url: str | None = None       # e.g. https://company.awsapps.com/start
+    idc_account_id: str | None = None      # AWS account ID for IDC access
+    idc_permission_set_name: str | None = None  # Permission set / role name
+
     # Confidential client authentication (Azure AD / Entra ID)
     # If neither is set, public client flow is used (current default).
     # If azure_auth_mode == "secret", the client secret is stored in the OS keyring
@@ -124,6 +135,13 @@ class Profile:
         """Legacy property for backward compatibility."""
         return self.client_id
 
+    @property
+    def effective_auth_type(self) -> str:
+        """Resolve auth_type with backward compatibility for sso_enabled."""
+        if hasattr(self, 'auth_type') and self.auth_type:
+            return self.auth_type
+        return "oidc" if self.sso_enabled else "none"
+
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary."""
         return asdict(self)
@@ -148,6 +166,13 @@ class Profile:
         # Provide default for credential_storage if not present
         if "credential_storage" not in data:
             data["credential_storage"] = "session"
+
+        # Derive auth_type from sso_enabled for backward compatibility
+        if "auth_type" not in data:
+            if data.get("sso_enabled", True):
+                data["auth_type"] = "oidc"
+            else:
+                data["auth_type"] = "none"
 
         # Infer sso_enabled for profiles saved before PR #71 introduced the field:
         # if provider_domain is set to a real value, SSO was enabled.

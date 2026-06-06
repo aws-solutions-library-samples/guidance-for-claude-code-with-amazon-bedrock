@@ -1,191 +1,251 @@
-# IAM Identity Center Setup
+# AWS IAM Identity Center Setup Guide
 
-This guide covers deploying Claude Code with Amazon Bedrock using **AWS IAM Identity Center** (formerly AWS SSO) instead of an external OIDC identity provider.
+This guide covers setting up Claude Code with Bedrock using AWS IAM Identity Center (formerly AWS SSO) as the authentication method.
 
-## When to Use This Path
+## When to Choose IAM Identity Center vs OIDC
 
-Choose IAM Identity Center when:
-- Your organization already uses IAM Identity Center for AWS access
-- You don't want to configure an external IdP (Okta, Azure AD, Auth0, etc.)
-- Users already run `aws sso login` as part of their workflow
-- You want the simplest possible auth setup
+### Choose IAM Identity Center (IDC) when:
+- Your organization already uses AWS SSO/Identity Center for AWS access management
+- You want to leverage existing AWS permission sets and user groups
+- You need native AWS authentication without external identity providers
+- You want simplified setup for AWS-first environments
 
-Choose the OIDC path instead when:
-- You need fine-grained group-based quota policies from JWT claims
-- Your IdP provides rich user attributes (department, team, cost center)
-- You need the browser-based auth flow for users without AWS CLI access
+### Choose OIDC when:
+- You need per-user quota enforcement and monitoring
+- You want detailed user attribution in metrics and logs
+- Your organization uses external identity providers (Okta, Azure AD, etc.)
+- You need fine-grained user access controls and JWT-based authorization
+
+## What's NOT Supported with IAM Identity Center
+
+⚠️ **Important Limitations:**
+
+1. **No Quota Monitoring**: Per-user token quota enforcement is disabled as it requires JWT tokens from OIDC providers
+2. **No Per-User Attribution**: Metrics and logs will show IAM role identity, not individual user names
+3. **No JWT Authorization**: The quota monitoring API Gateway cannot validate requests without an OIDC issuer
 
 ## Prerequisites
 
-1. **IAM Identity Center** configured in your AWS account
-2. **Permission set** granting Bedrock access (see [Permission Set Setup](#permission-set-setup) below)
-3. **Session name = email**: IAM Identity Center must use the user's email as the session name (this is the default)
-4. **AWS CLI v2** installed on developer machines
+Before starting, ensure you have:
 
-## How It Works
+- AWS IAM Identity Center enabled in your AWS account
+- A permission set created with appropriate Bedrock access (recommended: `BedrockDeveloperAccess`)
+- Users assigned to the permission set
+- AWS CLI v2 installed and configured
 
-```
-Developer machine:
-  aws sso login → SSO credentials cached locally
-  → credential-process detects sso_enabled=false
-  → passes through ambient AWS credentials (no OIDC browser flow)
-  → user identified by IAM ARN session name (email)
+## Step-by-Step Deployment
 
-Server side:
-  API Gateway receives SigV4-signed request
-  → validates IAM credentials
-  → Lambda extracts email from ARN: .../AWSReservedSSO_.../user@company.com
-  → quota enforced per user
-```
+### 1. Initialize Configuration
 
-## Setup
-
-### 1. Permission Set Setup
-
-Create a permission set in IAM Identity Center that grants Bedrock access:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "BedrockAccess",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream",
-        "bedrock:Converse",
-        "bedrock:ConverseStream",
-        "bedrock:ListFoundationModels",
-        "bedrock:ListInferenceProfiles"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-Assign this permission set to the users/groups who need Claude Code access.
-
-### 2. Initialize with SSO Disabled
+Run the Claude Code setup wizard and select IAM Identity Center:
 
 ```bash
 poetry run ccwb init
 ```
 
-When prompted for SSO authentication, select **No**:
-
+When prompted for authentication method, choose:
 ```
-? Enable SSO authentication (OIDC)? No
+❯ AWS IAM Identity Center (SSO)
 ```
 
-This sets `sso_enabled: false` in your profile. The system will use ambient AWS credentials instead of the OIDC browser flow.
+### 2. Provide Identity Center Details
 
-### 3. Configure AWS CLI SSO Profile
+You'll be prompted for:
 
-Each developer needs an AWS CLI SSO profile. Example `~/.aws/config`:
+- **Start URL**: Your Identity Center portal URL (e.g., `https://company.awsapps.com/start`)
+- **SSO Region**: The AWS region where Identity Center is configured
+- **Account ID**: Your 12-digit AWS account number
+- **Permission Set**: The name of your permission set (default: `BedrockDeveloperAccess`)
+
+### 3. AWS Configuration
+
+The wizard will generate an AWS config block and offer to append it to `~/.aws/config`:
 
 ```ini
-[profile claude-bedrock]
-sso_session = my-org
+[profile ClaudeCode]
+sso_session = ClaudeCode-MyPool
 sso_account_id = 123456789012
-sso_role_name = BedrockAccess
+sso_role_name = BedrockDeveloperAccess
+region = us-east-1
 
-[sso-session my-org]
-sso_start_url = https://my-org.awsapps.com/start
+[sso-session ClaudeCode-MyPool]
+sso_start_url = https://company.awsapps.com/start
 sso_region = us-east-1
 sso_registration_scopes = sso:account:access
 ```
 
-### 4. Deploy
+### 4. Authenticate with AWS SSO
+
+Before deploying, authenticate using the AWS CLI:
+
+```bash
+aws sso login --profile ClaudeCode
+```
+
+Verify your identity:
+
+```bash
+aws sts get-caller-identity --profile ClaudeCode
+```
+
+### 5. Deploy Infrastructure
+
+Deploy the Claude Code infrastructure:
 
 ```bash
 poetry run ccwb deploy
 ```
 
-The auth stack is skipped (no OIDC). Monitoring, dashboard, and quota stacks deploy normally.
+This will:
+- Skip the quota monitoring stack (not compatible with IDC)
+- Deploy the IAM role and Bedrock access policy
+- Deploy monitoring and dashboard stacks (if enabled)
 
-### 5. Package for Users
+## Extending SSO Session Duration
+
+By default, AWS SSO sessions expire after 8-12 hours. To extend this:
+
+1. **In AWS Console**: Go to IAM Identity Center → Settings → Session settings
+2. **Update Session Duration**: Set to maximum allowed (up to 7 days for programmatic access)
+3. **Apply to Permission Sets**: Ensure your permission set inherits these settings
+
+Example session settings:
+- **Programmatic access**: 7 days
+- **AWS Management Console access**: 12 hours
+
+## Per-User Cost Attribution
+
+While quota monitoring is disabled, you can still track usage per user via CloudTrail:
+
+### 1. Enable CloudTrail
+
+```yaml
+# Add to your monitoring configuration
+CloudTrailEnabled: true
+CloudTrailS3Bucket: my-company-cloudtrail-bucket
+```
+
+### 2. Query CloudTrail Logs
+
+Use Athena or CloudWatch Logs Insights to query Bedrock API calls:
+
+```sql
+-- Athena query for user-specific Bedrock usage
+SELECT 
+    useridentity.sessioncontext.sessionissuer.principalid as user_id,
+    eventname,
+    COUNT(*) as api_calls,
+    DATE_TRUNC('day', eventtime) as date
+FROM cloudtrail_logs
+WHERE 
+    eventsource = 'bedrock.amazonaws.com'
+    AND eventname LIKE 'InvokeModel%'
+    AND eventtime >= current_timestamp - interval '30' day
+GROUP BY 1,2,4
+ORDER BY date DESC, api_calls DESC;
+```
+
+### 3. Create Custom Dashboards
+
+Use the user identity from CloudTrail to create cost allocation reports and usage dashboards.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Profile not found" errors**
+   ```bash
+   # Verify your profile exists
+   aws configure list-profiles
+   
+   # Test SSO authentication
+   aws sso login --profile ClaudeCode
+   ```
+
+2. **"Access denied" for Bedrock**
+   - Verify your permission set includes Bedrock permissions
+   - Check that the deployed IAM role has the correct policies attached
+   - Ensure you're using the correct AWS region for Bedrock access
+
+3. **CloudFormation deployment failures**
+   ```bash
+   # Check stack status
+   aws cloudformation describe-stacks --stack-name YourStackName
+   
+   # View stack events for errors
+   aws cloudformation describe-stack-events --stack-name YourStackName
+   ```
+
+4. **SSO session expired**
+   ```bash
+   # Re-authenticate
+   aws sso login --profile ClaudeCode
+   
+   # Verify credentials are refreshed
+   aws sts get-caller-identity --profile ClaudeCode
+   ```
+
+### IAM Role Trust Policy Issues
+
+If you encounter trust policy errors, verify the CloudFormation template deployed correctly:
 
 ```bash
-poetry run ccwb package
+# Check the federated role
+aws iam get-role --role-name BedrockIDCFederatedRole
+
+# Verify trust policy allows SSO principals
+aws iam get-role --role-name BedrockIDCFederatedRole --query 'Role.AssumeRolePolicyDocument'
 ```
 
-The generated package includes the credential-process binary configured for passthrough mode. Users authenticate with `aws sso login` and the credential-process surfaces their ambient credentials to Claude Code.
+### Permission Set Configuration
 
-## User Workflow
-
-```bash
-# One-time: login to AWS SSO
-aws sso login --profile claude-bedrock
-
-# Use Claude Code normally — credentials are automatic
-claude
-```
-
-Re-authentication is needed when the SSO session expires (typically 8-12 hours, configurable in IAM Identity Center).
-
-## Quota Enforcement
-
-Quota enforcement works differently for IDC users compared to OIDC:
-
-| Aspect | OIDC Path | IDC Path |
-|---|---|---|
-| Authentication | JWT Bearer token | SigV4-signed request |
-| User identity | JWT `email` claim | ARN session name |
-| API Gateway auth | JWT Authorizer | AWS_IAM |
-| Group membership | JWT `groups` claim | Not available (user-level only) |
-
-### How Email Is Resolved
-
-IAM Identity Center uses the user's email as the role session name by default. The assumed-role ARN looks like:
-
-```
-arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockAccess_abc123/alice@company.com
-```
-
-The quota Lambda extracts `alice@company.com` from the last segment after `/`.
-
-### Requirements for Quota to Work
-
-1. **Email as session name**: This is the IAM Identity Center default. If your org has customized session names, quota enforcement won't resolve the user identity.
-2. **`quota_api_endpoint`** in config.json: The package must include the API Gateway endpoint.
-3. **`execute-api:Invoke` permission**: The user's IAM role must be able to invoke the quota API. Add to the permission set if not already included:
+Ensure your Identity Center permission set includes:
 
 ```json
 {
-  "Sid": "QuotaCheckAccess",
-  "Effect": "Allow",
-  "Action": "execute-api:Invoke",
-  "Resource": "arn:aws:execute-api:*:*:*/*/GET/check"
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:InvokeModel*",
+                "bedrock:GetFoundationModel",
+                "bedrock:ListFoundationModels"
+            ],
+            "Resource": "*"
+        }
+    ]
 }
 ```
 
-### Limitations (IDC-specific)
+## Migration from OIDC to IDC
 
-- **No group-based policies**: JWT group claims aren't available — only user-level and default policies apply
-- **Email format required**: Session name must contain `@` to be recognized as an email
-- **No Cowork 3P support**: Claude Desktop (Cowork) requires the OIDC flow — IDC is CLI-only
+To switch an existing OIDC profile to IDC:
 
-## Monitoring and OTEL
+1. **Backup current configuration**:
+   ```bash
+   cp ~/.ccwb/profiles/myprofile.json ~/.ccwb/profiles/myprofile-backup.json
+   ```
 
-| Feature | IDC Support |
-|---|---|
-| Central collector (ALB + ECS) | ✅ Works — otel-helper resolves identity from monitoring token |
-| Sidecar collector (local) | ✅ Works — exports directly to CloudWatch |
-| Per-user dashboard attribution | ⚠️ Requires monitoring token — works if credential-process can issue one |
-| ALB JWT validation | ❌ Not applicable — IDC users don't have JWTs for OTEL |
+2. **Re-run init with IDC**:
+   ```bash
+   poetry run ccwb init --profile myprofile
+   ```
+   Select "AWS IAM Identity Center (SSO)" when prompted.
 
-For IDC deployments using the central collector with HTTPS, configure the ALB **without** `OidcIssuerUrl` (deploy with `sso_enabled=false`) so JWT validation is disabled. Telemetry flows through without auth at the ALB level, secured by security groups instead.
+3. **Redeploy infrastructure**:
+   ```bash
+   poetry run ccwb deploy
+   ```
+   The auth stack will be updated to use the IDC template instead of OIDC.
 
-## Comparison: OIDC vs IDC
+## Next Steps
 
-| Feature | OIDC | IDC |
-|---|---|---|
-| External IdP required | ✅ Yes | ❌ No |
-| Browser popup for auth | ✅ Every 1-24h | ❌ Never (CLI only) |
-| Cowork 3P (Claude Desktop) | ✅ Supported | ❌ Not supported |
-| Group-based quota | ✅ From JWT claims | ❌ User-level only |
-| Rich user attributes | ✅ From JWT (dept, team, etc.) | ⚠️ Email only (from ARN) |
-| Setup complexity | Medium (IdP config) | Low (permission set only) |
-| Credential refresh | Automatic (refresh_token) | `aws sso login` when expired |
+After successful deployment:
+
+- **Test Authentication**: Create and run a simple Claude Code script
+- **Monitor Usage**: Use CloudWatch dashboards for system monitoring
+- **Set Up Alerts**: Configure SNS notifications for system health
+- **Train Users**: Share SSO login instructions with your team
+
+For quota monitoring and per-user controls, consider using the OIDC authentication method instead.
