@@ -45,3 +45,11 @@ OIDC token (email, sub, groups)
 - Proxy: verify ALB-forwarded headers match expected format
 
 *Issues: #361, #365, #441, #446*
+
+## Metric Sources
+
+The OTEL collector ingests metrics from two sources:
+1. **Claude Code client** — telemetry emitted by the IDE extension/CLI (e.g., `claude_code.cost.usage`, `claude_code.token.usage`). Defined by Anthropic, may change between versions.
+2. **Server-side Lambdas** — cost estimator, quota monitor (e.g., `claude_code.cost.estimated`).
+
+Do not assume a metric is unused because our server code doesn't emit it. When modifying dashboard widgets, treat existing metric references as potentially valid client-emitted data. Use distinct names for server-side metrics to avoid collisions.
