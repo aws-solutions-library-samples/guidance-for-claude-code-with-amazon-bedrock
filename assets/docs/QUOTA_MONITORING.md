@@ -715,6 +715,27 @@ ccwb deploy quota --parameters EnableBypassDetection=true
 - Group membership requires JWT group claims from identity provider (not available for IDC users — user-level policies only)
 - Enforcement only at credential issuance (see [Enforcement Timing](#enforcement-timing) for mitigation)
 
+## Data Latency
+
+Different data paths have different latency characteristics:
+
+| Data path | Latency | Use case |
+| --- | --- | --- |
+| Quota enforcement (DynamoDB) | ~1-5 seconds | Real-time quota checks |
+| CloudWatch metrics/dashboards | ~1-5 minutes | Live operational monitoring |
+| Analytics (Firehose → S3 → Athena) | Up to 15 minutes | Historical reporting, cost analysis |
+
+The analytics pipeline uses Kinesis Firehose with a configurable buffer interval
+(`FirehoseBufferInterval` parameter, default 900 seconds / 15 minutes). Firehose
+accumulates records before flushing to S3 to reduce cost and API calls.
+
+To reduce analytics latency, lower the buffer interval (minimum 60 seconds) at
+the cost of more frequent S3 writes:
+
+```bash
+ccwb deploy analytics --parameters FirehoseBufferInterval=60
+```
+
 ## Future Enhancements
 
 - **Tamper-proof enforcement**: Source quota usage from Bedrock model invocation
