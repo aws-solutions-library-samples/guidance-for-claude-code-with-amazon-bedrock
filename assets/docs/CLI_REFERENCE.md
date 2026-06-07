@@ -1172,7 +1172,7 @@ poetry run ccwb destroy [stack] [options]
 
 **Arguments:**
 
-- `stack` - Specific stack to destroy: auth, networking, monitoring, dashboard, or analytics (optional)
+- `stack` - Specific stack to destroy: codebuild, analytics, quota, cowork-dashboard, dashboard, monitoring, distribution, networking, s3bucket, or auth (optional)
 
 **Options:**
 
@@ -1181,7 +1181,7 @@ poetry run ccwb destroy [stack] [options]
 
 **What it does:**
 
-- Deletes CloudFormation stacks in reverse order (analytics → dashboard → monitoring → networking → auth)
+- Deletes CloudFormation stacks in reverse dependency order (codebuild → analytics → quota → cowork-dashboard → dashboard → monitoring → distribution → networking → s3bucket → auth), skipping any not enabled for the profile
 - Shows resources to be deleted before proceeding
 - Warns about manual cleanup requirements (e.g., CloudWatch LogGroups)
 
