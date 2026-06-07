@@ -115,6 +115,22 @@ The quota check Lambda provides real-time allow/block decisions by reading the D
 
 > **Detailed Information**: See the [Quota Monitoring Guide](QUOTA_MONITORING.md).
 
+## Cost Tracking
+
+When monitoring is enabled, a cost tracking Lambda runs hourly to compute estimated per-user spend from CloudWatch token metrics. It applies Bedrock on-demand pricing rates to each token type (input, output, cache write, cache read) and publishes dollar-denominated metrics back to CloudWatch.
+
+**Metrics published:**
+- `claude_code.cost.estimated` — per user × model family
+- `claude_code.cost.estimated.total` — per user (all models combined)
+
+**Key behaviors:**
+- Deploys automatically with monitoring (no separate opt-in)
+- Auto-detects user identity dimension (`user.email` preferred, falls back to `user.id`)
+- Applies 1.1x surcharge for cross-region inference profiles (`us.*`, `eu.*`, `ap.*`)
+- Pricing rates ship with each release; admins can override via `PricingRatesJson` CF parameter
+
+> **Note:** Cost metrics are estimates based on published Bedrock on-demand rates. Actual costs may differ due to committed throughput discounts, pricing changes between releases, or custom pricing agreements. Use [AWS Cost Explorer](https://console.aws.amazon.com/cost-management/) for authoritative billing data. For CUR-based per-user cost attribution, see [Cost Attribution](COST_ATTRIBUTION.md).
+
 ## Analytics Pipeline (Optional)
 
 The analytics pipeline streams EMF logs from CloudWatch Logs to S3 using Kinesis Data Firehose, converting metrics to Parquet format. AWS Athena provides SQL query capabilities over months of historical data.
