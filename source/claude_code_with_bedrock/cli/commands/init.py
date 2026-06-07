@@ -1926,9 +1926,12 @@ sso_registration_scopes = sso:account:access"""
                 else "Session Files (temporary)"
             ),
         )
-        table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
-        table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
-        table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
+        if sso_enabled:
+            table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
+            table.add_row("Identity Pool", config.get("aws", {}).get("identity_pool_name", "—"))
+        else:
+            table.add_row("Infrastructure Region", f"{config['aws']['region']} (IAM, Monitoring)")
+        table.add_row("Monitoring", "✓ Enabled" if config.get("monitoring", {}).get("enabled") else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
             mode = config.get("monitoring", {}).get("mode", "sidecar")
             mode_label = "Central (ECS Fargate)" if mode == "central" else "Sidecar (local collector)"
@@ -2005,10 +2008,11 @@ sso_registration_scopes = sso:account:access"""
 
         # Show what will be created
         console.print("\n[bold yellow]Resources to be created:[/bold yellow]")
-        if config.get("federation_type") == "direct":
-            console.print("• IAM OIDC Provider for authentication")
-        else:
-            console.print("• Cognito Identity Pool for authentication")
+        if sso_enabled:
+            if config.get("federation_type") == "direct":
+                console.print("• IAM OIDC Provider for authentication")
+            else:
+                console.print("• Cognito Identity Pool for authentication")
         console.print("• IAM roles and policies for Bedrock access")
         if config.get("monitoring", {}).get("enabled"):
             mode = config.get("monitoring", {}).get("mode", "sidecar")
