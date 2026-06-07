@@ -50,6 +50,33 @@ Parameters:
       - 'false'
     Description: Enable fine-grained quota policies (user/group/default levels)
 
+  QuotaMode:
+    Type: String
+    Default: 'token'
+    AllowedValues:
+      - 'token'
+      - 'cost'
+    Description: >-
+      Quota enforcement mode. 'token' counts raw tokens (existing behavior).
+      'cost' converts tokens to estimated USD using Bedrock pricing rates and
+      compares against dollar-denominated limits.
+
+  MonthlyCostLimitUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Monthly cost limit per user in USD (cost mode only). 0 = no limit.
+      Example: 500 = block at $500/month estimated spend.
+
+  DailyCostLimitUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Daily cost limit per user in USD (cost mode only). 0 = no limit.
+      Example: 50 = block at $50/day estimated spend.
+
   # JWT Authentication Parameters for Quota Check API
   OidcIssuerUrl:
     Type: String
@@ -279,6 +306,9 @@ Resources:
           DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
+          QUOTA_MODE: !Ref QuotaMode
+          MONTHLY_COST_LIMIT_USD: !Ref MonthlyCostLimitUsd
+          DAILY_COST_LIMIT_USD: !Ref DailyCostLimitUsd
       Code: ./lambda-functions/quota_check/
 
   # HTTP API Gateway (v2 - cheaper and faster than REST API)
