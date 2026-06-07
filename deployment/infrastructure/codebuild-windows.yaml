@@ -131,6 +131,7 @@ Resources:
         Name: windows-binaries.zip
         Packaging: ZIP
         OverrideArtifactName: false
+        EncryptionDisabled: true
       Environment:
         Type: WINDOWS_SERVER_2022_CONTAINER
         ComputeType: BUILD_GENERAL1_LARGE
@@ -212,6 +213,7 @@ Resources:
         Name: linux-x64-binaries.zip
         Packaging: ZIP
         OverrideArtifactName: false
+        EncryptionDisabled: true
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_LARGE
@@ -287,6 +289,7 @@ Resources:
         Name: linux-arm64-binaries.zip
         Packaging: ZIP
         OverrideArtifactName: false
+        EncryptionDisabled: true
       Environment:
         Type: ARM_CONTAINER
         ComputeType: BUILD_GENERAL1_LARGE
