@@ -16,7 +16,7 @@ Choose your IdP and follow the setup guide before running `ccwb init`:
 | **Microsoft Entra ID (Azure AD)** | [microsoft-entra-id-setup.md](./providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [auth0-setup.md](./providers/auth0-setup.md) |
 | **AWS Cognito User Pool** | [cognito-user-pool-setup.md](./providers/cognito-user-pool-setup.md) |
-| **AWS IAM Identity Center (SSO)** | [iam-identity-center-setup.md](./providers/iam-identity-center-setup.md) |
+| **AWS IAM Identity Center (SSO)** | Coming soon |
 
 ### Step 2 — Deploy AWS infrastructure
 

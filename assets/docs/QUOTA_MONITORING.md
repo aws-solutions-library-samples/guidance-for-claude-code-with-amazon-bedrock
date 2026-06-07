@@ -601,22 +601,22 @@ Configure the endpoint in your credential provider config.json:
 
 ### Enforcement Timing
 
-**Important**: Quota enforcement only occurs at credential issuance time, not during an active session.
+**Important**: Quota enforcement occurs at credential issuance time — every time the credential-process exchanges tokens for AWS credentials. This includes both browser re-authentication and silent refresh (via stored refresh_token).
 
-If a user exceeds their quota mid-session, they can continue using Claude Code until their credentials expire and they need to re-authenticate. At that point, the quota check will block access.
+With silent refresh enabled (default since June 2026), the credential-process automatically renews credentials without browser interaction. Quota is checked on each renewal, so enforcement gaps are bounded by the STS session duration, not by how often the user sees a browser prompt.
 
-#### Example Timeline (12-hour session)
+#### Example Timeline (1-hour STS session, silent refresh)
 
 ```
-09:00 - User authenticates, quota check passes (at 50% of limit)
-09:00 - AWS credentials issued, valid for 12 hours
-15:00 - User exceeds 100% of monthly quota
-15:01 - User CONTINUES working (credentials still valid)
-21:00 - Credentials expire, user must re-authenticate
-21:00 - Quota check BLOCKS access (enforcement finally applied)
+09:00 - User authenticates via browser, quota check passes (at 50%)
+09:00 - AWS credentials issued, valid for 1 hour
+10:00 - Credentials expire, silent refresh triggers
+10:00 - Quota check passes (at 80%), new credentials issued
+11:00 - Silent refresh triggers again
+11:00 - Quota check BLOCKS access (user exceeded limit)
 ```
 
-In this scenario, there's a 6-hour gap between exceeding the quota (15:00) and enforcement (21:00).
+The enforcement gap equals the STS session duration (typically 1 hour), regardless of refresh_token lifetime.
 
 #### Recommendation for Tight Enforcement
 

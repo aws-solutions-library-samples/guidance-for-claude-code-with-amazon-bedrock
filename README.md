@@ -128,7 +128,7 @@ When SSO authentication is disabled:
 
 To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
 
-> **New in v2.2+:** IAM Identity Center is now a first-class authentication option. Select **"AWS IAM Identity Center (SSO)"** in `ccwb init` to get guided setup, `~/.aws/config` generation, and the correct CloudFormation stack — without the undocumented workaround of disabling SSO. See the [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md) for details.
+> **IAM Identity Center support** is coming soon. In the meantime, IAM IDC users can deploy with SSO disabled and use their existing `aws sso login` credentials directly.
 
 ## Authentication Modes
 
@@ -143,7 +143,7 @@ This guidance supports three identity paths. All paths deliver per-user identity
 **Choosing a path:**
 
 - Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
-- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. See [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md).
+- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Full IAM IDC integration is coming soon.
 - Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
 
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
