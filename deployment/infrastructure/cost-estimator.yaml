@@ -14,12 +14,11 @@ Parameters:
 
   UserDimension:
     Type: String
-    Default: 'user.email'
-    AllowedValues: ['user.email', 'user.id']
+    Default: ''
     Description: >-
-      CloudWatch dimension used to identify users. Use 'user.email' when
-      available (OIDC, IDC with email session names). Fall back to 'user.id'
-      for deployments where email is not in the OTEL attributes.
+      Override for user identity dimension. Leave empty for auto-detection
+      (tries user.email first, falls back to user.id). Set explicitly only
+      if auto-detection picks the wrong dimension.
 
   PricingRatesJson:
     Type: String
@@ -99,3 +98,11 @@ Outputs:
   ScheduleArn:
     Description: ARN of the EventBridge schedule rule
     Value: !GetAtt CostEstimatorSchedule.Arn
+
+  CostDisclaimer:
+    Description: Cost accuracy notice
+    Value: >-
+      Cost metrics are estimates based on published Bedrock pricing rates.
+      Actual costs may vary due to committed throughput discounts, pricing
+      changes between releases, or custom pricing agreements. Use AWS Cost
+      Explorer for authoritative billing data.

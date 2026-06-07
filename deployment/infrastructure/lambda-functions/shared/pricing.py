@@ -5,9 +5,12 @@ Provides per-model, per-token-type pricing rates. Used by:
 - Cost estimator Lambda (dashboard cost metrics)
 - Quota Lambda (cost-based enforcement mode)
 
-Pricing is hardcoded with the ability to override via environment variable
-or CF parameter. This is more reliable than the AWS Pricing API which has
-poor filter support for Bedrock models and delayed updates.
+IMPORTANT: These are estimates based on published Bedrock on-demand rates.
+Actual costs may differ due to committed throughput discounts, pricing
+changes, or custom agreements. Use AWS Cost Explorer for billing truth.
+
+Rates are hardcoded and updated with each release. Admins can override
+via BEDROCK_PRICING_RATES_JSON environment variable without code changes.
 """
 
 import json

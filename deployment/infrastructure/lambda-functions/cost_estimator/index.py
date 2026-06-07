@@ -33,13 +33,27 @@ MAX_METRIC_DATA_QUERIES = 500
 MAX_PUT_METRIC_DATA = 1000
 
 
-def _resolve_user_dimension() -> str:
-    """Determine which CloudWatch dimension identifies users.
+def _resolve_user_dimension(cw) -> str:
+    """Auto-detect which CloudWatch dimension identifies users.
 
-    The OTEL collector emits both user.email and user.id as resource attributes.
-    Prefer user.email for readability; fall back to user.id.
+    Tries user.email first (most readable). Falls back to user.id
+    if no metrics exist with user.email dimension.
     """
-    return os.environ.get("USER_DIMENSION", "user.email")
+    override = os.environ.get("USER_DIMENSION", "").strip()
+    if override:
+        return override
+
+    # Check if user.email metrics exist
+    response = cw.list_metrics(
+        Namespace=NAMESPACE,
+        MetricName="claude_code.token.usage",
+        Dimensions=[{"Name": "user.email"}],
+        Limit=1,
+    )
+    if response.get("Metrics"):
+        return "user.email"
+
+    return "user.id"
 
 
 def _discover_active_users(cw, user_dim: str) -> list[str]:
@@ -135,7 +149,7 @@ def lambda_handler(event, context):
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=1)
 
-    user_dim = _resolve_user_dimension()
+    user_dim = _resolve_user_dimension(cw)
     users = _discover_active_users(cw, user_dim)
     models = _discover_active_models(cw)
 
