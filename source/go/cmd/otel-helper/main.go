@@ -79,6 +79,12 @@ func run(testMode bool) int {
 				headers["authorization"] = "Bearer " + t
 			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
 				headers["authorization"] = "Bearer " + t
+			} else {
+				// No token from env var or credential-process. Emit cached attribution
+				// anyway (otelHeadersHelper contract), but log so an ALB 401 is
+				// diagnosable instead of silent — the no-token path below logs the same way.
+				debugPrint("Layer 1 cache hit but no Bearer token available " +
+					"(env var empty, credential-process failed); emitting headers without authorization")
 			}
 			outputJSON(headers)
 			return 0

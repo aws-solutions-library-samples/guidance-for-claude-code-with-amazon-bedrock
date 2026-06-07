@@ -325,3 +325,63 @@ func TestRun_CacheHit_ResolvesTokenFromEnv(t *testing.T) {
 		t.Errorf("authorization = %q, want 'Bearer %s'", headers["authorization"], envToken)
 	}
 }
+
+// TestRun_Layer1_CacheHit_NoToken_OmitsBearerGracefully verifies that when a
+// Layer 1 cache hit occurs but NO Bearer can be resolved (env var empty AND
+// credential-process unavailable), the helper still emits valid cached attribution
+// JSON, exits 0, and does NOT include an "authorization" key. This is the
+// graceful-degradation half of Finding 2 — the (logged) path that previously
+// returned silently.
+func TestRun_Layer1_CacheHit_NoToken_OmitsBearerGracefully(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("AWS_PROFILE", "ClaudeCode")
+	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "") // no env token
+
+	// Seed a warm cache with valid attribution (far-future exp), no authorization.
+	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
+	cache := `{"schema_version":2,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
+	if err := os.WriteFile(cachePath, []byte(cache), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// No credential-process binary exists under tmpDir, so getTokenViaCredentialProcess fails.
+
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	code := run(false)
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("run() = %d, want 0", code)
+	}
+
+	var buf [8192]byte
+	n, _ := r.Read(buf[:])
+	var headers map[string]string
+	if err := json.Unmarshal(buf[:n], &headers); err != nil {
+		t.Fatalf("output not valid JSON: %v\nraw: %s", err, buf[:n])
+	}
+
+	if headers["x-user-email"] != "cached@user.com" {
+		t.Errorf("x-user-email = %q, want cached@user.com", headers["x-user-email"])
+	}
+	if _, ok := headers["authorization"]; ok {
+		t.Errorf("authorization must be absent when no token resolves, got %q", headers["authorization"])
+	}
+
+	// The cache file must be untouched (no Bearer leaked to disk).
+	after, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache file should still exist: %v", err)
+	}
+	if strings.Contains(string(after), "authorization") {
+		t.Error("cache file must not contain 'authorization' after a no-token cache hit")
+	}
+}

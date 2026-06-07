@@ -829,6 +829,14 @@ def main():
             _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
             if _bearer_token:
                 cached_headers["authorization"] = f"Bearer {_bearer_token}"
+            else:
+                # No token from env var or credential-process. Emit cached attribution
+                # anyway (otelHeadersHelper contract), but log so an ALB 401 is
+                # diagnosable instead of silent — Layer 3 logs the same way.
+                logger.info(
+                    "Layer 1 cache hit but no Bearer token available "
+                    "(env var empty, credential-process failed); emitting headers without authorization"
+                )
             print(json.dumps(cached_headers))
             return 0
         logger.info("Cache expired or missing, refreshing via credential-process")
@@ -863,6 +871,11 @@ def main():
         headers_dict = format_as_headers_dict(user_info)
         # In test mode, print detailed output
         if TEST_MODE:
+            # Show the Bearer in --test output (parity with the Go helper, which adds
+            # it before printTestOutput). Added only on this branch — test mode never
+            # writes the cache, so the token stays off disk.
+            if token:
+                headers_dict["authorization"] = f"Bearer {token}"
             print("===== TEST MODE OUTPUT =====\n")
             if token:
                 print("Mode: Authenticated (JWT Token)")

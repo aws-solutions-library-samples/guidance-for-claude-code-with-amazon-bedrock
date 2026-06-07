@@ -112,8 +112,9 @@ def test_bearer_token_not_in_cache_file(mock_cache_dir, otel_headers_cache_file,
     captured = io.StringIO()
     monkeypatch.setattr(sys, "stdout", captured)
 
-    with patch("otel_helper.__main__.get_token_via_credential_process", return_value=fake_token), patch(
-        "otel_helper.__main__.get_aws_caller_identity", return_value={"Arn": "test"}
+    with (
+        patch("otel_helper.__main__.get_token_via_credential_process", return_value=fake_token),
+        patch("otel_helper.__main__.get_aws_caller_identity", return_value={"Arn": "test"}),
     ):
         main()
 
@@ -162,9 +163,48 @@ def test_layer1_cache_hit_includes_bearer(mock_cache_dir, otel_headers_cache_fil
 
     # Cache file must NOT have been updated to include the Bearer token
     cache_data = json.loads(otel_headers_cache_file.read_text())
-    assert "authorization" not in cache_data.get("headers", {}), (
-        "Bearer token must not be persisted to the cache file on a Layer 1 hit"
-    )
+    assert "authorization" not in cache_data.get(
+        "headers", {}
+    ), "Bearer token must not be persisted to the cache file on a Layer 1 hit"
+
+
+def test_layer1_cache_hit_no_bearer_logs_info(mock_cache_dir, otel_headers_cache_file, monkeypatch, caplog):
+    """Layer 1 cache hit with no resolvable token emits attribution + logs (Finding 2)."""
+    from otel_helper.__main__ import main
+
+    monkeypatch.setattr("sys.argv", ["otel-helper"])
+    monkeypatch.delenv("CLAUDE_CODE_MONITORING_TOKEN", raising=False)
+
+    future_exp = int(time.time()) + 3600
+    cache_entry = {
+        "schema_version": 2,
+        "headers": {"x-user-email": "cached@example.com"},
+        "token_exp": future_exp,
+        "cached_at": int(time.time()),
+    }
+    otel_headers_cache_file.write_text(json.dumps(cache_entry))
+
+    captured = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", captured)
+
+    # No env token and credential-process unavailable → no Bearer resolvable.
+    with patch("otel_helper.__main__.get_token_via_credential_process", return_value=None):
+        with caplog.at_level("INFO", logger="claude-otel-headers"):
+            exit_code = main()
+
+    assert exit_code == 0
+    output = json.loads(captured.getvalue().strip())
+    # Attribution still emitted (contract), but no authorization key.
+    assert output.get("x-user-email") == "cached@example.com"
+    assert "authorization" not in output
+    # The omission must be logged so an ALB 401 is diagnosable, not silent.
+    assert any(
+        "no Bearer token available" in rec.message for rec in caplog.records
+    ), "Layer 1 no-token cache hit must log a diagnostic breadcrumb"
+
+    # Cache file untouched — no Bearer leaked to disk.
+    cache_data = json.loads(otel_headers_cache_file.read_text())
+    assert "authorization" not in cache_data.get("headers", {})
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +227,6 @@ def test_subprocess_called_when_no_env_token(mock_run, mock_cache_dir, monkeypat
 
     assert result == fallback_token
     mock_run.assert_called_once()
-
 
 
 @patch("otel_helper.__main__.subprocess.run")
