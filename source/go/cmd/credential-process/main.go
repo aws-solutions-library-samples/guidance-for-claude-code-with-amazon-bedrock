@@ -193,6 +193,8 @@ func (a *credentialApp) clearCache() {
 		SessionToken: "EXPIRED", Expiration: "2000-01-01T00:00:00Z",
 	}
 	_ = storage.SaveToCredentialsFile(expired, a.profile)
+	// Clear refresh token
+	storage.ClearRefreshToken(a.profile)
 	fmt.Fprintf(os.Stderr, "Cleared cached credentials for profile '%s'\n", a.profile)
 }
 
@@ -408,6 +410,24 @@ func (a *credentialApp) run() int {
 		return 0
 	}
 
+	// Try refresh_token exchange before falling back to browser auth.
+	// This enables Cowork 3P (Claude Desktop) to refresh silently even after
+	// the id_token expires, since Claude Desktop cannot open a browser popup.
+	if creds := a.tryRefreshToken(); creds != nil {
+		if a.cfg.QuotaAPIEndpoint != "" {
+			token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+			if token != "" {
+				qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
+				if !qr.Allowed {
+					printQuotaBlocked(qr)
+					return 1
+				}
+			}
+		}
+		outputJSON(creds)
+		return 0
+	}
+
 	// Authenticate with OIDC provider (browser popup)
 	debugPrint("Authenticating with %s for profile '%s'...", a.providerType, a.profile)
 	authResult, err := a.authenticate()
@@ -446,6 +466,9 @@ func (a *credentialApp) run() int {
 	// Save monitoring token (non-blocking)
 	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
 		authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
+
+	// Persist refresh_token for silent renewal (Cowork 3P support)
+	_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, authResult.RefreshToken)
 
 	outputJSON(awsCreds)
 	return 0
@@ -564,6 +587,88 @@ func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
 	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
 		token, map[string]interface{}(claims))
 	debugPrint("Silent credential refresh succeeded")
+	return creds
+}
+
+// tryRefreshToken attempts to use a stored OIDC refresh_token to obtain a
+// fresh id_token without browser interaction. This is the key enabler for
+// Cowork 3P (Claude Desktop): after the id_token expires, credential-process
+// can still silently refresh credentials as long as the refresh_token is valid
+// (typically 7-30 days depending on IdP configuration).
+func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
+	refreshToken := storage.LoadRefreshToken(a.profile, a.cfg.CredentialStorage)
+	if refreshToken == "" {
+		debugPrint("No cached refresh_token, cannot refresh silently")
+		return nil
+	}
+
+	debugPrint("Found cached refresh_token, attempting token exchange...")
+
+	// Resolve token endpoint URL
+	var tokenURL string
+	if a.providerType == "generic" {
+		tokenURL = a.cfg.OIDCTokenEndpoint
+	} else {
+		provCfg := provider.ConfigFor(a.providerType, a.cfg.OktaAuthServerID)
+		domain := a.cfg.ProviderDomain
+		tokenURL = "https://" + domain + provCfg.TokenEndpoint
+	}
+
+	// Resolve confidential client auth (Azure secret/cert)
+	confidential, err := a.resolveConfidentialAuth()
+	if err != nil {
+		debugPrint("Failed to resolve confidential auth for refresh: %v", err)
+		return nil
+	}
+
+	// Exchange refresh_token for fresh tokens
+	tokenResp, err := oidc.RefreshTokenExchange(tokenURL, refreshToken, a.cfg.ClientID, confidential)
+	if err != nil {
+		debugPrint("Refresh token exchange failed: %v", err)
+		// Token may be revoked/expired — clear it so we don't retry next time
+		storage.ClearRefreshToken(a.profile)
+		return nil
+	}
+
+	if tokenResp.IDToken == "" {
+		debugPrint("Refresh response did not contain an id_token")
+		return nil
+	}
+
+	// Decode fresh id_token
+	claims, err := jwt.DecodePayload(tokenResp.IDToken)
+	if err != nil {
+		debugPrint("Failed to decode refreshed id_token: %v", err)
+		return nil
+	}
+
+	// Exchange for AWS credentials
+	authResult := &oidc.AuthResult{
+		IDToken:      tokenResp.IDToken,
+		RefreshToken: tokenResp.RefreshToken,
+		TokenClaims:  claims,
+	}
+	creds, err := a.getAWSCredentials(authResult)
+	if err != nil {
+		debugPrint("AWS credential exchange after refresh failed: %v", err)
+		return nil
+	}
+
+	// Save refreshed credentials
+	if saveErr := a.saveCredentials(creds); saveErr != nil {
+		debugPrint("Failed to save refresh-derived credentials: %v", saveErr)
+	}
+
+	// Update monitoring token with fresh id_token
+	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
+		tokenResp.IDToken, map[string]interface{}(claims))
+
+	// Persist rotated refresh_token (some IdPs rotate on every use)
+	if tokenResp.RefreshToken != "" {
+		_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, tokenResp.RefreshToken)
+	}
+
+	debugPrint("Refresh token exchange succeeded — credentials renewed without browser")
 	return creds
 }
 

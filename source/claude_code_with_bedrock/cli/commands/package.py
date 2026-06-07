@@ -2257,6 +2257,9 @@ RUN pyinstaller \
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo "======================================"
 echo "Claude Code Authentication Installer"
 echo "======================================"
@@ -2420,6 +2423,7 @@ if [ -f "$OTEL_BINARY" ]; then
     echo "Installing OTEL helper..."
     cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
     chmod +x ~/claude-code-with-bedrock/otel-helper
+    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
     echo "✓ OTEL helper installed"
 fi
 
@@ -2531,6 +2535,7 @@ echo
 
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
+cd /d "%~dp0"
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}

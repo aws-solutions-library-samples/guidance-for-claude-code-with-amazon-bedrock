@@ -61,3 +61,45 @@ func ExchangeCode(tokenURL, code, redirectURI, clientID, codeVerifier string, co
 
 	return &tokenResp, nil
 }
+
+// RefreshTokenExchange exchanges a refresh_token for fresh tokens at the
+// provider's token endpoint. Returns a new TokenResponse containing a fresh
+// id_token (and possibly a rotated refresh_token). Falls back gracefully:
+// callers should treat any error as "refresh unavailable, try browser auth."
+func RefreshTokenExchange(tokenURL, refreshToken, clientID string, confidential *ConfidentialAuth) (*TokenResponse, error) {
+	form := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+		"client_id":     clientID,
+	}
+	if err := confidential.apply(form, tokenURL, clientID); err != nil {
+		return nil, err
+	}
+	data := url.Values{}
+	for k, v := range form {
+		data.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(tokenURL, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("refresh token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading refresh response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("refresh token exchange failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp TokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("parsing refresh response: %w", err)
+	}
+
+	return &tokenResp, nil
+}
