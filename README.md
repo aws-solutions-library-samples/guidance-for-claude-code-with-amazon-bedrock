@@ -7,7 +7,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 ### For Organizations
 
 - **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, Google, etc.)
-- **AWS SSO / IAM Identity Center**: Native AWS identity path for teams already using IAM Identity Center — no external IdP required
+- **AWS SSO / IAM Identity Center**: Native AWS identity path with per-user quota enforcement and OTEL attribution — no external IdP required
 - **Centralized Access Control**: Manage Claude Code access through your identity provider
 - **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
 - **Usage Monitoring**: Optional CloudWatch dashboards for tracking usage and costs
@@ -137,7 +137,7 @@ This guidance supports three identity paths. All paths deliver per-user identity
 | Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
 |------|--------------------|----------------|----------------|-------------------|----------|
 | **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Azure AD, Auth0, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
-| **AWS IAM Identity Center** | `AWS IAM Identity Center` | `AWSReservedSSO_*` IAM role ARN (email + permission set) | Up to 90 days (recommended: 7 days) | ❌ Not available | Orgs on native AWS identity, or where OIDC localhost callback is blocked |
+| **AWS IAM Identity Center** | `AWS IAM Identity Center` | `AWSReservedSSO_*` IAM role ARN (email in session name) | Up to 90 days (recommended: 7 days) | ✅ Via SigV4 | Orgs on native AWS identity, or where OIDC localhost callback is blocked |
 | **None** | `None` | IAM user ARN or hashed role principal | AWS credential TTL | ❌ Not available | Internal tools / analytics-only deployments |
 
 **Choosing a path:**

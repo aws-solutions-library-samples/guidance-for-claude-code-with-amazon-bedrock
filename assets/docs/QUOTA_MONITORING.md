@@ -540,7 +540,7 @@ The Quota Check API is a secured HTTP endpoint that validates user quotas before
 
 The API requires JWT authentication using your OIDC provider's tokens:
 
-> **IAM Identity Center users**: Quota enforcement uses IAM SigV4 authentication instead of JWT. See [IAM Identity Center Setup](providers/iam-identity-center-setup.md#quota-enforcement) for details.
+> **IAM Identity Center users**: Quota enforcement uses IAM SigV4 authentication instead of JWT. The credential-process signs the quota API request with SigV4 (`execute-api` service). API Gateway validates IAM credentials, and the quota Lambda extracts the user email from the caller ARN session name (`arn:aws:sts::ACCOUNT:assumed-role/Role/user@company.com`). Same per-user DynamoDB lookup and enforcement as OIDC. See [IAM Identity Center Setup](providers/iam-identity-center-setup.md) for details.
 
 - **Authentication**: JWT token in `Authorization: Bearer <token>` header (OIDC) or SigV4-signed request (IDC)
 - **Validation**: API Gateway JWT Authorizer validates the token against your OIDC provider

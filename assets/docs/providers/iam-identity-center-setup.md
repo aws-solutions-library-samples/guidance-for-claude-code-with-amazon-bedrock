@@ -2,6 +2,10 @@
 
 This guide covers setting up Claude Code with Bedrock using AWS IAM Identity Center (formerly AWS SSO) as the authentication method.
 
+## How It Works
+
+IDC uses your existing AWS SSO credentials — no external IdP or JWT tokens needed. The credential-process passes through ambient AWS creds from `aws sso login`, resolves your email from the STS caller ARN session name, writes OTEL attribution headers to a local cache, and checks quota via SigV4-signed API requests.
+
 ## When to Choose IAM Identity Center vs OIDC
 
 ### Choose IAM Identity Center (IDC) when:
@@ -11,18 +15,17 @@ This guide covers setting up Claude Code with Bedrock using AWS IAM Identity Cen
 - You want simplified setup for AWS-first environments
 
 ### Choose OIDC when:
-- You need per-user quota enforcement and monitoring
-- You want detailed user attribution in metrics and logs
 - Your organization uses external identity providers (Okta, Azure AD, etc.)
-- You need fine-grained user access controls and JWT-based authorization
+- You need JWT-based ALB authorization for the OTEL proxy
+- You want token-based session management with refresh tokens
 
 ## What's NOT Supported with IAM Identity Center
 
-⚠️ **Important Limitations:**
+⚠️ **Differences from OIDC:**
 
-1. **No Quota Monitoring**: Per-user token quota enforcement is disabled as it requires JWT tokens from OIDC providers
-2. **Per-User Attribution via STS**: OTEL metrics include user email extracted from the IAM assumed-role session name. This requires IAM Identity Center to use email as the session name (the default). Dashboard per-user widgets work automatically.
-3. **No JWT Authorization**: The quota monitoring API Gateway cannot validate requests without an OIDC issuer
+1. **Quota via SigV4**: Per-user quota enforcement works via IAM SigV4 authentication (not JWT). The quota Lambda extracts user email from the assumed-role ARN session name. Requires the quota-monitoring stack to be deployed.
+2. **Per-User OTEL Attribution**: Works automatically — credential-process writes user email to the OTEL cache from the STS caller ARN. Requires email as the IDC session name (the default).
+3. **No ALB JWT Authorization**: The OTEL proxy (central mode) cannot validate requests via JWT. Use sidecar mode, or accept unauthenticated OTEL ingestion in proxy mode.
 
 ## Prerequisites
 
@@ -115,14 +118,24 @@ Example session settings:
 
 ## Per-User Cost Attribution
 
-IDC users get per-user OTEL attribution automatically. The credential-process
-extracts the user email from the STS assumed-role ARN session name and writes
-it to the OTEL cache. Dashboard widgets (Token Usage by User, Active Users)
-work without additional configuration.
+IDC users get per-user OTEL attribution automatically. The credential-process extracts the user email from the STS assumed-role ARN session name and writes it to the OTEL cache. Dashboard widgets (Token Usage by User, Active Users) work without additional configuration.
 
-**Requirement:** IAM Identity Center must use email as the session name (this
-is the default). The ARN format must be:
+**Requirement:** IAM Identity Center must use email as the session name (the default). The ARN format must be:
 `arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com`
+
+### Verifying Attribution
+
+```bash
+# Confirm email is in your ARN
+aws sts get-caller-identity --profile ClaudeCode
+# Look for: "Arn": "arn:aws:sts::123456789012:assumed-role/.../user@company.com"
+
+# Check the OTEL cache was written (after first credential-process invocation)
+cat ~/.ccwb/otel-cache/*.json
+# Should show: {"x-user-email": "user@company.com", ...}
+```
+
+If your ARN shows a session ID instead of email, update your IDC session name configuration in the IAM Identity Center console under Settings → Session settings.
 
 For additional cost tracking via CloudTrail:
 
