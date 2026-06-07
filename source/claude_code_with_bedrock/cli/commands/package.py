@@ -206,34 +206,42 @@ class PackageCommand(Command):
             return 1
 
         # Get actual Identity Pool ID or Role ARN from stack outputs
-        console.print("[yellow]Fetching deployment information...[/yellow]")
-        stack_outputs = get_stack_outputs(
-            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-        )
-
-        if not stack_outputs:
-            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-            return 1
-
-        # Check federation type and get appropriate identifier
-        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+        # If identity_pool_id is already set in profile (e.g. imported config), skip stack query
         identity_pool_id = None
         federated_role_arn = None
+        federation_type = profile.federation_type
 
-        if federation_type == "direct":
-            # Try DirectSTSRoleArn first (both old and new templates have this for direct mode)
-            # Then fallback to FederatedRoleArn (new templates)
-            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                federated_role_arn = stack_outputs.get("FederatedRoleArn")
-            if not federated_role_arn or federated_role_arn == "N/A":
-                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                return 1
+        if hasattr(profile, "identity_pool_id") and getattr(profile, "identity_pool_id", None):
+            identity_pool_id = profile.identity_pool_id
+            console.print(f"[green]Using identity pool ID from profile: {identity_pool_id}[/green]")
+        elif hasattr(profile, "federated_role_arn") and getattr(profile, "federated_role_arn", None):
+            federated_role_arn = profile.federated_role_arn
+            console.print(f"[green]Using federated role ARN from profile: {federated_role_arn}[/green]")
         else:
-            identity_pool_id = stack_outputs.get("IdentityPoolId")
-            if not identity_pool_id:
-                console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            console.print("[yellow]Fetching deployment information...[/yellow]")
+            stack_outputs = get_stack_outputs(
+                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+            )
+
+            if not stack_outputs:
+                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
                 return 1
+
+            # Check federation type and get appropriate identifier
+            federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+            if federation_type == "direct":
+                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
+                if not federated_role_arn or federated_role_arn == "N/A":
+                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                    return 1
+            else:
+                identity_pool_id = stack_outputs.get("IdentityPoolId")
+                if not identity_pool_id:
+                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+                    return 1
 
         # Welcome
         console.print(
