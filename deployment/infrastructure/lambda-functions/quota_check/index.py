@@ -1,13 +1,18 @@
 # ABOUTME: Lambda function for real-time quota checking before credential issuance
 # ABOUTME: Returns allowed/blocked status based on user quota policy and current usage
+# ABOUTME: Supports two modes: 'token' (raw token counting) and 'cost' (dollar-based)
 # ABOUTME: Requires JWT authentication - extracts user identity from API Gateway JWT Authorizer claims
 
 import json
+import sys
 import boto3
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from boto3.dynamodb.conditions import Key, Attr
+
+# Add shared utilities to path (deployed alongside this Lambda)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Initialize clients
 dynamodb = boto3.resource("dynamodb")
@@ -20,10 +25,16 @@ POLICIES_TABLE = os.environ.get("POLICIES_TABLE", "QuotaPolicies")
 MISSING_EMAIL_ENFORCEMENT = os.environ.get("MISSING_EMAIL_ENFORCEMENT", "block")
 ERROR_HANDLING_MODE = os.environ.get("ERROR_HANDLING_MODE", "fail_closed")
 
+# Quota mode: 'token' (default, existing) or 'cost' (dollar-based)
+QUOTA_MODE = os.environ.get("QUOTA_MODE", "token")
+
 # Default limits from environment (used when fine-grained quotas are disabled)
 ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", "0"))
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "0"))
+# Cost-mode limits (USD, as cents in env var to avoid float parsing issues)
+MONTHLY_COST_LIMIT = float(os.environ.get("MONTHLY_COST_LIMIT_USD", "0"))
+DAILY_COST_LIMIT = float(os.environ.get("DAILY_COST_LIMIT_USD", "0"))
 MONTHLY_ENFORCEMENT_MODE = os.environ.get("MONTHLY_ENFORCEMENT_MODE", "block")
 DAILY_ENFORCEMENT_MODE = os.environ.get("DAILY_ENFORCEMENT_MODE", "alert")
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
@@ -130,35 +141,24 @@ def lambda_handler(event, context):
                 "message": "Access granted - enforcement mode is alert-only"
             })
 
-        # 5. Check limits (monthly, daily)
-        monthly_tokens = usage.get("total_tokens", 0)
-        daily_tokens = usage.get("daily_tokens", 0)
+        # 5. Check limits (monthly, daily) — token mode or cost mode
+        if QUOTA_MODE == "cost":
+            # Cost-based enforcement: convert tokens to USD, compare against $ limits
+            cost_data = _calculate_usage_cost(usage)
+            monthly_cost = cost_data["monthly_cost"]
+            daily_cost = cost_data["daily_cost"]
 
-        monthly_limit = policy.get("monthly_token_limit", 0)
-        daily_limit = policy.get("daily_token_limit")
+            monthly_cost_limit = policy.get("monthly_cost_limit", MONTHLY_COST_LIMIT)
+            daily_cost_limit = policy.get("daily_cost_limit", DAILY_COST_LIMIT)
 
-        # Check monthly token limit
-        if monthly_limit > 0 and monthly_tokens >= monthly_limit:
-            return build_response(200, {
-                "allowed": False,
-                "reason": "monthly_exceeded",
-                "enforcement_mode": enforcement_mode,
-                "usage": usage_summary,
-                "policy": {
-                    "type": policy.get("policy_type"),
-                    "identifier": policy.get("identifier")
-                },
-                "unblock_status": {"is_unblocked": False},
-                "message": f"Monthly quota exceeded: {int(monthly_tokens):,} / {int(monthly_limit):,} tokens ({monthly_tokens/monthly_limit*100:.1f}%). Contact your administrator for assistance."
-            })
+            # Enrich usage summary with cost data
+            usage_summary["monthly_cost_usd"] = round(monthly_cost, 4)
+            usage_summary["daily_cost_usd"] = round(daily_cost, 4)
 
-        # Check daily token limit (if configured)
-        if daily_limit and daily_limit > 0 and daily_tokens >= daily_limit:
-            daily_mode = policy.get("daily_enforcement_mode", "alert")
-            if daily_mode == "block":
+            if monthly_cost_limit > 0 and monthly_cost >= monthly_cost_limit:
                 return build_response(200, {
                     "allowed": False,
-                    "reason": "daily_exceeded",
+                    "reason": "monthly_cost_exceeded",
                     "enforcement_mode": enforcement_mode,
                     "usage": usage_summary,
                     "policy": {
@@ -166,8 +166,63 @@ def lambda_handler(event, context):
                         "identifier": policy.get("identifier")
                     },
                     "unblock_status": {"is_unblocked": False},
-                    "message": f"Daily quota exceeded: {int(daily_tokens):,} / {int(daily_limit):,} tokens ({daily_tokens/daily_limit*100:.1f}%). Quota resets at UTC midnight."
+                    "message": f"Monthly spend limit exceeded: ${monthly_cost:.2f} / ${monthly_cost_limit:.2f} ({monthly_cost/monthly_cost_limit*100:.1f}%). Contact your administrator."
                 })
+
+            if daily_cost_limit > 0 and daily_cost >= daily_cost_limit:
+                daily_mode = policy.get("daily_enforcement_mode", "alert")
+                if daily_mode == "block":
+                    return build_response(200, {
+                        "allowed": False,
+                        "reason": "daily_cost_exceeded",
+                        "enforcement_mode": enforcement_mode,
+                        "usage": usage_summary,
+                        "policy": {
+                            "type": policy.get("policy_type"),
+                            "identifier": policy.get("identifier")
+                        },
+                        "unblock_status": {"is_unblocked": False},
+                        "message": f"Daily spend limit exceeded: ${daily_cost:.2f} / ${daily_cost_limit:.2f} ({daily_cost/daily_cost_limit*100:.1f}%). Resets at UTC midnight."
+                    })
+        else:
+            # Token-based enforcement (existing behavior, unchanged)
+            monthly_tokens = usage.get("total_tokens", 0)
+            daily_tokens = usage.get("daily_tokens", 0)
+
+            monthly_limit = policy.get("monthly_token_limit", 0)
+            daily_limit = policy.get("daily_token_limit")
+
+            # Check monthly token limit
+            if monthly_limit > 0 and monthly_tokens >= monthly_limit:
+                return build_response(200, {
+                    "allowed": False,
+                    "reason": "monthly_exceeded",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {
+                        "type": policy.get("policy_type"),
+                        "identifier": policy.get("identifier")
+                    },
+                    "unblock_status": {"is_unblocked": False},
+                    "message": f"Monthly quota exceeded: {int(monthly_tokens):,} / {int(monthly_limit):,} tokens ({monthly_tokens/monthly_limit*100:.1f}%). Contact your administrator for assistance."
+                })
+
+            # Check daily token limit (if configured)
+            if daily_limit and daily_limit > 0 and daily_tokens >= daily_limit:
+                daily_mode = policy.get("daily_enforcement_mode", "alert")
+                if daily_mode == "block":
+                    return build_response(200, {
+                        "allowed": False,
+                        "reason": "daily_exceeded",
+                        "enforcement_mode": enforcement_mode,
+                        "usage": usage_summary,
+                        "policy": {
+                            "type": policy.get("policy_type"),
+                            "identifier": policy.get("identifier")
+                        },
+                        "unblock_status": {"is_unblocked": False},
+                        "message": f"Daily quota exceeded: {int(daily_tokens):,} / {int(daily_limit):,} tokens ({daily_tokens/daily_limit*100:.1f}%). Quota resets at UTC midnight."
+                    })
 
         # All checks passed - access allowed
         return build_response(200, {
@@ -199,6 +254,54 @@ def lambda_handler(event, context):
             "unblock_status": None,
             "message": f"Quota check failed ({ERROR_HANDLING_MODE}): {str(e)}"
         })
+
+
+def _calculate_usage_cost(usage: dict, model_family: str = "sonnet") -> dict:
+    """Calculate cost from usage data for cost-mode enforcement.
+
+    Uses the shared pricing utility to convert token counts to USD.
+    DynamoDB stores: input_tokens, output_tokens, cache_tokens (cache_read).
+    Cache write is derived: total - input - output - cache_read.
+
+    Returns: {"monthly_cost": float, "daily_cost": float}
+    """
+    try:
+        from shared.pricing import calculate_cost, get_pricing_rates
+        rates = get_pricing_rates()
+    except ImportError:
+        # Shared pricing not deployed — fall back to simple estimate
+        # Use sonnet input rate as approximation
+        total_monthly = usage.get("total_tokens", 0)
+        total_daily = usage.get("daily_tokens", 0)
+        return {
+            "monthly_cost": (total_monthly / 1_000_000) * 3.0,
+            "daily_cost": (total_daily / 1_000_000) * 3.0,
+        }
+
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read_tokens = usage.get("cache_tokens", 0)
+    total_tokens = usage.get("total_tokens", 0)
+    # Derive cache_write: total minus known types
+    cache_write_tokens = max(0, total_tokens - input_tokens - output_tokens - cache_read_tokens)
+
+    tokens_by_type = {
+        "input": input_tokens,
+        "output": output_tokens,
+        "cache_read": cache_read_tokens,
+        "cache_write": cache_write_tokens,
+    }
+    monthly_cost = calculate_cost(tokens_by_type, model_family, rates)
+
+    # For daily, scale proportionally (DynamoDB only stores daily total, not per-type)
+    daily_tokens = usage.get("daily_tokens", 0)
+    if total_tokens > 0:
+        daily_ratio = daily_tokens / total_tokens
+        daily_cost = monthly_cost * daily_ratio
+    else:
+        daily_cost = 0.0
+
+    return {"monthly_cost": monthly_cost, "daily_cost": daily_cost}
 
 
 def build_response(status_code: int, body: dict) -> dict:

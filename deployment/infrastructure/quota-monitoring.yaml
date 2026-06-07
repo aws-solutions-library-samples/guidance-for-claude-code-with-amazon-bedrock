@@ -426,6 +426,9 @@ Resources:
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
+          QUOTA_MODE: !Ref QuotaMode
+          MONTHLY_COST_LIMIT_USD: !Ref MonthlyCostLimitUsd
+          DAILY_COST_LIMIT_USD: !Ref DailyCostLimitUsd
       Code: ./lambda-functions/quota_check/
 
   # HTTP API Gateway (v2 - cheaper and faster than REST API)
