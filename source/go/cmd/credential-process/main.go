@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"ccwb-go/internal/config"
 	"ccwb-go/internal/federation"
@@ -202,7 +207,17 @@ func (a *credentialApp) getMonitoringToken() int {
 	debugPrint("No valid monitoring token found, triggering authentication...")
 	authResult, err := a.authenticate()
 	if err != nil {
-		debugPrint("Authentication failed: %v", err)
+		// IDC/no-SSO path: OIDC auth not available.
+		// Fall back to writing OTEL cache from STS caller identity so
+		// the otel-helper can serve user attribution headers without a JWT.
+		debugPrint("OIDC authentication not available: %v", err)
+		debugPrint("Attempting STS identity resolution for OTEL attribution...")
+		if a.writeOtelCacheFromSTS() {
+			// Return empty token — otel-helper will use the cached headers
+			// from Layer 1 (file cache) on next invocation.
+			fmt.Println("")
+			return 0
+		}
 		return 1
 	}
 
@@ -574,6 +589,73 @@ func (a *credentialApp) performQuotaRecheck() {
 	if !qr.Allowed {
 		printQuotaBlocked(qr)
 	}
+}
+
+// writeOtelCacheFromSTS resolves user identity via STS GetCallerIdentity and
+// writes OTEL attribution headers to the cache file. This enables OTEL user
+// attribution for IDC users who don't have a JWT token.
+//
+// The email is extracted from the assumed-role ARN session name:
+//   arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
+//
+// Returns true if the cache was written successfully.
+func (a *credentialApp) writeOtelCacheFromSTS() bool {
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		debugPrint("Could not load AWS config for STS: %v", err)
+		return false
+	}
+
+	stsClient := sts.NewFromConfig(cfg)
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		debugPrint("GetCallerIdentity failed: %v", err)
+		return false
+	}
+
+	// Extract email from ARN: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION_NAME
+	arn := ""
+	if identity.Arn != nil {
+		arn = *identity.Arn
+	}
+	email := extractEmailFromARN(arn)
+	if email == "" {
+		debugPrint("Could not extract email from ARN: %s", arn)
+		return false
+	}
+
+	debugPrint("Resolved user email from STS: %s", email)
+
+	// Build OTEL headers with the resolved email
+	userInfo := otel.UserInfo{Email: email}
+	headers := otel.FormatHeaders(userInfo)
+
+	// Cache for 1 hour (IDC sessions are typically longer)
+	expiry := time.Now().Add(1 * time.Hour).Unix()
+	if err := otel.WriteCachedHeaders(a.profile, headers, expiry); err != nil {
+		debugPrint("Failed to write OTEL cache: %v", err)
+		return false
+	}
+
+	debugPrint("Wrote OTEL attribution cache for IDC user: %s", email)
+	return true
+}
+
+// extractEmailFromARN extracts the session name (typically email) from an
+// assumed-role ARN. Format: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION
+func extractEmailFromARN(arn string) string {
+	// Split on "/" — assumed-role ARNs have: assumed-role/RoleName/SessionName
+	parts := strings.Split(arn, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	sessionName := parts[len(parts)-1]
+	// Only return if it looks like an email (contains @)
+	if strings.Contains(sessionName, "@") {
+		return sessionName
+	}
+	return ""
 }
 
 func printQuotaBlocked(qr *quota.Result) {
