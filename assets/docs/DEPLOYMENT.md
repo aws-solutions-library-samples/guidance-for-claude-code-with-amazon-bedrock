@@ -59,30 +59,25 @@ With infrastructure deployed, you're ready to create the package that end users 
 
 ### Multi-Platform Build Support
 
-Claude Code supports building for all major platforms:
+The packaging system uses Go cross-compilation to produce native binaries for all platforms from a single machine:
 
 ```bash
-# Build for all platforms (recommended)
-poetry run ccwb package --target-platform=all
-
-# Build for specific platforms
-poetry run ccwb package --target-platform=windows    # Windows via CodeBuild
-poetry run ccwb package --target-platform=macos      # Current macOS architecture
-poetry run ccwb package --target-platform=linux      # Linux via Docker
+# Build for all platforms (recommended — works from any OS)
+poetry run ccwb package --go --target-platform all
 ```
 
-**Build Modes:**
+This single command:
+- Cross-compiles Go binaries for all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows x64)
+- Generates customer-specific `config.json` and `settings.json` from your deployment profile
+- Includes `otel-helper` binary if monitoring is enabled
+- Produces ready-to-distribute install packages with platform-specific installers
 
-| Mode | Flag | Requirements | Best for |
-|---|---|---|---|
-| **Go cross-compile** (recommended) | `--go` | Go 1.24+ installed | All admins — fast, all platforms from one machine |
-| **Legacy** | (none) | PyInstaller, Docker, CodeBuild | Backward compatibility with Python binaries |
+**Requirements:** Go 1.24+ installed. Go supports native cross-compilation, so all 5 platform binaries are produced from any single machine (macOS, Linux, or Windows) without Docker or CodeBuild. Build time: ~10 seconds for all platforms.
 
-With `--go`, all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows) are always available regardless of the admin's OS. No Docker, CodeBuild, or platform-specific toolchains required.
+> **Legacy mode:** Running `ccwb package` without `--go` uses the PyInstaller/Nuitka/Docker/CodeBuild pipeline. This is retained for backward compatibility.
 
-This command reads federation configuration from the admin profile (saved during `ccwb deploy`), cross-compiles native Go binaries, and generates customer-specific `config.json` and `settings.json` files.
-
-**Legacy build mode (PyInstaller / Nuitka / Docker):**
+<details>
+<summary>Legacy build mode details</summary>
 
 PyInstaller emits binaries in the host OS's native format, so the build host must match the target OS. Only Windows (via CodeBuild) escapes this constraint.
 
@@ -92,19 +87,13 @@ PyInstaller emits binaries in the host OS's native format, so the build host mus
 | `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container when building from macOS) |
 | `windows` | any host | AWS CodeBuild (remote) |
 
-**Linux admins cannot produce macOS binaries** — see [CLI Reference: Platform Support](CLI_REFERENCE.md#platform-support-hybrid-build-system) for details. The package command refuses this combination with a clear error; to produce macOS binaries use a macOS workstation, a CI macOS runner, or an EC2 Mac instance.
-
 - **Windows**: Uses Nuitka via AWS CodeBuild
-  - Optimized for performance and minimal antivirus false positives
-- **macOS**: Uses PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
-  - Intel: Runs natively on Intel Macs and on Apple Silicon via Rosetta — covers all Mac users with one binary
-  - Cross-arch: **Optional** — build the other architecture from your current Mac; requires a universal2 Python (see below)
+- **macOS**: Uses PyInstaller with architecture-specific builds (ARM64 or Intel)
 - **Linux x64/ARM64**: Uses PyInstaller in Docker containers (cross-compiled from macOS)
-  - Automatically builds both architectures when Docker is available
-  - Docker Desktop handles architecture emulation via Rosetta
-  - **When building from macOS, requires Docker Desktop installed and running** — if absent, Linux builds are skipped with a warning and all other platforms continue normally
-  - macOS and Windows builds have no dependency on Docker
+
+**Linux admins cannot produce macOS binaries** — the package command refuses this combination with a clear error.
+
+</details>
 
 **Which macOS binary should you ship?**
 
