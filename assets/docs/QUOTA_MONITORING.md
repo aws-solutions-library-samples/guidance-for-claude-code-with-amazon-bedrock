@@ -682,6 +682,14 @@ via the `EnableBypassDetection` parameter on the quota stack. In central mode th
 collector runs server-side (users cannot stop it), so this control is disabled
 automatically.
 
+```bash
+# Enable during init
+ccwb init  # Select "Yes" for bypass detection when prompted (sidecar mode)
+
+# Or enable on existing deployment
+ccwb deploy quota --parameters EnableBypassDetection=true
+```
+
 | Parameter | Default | Description |
 | --- | --- | --- |
 | EnableBypassDetection | false | Enable sidecar bypass detection (sidecar mode) |
@@ -694,6 +702,9 @@ automatically.
   logging (server-side) — a larger change tracked as a future enhancement.
 - Relies on Bedrock runtime calls being present in CloudTrail management events
   (the default). Detection lag is one schedule interval (15 minutes).
+- Alerts fire every schedule interval (15 min) while bypass is active. To reduce
+  notification frequency, create a CloudWatch Alarm on `SidecarStoppedUserCount`
+  with a longer evaluation period (e.g., 1 hour) instead of relying on raw SNS.
 
 ## Current Limitations
 
