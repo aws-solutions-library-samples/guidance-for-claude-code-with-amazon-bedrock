@@ -43,7 +43,7 @@ Resources:
                 "title": "Active Users",
                 "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Users" }] },
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\", \"user.id\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Users" }] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
@@ -124,7 +124,7 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\", \"user.id\")({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
@@ -137,7 +137,7 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\")({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"user.email\", \"user.id\")({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
                 ] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
@@ -150,7 +150,7 @@ Resources:
                 "view": "line",
                 "region": "${MetricsRegion}",
                 "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Active Users" }
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.email\", \"user.id\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60, "label": "Active Users" }
                 ] },
                 "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
