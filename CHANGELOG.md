@@ -1,5 +1,9 @@
 # Changelog
 
+> **Note:** Starting with v3.0.0, release notes are published on
+> [GitHub Releases](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases).
+> This file is retained for historical reference only.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
