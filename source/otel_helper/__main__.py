@@ -624,6 +624,30 @@ def create_anonymous_user_info(caller_identity=None):
         }
 
 
+def build_proxy_user_headers() -> dict:
+    """Return enrichment headers (identity + Bearer) for the OTLP proxy.
+
+    Module-level so tests can call it directly without binding a real socket via
+    run_proxy(). Includes the Bearer token so the upstream ALB jwt-validation
+    action accepts forwarded requests.
+    """
+    token = None
+    if not ANONYMOUS_MODE:
+        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+
+    if token:
+        payload = decode_jwt_payload(token)
+        user_info = extract_user_info(payload)
+    else:
+        caller_identity = get_aws_caller_identity()
+        user_info = create_anonymous_user_info(caller_identity)
+
+    headers = format_as_headers_dict(user_info)
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
 def run_proxy(target_url: str, port: int = 4318):
     """Run a local OTLP proxy that injects user identity headers before forwarding.
 
@@ -640,28 +664,6 @@ def run_proxy(target_url: str, port: int = 4318):
     target_url = target_url.rstrip("/")
     logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
 
-    def get_user_headers():
-        """Return enrichment headers derived from the cached monitoring token."""
-        token = None
-        if not ANONYMOUS_MODE:
-            token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
-
-        if token:
-            payload = decode_jwt_payload(token)
-            user_info = extract_user_info(payload)
-        else:
-            caller_identity = get_aws_caller_identity()
-            user_info = create_anonymous_user_info(caller_identity)
-
-        headers = format_as_headers_dict(user_info)
-
-        # Include Bearer token for ALB JWT validation.
-        # The proxy forwards to the remote ALB which may have jwt-validation enabled.
-        if token:
-            headers["authorization"] = f"Bearer {token}"
-
-        return headers
-
     # Pre-fetch headers once at startup; refresh on each request so token
     # rotations are picked up without restarting the proxy.
     _header_cache = {"headers": {}, "fetched_at": 0}
@@ -671,7 +673,7 @@ def run_proxy(target_url: str, port: int = 4318):
         now = time.time()
         if now - _header_cache["fetched_at"] > _HEADER_REFRESH_SECONDS:
             try:
-                _header_cache["headers"] = get_user_headers()
+                _header_cache["headers"] = build_proxy_user_headers()
                 _header_cache["fetched_at"] = now
             except Exception as e:
                 logger.warning(f"Could not refresh user headers: {e}")
@@ -822,6 +824,19 @@ def main():
     if not TEST_MODE:
         cached_headers = read_cached_headers()
         if cached_headers is not None:
+            # Resolve Bearer fresh — the cache stores attribution headers only,
+            # never the token itself. Try env var (free) then credential-process (~20ms).
+            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+            if _bearer_token:
+                cached_headers["authorization"] = f"Bearer {_bearer_token}"
+            else:
+                # No token from env var or credential-process. Emit cached attribution
+                # anyway (otelHeadersHelper contract), but log so an ALB 401 is
+                # diagnosable instead of silent — Layer 3 logs the same way.
+                logger.info(
+                    "Layer 1 cache hit but no Bearer token available "
+                    "(env var empty, credential-process failed); emitting headers without authorization"
+                )
             print(json.dumps(cached_headers))
             return 0
         logger.info("Cache expired or missing, refreshing via credential-process")
@@ -856,6 +871,11 @@ def main():
         headers_dict = format_as_headers_dict(user_info)
         # In test mode, print detailed output
         if TEST_MODE:
+            # Show the Bearer in --test output (parity with the Go helper, which adds
+            # it before printTestOutput). Added only on this branch — test mode never
+            # writes the cache, so the token stays off disk.
+            if token:
+                headers_dict["authorization"] = f"Bearer {token}"
             print("===== TEST MODE OUTPUT =====\n")
             if token:
                 print("Mode: Authenticated (JWT Token)")
@@ -893,7 +913,8 @@ def main():
             print("\n========================")
         else:
             # Normal mode: Output as JSON (flat object with string values)
-            # Cache attribution headers only — never persist Bearer token to disk.
+            # Cache attribution headers only — Bearer token must never be persisted
+            # to the plaintext cache file. Add it to output AFTER the cache write.
             if token:
                 token_exp = payload.get("exp")
                 if token_exp:
@@ -903,13 +924,8 @@ def main():
             else:
                 # Anonymous mode: cache with a synthetic TTL (5 minutes)
                 write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
-
-            # Add Bearer token AFTER cache write — output only, never persisted.
-            # Enables ALB JWT validation (PR #129 / issue #126) while keeping
-            # the sensitive token out of the plaintext cache file.
             if token:
                 headers_dict["authorization"] = f"Bearer {token}"
-
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

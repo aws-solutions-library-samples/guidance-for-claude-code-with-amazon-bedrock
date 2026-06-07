@@ -73,12 +73,18 @@ func run(testMode bool) int {
 		headers, err := otel.ReadCachedHeaders(profile)
 		if err == nil && headers != nil {
 			debugPrint("Using cached OTEL headers (token still valid)")
-			// Resolve a Bearer token for ALB JWT validation.
-			// Try env var (free) then credential-process cache (fast ~20ms).
+			// Resolve Bearer fresh — the cache stores attribution headers only,
+			// never the token itself. Try env var (free) then credential-process (~20ms).
 			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" {
 				headers["authorization"] = "Bearer " + t
 			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
 				headers["authorization"] = "Bearer " + t
+			} else {
+				// No token from env var or credential-process. Emit cached attribution
+				// anyway (otelHeadersHelper contract), but log so an ALB 401 is
+				// diagnosable instead of silent — the no-token path below logs the same way.
+				debugPrint("Layer 1 cache hit but no Bearer token available " +
+					"(env var empty, credential-process failed); emitting headers without authorization")
 			}
 			outputJSON(headers)
 			return 0
@@ -126,13 +132,12 @@ func run(testMode bool) int {
 	headers := otel.FormatHeaders(userInfo)
 
 	if testMode {
-		// Include bearer in test output for visibility
+		// Include Bearer in test output so --test shows the full header set.
 		headers["authorization"] = "Bearer " + token
 		printTestOutput(userInfo, headers)
 	} else {
-		// Cache attribution headers only — never persist the Bearer token to disk.
-		// The token is sensitive and the cache file has weaker protection than
-		// the keyring/credential-process chain that issued it.
+		// Cache attribution headers only — Bearer token must never be persisted
+		// to the plaintext cache file. Add it to output AFTER the cache write.
 		tokenExp := int64(claims.GetFloat("exp"))
 		if tokenExp > 0 {
 			if err := otel.WriteCachedHeaders(profile, headers, tokenExp); err != nil {
@@ -141,10 +146,6 @@ func run(testMode bool) int {
 		} else {
 			debugPrint("JWT has no exp claim, skipping cache write")
 		}
-
-		// Add Bearer token AFTER cache write — output only, never persisted.
-		// This enables ALB JWT validation (PR #129 / issue #126) while keeping
-		// the sensitive token out of the plaintext cache file.
 		headers["authorization"] = "Bearer " + token
 		outputJSON(headers)
 	}
