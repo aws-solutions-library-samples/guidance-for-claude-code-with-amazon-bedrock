@@ -2532,6 +2532,7 @@ echo
 
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
+cd /d "%~dp0"
 REM Claude Code Authentication Installer for Windows
 REM Organization: {profile.provider_domain}
 REM Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
