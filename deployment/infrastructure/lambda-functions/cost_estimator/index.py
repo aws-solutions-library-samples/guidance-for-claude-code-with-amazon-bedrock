@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 
 # Import shared pricing utility (deployed alongside this Lambda)
-from shared.pricing import calculate_cost, get_model_family, get_pricing_rates
+from shared.pricing import calculate_cost, get_model_family, get_pricing_rates, is_cross_region
 
 # CloudWatch namespace for Claude Code metrics
 NAMESPACE = os.environ.get("METRICS_NAMESPACE", "ClaudeCode")
@@ -158,7 +158,7 @@ def lambda_handler(event, context):
                 continue
 
             family = get_model_family(model)
-            cost = calculate_cost(tokens_by_type, family, rates)
+            cost = calculate_cost(tokens_by_type, family, rates, model_id=model)
 
             if cost > 0:
                 user_cost += cost
