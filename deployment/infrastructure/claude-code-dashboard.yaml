@@ -156,13 +156,83 @@ Resources:
               }
             },
             {
+            {
+              "type": "text",
+              "x": 0, "y": 26, "width": 24, "height": 2,
+              "properties": { "markdown": "## Estimated Cost\n\nEstimates based on Bedrock on-demand rates. Use AWS Cost Explorer for billing truth.", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 28, "width": 8, "height": 4,
+              "properties": {
+                "title": "Total Estimated Cost",
+                "view": "sparkline",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.cost.estimated.total\", \"@resource.service.name\"=\"claude-code\"})", "step": 3600, "label": "$" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 8, "y": 28, "width": 8, "height": 4,
+              "properties": {
+                "title": "Avg Cost per User",
+                "view": "sparkline",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "avg(sum by (\"user.email\")({\"claude_code.cost.estimated.total\", \"@resource.service.name\"=\"claude-code\"}))", "step": 3600, "label": "$/user" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 16, "y": 28, "width": 8, "height": 4,
+              "properties": {
+                "title": "Top Spender",
+                "view": "sparkline",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "max(sum by (\"user.email\")({\"claude_code.cost.estimated.total\", \"@resource.service.name\"=\"claude-code\"}))", "step": 3600, "label": "$" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 32, "width": 12, "height": 6,
+              "properties": {
+                "title": "Cost Over Time",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.cost.estimated.total\", \"@resource.service.name\"=\"claude-code\"})", "step": 3600, "label": "Total $" }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 32, "width": 12, "height": 6,
+              "properties": {
+                "title": "Cost by User (Top 10)",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user.email\")({\"claude_code.cost.estimated\", \"@resource.service.name\"=\"claude-code\"}))", "step": 3600 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
               "type": "text",
               "x": 0, "y": 26, "width": 24, "height": 2,
               "properties": { "markdown": "## Developer Productivity", "background": "transparent" }
             },
             {
               "type": "chart",
-              "x": 0, "y": 28, "width": 6, "height": 6,
+              "x": 0, "y": 40, "width": 6, "height": 6,
               "properties": {
                 "title": "Lines of Code",
                 "view": "line",
@@ -176,7 +246,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 6, "y": 28, "width": 6, "height": 6,
+              "x": 6, "y": 40, "width": 6, "height": 6,
               "properties": {
                 "title": "Commits",
                 "view": "line",
@@ -189,7 +259,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 12, "y": 28, "width": 6, "height": 6,
+              "x": 12, "y": 40, "width": 6, "height": 6,
               "properties": {
                 "title": "Active Hours",
                 "view": "line",
@@ -202,7 +272,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 18, "y": 28, "width": 6, "height": 6,
+              "x": 18, "y": 40, "width": 6, "height": 6,
               "properties": {
                 "title": "Pull Requests",
                 "view": "line",
@@ -215,7 +285,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 0, "y": 34, "width": 8, "height": 6,
+              "x": 0, "y": 46, "width": 8, "height": 6,
               "properties": {
                 "title": "Code Generation by Language",
                 "view": "pie",
@@ -228,7 +298,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 8, "y": 34, "width": 8, "height": 6,
+              "x": 8, "y": 46, "width": 8, "height": 6,
               "properties": {
                 "title": "Code Edit Decisions",
                 "view": "line",
@@ -241,7 +311,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 16, "y": 34, "width": 8, "height": 6,
+              "x": 16, "y": 46, "width": 8, "height": 6,
               "properties": {
                 "title": "Code Edits by Tool",
                 "view": "line",
@@ -254,12 +324,12 @@ Resources:
             },
             {
               "type": "text",
-              "x": 0, "y": 40, "width": 24, "height": 2,
+              "x": 0, "y": 52, "width": 24, "height": 2,
               "properties": { "markdown": "## Organizational Breakdown", "background": "transparent" }
             },
             {
               "type": "chart",
-              "x": 0, "y": 42, "width": 12, "height": 6,
+              "x": 0, "y": 54, "width": 12, "height": 6,
               "properties": {
                 "title": "Token Usage by Department",
                 "view": "line",
@@ -272,7 +342,7 @@ Resources:
             },
             {
               "type": "chart",
-              "x": 12, "y": 42, "width": 12, "height": 6,
+              "x": 12, "y": 54, "width": 12, "height": 6,
               "properties": {
                 "title": "Token Usage by Team",
                 "view": "line",
@@ -285,12 +355,12 @@ Resources:
             },
             {
               "type": "text",
-              "x": 0, "y": 48, "width": 24, "height": 2,
+              "x": 0, "y": 60, "width": 24, "height": 2,
               "properties": { "markdown": "## Bedrock API Health", "background": "transparent" }
             },
             {
               "type": "metric",
-              "x": 0, "y": 50, "width": 8, "height": 6,
+              "x": 0, "y": 62, "width": 8, "height": 6,
               "properties": {
                 "metrics": [
                   [ { "expression": "SELECT SUM(InvocationThrottles) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "throttles", "region": "${MetricsRegion}" } ]
@@ -303,7 +373,7 @@ Resources:
             },
             {
               "type": "metric",
-              "x": 8, "y": 50, "width": 8, "height": 6,
+              "x": 8, "y": 62, "width": 8, "height": 6,
               "properties": {
                 "metrics": [
                   [ { "expression": "SELECT SUM(InvocationClientErrors) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "client_errors", "region": "${MetricsRegion}" } ]
@@ -316,7 +386,7 @@ Resources:
             },
             {
               "type": "metric",
-              "x": 16, "y": 50, "width": 8, "height": 6,
+              "x": 16, "y": 62, "width": 8, "height": 6,
               "properties": {
                 "metrics": [
                   [ { "expression": "SELECT SUM(InvocationServerErrors) FROM \"AWS/Bedrock\" GROUP BY ModelId", "id": "server_errors", "region": "${MetricsRegion}" } ]
