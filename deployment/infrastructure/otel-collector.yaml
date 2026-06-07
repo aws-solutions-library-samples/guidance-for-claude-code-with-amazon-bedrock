@@ -409,6 +409,9 @@ Resources:
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
+                  - key: project
+                    from_context: metadata.x-project
+                    action: upsert
                   - key: organization
                     from_context: metadata.x-organization
                     action: upsert
@@ -522,6 +525,9 @@ Resources:
                     action: upsert
                   - key: cost_center
                     from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: project
+                    from_context: metadata.x-project
                     action: upsert
                   - key: organization
                     from_context: metadata.x-organization
