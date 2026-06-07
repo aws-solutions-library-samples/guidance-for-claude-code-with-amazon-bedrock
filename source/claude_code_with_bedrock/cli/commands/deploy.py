@@ -882,6 +882,9 @@ class DeployCommand(Command):
                     f"OidcClientId={oidc_client_id}",
                     f"EnableFinegrainedQuotas={str(enable_finegrained_quotas).lower()}",
                     f"EnableBypassDetection={str(enable_bypass_detection).lower()}",
+                    f"QuotaMode={getattr(profile, 'quota_mode', 'token')}",
+                    f"MonthlyCostLimitUsd={getattr(profile, 'monthly_cost_limit', 0)}",
+                    f"DailyCostLimitUsd={getattr(profile, 'daily_cost_limit', 0)}",
                 ]
 
                 # Package the template using AWS CLI
@@ -1163,6 +1166,9 @@ class DeployCommand(Command):
                 f"OidcClientId={profile.client_id}",
                 f"EnableFinegrainedQuotas={str(profile.enable_finegrained_quotas).lower()}",
                 f"EnableBypassDetection={str(getattr(profile, 'enable_bypass_detection', False)).lower()}",
+                f"QuotaMode={getattr(profile, 'quota_mode', 'token')}",
+                f"MonthlyCostLimitUsd={getattr(profile, 'monthly_cost_limit', 0)}",
+                f"DailyCostLimitUsd={getattr(profile, 'daily_cost_limit', 0)}",
             ]
             print_deploy_cmd("/tmp/quota-monitoring-packaged.yaml", stack_name, params)
 

@@ -78,6 +78,9 @@ class Profile:
     daily_enforcement_mode: str = "alert"  # Daily limit enforcement: "alert" or "block"
     monthly_enforcement_mode: str = "block"  # Monthly limit enforcement: "alert" or "block"
     enable_finegrained_quotas: bool = False  # Enable fine-grained quota policies (user/group/default)
+    quota_mode: str = "token"  # Quota enforcement mode: "token" (raw counts) or "cost" (USD-based)
+    monthly_cost_limit: float = 0.0  # Monthly cost limit per user in USD (cost mode only, 0=disabled)
+    daily_cost_limit: float = 0.0  # Daily cost limit per user in USD (cost mode only, 0=disabled)
     quota_policies_table: str | None = None  # DynamoDB table name for quota policies
     user_quota_metrics_table: str | None = None  # DynamoDB table name for user quota metrics
     quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
