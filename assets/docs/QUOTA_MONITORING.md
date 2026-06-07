@@ -603,22 +603,22 @@ Configure the endpoint in your credential provider config.json:
 
 ### Enforcement Timing
 
-**Important**: Quota enforcement only occurs at credential issuance time, not during an active session.
+**Important**: Quota enforcement occurs at credential issuance time — every time the credential-process exchanges tokens for AWS credentials. This includes both browser re-authentication and silent refresh (via stored refresh_token).
 
-If a user exceeds their quota mid-session, they can continue using Claude Code until their credentials expire and they need to re-authenticate. At that point, the quota check will block access.
+With silent refresh enabled (default since June 2026), the credential-process automatically renews credentials without browser interaction. Quota is checked on each renewal, so enforcement gaps are bounded by the STS session duration, not by how often the user sees a browser prompt.
 
-#### Example Timeline (12-hour session)
+#### Example Timeline (1-hour STS session, silent refresh)
 
 ```
-09:00 - User authenticates, quota check passes (at 50% of limit)
-09:00 - AWS credentials issued, valid for 12 hours
-15:00 - User exceeds 100% of monthly quota
-15:01 - User CONTINUES working (credentials still valid)
-21:00 - Credentials expire, user must re-authenticate
-21:00 - Quota check BLOCKS access (enforcement finally applied)
+09:00 - User authenticates via browser, quota check passes (at 50%)
+09:00 - AWS credentials issued, valid for 1 hour
+10:00 - Credentials expire, silent refresh triggers
+10:00 - Quota check passes (at 80%), new credentials issued
+11:00 - Silent refresh triggers again
+11:00 - Quota check BLOCKS access (user exceeded limit)
 ```
 
-In this scenario, there's a 6-hour gap between exceeding the quota (15:00) and enforcement (21:00).
+The enforcement gap equals the STS session duration (typically 1 hour), regardless of refresh_token lifetime.
 
 #### Recommendation for Tight Enforcement
 
@@ -645,6 +645,69 @@ Configure in your profile:
 
 **Trade-off**: Shorter sessions mean more frequent re-authentication prompts for users, but provide tighter quota enforcement.
 
+## Sidecar Bypass Detection
+
+In sidecar mode, per-user token usage is measured from telemetry the local OTEL
+sidecar sends to CloudWatch. If a developer stops the sidecar on their machine,
+their usage stops being counted — so the quota check never sees them exceed a
+limit, even though they can still invoke Bedrock. This is an inherent property
+of client-side telemetry.
+
+Sidecar bypass detection is an **opt-in detective control** that surfaces this.
+It does not block access; it reports which users are invoking Bedrock without
+reporting telemetry, so administrators can follow up.
+
+### How It Works
+
+A scheduled Lambda (`claude-code-bypass-detection`) runs every 15 minutes and:
+
+1. Queries **CloudTrail** for Bedrock invocation events (`InvokeModel`,
+   `InvokeModelWithResponseStream`, `Converse`, `ConverseStream`) in the last
+   window. These are logged as CloudTrail **management events** — captured by
+   default, with no trail or data-event charges. The caller's email is read from
+   the assumed-role session name (`assumed-role/<role>/<email>`), making this a
+   tamper-proof source of truth for who actually used Bedrock.
+2. For each of those (typically few) active users, does a single DynamoDB
+   `GetItem` point read on their `UserQuotaMetrics` record and checks whether
+   `last_updated` falls within the window. This scales with the number of
+   *active* users, not the total user count — no full-table scan.
+3. A user active in CloudTrail whose record is missing or stale has a
+   stopped/bypassed sidecar.
+4. Publishes CloudWatch metrics under the `ClaudeCode/SidecarHealth` namespace
+   (`SidecarStopped` per user, `SidecarStoppedUserCount` aggregate) and sends an
+   SNS alert (via the existing quota alert topic) listing affected users.
+
+### Configuration
+
+Disabled by default (opt-in). Enable during `ccwb init` (sidecar mode only) or
+via the `EnableBypassDetection` parameter on the quota stack. In central mode the
+collector runs server-side (users cannot stop it), so this control is disabled
+automatically.
+
+```bash
+# Enable during init
+ccwb init  # Select "Yes" for bypass detection when prompted (sidecar mode)
+
+# Or enable on existing deployment
+ccwb deploy quota --parameters EnableBypassDetection=true
+```
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| EnableBypassDetection | false | Enable sidecar bypass detection (sidecar mode) |
+| BypassDetectionLookbackMinutes | 15 | Detection window; should match the detection schedule |
+
+### Limitations
+
+- **Detective, not preventive.** It reports bypass; it does not block Bedrock.
+  For tamper-proof enforcement, source quota usage from Bedrock model invocation
+  logging (server-side) — a larger change tracked as a future enhancement.
+- Relies on Bedrock runtime calls being present in CloudTrail management events
+  (the default). Detection lag is one schedule interval (15 minutes).
+- Alerts fire every schedule interval (15 min) while bypass is active. To reduce
+  notification frequency, create a CloudWatch Alarm on `SidecarStoppedUserCount`
+  with a longer evaluation period (e.g., 1 hour) instead of relying on raw SNS.
+
 ## Current Limitations
 
 - Quotas reset on calendar month/day (UTC timezone)
@@ -654,6 +717,9 @@ Configure in your profile:
 
 ## Future Enhancements
 
+- **Tamper-proof enforcement**: Source quota usage from Bedrock model invocation
+  logging (server-side) so usage is counted even if the sidecar is stopped,
+  upgrading sidecar health monitoring from detective to preventive.
 - **Bulk import/export**: Manage policies via JSON files
 - **Quota reporting**: Generate usage reports across all users
 

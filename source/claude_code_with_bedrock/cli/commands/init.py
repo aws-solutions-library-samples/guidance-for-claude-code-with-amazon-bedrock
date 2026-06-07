@@ -2246,6 +2246,7 @@ sso_registration_scopes = sso:account:access"""
             daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
+            enable_bypass_detection=config_data.get("quota", {}).get("enable_bypass_detection", False),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
             tags=config_data.get("tags", {}),
             redirect_port=config_data.get("redirect_port"),

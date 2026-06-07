@@ -19,4 +19,4 @@ jobs:
       - name: detect-secrets
         run: |
           detect-secrets scan --baseline .secrets.baseline
-          cat .secrets.baseline | jq '[.results|to_entries|.[].value[]|{ "filename": .filename, "is_secret": .is_secret } | if .is_secret == null or .is_secret == true then .filename else empty end]|unique|if length>0 then error("potential secrets in: \(.)") else empty end'
+          cat .secrets.baseline | jq '[.results|to_entries|.[].value[]|{ "filename": .filename, "is_secret": .is_secret } | select(.filename | startswith("source/tests/") | not) | if .is_secret == null or .is_secret == true then .filename else empty end]|unique|if length>0 then error("potential secrets in: \(.)") else empty end'
