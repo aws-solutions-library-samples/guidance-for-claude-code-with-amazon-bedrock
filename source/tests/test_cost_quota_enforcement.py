@@ -99,3 +99,32 @@ class TestCalculateUsageCost:
         sonnet_result = _calculate_usage_cost(usage, "sonnet")
         opus_result = _calculate_usage_cost(usage, "opus")
         assert opus_result["monthly_cost"] > sonnet_result["monthly_cost"]
+
+    def test_negative_cache_write_clamped_to_zero(self):
+        """If token counts are inconsistent, cache_write derivation won't go negative."""
+        usage = {
+            "total_tokens": 100_000,  # Less than sum of parts (inconsistent data)
+            "daily_tokens": 100_000,
+            "input_tokens": 50_000,
+            "output_tokens": 50_000,
+            "cache_tokens": 50_000,  # Sum = 150K > total
+        }
+        result = _calculate_usage_cost(usage, "sonnet")
+        # Should not raise, cache_write = max(0, 100K-50K-50K-50K) = 0
+        assert result["monthly_cost"] >= 0
+
+
+class TestTokenModeUnchanged:
+    """Regression tests: token mode behavior must not change."""
+
+    def test_quota_mode_defaults_to_token(self):
+        """QUOTA_MODE defaults to 'token' when not set."""
+        from quota_check.index import QUOTA_MODE
+        # In test environment, env var isn't set → should be 'token'
+        assert QUOTA_MODE == "token"
+
+    def test_cost_limits_default_to_zero(self):
+        """Cost limits default to 0 (disabled) so token mode isn't affected."""
+        from quota_check.index import MONTHLY_COST_LIMIT, DAILY_COST_LIMIT
+        assert MONTHLY_COST_LIMIT == 0
+        assert DAILY_COST_LIMIT == 0
