@@ -16,10 +16,12 @@ sys.path.insert(0, os.path.join(
 ))
 
 from shared.pricing import (
+    CROSS_REGION_MULTIPLIER,
     DEFAULT_RATES,
     calculate_cost,
     get_model_family,
     get_pricing_rates,
+    is_cross_region,
 )
 
 
@@ -141,3 +143,35 @@ class TestCalculateCost:
         cost = calculate_cost(tokens, "sonnet")
         # Falls back to input rate: $3.00/MTok
         assert cost == pytest.approx(3.0)
+
+    def test_cross_region_surcharge_applied(self):
+        """Cross-region inference profiles get 10% surcharge."""
+        tokens = {"input": 1_000_000}
+        standard_cost = calculate_cost(tokens, "sonnet", model_id="anthropic.claude-sonnet-4-6-20250514-v1:0")
+        cross_region_cost = calculate_cost(tokens, "sonnet", model_id="us.anthropic.claude-sonnet-4-6-20250514-v1:0")
+        assert cross_region_cost == pytest.approx(standard_cost * 1.1)
+
+    def test_no_surcharge_without_model_id(self):
+        """No surcharge when model_id is not provided."""
+        tokens = {"input": 1_000_000}
+        cost = calculate_cost(tokens, "sonnet")
+        assert cost == pytest.approx(3.0)  # Exact, no multiplier
+
+
+class TestIsCrossRegion:
+    """Tests for cross-region inference profile detection."""
+
+    def test_us_prefix(self):
+        assert is_cross_region("us.anthropic.claude-sonnet-4-6-20250514-v1:0") is True
+
+    def test_eu_prefix(self):
+        assert is_cross_region("eu.anthropic.claude-opus-4-8-20260301-v1:0") is True
+
+    def test_ap_prefix(self):
+        assert is_cross_region("ap.anthropic.claude-haiku-4-5-20250901-v1:0") is True
+
+    def test_standard_regional(self):
+        assert is_cross_region("anthropic.claude-sonnet-4-6-20250514-v1:0") is False
+
+    def test_short_name(self):
+        assert is_cross_region("claude-sonnet-4-6") is False

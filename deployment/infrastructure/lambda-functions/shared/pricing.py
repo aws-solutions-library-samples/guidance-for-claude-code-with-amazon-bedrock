@@ -68,6 +68,12 @@ def get_pricing_rates() -> dict:
     return dict(DEFAULT_RATES)
 
 
+# Cross-region inference surcharge multiplier
+# Models invoked via cross-region inference profiles (us.anthropic.*, eu.anthropic.*)
+# incur a 10% surcharge over standard regional pricing.
+CROSS_REGION_MULTIPLIER = 1.1
+
+
 def get_model_family(model_id: str) -> str:
     """Extract model family from a Bedrock model ID or CRIS profile.
 
@@ -87,16 +93,36 @@ def get_model_family(model_id: str) -> str:
         return "sonnet"
 
 
-def calculate_cost(tokens_by_type: dict, model_family: str, rates: dict = None) -> float:
+def is_cross_region(model_id: str) -> bool:
+    """Determine if a model ID is a cross-region inference profile.
+
+    Cross-region profiles are prefixed with a region code:
+        us.anthropic.claude-*  (US cross-region)
+        eu.anthropic.claude-*  (EU cross-region)
+
+    Standard regional models start with:
+        anthropic.claude-*
+    """
+    model_lower = model_id.lower()
+    # Cross-region profiles have a geo prefix before 'anthropic'
+    return bool(
+        model_lower.startswith(("us.", "eu.", "ap."))
+        and "anthropic" in model_lower
+    )
+
+
+def calculate_cost(tokens_by_type: dict, model_family: str, rates: dict = None,
+                   model_id: str = None) -> float:
     """Calculate cost in USD for a set of token counts by type.
 
     Args:
         tokens_by_type: {token_type: count} e.g. {"input": 1000, "output": 500, ...}
         model_family: "opus", "sonnet", or "haiku"
         rates: pricing rates dict (default: get_pricing_rates())
+        model_id: optional full model ID — used to detect cross-region surcharge
 
     Returns:
-        Estimated cost in USD
+        Estimated cost in USD (includes cross-region surcharge if applicable)
     """
     if rates is None:
         rates = get_pricing_rates()
@@ -107,5 +133,9 @@ def calculate_cost(tokens_by_type: dict, model_family: str, rates: dict = None) 
     for token_type, count in tokens_by_type.items():
         rate_per_mtok = family_rates.get(token_type, family_rates.get("input", 3.0))
         total_cost += (count / 1_000_000) * rate_per_mtok
+
+    # Apply cross-region inference surcharge (10%) if applicable
+    if model_id and is_cross_region(model_id):
+        total_cost *= CROSS_REGION_MULTIPLIER
 
     return total_cost
