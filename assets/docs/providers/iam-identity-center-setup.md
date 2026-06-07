@@ -21,7 +21,7 @@ This guide covers setting up Claude Code with Bedrock using AWS IAM Identity Cen
 ⚠️ **Important Limitations:**
 
 1. **No Quota Monitoring**: Per-user token quota enforcement is disabled as it requires JWT tokens from OIDC providers
-2. **No Per-User Attribution**: Metrics and logs will show IAM role identity, not individual user names
+2. **Per-User Attribution via STS**: OTEL metrics include user email extracted from the IAM assumed-role session name. This requires IAM Identity Center to use email as the session name (the default). Dashboard per-user widgets work automatically.
 3. **No JWT Authorization**: The quota monitoring API Gateway cannot validate requests without an OIDC issuer
 
 ## Prerequisites
@@ -115,7 +115,16 @@ Example session settings:
 
 ## Per-User Cost Attribution
 
-While quota monitoring is disabled, you can still track usage per user via CloudTrail:
+IDC users get per-user OTEL attribution automatically. The credential-process
+extracts the user email from the STS assumed-role ARN session name and writes
+it to the OTEL cache. Dashboard widgets (Token Usage by User, Active Users)
+work without additional configuration.
+
+**Requirement:** IAM Identity Center must use email as the session name (this
+is the default). The ARN format must be:
+`arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com`
+
+For additional cost tracking via CloudTrail:
 
 ### 1. Enable CloudTrail
 
