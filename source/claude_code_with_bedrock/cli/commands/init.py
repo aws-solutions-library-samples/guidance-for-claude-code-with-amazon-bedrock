@@ -1687,15 +1687,18 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
+        if config.get("sso_enabled", True) and config.get("okta", {}).get("domain"):
+            table.add_row("OIDC Provider", config["okta"]["domain"])
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    config["okta"]["client_id"][:20] + "..."
+                    if len(config["okta"].get("client_id", "")) > 20
+                    else config["okta"].get("client_id", "")
+                ),
+            )
+        else:
+            table.add_row("SSO Authentication", "Disabled (IAM roles)")
 
         table.add_row(
             "Credential Storage",
@@ -2402,7 +2405,10 @@ class InitCommand(Command):
         """Show summary of existing deployment."""
         console = Console()
 
-        console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        if config.get("sso_enabled", True) and config.get("okta", {}).get("domain"):
+            console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        else:
+            console.print("• SSO Authentication: [cyan]Disabled (IAM roles)[/cyan]")
 
         # Show Cognito-specific fields if using Cognito User Pool
         if "cognito_user_pool_id" in config:

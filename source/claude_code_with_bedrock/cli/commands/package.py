@@ -367,28 +367,34 @@ class PackageCommand(Command):
         requested_platforms = platforms_to_build.copy()
         built_executables = []
         built_otel_helpers = []
+        windows_codebuild_started = False  # True only when CodeBuild was actually invoked
 
         console.print()
         for platform_name in platforms_to_build:
             # Build credential process
             console.print(f"[cyan]Building credential process for {platform_name}...[/cyan]")
             executable_path = None  # Initialize to avoid undefined variable error
+            codebuild_submitted = False
             try:
                 executable_path = self._build_executable(output_dir, platform_name)
-                # Check if this was an async Windows build
-                if executable_path is None:
-                    # Windows build started in CodeBuild, continue without local binary
+                # Check if this was an async Windows CodeBuild submission (returns None)
+                if executable_path is None and platform_name == "windows":
+                    codebuild_submitted = True
+                    windows_codebuild_started = True
                     console.print("[dim]Windows binaries will be built in CodeBuild[/dim]")
-                else:
+                elif executable_path is not None:
                     built_executables.append((platform_name, executable_path))
             except Exception as e:
                 console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
 
             # Build OTEL helper if monitoring is enabled
             if profile.monitoring_enabled:
-                # Skip OTEL helper for Windows if being built in CodeBuild
+                # Skip OTEL helper for Windows when no local credential-process was produced
+                # (either CodeBuild submission or failed native build)
                 if platform_name == "windows" and executable_path is None:
-                    console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
+                    if codebuild_submitted:
+                        console.print("[dim]Windows OTEL helper will be built in CodeBuild[/dim]")
+                    # else: credential-process build failed; skip OTEL helper silently
                 else:
                     console.print(f"[cyan]Building OTEL helper for {platform_name}...[/cyan]")
                     try:
@@ -417,11 +423,8 @@ class PackageCommand(Command):
                 console.print(f"[yellow]Warning: Could not build OTEL Collector sidecar: {e}[/yellow]")
                 console.print("[dim]Metrics will not be sent to CloudWatch without the collector.[/dim]")
 
-        # Track whether Windows build was submitted to CodeBuild
-        windows_codebuild_pending = any(
-            platform_name == "windows" and platform_name not in [p for p, _ in built_executables]
-            for platform_name in platforms_to_build
-        ) and profile and getattr(profile, "enable_codebuild", False)
+        # True only when a Windows build was actually submitted to CodeBuild (not a failed local build)
+        windows_codebuild_pending = windows_codebuild_started
 
         # Check if any binaries were built (or pending in CodeBuild)
         if not built_executables and not windows_codebuild_pending:
@@ -707,7 +710,7 @@ class PackageCommand(Command):
             binary_name = "credential-process-linux"
         elif target_platform == "windows":
             platform_variant = "x86_64"
-            # binary_name already set above
+            binary_name = "credential-process-windows.exe"
         else:
             raise ValueError(f"Unsupported target platform: {target_platform}")
 
@@ -742,15 +745,19 @@ class PackageCommand(Command):
 
         # Check if Nuitka is available (through Poetry)
         source_dir = Path(__file__).parent.parent.parent.parent
-        nuitka_check = subprocess.run(
-            ["poetry", "run", "which", "nuitka"], capture_output=True, text=True, cwd=source_dir
-        )
-        if nuitka_check.returncode != 0:
-            raise RuntimeError(
-                "Nuitka not found. Please install it:\n"
-                "  poetry add --group dev nuitka ordered-set zstandard\n\n"
-                "Note: Nuitka requires Python 3.10-3.12."
-            )
+        import shutil
+
+        # First check if it's in the current path (e.g. if already running in poetry venv)
+        if not shutil.which("nuitka"):
+            # Fallback: check via poetry run
+            check_cmd = ["poetry", "run", "where" if platform.system() == "Windows" else "which", "nuitka"]
+            nuitka_check = subprocess.run(check_cmd, capture_output=True, text=True, cwd=source_dir)
+            if nuitka_check.returncode != 0:
+                raise RuntimeError(
+                    "Nuitka not found. Please install it:\n"
+                    "  poetry add --group dev nuitka ordered-set zstandard\n\n"
+                    "Note: Nuitka requires Python 3.10-3.12."
+                )
 
         # Find the source file
         src_file = Path(__file__).parent.parent.parent.parent.parent / "source" / "credential_provider" / "__main__.py"
@@ -1564,20 +1571,27 @@ RUN pyinstaller \
             return
 
         OCB_VERSION = "0.120.0"
-        ocb_os = "darwin" if host_os == "darwin" else "linux"
+        if host_os == "darwin":
+            ocb_os = "darwin"
+        elif host_os == "windows":
+            ocb_os = "windows"
+        else:
+            ocb_os = "linux"
         ocb_arch = "arm64" if host_arch in ["arm64", "aarch64"] else "amd64"
+        ocb_ext = ".exe" if host_os == "windows" else ""
         ocb_dir = Path.home() / ".cache" / "ocb"
         ocb_dir.mkdir(parents=True, exist_ok=True)
-        ocb_path = ocb_dir / f"ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}"
+        ocb_path = ocb_dir / f"ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_ext}"
 
         if not ocb_path.exists():
             url = (
                 f"https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/"
-                f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}"
+                f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_ext}"
             )
             console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
             urllib.request.urlretrieve(url, ocb_path)
-            ocb_path.chmod(0o755)
+            if host_os != "windows":
+                ocb_path.chmod(0o755)
 
         manifest = Path(__file__).parent.parent.parent.parent / "otel_helper" / "ocb-manifest.yaml"
         if not manifest.exists():
@@ -2308,7 +2322,7 @@ echo
 """
 
         installer_path = output_dir / "install.sh"
-        with open(installer_path, "w") as f:
+        with open(installer_path, "w", encoding="utf-8") as f:
             f.write(installer_content)
         installer_path.chmod(0o755)
 
@@ -2616,7 +2630,7 @@ Available metrics include:
 
         readme_content += "\n" ""
 
-        with open(output_dir / "README.md", "w") as f:
+        with open(output_dir / "README.md", "w", encoding="utf-8") as f:
             f.write(readme_content)
 
     def _create_claude_settings(

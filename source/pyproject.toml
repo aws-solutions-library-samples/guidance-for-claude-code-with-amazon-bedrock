@@ -30,7 +30,7 @@ credential-provider = "credential_provider:main"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-boto3 = "^1.42.88"
+boto3 = {extras = ["crt"], version = "^1.43.23"}
 requests = "^2.33.1"
 PyJWT = "^2.8.0"
 keyring = "^24.0.0"
@@ -41,6 +41,8 @@ pydantic = "^2.12.5"
 pyyaml = "^6.0"
 questionary = "^2.1.1"
 cfn-flip = "^1.3.0"
+botocore = {extras = ["crt"], version = "^1.43.23"}
+nuitka = "^4.1.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"
