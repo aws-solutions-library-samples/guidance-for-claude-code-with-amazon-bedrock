@@ -409,9 +409,23 @@ Resources:
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
-                  - key: project
-                    from_context: metadata.x-project
+                  # Session tag dimensions (from x-tag-* headers emitted by otel-helper)
+                  # Add entries here for tag keys your organization uses.
+                  - key: tag.project
+                    from_context: metadata.x-tag-project
                     action: upsert
+                  - key: tag.costcenter
+                    from_context: metadata.x-tag-costcenter
+                    action: upsert
+                  - key: tag.billingcode
+                    from_context: metadata.x-tag-billingcode
+                    action: upsert
+                  - key: tag.environment
+                    from_context: metadata.x-tag-environment
+                    action: upsert
+
+
+
                   - key: organization
                     from_context: metadata.x-organization
                     action: upsert
@@ -526,9 +540,21 @@ Resources:
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
-                  - key: project
-                    from_context: metadata.x-project
+                  - key: tag.project
+                    from_context: metadata.x-tag-project
                     action: upsert
+                  - key: tag.costcenter
+                    from_context: metadata.x-tag-costcenter
+                    action: upsert
+                  - key: tag.billingcode
+                    from_context: metadata.x-tag-billingcode
+                    action: upsert
+                  - key: tag.environment
+                    from_context: metadata.x-tag-environment
+                    action: upsert
+
+
+
                   - key: organization
                     from_context: metadata.x-organization
                     action: upsert

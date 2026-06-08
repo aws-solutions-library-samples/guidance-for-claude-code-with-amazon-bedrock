@@ -197,35 +197,22 @@ def extract_user_info(payload):
     location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
     role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
 
-    # Project/cost attribution tag — used for per-project cost tracking in CUR/Cost Explorer.
-    # Reads from multiple claim patterns to support different IdP configurations:
-    # - "project" / "Project" — direct claim (generic IdPs)
-    # - "custom:project" — Cognito custom attribute
-    # - Nested in https://aws.amazon.com/tags/principal_tags/Project — AWS session tag claim
-    #   (the value that STS reads for sts:TagSession)
+    # AWS Session Tags — generic extraction from https://aws.amazon.com/tags claim.
+    # If the IdP emits session tags, ALL principal_tags flow through as OTEL dimensions
+    # automatically. No configuration required — whatever tags the admin configured in
+    # their IdP appear as CloudWatch dimensions.
+    # This enables per-project, per-team, per-environment cost attribution without
+    # any code changes when the admin adds new tag keys.
     aws_tags = payload.get("https://aws.amazon.com/tags", {})
     principal_tags = aws_tags.get("principal_tags", {}) if isinstance(aws_tags, dict) else {}
-    # Session tag values are arrays in the AWS claim format
-    project_from_tags = ""
+    session_tags = {}
     if isinstance(principal_tags, dict):
-        for key in ("Project", "project", "CostCenter", "BillingCode"):
-            tag_val = principal_tags.get(key, [])
-            if isinstance(tag_val, list) and tag_val:
-                project_from_tags = tag_val[0]
-                break
-            elif isinstance(tag_val, str) and tag_val:
-                project_from_tags = tag_val
-                break
-
-    project = (
-        project_from_tags
-        or payload.get("custom:project")
-        or payload.get("project")
-        or payload.get("Project")
-        or payload.get("billing_code")
-        or payload.get("BillingCode")
-        or ""
-    )
+        for key, value in principal_tags.items():
+            # Session tag values are arrays in Auth0/Okta format, strings in Entra ID
+            if isinstance(value, list) and value and value[0]:
+                session_tags[key] = value[0]
+            elif isinstance(value, str) and value:
+                session_tags[key] = value
 
     return {
         "email": email,
@@ -235,7 +222,7 @@ def extract_user_info(payload):
         "department": department,
         "team": team,
         "cost_center": cost_center,
-        "project": project,
+        "session_tags": session_tags,
         "manager": manager,
         "location": location,
         "role": role,
@@ -256,7 +243,6 @@ def format_as_headers_dict(attributes):
         "department": "x-department",
         "team": "x-team-id",
         "cost_center": "x-cost-center",
-        "project": "x-project",
         "organization_id": "x-organization",
         "location": "x-location",
         "role": "x-role",
@@ -267,6 +253,15 @@ def format_as_headers_dict(attributes):
     for attr_key, header_name in header_mapping.items():
         if attr_key in attributes and attributes[attr_key]:
             headers[header_name] = attributes[attr_key]
+
+    # Emit session tags as x-tag-<key> headers (generic, no fixed list)
+    session_tags = attributes.get("session_tags", {})
+    if isinstance(session_tags, dict):
+        for key, value in session_tags.items():
+            if value:  # Skip empty values
+                # Normalize key to lowercase, replace spaces/special chars
+                safe_key = key.lower().replace(" ", "-")
+                headers[f"x-tag-{safe_key}"] = str(value)
 
     return headers
 
