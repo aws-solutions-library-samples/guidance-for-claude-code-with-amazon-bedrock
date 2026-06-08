@@ -15,6 +15,8 @@ from cleo.helpers import option
 from rich.console import Console
 from rich.table import Table
 
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
+
 from claude_code_with_bedrock.cli.commands.package_cb import CODEBUILD_PLATFORMS
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.config import Config
@@ -89,7 +91,7 @@ class BuildsCommand(Command):
             console.print("[yellow]No CodeBuild projects found. Run 'ccwb deploy codebuild' first.[/yellow]")
             return 1
 
-        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
         limit = int(self.option("limit"))
 
         for plat, project_name in projects.items():
@@ -174,7 +176,7 @@ class BuildsCommand(Command):
             console.print("[red]No build IDs found.[/red]")
             return 1
 
-        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
         # Resolve all build IDs and check status
         succeeded = {}

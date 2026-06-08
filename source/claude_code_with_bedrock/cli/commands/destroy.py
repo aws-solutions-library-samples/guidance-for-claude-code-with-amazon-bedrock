@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
+from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials
 from claude_code_with_bedrock.config import Config
 
 
@@ -173,6 +174,10 @@ class DestroyCommand(Command):
                     console.print()
                 else:
                     console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+
+        # Clean up cached credentials for this profile
+        if clear_cached_credentials(profile_name):
+            console.print(f"[green]✓ Cleared cached credentials for profile '{profile_name}'[/green]")
 
         # Show cleanup summary at the end
         self._show_cleanup_summary(all_failed_resources, all_retained_resources, stacks_with_failures, profile, console)
