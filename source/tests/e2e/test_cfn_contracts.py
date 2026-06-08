@@ -168,7 +168,7 @@ class TestQuotaMonitoringTemplateContract:
             if resource.get("Type") == "AWS::Lambda::Function":
                 props = resource.get("Properties", {})
                 handler = props.get("Handler", "")
-                if "quota_check" in handler or "quota_check" in resource_name.lower():
+                if "quota_check" in handler or "quotacheck" in resource_name.lower():
                     quota_lambda = props
                     break
 
@@ -183,12 +183,35 @@ class TestQuotaMonitoringTemplateContract:
             "QUOTA_TABLE",
             "MONTHLY_TOKEN_LIMIT",
             "MONTHLY_ENFORCEMENT_MODE",
+            "ENABLE_FINEGRAINED_QUOTAS",
         }
 
         for var in expected_vars:
             assert var in env_vars, (
                 f"quota_check Lambda missing env var '{var}' that the code reads at import time"
             )
+
+    def test_quota_monitor_role_has_update_item(self):
+        """QuotaMonitorRole must have dynamodb:UpdateItem for atomic counter upserts."""
+        template = _load_template("quota-monitoring.yaml")
+        resources = template.get("Resources", {})
+
+        monitor_role = resources.get("QuotaMonitorRole", {})
+        policies = monitor_role.get("Properties", {}).get("Policies", [])
+
+        all_actions = []
+        for policy in policies:
+            statements = policy.get("PolicyDocument", {}).get("Statement", [])
+            for stmt in statements:
+                actions = stmt.get("Action", [])
+                if isinstance(actions, str):
+                    actions = [actions]
+                all_actions.extend(actions)
+
+        assert "dynamodb:UpdateItem" in all_actions, (
+            "QuotaMonitorRole missing dynamodb:UpdateItem — quota_monitor Lambda uses "
+            "table.update_item() for atomic counter upserts"
+        )
 
     def test_dynamodb_table_schema_matches_code(self):
         """DynamoDB table key schema matches what Lambda code uses for queries."""
