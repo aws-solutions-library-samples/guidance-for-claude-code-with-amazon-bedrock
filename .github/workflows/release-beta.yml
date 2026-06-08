@@ -48,7 +48,7 @@ jobs:
             NEXT_NUM=1
             echo "No existing beta tags for v${BASE_VERSION} — starting at beta.1"
           else
-            # Extract the beta number: v3.0.0-beta.5 → 5
+            # Extract the beta number: v2.4.0-beta.5 → 5
             CURRENT_NUM=$(echo "$LAST_BETA" | sed "s/v${BASE_VERSION}-beta\.//")
             NEXT_NUM=$((CURRENT_NUM + 1))
             echo "Last beta tag: $LAST_BETA — next is beta.${NEXT_NUM}"
