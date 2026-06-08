@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:  # manual trigger for testing from any branch
 
 permissions: {}
 
@@ -68,6 +69,7 @@ jobs:
     permissions:
       contents: write
     strategy:
+      fail-fast: true
       matrix:
         include:
           - os: windows-latest
@@ -111,8 +113,12 @@ jobs:
           go build -ldflags="-s -w" -o ../../credential-process-${{ matrix.artifact_prefix }}${EXT} ./cmd/credential-process/
           go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
 
+      - name: Generate checksums
+        run: |
+          sha256sum credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* > checksums-${{ matrix.artifact_prefix }}.txt
+
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ needs.release.outputs.tag }} credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}*
+          gh release upload ${{ needs.release.outputs.tag }} credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* checksums-${{ matrix.artifact_prefix }}.txt
