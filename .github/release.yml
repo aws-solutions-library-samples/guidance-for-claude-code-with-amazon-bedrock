@@ -1,0 +1,18 @@
+changelog:
+  categories:
+    - title: "🚀 Features"
+      labels: ["enhancement"]
+    - title: "🐛 Bug Fixes"
+      labels: ["bug"]
+    - title: "🧪 Tests"
+      labels: ["testing"]
+    - title: "⚙️ CI/CD"
+      labels: ["ci", "github_actions"]
+    - title: "📖 Documentation"
+      labels: ["documentation"]
+    - title: "📦 Dependencies"
+      labels: ["dependencies"]
+    - title: "🔧 Maintenance"
+      labels: ["maintenance"]
+  exclude:
+    labels: ["skip-changelog", "duplicate", "invalid", "wontfix", "DRAFT [DO NOT MERGE]"]

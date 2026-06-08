@@ -1,0 +1,148 @@
+---
+name: Beta Pre-release Tag
+description: |
+  Auto-triggered on every push to the beta branch.
+  Creates an incrementing pre-release tag (v{base}-beta.{N}) and publishes
+  a GitHub pre-release with auto-generated notes from commits since the last beta tag.
+on:
+  push:
+    branches:
+      - beta
+permissions: {}
+jobs:
+  tag-beta:
+    name: Create Beta Pre-release Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Determine base version and next beta number
+        id: version
+        run: |
+          set -euo pipefail
+
+          # Read base version from pyproject.toml
+          BASE_VERSION=$(python3 -c "
+          import re
+          content = open('source/pyproject.toml').read()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', content, re.MULTILINE)
+          if not m:
+              raise SystemExit('ERROR: version not found in source/pyproject.toml')
+          # Strip any existing pre-release suffix for the base
+          v = m.group(1).split('-')[0]
+          print(v)
+          ")
+
+          echo "Base version: $BASE_VERSION"
+
+          # Find the highest existing beta tag for this base version
+          LAST_BETA=$(git tag --list "v${BASE_VERSION}-beta.*" --sort=-version:refname | head -1)
+
+          if [[ -z "$LAST_BETA" ]]; then
+            NEXT_NUM=1
+            echo "No existing beta tags for v${BASE_VERSION} — starting at beta.1"
+          else
+            # Extract the beta number: v2.4.0-beta.5 → 5
+            CURRENT_NUM=$(echo "$LAST_BETA" | sed "s/v${BASE_VERSION}-beta\.//")
+            NEXT_NUM=$((CURRENT_NUM + 1))
+            echo "Last beta tag: $LAST_BETA — next is beta.${NEXT_NUM}"
+          fi
+
+          TAG="v${BASE_VERSION}-beta.${NEXT_NUM}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "beta_num=$NEXT_NUM" >> "$GITHUB_OUTPUT"
+          echo "last_tag=${LAST_BETA:-}" >> "$GITHUB_OUTPUT"
+          echo "Next tag: $TAG"
+
+      - name: Skip if tag already exists (idempotency)
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes from commits
+        if: steps.check.outputs.skip != 'true'
+        id: notes
+        run: |
+          set -euo pipefail
+
+          LAST_TAG="${{ steps.version.outputs.last_tag }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if [[ -z "$LAST_TAG" ]]; then
+            # No previous beta tag — use last stable release or last 30 commits
+            LAST_STABLE=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname \
+              | grep -v 'beta\|rc\|alpha' | head -1 || true)
+            if [[ -n "$LAST_STABLE" ]] && git rev-parse "$LAST_STABLE" >/dev/null 2>&1; then
+              RANGE="${LAST_STABLE}..HEAD"
+              echo "Collecting commits since last stable release: $LAST_STABLE"
+            else
+              RANGE="HEAD~30..HEAD"
+              echo "No reference tag found — using last 30 commits"
+            fi
+          else
+            RANGE="${LAST_TAG}..HEAD"
+            echo "Collecting commits since $LAST_TAG"
+          fi
+
+          COMMITS=$(git log --no-merges --format="- %s" $RANGE 2>/dev/null || git log --no-merges --format="- %s" -n 30)
+          COUNT=$(echo "$COMMITS" | wc -l)
+
+          {
+            echo "## What's changed since ${LAST_TAG:-last stable release}"
+            echo ""
+            echo "$COMMITS"
+            echo ""
+            echo "---"
+            echo "_${COUNT} commit(s) • Pre-release from \`beta\` branch_"
+          } > /tmp/release_notes.txt
+
+          echo "--- notes preview (first 20 lines) ---"
+          head -20 /tmp/release_notes.txt
+
+      - name: Create annotated tag
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name  "github-actions[bot]"
+
+          git tag -a "$TAG" -m "Pre-release $TAG from beta branch"
+          git push origin "$TAG"
+
+          echo "::notice::Created and pushed tag $TAG"
+
+      - name: Publish GitHub Pre-release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Pre-release $TAG" \
+            --notes-file /tmp/release_notes.txt \
+            --prerelease \
+            --verify-tag
+
+          echo "### 🏷️ Beta Pre-release Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**$TAG** — [View release](https://github.com/${{ github.repository }}/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"
