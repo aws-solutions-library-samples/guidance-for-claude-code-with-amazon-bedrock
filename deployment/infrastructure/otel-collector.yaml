@@ -423,6 +423,15 @@ Resources:
                   - key: tag.environment
                     from_context: metadata.x-tag-environment
                     action: upsert
+                  - key: tag.team
+                    from_context: metadata.x-tag-team
+                    action: upsert
+                  - key: tag.department
+                    from_context: metadata.x-tag-department
+                    action: upsert
+                  - key: tag.application
+                    from_context: metadata.x-tag-application
+                    action: upsert
 
 
 
@@ -551,6 +560,15 @@ Resources:
                     action: upsert
                   - key: tag.environment
                     from_context: metadata.x-tag-environment
+                    action: upsert
+                  - key: tag.team
+                    from_context: metadata.x-tag-team
+                    action: upsert
+                  - key: tag.department
+                    from_context: metadata.x-tag-department
+                    action: upsert
+                  - key: tag.application
+                    from_context: metadata.x-tag-application
                     action: upsert
 
 
