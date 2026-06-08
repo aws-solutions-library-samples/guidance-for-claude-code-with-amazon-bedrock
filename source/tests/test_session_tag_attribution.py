@@ -141,7 +141,8 @@ class TestSessionTagExtraction:
         assert headers["x-team-id"] == "Platform"
 
     def test_custom_prefix_cognito_compat(self):
-        """custom: prefix works for Cognito attributes."""
+        """custom: prefix works as fallback for Cognito attributes."""
+        # custom: is lower priority than direct claim (backward compat)
         info = extract_user_info(self._base_payload(**{
             "custom:department": "DataScience"
         }))
