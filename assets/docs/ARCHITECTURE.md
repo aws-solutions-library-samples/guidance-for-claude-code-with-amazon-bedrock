@@ -8,9 +8,17 @@ This document provides technical details about the Claude Code authentication sy
 
 The Claude Code authentication system enables secure, scalable access to Amazon Bedrock by federating enterprise identity providers through AWS Cognito. The architecture follows zero-trust principles with complete audit trails.
 
-## Component Architecture
-
 ### Authentication Components
+
+The credential process is a native Go binary (`source/go/`) implementing the full authentication lifecycle:
+
+- **OAuth2/OIDC with PKCE** — browser-based login, no client secrets
+- **Silent refresh** — stores OIDC refresh_token for automatic renewal (7-30 days without browser re-auth)
+- **Token caching** — OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service) or encrypted session files
+- **Multi-provider registry** — Okta, Azure AD, Auth0, Google, Cognito, generic OIDC
+- **Cross-platform** — single `make all` produces 5 binaries (macOS ARM64/Intel, Linux x64/ARM64, Windows x64) via Go cross-compilation
+
+The Go rewrite (June 2026) replaced the Python credential-provider, eliminating PyInstaller/Nuitka build complexity, AV false positives on Windows, and the 60-80MB binary size (now ~14MB).
 
 The core authentication component is the credential process, implemented as a native Go binary in `source/go/`. This implements a complete OAuth2/OIDC client with PKCE flow for secure authentication without client secrets. Go cross-compilation produces native statically-linked binaries for all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows x64) from a single build, eliminating the need for per-platform build toolchains. The credential process supports multiple identity providers including Okta, Azure AD, Auth0, and Cognito User Pools through a flexible provider registry system. Once authenticated, credentials are cached either in the operating system's secure keyring or in session files, depending on the organization's preference. The implementation follows the AWS CLI credential process protocol, making it transparent to any AWS SDK or tool.
 
@@ -19,20 +27,6 @@ The management CLI in `source/claude_code_with_bedrock/` provides IT administrat
 ### AWS Infrastructure Components
 
 The authentication infrastructure supports two federation methods. With Direct IAM Federation, an IAM OIDC Provider creates the trust relationship between the organization's identity provider and AWS, allowing direct token exchange via STS. With Cognito Identity Pool, Amazon Cognito acts as an intermediary that federates OIDC tokens into AWS credentials. Both methods use IAM roles that grant permissions specifically for Amazon Bedrock model invocation in configured regions. Every API call includes session tags containing the user's email and subject claim, ensuring complete attribution in CloudTrail logs.
-
-#### IAM Permissions
-
-The IAM role assigned to authenticated users grants the following Amazon Bedrock permissions:
-
-- `bedrock:InvokeModel` - Invoke foundation models for text generation
-- `bedrock:InvokeModelWithResponseStream` - Invoke models with streaming responses
-- `bedrock:ListFoundationModels` - List available foundation models
-- `bedrock:GetFoundationModel` - Get details about specific models
-- `bedrock:GetFoundationModelAvailability` - Check model availability in regions
-- `bedrock:ListInferenceProfiles` - List available cross-region inference profiles
-- `bedrock:GetInferenceProfile` - Get details about specific inference profiles
-
-These permissions are scoped to the configured regions and enable users to discover and invoke models through cross-region inference profiles, ensuring optimal performance and availability.
 
 #### IAM Permissions
 

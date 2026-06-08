@@ -50,6 +50,25 @@ Parameters:
       - 'false'
     Description: Enable fine-grained quota policies (user/group/default levels)
 
+  EnableBypassDetection:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Detect users invoking Bedrock without a running OTEL sidecar by joining
+      CloudTrail Bedrock activity against OTEL-reported usage. Reports via
+      CloudWatch metrics and SNS alerts (detective control, does not block).
+      Opt-in compliance/audit feature; applies to sidecar monitoring mode.
+
+  BypassDetectionLookbackMinutes:
+    Type: Number
+    Default: 15
+    MinValue: 5
+    MaxValue: 60
+    Description: Lookback window (minutes) for bypass detection - should match the detection schedule
+
   # JWT Authentication Parameters for Quota Check API
   OidcIssuerUrl:
     Type: String
@@ -64,6 +83,7 @@ Parameters:
 Conditions:
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   NoJwtAuth: !Equals [!Ref OidcIssuerUrl, '']
+  BypassDetectionEnabled: !Equals [!Ref EnableBypassDetection, 'true']
 
 Resources:
   # DynamoDB table for quota policies (user, group, default levels)
@@ -228,6 +248,104 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt QuotaMonitorScheduleRule.Arn
+
+  # ============================================
+  # Sidecar Bypass Detection (detective control)
+  # Detects users invoking Bedrock without a running OTEL sidecar by joining
+  # CloudTrail Bedrock activity (tamper-proof) against OTEL-reported usage.
+  # ============================================
+
+  # IAM Role for Bypass Detection Lambda
+  SidecarMonitorRole:
+    Type: AWS::IAM::Role
+    Condition: BypassDetectionEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BypassDetectionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Point reads on per-user records to check telemetry freshness
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt UserQuotaMetrics.Arn
+              # Tamper-proof source of truth for who actually invoked Bedrock
+              - Effect: Allow
+                Action:
+                  - cloudtrail:LookupEvents
+                Resource: '*'
+              # Publish per-user sidecar health metrics
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'ClaudeCode/SidecarHealth'
+              # Alert administrators about stopped sidecars
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref QuotaAlertTopic
+
+  # Lambda function for sidecar bypass detection
+  SidecarMonitorFunction:
+    Type: AWS::Lambda::Function
+    Condition: BypassDetectionEnabled
+    Properties:
+      FunctionName: claude-code-bypass-detection
+      Description: Detects users invoking Bedrock without a running OTEL sidecar (detective control)
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SidecarMonitorRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          QUOTA_TABLE: !Ref UserQuotaMetrics
+          SNS_TOPIC_ARN: !Ref QuotaAlertTopic
+          METRICS_REGION: !Ref 'AWS::Region'
+          LOOKBACK_MINUTES: !Ref BypassDetectionLookbackMinutes
+          CLOUDWATCH_NAMESPACE: 'ClaudeCode/SidecarHealth'
+      Code: ./lambda-functions/sidecar_monitor/
+
+  # EventBridge Rule to run bypass detection every 15 minutes
+  SidecarMonitorScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: BypassDetectionEnabled
+    Properties:
+      Name: claude-code-bypass-detection-schedule
+      Description: Trigger sidecar bypass detection every 15 minutes
+      ScheduleExpression: rate(15 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SidecarMonitorFunction.Arn
+          Id: BypassDetectionTarget
+
+  # Permission for EventBridge to invoke the bypass detection Lambda
+  SidecarMonitorSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Condition: BypassDetectionEnabled
+    Properties:
+      FunctionName: !Ref SidecarMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SidecarMonitorScheduleRule.Arn
+
+  # ============================================
+  # End Sidecar Bypass Detection
+  # ============================================
 
   # ============================================
   # Quota Check API (Phase 2 - Access Blocking)
@@ -413,3 +531,10 @@ Outputs:
     Value: !GetAtt QuotaCheckFunction.Arn
     Export:
       Name: !Sub '${AWS::StackName}-QuotaCheckFunctionArn'
+
+  SidecarMonitorFunctionArn:
+    Condition: BypassDetectionEnabled
+    Description: ARN of the sidecar bypass-detection Lambda function
+    Value: !GetAtt SidecarMonitorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SidecarMonitorFunctionArn'

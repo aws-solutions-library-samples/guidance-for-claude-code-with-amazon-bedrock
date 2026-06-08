@@ -76,6 +76,7 @@ class Profile:
     quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
+    enable_bypass_detection: bool = False  # Detect Bedrock use without a running OTEL sidecar (opt-in)
 
     # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
     otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL

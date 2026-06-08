@@ -75,6 +75,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// SSO-disabled (passthrough) mode. Resolve before provider-type detection
+	// because cfg.ProviderDomain is intentionally "none" for these profiles
+	// and would trip the auto-detect error otherwise. Mirrors Python PR #303.
+	if !cfg.IsSsoEnabled() {
+		// Build a minimal app — we don't need providerType or redirectPort for
+		// passthrough, only the ambient AWS chain.
+		app := &credentialApp{
+			profile: profile,
+			cfg:     cfg,
+		}
+		// Honor the small-but-useful flag set that doesn't depend on OIDC.
+		if *clearCache {
+			app.clearCache()
+			os.Exit(0)
+		}
+		os.Exit(app.runPassthrough())
+	}
+
 	// Resolve provider type
 	providerType := resolveProviderType(cfg)
 

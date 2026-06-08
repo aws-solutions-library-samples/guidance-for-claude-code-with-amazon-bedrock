@@ -254,7 +254,7 @@ Choose whether developers will authenticate through an OIDC identity provider to
 | **Yes** (default) | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
 | **No** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
 
-> **Note:** AWS IAM Identity Center (SSO) support is coming in a future release. If your org uses AWS SSO today, choose **No** and configure developer access via your existing IAM Identity Center setup outside this tool.
+> **Note:** AWS IAM Identity Center (SSO) integration is coming soon. If your org uses IAM IDC today, choose **No** for SSO and use your existing `aws sso login` credentials — the solution works with any valid AWS credentials that have Bedrock access.
 
 ---
 
@@ -625,15 +625,17 @@ poetry run ccwb status
 Build the package for end users:
 
 ```bash
-# Build all platforms (starts Windows build in background)
-poetry run ccwb package --target-platform all
+# Build all platforms using Go cross-compilation (recommended)
+poetry run ccwb package --go --target-platform all
 
-# Check Windows build status (optional)
-poetry run ccwb builds
-
-# When ready, create distribution URL (optional)
-poetry run ccwb distribute
+# Creates ready-to-distribute packages for:
+# - macOS ARM64 (Apple Silicon) and Intel
+# - Linux x64 and ARM64
+# - Windows x64
+# All from a single command, any admin OS. Requires: Go 1.24+
 ```
+
+> **Note:** Running `ccwb package` without `--go` falls back to the legacy PyInstaller/CodeBuild pipeline which requires Docker and platform-specific toolchains. Use `--go` for all new deployments.
 
 **Choosing macOS targets:**
 
