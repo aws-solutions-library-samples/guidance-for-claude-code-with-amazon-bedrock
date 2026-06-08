@@ -38,7 +38,6 @@ type ProfileConfig struct {
 	// Okta Custom Authorization Server id. Absent / empty / "default" all
 	// mean "use the default CAS" -- the Go code normalizes these equivalently.
 	OktaAuthServerID string `json:"okta_auth_server_id"`
-
 	// Per-project cost-attribution opt-in marker. Not required by the binaries
 	// today (header emission is driven by the JWT claim alone), but kept in
 	// config.json so future dimensions like `ccwb test` can report adoption
@@ -70,6 +69,14 @@ type ProfileConfig struct {
 	AzureAuthMode            string `json:"azure_auth_mode,omitempty"`
 	ClientCertificatePath    string `json:"client_certificate_path,omitempty"`
 	ClientCertificateKeyPath string `json:"client_certificate_key_path,omitempty"`
+
+	// SSO authentication. When false, the credential helper bypasses the OIDC
+	// flow entirely and emits AWS credentials from the ambient credential
+	// chain (IAM Identity Center, env vars, instance profile, etc.). Mirrors
+	// the Python credential_provider behavior added in PR #303.
+	// Pointer so we can distinguish "missing" (legacy bundles, default true)
+	// from "explicitly false" (passthrough mode).
+	SsoEnabled *bool `json:"sso_enabled,omitempty"`
 
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
@@ -254,4 +261,14 @@ func CredentialProcessPath() string {
 		name = "credential-process.exe"
 	}
 	return filepath.Join(home, "claude-code-with-bedrock", name)
+}
+
+// IsSsoEnabled reports whether the profile uses SSO/OIDC authentication.
+// Defaults to true when the field is absent, preserving behavior for legacy
+// bundles that predate PR #303.
+func (p *ProfileConfig) IsSsoEnabled() bool {
+	if p == nil || p.SsoEnabled == nil {
+		return true
+	}
+	return *p.SsoEnabled
 }
