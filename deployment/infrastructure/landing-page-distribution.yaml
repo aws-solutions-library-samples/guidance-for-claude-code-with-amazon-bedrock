@@ -842,7 +842,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     DependsOn: LambdaInvokePermission
     Properties:
-      Name: !Sub '${IdentityPoolName}-landing-page-tg'
+      # Name omitted — auto-generated to avoid 32-char limit (issue #86)
       TargetType: lambda
       Targets:
         - Id: !GetAtt LandingPageFunction.Arn

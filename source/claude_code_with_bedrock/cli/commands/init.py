@@ -41,9 +41,14 @@ def validate_identity_pool_name(value: str) -> bool | str:
     Returns:
         True if valid, error message if invalid
     """
-    if value and re.match(r"^[a-zA-Z0-9_-]+$", value):
-        return True
-    return "Invalid pool name (alphanumeric, underscore, hyphen only)"
+    if not value or not re.match(r"^[a-zA-Z0-9_-]+$", value):
+        return "Invalid name (alphanumeric, underscore, hyphen only)"
+    # Stack names use identity_pool_name as prefix: e.g. {name}-otel-collector (16 chars suffix)
+    # Various AWS resources append further suffixes. Removing explicit Names in CF
+    # templates avoids hard limits, but shorter names prevent other edge cases.
+    if len(value) > 20:
+        return "Name too long (max 20 characters). This is used as the base for all CloudFormation stack names and AWS resources."
+    return True
 
 
 def validate_cognito_user_pool_id(value: str) -> bool | str:

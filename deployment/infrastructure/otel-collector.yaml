@@ -178,7 +178,9 @@ Resources:
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub '${AWS::StackName}-tg'
+      # Name omitted intentionally — CloudFormation auto-generates a unique name
+      # that respects the 32-char limit. Previously used !Sub '${AWS::StackName}-tg'
+      # which failed when stack names exceeded 29 characters (issue #86).
       Port: 4318
       Protocol: HTTP
       TargetType: ip
