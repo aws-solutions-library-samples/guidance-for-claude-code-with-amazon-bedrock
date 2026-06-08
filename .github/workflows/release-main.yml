@@ -100,19 +100,23 @@ jobs:
           - os: windows-latest
             goos: windows
             goarch: amd64
-            artifact: credential-process-windows.exe
+            artifact_prefix: windows-amd64
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
-            artifact: credential-process-linux-amd64
+            artifact_prefix: linux-amd64
           - os: ubuntu-latest
             goos: linux
             goarch: arm64
-            artifact: credential-process-linux-arm64
+            artifact_prefix: linux-arm64
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            artifact: credential-process-darwin-arm64
+            artifact_prefix: darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact_prefix: darwin-amd64
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -122,17 +126,20 @@ jobs:
         with:
           go-version-file: source/go/go.mod
 
-      - name: Build binary
+      - name: Build binaries
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
           cd source/go
-          go build -ldflags="-s -w" -o ../../${{ matrix.artifact }} ./cmd/credential-process/
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-s -w" -o ../../credential-process-${{ matrix.artifact_prefix }}${EXT} ./cmd/credential-process/
+          go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ needs.release.outputs.tag }} ${{ matrix.artifact }}
+          gh release upload ${{ needs.release.outputs.tag }} credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}*
