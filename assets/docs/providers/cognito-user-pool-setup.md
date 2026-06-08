@@ -173,6 +173,34 @@ Similar process for Okta, Auth0, Azure AD:
 
 ## Troubleshooting
 
+### Group-Level Dashboards Show Default Values
+
+If CloudWatch dimensions show `department: "unspecified"` or `team: "default-team"`, your Cognito tokens may not include custom attributes. Enable the Pre-Token-Generation trigger:
+
+```bash
+# Redeploy with custom claim injection enabled
+aws cloudformation deploy \
+  --template-file deployment/infrastructure/cognito-user-pool-setup.yaml \
+  --stack-name claude-code-user-pool \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    EnableCustomClaimInjection=true
+```
+
+Then ensure users have custom attributes set:
+```bash
+aws cognito-idp admin-update-user-attributes \
+  --user-pool-id <pool-id> \
+  --username user@example.com \
+  --user-attributes \
+    Name=custom:department,Value=engineering \
+    Name=custom:team,Value=platform
+```
+
+Users must re-authenticate for the new claims to appear in their tokens.
+
+> **Note:** This is only needed for pure Cognito deployments. If you use an external IdP (Okta, Azure AD, Google), those providers already emit standard claims via OIDC.
+
 ### Domain Already Exists
 If you get a domain conflict error, choose a different `DomainPrefix`. Cognito domains must be globally unique.
 
