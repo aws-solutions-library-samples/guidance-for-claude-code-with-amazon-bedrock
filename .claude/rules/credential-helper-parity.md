@@ -24,4 +24,16 @@ Any change to either variant requires a parity test:
 - Edge cases: no email, no sub, pipe-delimited sub (`auth0|12345`), >64 char email
 - Verify sanitization produces identical output across variants
 
+## Auth-Type Parity
+
+Beyond Go↔Python, features must also work across all 3 auth types:
+- **OIDC** — JWT available, use Bearer token
+- **IDC** — No JWT, use SigV4 with ambient AWS credentials
+- **none** — No identity, skip or warn
+
+If a feature works for OIDC but not IDC, it's incomplete. Check:
+- Does the Go handler have the same IDC fallback as Python?
+- Does `--quota-status` / monitoring work without a JWT?
+- Are error messages clear about which auth type is needed?
+
 *Issues: #204 (session name truncation), #58 (recursion)*

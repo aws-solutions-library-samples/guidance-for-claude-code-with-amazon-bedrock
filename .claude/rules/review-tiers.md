@@ -45,3 +45,13 @@ all users.
 **Requirements:**
 - Tests must pass
 - No regression test required (unless fixing a bug)
+
+## Auth-Touching PR Review Checklist
+
+Any PR modifying authentication, identity, or user-specific features:
+- [ ] OIDC path tested (JWT Bearer flow)
+- [ ] IDC path tested (SigV4/ambient creds, no JWT)
+- [ ] `none` path tested (graceful skip or clear warning)
+- [ ] No new email assumption without `.get()` fallback
+- [ ] Credential flow timing untouched (no latency added to `auth.run()`)
+- [ ] Go parity maintained (if Python changed, Go updated too)
