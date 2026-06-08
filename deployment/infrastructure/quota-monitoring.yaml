@@ -180,6 +180,7 @@ Resources:
                 Action:
                   - dynamodb:Query
                   - dynamodb:PutItem
+                  - dynamodb:UpdateItem
                   - dynamodb:GetItem
                   - dynamodb:Scan
                 Resource:
@@ -397,6 +398,7 @@ Resources:
           DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
+          ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
       Code: ./lambda-functions/quota_check/
 
   # HTTP API Gateway (v2 - cheaper and faster than REST API)
