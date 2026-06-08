@@ -46,11 +46,25 @@ Parameters:
     Description: Client secret from Federate service profile (required if using Federate)
     NoEcho: true
 
+  EnableCustomClaimInjection:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      When 'true', deploys a Pre-Token-Generation Lambda that copies any
+      custom:* user attributes (department, team, cost_center, organization,
+      location, role, manager) into ID-token claims. Cognito's OAuth2
+      Hosted-UI flow does not include custom attributes by default; this
+      trigger is the standard workaround so OTLP/CloudWatch dimensions
+      populate per-user. Safe to leave 'false' for deployments that don't
+      need group-level dashboards.
+
 Conditions:
   UseFederate: !Not [!Equals [!Ref FederateEnvironment, 'none']]
   NotUseFederate: !Equals [!Ref FederateEnvironment, 'none']
   UseFederateInteg: !Equals [!Ref FederateEnvironment, 'integ']
   UseFederateProd: !Equals [!Ref FederateEnvironment, 'prod']
+  InjectCustomClaims: !Equals [!Ref EnableCustomClaimInjection, 'true']
 
 Resources:
   # Cognito User Pool with settings matching Amazon Federate requirements
@@ -101,6 +115,12 @@ Resources:
         Name: !Ref UserPoolName
         Purpose: 'Claude Code Authentication'
         FederateIntegration: !If [UseFederate, 'true', 'false']
+      # Optional Pre-Token-Generation trigger that injects custom:* attributes
+      # into ID tokens. Required when group-level CloudWatch dashboards are needed.
+      LambdaConfig: !If
+        - InjectCustomClaims
+        - PreTokenGeneration: !GetAtt PreTokenGenerationFunction.Arn
+        - !Ref AWS::NoValue
 
   # App Client with specific token validity settings
   UserPoolClient:
@@ -450,6 +470,54 @@ Resources:
       UserPoolId: !Ref UserPool
       ClientId: !Ref DistributionWebClient
       SecretName: !Sub '${AWS::StackName}-distribution-web-client-secret'
+
+  # Pre-Token-Generation Lambda — injects custom:* attributes into ID tokens.
+  # Cognito's OAuth2 Hosted-UI flow does not surface custom attributes via
+  # standard OIDC scopes; this trigger is the documented workaround.
+  PreTokenGenerationRole:
+    Type: AWS::IAM::Role
+    Condition: InjectCustomClaims
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  PreTokenGenerationFunction:
+    Type: AWS::Lambda::Function
+    Condition: InjectCustomClaims
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PreTokenGenerationRole.Arn
+      Timeout: 5
+      Description: Injects custom:* user attributes into Cognito ID tokens
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              attrs = event.get('request', {}).get('userAttributes', {}) or {}
+              custom = {k: v for k, v in attrs.items() if k.startswith('custom:') and v}
+              if custom:
+                  event['response'] = {
+                      'claimsOverrideDetails': {
+                          'claimsToAddOrOverride': custom
+                      }
+                  }
+              return event
+
+  PreTokenGenerationPermission:
+    Type: AWS::Lambda::Permission
+    Condition: InjectCustomClaims
+    Properties:
+      FunctionName: !Ref PreTokenGenerationFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
 
 Outputs:
   UserPoolId:
