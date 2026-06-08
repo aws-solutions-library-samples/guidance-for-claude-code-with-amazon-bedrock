@@ -47,33 +47,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate release notes
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          LAST_STABLE=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname \
-            | grep -v 'beta\|rc\|alpha' | head -1 || true)
-
-          if [[ -n "$LAST_STABLE" ]] && git rev-parse "$LAST_STABLE" >/dev/null 2>&1; then
-            RANGE="${LAST_STABLE}..HEAD"
-            echo "Commits since $LAST_STABLE"
-          else
-            RANGE="HEAD~50..HEAD"
-            echo "No previous stable tag — using last 50 commits"
-          fi
-
-          COMMITS=$(git log --no-merges --format="- %s" $RANGE 2>/dev/null || git log --no-merges --format="- %s" -n 50)
-          COUNT=$(echo "$COMMITS" | wc -l)
-
-          {
-            echo "## What's changed since ${LAST_STABLE:-initial release}"
-            echo ""
-            echo "$COMMITS"
-            echo ""
-            echo "---"
-            echo "_${COUNT} commit(s) • Stable release from \`main\` branch_"
-          } > /tmp/release_notes.txt
-
       - name: Create tag and release
         if: steps.check.outputs.skip != 'true'
         env:
@@ -84,7 +57,7 @@ jobs:
           git push origin "$TAG"
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes-file /tmp/release_notes.txt \
+            --generate-notes \
             --latest
 
   build-binaries:
