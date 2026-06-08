@@ -2,10 +2,12 @@ package quota
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -14,9 +16,9 @@ import (
 
 // Result represents the quota check API response.
 type Result struct {
-	Allowed bool              `json:"allowed"`
-	Reason  string            `json:"reason"`
-	Message string            `json:"message"`
+	Allowed bool                   `json:"allowed"`
+	Reason  string                 `json:"reason"`
+	Message string                 `json:"message"`
 	Usage   map[string]interface{} `json:"usage"`
 	Policy  map[string]interface{} `json:"policy"`
 }
@@ -116,4 +118,122 @@ func CheckWithIAM(endpoint string, timeout int, failMode string) *Result {
 	default:
 		return failResult(failMode, "api_error", fmt.Sprintf("Quota check failed with status %d", resp.StatusCode))
 	}
+}
+
+// PrintStatus prints a human-readable quota status report to stdout.
+// For OIDC: extracts email from JWT token.
+// For IDC: email comes from the API response (resolved server-side from ARN).
+func PrintStatus(result *Result, endpoint, token string) {
+	var identity string
+	if token != "" {
+		identity = emailFromJWT(token)
+	}
+	// If no email from JWT, check if the API response includes it
+	if identity == "" || identity == "unknown" {
+		if result.Usage != nil {
+			if email, ok := result.Usage["email"].(string); ok && email != "" {
+				identity = email
+			}
+		}
+	}
+	if identity == "" || identity == "unknown" {
+		identity = "unknown (IAM identity)"
+	}
+
+	sep := "============================================================"
+	fmt.Println(sep)
+	fmt.Printf("Quota Status — %s\n", identity)
+	fmt.Println(sep)
+
+	switch {
+	case result.Reason == "no_policy" || result.Reason == "no_email":
+		fmt.Println("Status:  UNLIMITED (no quota policy configured)")
+	case !result.Allowed:
+		fmt.Println("Status:  BLOCKED")
+	default:
+		fmt.Println("Status:  ALLOWED")
+	}
+
+	if result.Usage != nil {
+		fmt.Println()
+		fmt.Println("Usage:")
+		if mt, ok := result.Usage["monthly_tokens"]; ok {
+			ml, _ := result.Usage["monthly_limit"]
+			mtf := toFloat(mt)
+			mlf := toFloat(ml)
+			pct := 0.0
+			if mlf > 0 {
+				pct = mtf / mlf * 100
+			}
+			fmt.Printf("  Monthly: %13.0f / %13.0f tokens  (%5.1f%%)  %s\n", mtf, mlf, pct, bar(pct))
+		}
+		if dt, ok := result.Usage["daily_tokens"]; ok {
+			dl, _ := result.Usage["daily_limit"]
+			dtf := toFloat(dt)
+			dlf := toFloat(dl)
+			pct := 0.0
+			if dlf > 0 {
+				pct = dtf / dlf * 100
+			}
+			fmt.Printf("  Daily:   %13.0f / %13.0f tokens  (%5.1f%%)  %s\n", dtf, dlf, pct, bar(pct))
+		}
+	}
+
+	if result.Message != "" && !result.Allowed {
+		fmt.Printf("\nNote:    %s\n", result.Message)
+	}
+
+	fmt.Println(sep)
+}
+
+func bar(pct float64) string {
+	width := 20
+	capped := pct
+	if capped > 100 {
+		capped = 100
+	}
+	filled := int(capped / 100 * float64(width))
+	b := make([]byte, width)
+	for i := range b {
+		if i < filled {
+			b[i] = '#'
+		} else {
+			b[i] = '-'
+		}
+	}
+	return "[" + string(b) + "]"
+}
+
+func toFloat(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+func emailFromJWT(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return "unknown"
+	}
+	payload := parts[1]
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return "unknown"
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return "unknown"
+	}
+	if email, ok := claims["email"].(string); ok && email != "" {
+		return email
+	}
+	return "unknown"
 }

@@ -49,6 +49,7 @@ func main() {
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
+	quotaStatus := flag.Bool("quota-status", false, "Display current quota usage and limits for the authenticated user, then exit")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -130,6 +131,22 @@ func main() {
 			}
 		}
 		// Fall through to normal auth flow
+	}
+
+	if *quotaStatus {
+		if cfg.QuotaAPIEndpoint == "" {
+			fmt.Fprintln(os.Stderr, "Quota monitoring is not configured for this profile.")
+			fmt.Fprintln(os.Stderr, "Set 'quota_api_endpoint' in your profile to enable quota tracking.")
+			os.Exit(1)
+		}
+		token := storage.ReadMonitoringToken(profile)
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "No cached monitoring token. Run credential-process once to authenticate.")
+			os.Exit(1)
+		}
+		result := quota.Check(cfg.QuotaAPIEndpoint, token, cfg.QuotaCheckTimeout, cfg.QuotaFailMode)
+		quota.PrintStatus(result, cfg.QuotaAPIEndpoint, token)
+		os.Exit(0)
 	}
 
 	os.Exit(app.run())

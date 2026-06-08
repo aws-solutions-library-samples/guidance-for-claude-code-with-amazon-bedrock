@@ -2403,6 +2403,52 @@ class MultiProviderAuth:
             return 1
 
 
+def _print_quota_status(quota_result: dict, email: str) -> None:
+    """Print a human-readable quota status report to stdout."""
+    allowed = quota_result.get("allowed", True)
+    reason = quota_result.get("reason", "unknown")
+    message = quota_result.get("message", "")
+    usage = quota_result.get("usage") or {}
+
+    sep = "=" * 60
+    print(sep)
+    print(f"Quota Status \u2014 {email}")
+    print(sep)
+
+    if reason in ("no_policy", "no_email"):
+        status_str = "UNLIMITED (no quota policy configured)"
+    elif not allowed:
+        status_str = "BLOCKED"
+    else:
+        status_str = "ALLOWED"
+    print(f"Status:  {status_str}")
+
+    if usage:
+        print()
+        print("Usage:")
+
+        def _bar(pct, width=20):
+            filled = int(min(pct, 100) / 100 * width)
+            return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+        if "monthly_tokens" in usage and "monthly_limit" in usage:
+            mt = int(usage["monthly_tokens"])
+            ml = int(usage["monthly_limit"])
+            mp = (mt / ml * 100) if ml else 0
+            print(f"  Monthly: {mt:>13,} / {ml:>13,} tokens  ({mp:5.1f}%)  {_bar(mp)}")
+
+        if "daily_tokens" in usage and "daily_limit" in usage:
+            dt = int(usage["daily_tokens"])
+            dl = int(usage["daily_limit"])
+            dp = (dt / dl * 100) if dl else 0
+            print(f"  Daily:   {dt:>13,} / {dl:>13,} tokens  ({dp:5.1f}%)  {_bar(dp)}")
+
+    if message and not allowed:
+        print(f"\nNote:    {message}")
+
+    print(sep)
+
+
 def main():
     """CLI entry point"""
     import argparse
@@ -2438,6 +2484,11 @@ def main():
             "For non-interactive use set CCWB_CLIENT_SECRET env var before running; "
             "otherwise an interactive prompt is shown. Blank input clears the stored secret."
         ),
+    )
+    parser.add_argument(
+        "--quota-status",
+        action="store_true",
+        help="Display current quota usage and limits for the authenticated user, then exit",
     )
 
     args = parser.parse_args()
@@ -2531,6 +2582,28 @@ def main():
             auth._debug_print(f"Credentials still valid for profile '{args.profile}', no refresh needed")
             sys.exit(0)
         # Credentials expired, fall through to normal auth flow
+
+    # Handle --quota-status: display usage and exit (never reaches credential issuance)
+    if args.quota_status:
+        if not auth._should_check_quota():
+            print("Quota monitoring is not configured for this profile.", file=sys.stderr)
+            print("Set 'quota_api_endpoint' in your profile to enable quota tracking.", file=sys.stderr)
+            sys.exit(1)
+
+        # Use cached monitoring token; fall back to interactive auth if expired
+        id_token = auth.get_monitoring_token()
+        if not id_token:
+            auth._debug_print("No cached token, authenticating for quota status...")
+            id_token = auth.authenticate_for_monitoring()
+        if not id_token:
+            print("Authentication failed: cannot retrieve quota status.", file=sys.stderr)
+            sys.exit(1)
+
+        token_claims = jwt.decode(id_token, options={"verify_signature": False})
+        email = token_claims.get("email", "unknown")
+        quota_result = auth._check_quota(token_claims, id_token)
+        _print_quota_status(quota_result, email)
+        sys.exit(0)
 
     # Normal AWS credential flow (credential_process mode)
     # For session storage, this automatically uses ~/.aws/credentials
