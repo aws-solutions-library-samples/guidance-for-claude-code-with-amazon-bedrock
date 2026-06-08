@@ -247,8 +247,8 @@ class DeployCommand(Command):
                             "[dim]Re-run 'ccwb init' with OIDC authentication to deploy quota monitoring. "
                             "See issue #454.[/dim]"
                         )
-            # Check if CodeBuild is enabled
-            if getattr(profile, "enable_codebuild", False):
+            # Check if CodeBuild is enabled (skip for cowork-only scope)
+            if getattr(profile, "enable_codebuild", False) and getattr(profile, "deployment_scope", "both") != "cowork":
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
         # Initialize CloudFormation manager

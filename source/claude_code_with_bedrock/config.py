@@ -124,6 +124,7 @@ class Profile:
 
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
+    deployment_scope: str = "both"  # Deployment scope: "cowork" (Desktop only), "code" (CLI only), or "both" (default)
 
     # Legacy field support
     @property

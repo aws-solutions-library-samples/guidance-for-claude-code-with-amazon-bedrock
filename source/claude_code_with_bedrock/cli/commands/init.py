@@ -312,6 +312,20 @@ class InitCommand(Command):
             skip_monitoring = last_step in ["monitoring_complete", "bedrock_complete"]
             skip_bedrock = last_step in ["bedrock_complete"]
 
+        # Deployment Scope
+        console.print("\n[bold blue]Deployment Scope[/bold blue]")
+        console.print("Choose what you are deploying:")
+        deployment_scope = questionary.select(
+            "Deployment scope:",
+            choices=[
+                questionary.Choice("both (Cowork + Code)", value="both"),
+                questionary.Choice("cowork (Desktop only)", value="cowork"),
+                questionary.Choice("code (CLI only)", value="code"),
+            ],
+            default=config.get("deployment_scope", "both"),
+        ).ask()
+        config["deployment_scope"] = deployment_scope
+
         # SSO Authentication Configuration
         if not skip_okta:
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
@@ -2247,6 +2261,7 @@ sso_registration_scopes = sso:account:access"""
             monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
             cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
+            deployment_scope=config_data.get("deployment_scope", "both"),
             tags=config_data.get("tags", {}),
             redirect_port=config_data.get("redirect_port"),
         )
@@ -2588,6 +2603,8 @@ sso_registration_scopes = sso:account:access"""
 
             # Add CoWork 3P configuration
             existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+            if hasattr(profile, "deployment_scope"):
+                existing_config["deployment_scope"] = profile.deployment_scope
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):

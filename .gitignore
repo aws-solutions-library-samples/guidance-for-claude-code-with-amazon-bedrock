@@ -84,3 +84,4 @@ FEEDBACK.md
 .claudeignore
 .mcp.json
 source/go/credential-process
+__pycache__/
