@@ -87,30 +87,57 @@ jobs:
               | grep -v 'beta\|rc\|alpha' | head -1 || true)
             if [[ -n "$LAST_STABLE" ]] && git rev-parse "$LAST_STABLE" >/dev/null 2>&1; then
               RANGE="${LAST_STABLE}..HEAD"
-              echo "Collecting commits since last stable release: $LAST_STABLE"
             else
               RANGE="HEAD~30..HEAD"
-              echo "No reference tag found — using last 30 commits"
             fi
           else
             RANGE="${LAST_TAG}..HEAD"
-            echo "Collecting commits since $LAST_TAG"
           fi
 
-          COMMITS=$(git log --no-merges --format="- %s" $RANGE 2>/dev/null || git log --no-merges --format="- %s" -n 30)
+          COMMITS=$(git log --no-merges --format="%s" $RANGE 2>/dev/null || git log --no-merges --format="%s" -n 30)
           COUNT=$(echo "$COMMITS" | wc -l)
 
+          # Categorise by conventional commit prefix
+          FEATURES=$(echo "$COMMITS" | grep -iE '^feat' | sed 's/^/- /' || true)
+          FIXES=$(echo "$COMMITS" | grep -iE '^fix' | sed 's/^/- /' || true)
+          TESTS=$(echo "$COMMITS" | grep -iE '^(test|ci)' | sed 's/^/- /' || true)
+          OTHER=$(echo "$COMMITS" | grep -viE '^(feat|fix|test|ci)' | sed 's/^/- /' || true)
+
           {
-            echo "## What's changed since ${LAST_TAG:-last stable release}"
+            echo "## What's Changed"
             echo ""
-            echo "$COMMITS"
-            echo ""
+            if [[ -n "$FEATURES" ]]; then
+              echo "### 🚀 Features"
+              echo ""
+              echo "$FEATURES"
+              echo ""
+            fi
+            if [[ -n "$FIXES" ]]; then
+              echo "### 🐛 Bug Fixes"
+              echo ""
+              echo "$FIXES"
+              echo ""
+            fi
+            if [[ -n "$TESTS" ]]; then
+              echo "### 🧪 Tests & CI"
+              echo ""
+              echo "$TESTS"
+              echo ""
+            fi
+            if [[ -n "$OTHER" ]]; then
+              echo "### 🔧 Maintenance"
+              echo ""
+              echo "$OTHER"
+              echo ""
+            fi
             echo "---"
             echo "_${COUNT} commit(s) • Pre-release from \`beta\` branch_"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG:-$TAG}...$TAG"
           } > /tmp/release_notes.txt
 
-          echo "--- notes preview (first 20 lines) ---"
-          head -20 /tmp/release_notes.txt
+          echo "--- notes preview (first 30 lines) ---"
+          head -30 /tmp/release_notes.txt
 
       - name: Create annotated tag
         if: steps.check.outputs.skip != 'true'
