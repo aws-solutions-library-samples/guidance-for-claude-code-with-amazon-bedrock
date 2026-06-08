@@ -34,7 +34,7 @@ class TestNamedValidationFunctions:
         for name in invalid_names:
             result = validate_identity_pool_name(name)
             assert (
-                result == "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                result == "Invalid name (alphanumeric, underscore, hyphen only)"
             ), f"Expected '{name}' to be invalid, but got: {result}"
 
     def test_validate_cognito_user_pool_id_valid(self):
@@ -63,7 +63,7 @@ class TestInitCommandValidation:
         # Extract the validator from line 352
         # The validator validates alphanumeric, underscore, hyphen only
         def validator(x):
-            error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+            error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
             return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
         valid_names = [
@@ -87,7 +87,7 @@ class TestInitCommandValidation:
         """Test that invalid identity pool names fail validation."""
 
         def validator(x):
-            error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+            error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
             return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
         invalid_names = [
@@ -105,7 +105,7 @@ class TestInitCommandValidation:
         for name in invalid_names:
             result = validator(name)
             assert (
-                result == "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                result == "Invalid name (alphanumeric, underscore, hyphen only)"
             ), f"Expected '{name}' to be invalid, but got: {result}"
 
     def test_cognito_user_pool_id_validator_valid_ids(self):
@@ -165,7 +165,7 @@ class TestInitCommandValidation:
 
             # This simulates the lambda on line 352
             def identity_validator(x):
-                error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
                 return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
             # This simulates the lambda on line 275
@@ -197,7 +197,7 @@ class TestInitCommandValidation:
         def identity_validator(x):
             return (
                 bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-                or "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                or "Invalid name (alphanumeric, underscore, hyphen only)"
             )
 
         def cognito_validator(x):
@@ -314,7 +314,7 @@ class TestInitCommandRegression:
         # We test this by creating similar lambdas here
         test_lambdas = [
             lambda x: bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-            or "Invalid pool name (alphanumeric, underscore, hyphen only)",
+            or "Invalid name (alphanumeric, underscore, hyphen only)",
             lambda x: bool(re.match(r"^[\w-]+_[0-9a-zA-Z]+$", x)) or "Invalid User Pool ID format",
         ]
 
