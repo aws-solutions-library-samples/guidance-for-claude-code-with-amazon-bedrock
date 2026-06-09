@@ -99,7 +99,7 @@ class TestIAMPolicyValidity:
 
     # Valid IAM action prefixes for services used in this project
     VALID_ACTION_PREFIXES = {
-        "bedrock", "bedrock-runtime", "cognito-identity", "cognito-idp", "sts", "logs",
+        "bedrock", "cloudtrail", "cognito-identity", "cognito-idp", "sts", "logs",
         "cloudwatch", "s3", "s3express", "s3-object-lambda", "s3outposts",
         "dynamodb", "lambda", "iam", "ssm",
         "firehose", "glue", "athena", "kms", "codebuild", "ec2",
