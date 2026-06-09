@@ -270,7 +270,7 @@ def _calculate_usage_cost(usage: dict, model_family: str = "sonnet") -> dict:
         rates = get_pricing_rates()
     except ImportError:
         # Shared pricing not deployed — fall back to simple estimate
-        # Use sonnet input rate as approximation
+        print("WARNING: shared.pricing not available, using flat $3/MTok estimate")
         total_monthly = usage.get("total_tokens", 0)
         total_daily = usage.get("daily_tokens", 0)
         return {
@@ -293,7 +293,9 @@ def _calculate_usage_cost(usage: dict, model_family: str = "sonnet") -> dict:
     }
     monthly_cost = calculate_cost(tokens_by_type, model_family, rates)
 
-    # For daily, scale proportionally (DynamoDB only stores daily total, not per-type)
+    # For daily cost: DynamoDB stores daily total tokens but not per-type breakdown,
+    # so we scale monthly cost proportionally. This assumes similar token-type ratios
+    # throughout the month — acceptable for enforcement (not billing).
     daily_tokens = usage.get("daily_tokens", 0)
     if total_tokens > 0:
         daily_ratio = daily_tokens / total_tokens

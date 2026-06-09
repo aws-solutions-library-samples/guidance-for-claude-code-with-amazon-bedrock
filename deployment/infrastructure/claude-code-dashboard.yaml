@@ -156,7 +156,6 @@ Resources:
               }
             },
             {
-            {
               "type": "text",
               "x": 0, "y": 26, "width": 24, "height": 2,
               "properties": { "markdown": "## Estimated Cost\n\nEstimates based on Bedrock on-demand rates. Use AWS Cost Explorer for billing truth.", "background": "transparent" }
