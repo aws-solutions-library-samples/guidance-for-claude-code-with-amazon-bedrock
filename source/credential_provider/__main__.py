@@ -73,6 +73,15 @@ PROVIDER_CONFIGS = {
 
 
 class MultiProviderAuth:
+    OTEL_IDENTITY_RESOURCE_KEYS = {
+        "user.email",
+        "user.division",
+        "user.department",
+        "user.group",
+        "user.team",
+    }
+    OTEL_SHIM_RESOURCE_KEYS = OTEL_IDENTITY_RESOURCE_KEYS | {"git.repo"}
+
     def __init__(self, profile=None):
         # Load configuration from environment or config file
         self.profile = profile or "default"
@@ -694,11 +703,51 @@ class MultiProviderAuth:
 
         return ",".join(attr_pairs)
 
+    def _split_otel_resource_attributes(self, attributes):
+        """Split an OTEL_RESOURCE_ATTRIBUTES string on unescaped commas."""
+        pairs = []
+        current = []
+        escaped = False
+
+        for char in attributes:
+            if char == "," and not escaped:
+                pair = "".join(current).strip()
+                if pair:
+                    pairs.append(pair)
+                current = []
+            else:
+                current.append(char)
+
+            if char == "\\" and not escaped:
+                escaped = True
+            else:
+                escaped = False
+
+        pair = "".join(current).strip()
+        if pair:
+            pairs.append(pair)
+
+        return pairs
+
+    def _otel_resource_key(self, pair):
+        """Return the key from a single escaped OTEL resource attribute pair."""
+        escaped = False
+        for index, char in enumerate(pair):
+            if char == "=" and not escaped:
+                return pair[:index].strip()
+
+            if char == "\\" and not escaped:
+                escaped = True
+            else:
+                escaped = False
+
+        return ""
+
     def _fetch_env_overrides_from_secrets_manager(self, secret_name="shared/claude-code-for-everyone-environment-variables"):
         """Fetch environment variable overrides from AWS Secrets Manager.
 
         The secret must be a JSON object whose keys are environment variable names and
-        whose values are the corresponding string values.  All entries are merged into
+        whose values are the corresponding string values. All entries are merged into
         ~/.claude/settings.json["env"], with secret values taking precedence over
         any defaults computed locally.
 
@@ -752,23 +801,27 @@ class MultiProviderAuth:
     def _update_claude_otel_attributes(self, attributes):
         import tempfile
 
+        def write_atomic_text(path, content):
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-tmp-")
+            try:
+                with os.fdopen(tmp_fd, "w") as f:
+                    f.write(content)
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
         # Write identity to a cache file that the launch wrapper reads at session start.
         # Atomic write (os.replace via temp file) avoids torn reads by concurrent wrapper launches.
         # Runs on re-auth (when cached AWS credentials expire) and at install (--setup-otel-attrs).
         cache_dir = Path.home() / "claude-code-with-bedrock"
         cache_dir.mkdir(parents=True, exist_ok=True)
         identity_path = cache_dir / "otel-identity"
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=".otel-identity-tmp-")
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                f.write(attributes)
-            os.replace(tmp_path, identity_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        extra_path = cache_dir / "otel-extra-attributes"
+        write_atomic_text(identity_path, attributes)
 
         # Windows: also write identity into settings.json env so Windows users retain
         # identity-level telemetry (no launch wrapper on Windows yet).
@@ -785,16 +838,31 @@ class MultiProviderAuth:
             with open(settings_path, "w") as f:
                 json.dump(settings, f, indent=2)
 
-        # Migration: strip any stale OTEL_RESOURCE_ATTRIBUTES from settings.json
-        # (self-healing for users who had it set by earlier installs).
-        # Runs on re-auth and at install so no separate cleanup script is needed; idempotent.
+        # Migration: remove stale shim-owned OTEL_RESOURCE_ATTRIBUTES from settings.json
+        # (self-healing for users who had it set by earlier installs) without dropping
+        # custom resource attributes the user/admin may have configured there.
+        # Preserved custom pairs move to otel-extra-attributes so the shim can keep
+        # passing them via the per-process environment.
         if os.name != "nt":
             settings_path = Path.home() / ".claude" / "settings.json"
             if settings_path.exists():
                 try:
                     with open(settings_path, "r") as f:
                         settings = json.load(f)
-                    if settings.get("env", {}).pop("OTEL_RESOURCE_ATTRIBUTES", None) is not None:
+                    env = settings.get("env", {})
+                    existing_attrs = env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
+                    if existing_attrs is not None:
+                        preserved_pairs = []
+                        for pair in self._split_otel_resource_attributes(existing_attrs):
+                            key = self._otel_resource_key(pair)
+                            if key and key not in self.OTEL_SHIM_RESOURCE_KEYS:
+                                preserved_pairs.append(pair)
+
+                        if preserved_pairs:
+                            write_atomic_text(extra_path, ",".join(preserved_pairs))
+                        elif extra_path.exists():
+                            extra_path.unlink()
+
                         with open(settings_path, "w") as f:
                             json.dump(settings, f, indent=2)
                 except Exception:
