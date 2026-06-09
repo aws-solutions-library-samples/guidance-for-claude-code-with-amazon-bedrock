@@ -51,16 +51,26 @@ Resources:
                   - cloudwatch:GetMetricData
                   - cloudwatch:ListMetrics
                   - cloudwatch:PutMetricData
-                Resource: '*'
+                # CloudWatch metric APIs do not support resource-level permissions.
+                # See: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/iam-cw-condition-keys-namespace.html
+                Resource: '*'  # nosemgrep: cfn-nag-wildcard-resource
 
   CostEstimatorFunction:
     Type: AWS::Lambda::Function
+    # cfn_nag suppress: W89 (VPC not required — only calls CloudWatch APIs)
+    # cfn_nag suppress: W92 (ReservedConcurrentExecutions added below)
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Lambda only calls CloudWatch APIs — no VPC resources accessed
     Properties:
       Runtime: python3.12
       Handler: index.lambda_handler
       Role: !GetAtt CostEstimatorRole.Arn
       Timeout: 300
       MemorySize: 256
+      ReservedConcurrentExecutions: 1
       Environment:
         Variables:
           METRICS_NAMESPACE: !Ref MetricsNamespace
