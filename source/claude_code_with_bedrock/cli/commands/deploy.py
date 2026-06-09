@@ -184,10 +184,16 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "cost-estimator":
+                if profile.monitoring_enabled:
+                    stacks_to_deploy.append(("cost-estimator", "Cost Estimator (Per-User Spend Metrics)"))
+                else:
+                    console.print("[yellow]Cost estimator requires monitoring to be enabled.[/yellow]")
+                    return 1
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, cost-estimator, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -228,6 +234,8 @@ class DeployCommand(Command):
                 stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
                 stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
+                # Cost estimator: per-user spend metrics from CloudWatch token data
+                stacks_to_deploy.append(("cost-estimator", "Cost Estimator (Per-User Spend Metrics)"))
                 # Check if analytics is enabled (default to True for backward compatibility)
                 if getattr(profile, "analytics_enabled", True):
                     stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
@@ -885,6 +893,68 @@ class DeployCommand(Command):
 
                 finally:
                     # Clean up temp file
+                    if "packaged_template_path" in locals():
+                        try:
+                            os.unlink(packaged_template_path)
+                        except Exception:
+                            pass
+
+            elif stack_type == "cost-estimator":
+                template = project_root / "deployment" / "infrastructure" / "cost-estimator.yaml"
+                stack_name = profile.stack_names.get(
+                    "cost-estimator", f"{profile.identity_pool_name}-cost-estimator"
+                )
+
+                # Get S3 bucket from s3bucket stack for packaging
+                s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack, profile.aws_region)
+
+                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
+                    console.print(f"[red]Could not get S3 bucket from s3bucket stack {s3_stack}[/red]")
+                    console.print("[yellow]The s3bucket stack must be deployed first.[/yellow]")
+                    console.print("Run: [cyan]ccwb deploy s3bucket[/cyan]")
+                    return 1
+
+                s3_bucket = s3_outputs["CfnArtifactsBucket"]
+                params = [f"MetricsNamespace=ClaudeCode"]
+
+                # Optional: override pricing rates
+                pricing_override = getattr(profile, "pricing_rates_json", "")
+                if pricing_override:
+                    params.append(f"PricingRatesJson={pricing_override}")
+
+                # Package the template (has Lambda code)
+                task = progress.add_task("Packaging cost estimator Lambda...", total=None)
+
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                        packaged_template_path = f.name
+
+                    cmd = [
+                        "aws", "cloudformation", "package",
+                        "--template-file", str(template),
+                        "--s3-bucket", s3_bucket,
+                        "--s3-prefix", "claude-code/cost-estimator",
+                        "--output-template-file", packaged_template_path,
+                        "--region", profile.aws_region,
+                    ]
+
+                    result_pkg = subprocess.run(cmd, capture_output=True, text=True)
+
+                    if result_pkg.returncode != 0:
+                        console.print(f"[red]Failed to package template: {result_pkg.stderr}[/red]")
+                        return 1
+
+                    progress.update(
+                        task, description="Cost estimator Lambda packaged successfully", completed=True
+                    )
+
+                    return deploy_with_cf(
+                        packaged_template_path, stack_name, params,
+                        task_description="Deploying cost estimator..."
+                    )
+
+                finally:
                     if "packaged_template_path" in locals():
                         try:
                             os.unlink(packaged_template_path)

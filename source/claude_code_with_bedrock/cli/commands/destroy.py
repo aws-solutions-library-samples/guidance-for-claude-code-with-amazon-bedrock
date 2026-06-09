@@ -19,6 +19,7 @@ from claude_code_with_bedrock.config import Config
 # Keep in sync with deploy.py's stack types when adding new stacks.
 DESTROYABLE_STACKS = [
     "codebuild",
+    "cost-estimator",
     "analytics",
     "quota",
     "cowork-dashboard",
