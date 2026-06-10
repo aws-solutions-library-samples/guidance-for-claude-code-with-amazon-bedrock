@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   label:
+    # Skip fork PRs — they don't have write access to labels
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
