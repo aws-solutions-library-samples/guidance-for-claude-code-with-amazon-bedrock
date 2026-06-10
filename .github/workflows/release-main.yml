@@ -108,13 +108,15 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          # macOS credential-process needs cgo for keychain access (99designs/keyring)
+          CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '0' }}
         run: |
           cd source/go
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          # credential-process uses CGO_ENABLED from env; otel-helper never needs cgo
           go build -ldflags="-s -w" -o ../../credential-process-${{ matrix.artifact_prefix }}${EXT} ./cmd/credential-process/
-          go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
 
       - name: Generate checksums
         shell: bash

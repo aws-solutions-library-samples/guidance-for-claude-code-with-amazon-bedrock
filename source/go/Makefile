@@ -24,12 +24,12 @@ clean:
 
 macos-arm64:
 	@mkdir -p $(OUT)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/credential-process-macos-arm64 ./cmd/credential-process/
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/credential-process-macos-arm64 ./cmd/credential-process/
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/otel-helper-macos-arm64 ./cmd/otel-helper/
 
 macos-intel:
 	@mkdir -p $(OUT)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/credential-process-macos-intel ./cmd/credential-process/
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/credential-process-macos-intel ./cmd/credential-process/
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/otel-helper-macos-intel ./cmd/otel-helper/
 
 linux-x64:
