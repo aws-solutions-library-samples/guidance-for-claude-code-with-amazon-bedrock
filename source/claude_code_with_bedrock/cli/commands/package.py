@@ -496,11 +496,28 @@ class PackageCommand(Command):
                         except Exception as e:
                             console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
-        # Check if any binaries were built
-        if not built_executables:
+        # A Windows build runs asynchronously in CodeBuild and produces no local
+        # binary now (_build_executable returns None), so built_executables can be
+        # empty even though the build was submitted successfully. Treat that as a
+        # success and still generate the config/installer for distribution.
+        windows_codebuild_pending = any(
+            platform_name == "windows" and platform_name not in [p for p, _ in built_executables]
+            for platform_name in platforms_to_build
+        ) and bool(profile and getattr(profile, "enable_codebuild", False))
+
+        # Check if any binaries were built (or are pending in CodeBuild)
+        if not built_executables and not windows_codebuild_pending:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
+
+        if windows_codebuild_pending and not built_executables:
+            console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
+            console.print("Local configuration files will be generated now for distribution.")
+            console.print("\nTo check build status:")
+            console.print("  [cyan]poetry run ccwb builds[/cyan]")
+            console.print("\nOnce complete, retrieve binaries with:")
+            console.print("  [cyan]poetry run ccwb distribute[/cyan]\n")
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
