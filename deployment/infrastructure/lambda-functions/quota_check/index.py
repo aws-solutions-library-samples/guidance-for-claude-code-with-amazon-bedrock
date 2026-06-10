@@ -123,6 +123,23 @@ def lambda_handler(event, context):
         usage = get_user_usage(email)
         usage_summary = build_usage_summary(usage, policy)
 
+        # 3b. Enrich usage summary with cost data if in cost mode
+        if QUOTA_MODE == "cost":
+            cost_data = _calculate_usage_cost(usage)
+            monthly_cost = cost_data["monthly_cost"]
+            daily_cost = cost_data["daily_cost"]
+            monthly_cost_limit = policy.get("monthly_cost_limit", MONTHLY_COST_LIMIT)
+            daily_cost_limit = policy.get("daily_cost_limit", DAILY_COST_LIMIT)
+            usage_summary["monthly_cost_usd"] = round(monthly_cost, 4)
+            usage_summary["daily_cost_usd"] = round(daily_cost, 4)
+            usage_summary["monthly_cost_limit_usd"] = monthly_cost_limit
+            usage_summary["daily_cost_limit_usd"] = daily_cost_limit
+            usage_summary["quota_mode"] = "cost"
+            if monthly_cost_limit > 0:
+                usage_summary["monthly_percent"] = round(monthly_cost / monthly_cost_limit * 100, 1)
+            if daily_cost_limit > 0:
+                usage_summary["daily_percent"] = round(daily_cost / daily_cost_limit * 100, 1)
+
         # 4. Check if enforcement mode is "block"
         enforcement_mode = policy.get("enforcement_mode", "alert")
 
@@ -143,18 +160,7 @@ def lambda_handler(event, context):
 
         # 5. Check limits (monthly, daily) — token mode or cost mode
         if QUOTA_MODE == "cost":
-            # Cost-based enforcement: convert tokens to USD, compare against $ limits
-            cost_data = _calculate_usage_cost(usage)
-            monthly_cost = cost_data["monthly_cost"]
-            daily_cost = cost_data["daily_cost"]
-
-            monthly_cost_limit = policy.get("monthly_cost_limit", MONTHLY_COST_LIMIT)
-            daily_cost_limit = policy.get("daily_cost_limit", DAILY_COST_LIMIT)
-
-            # Enrich usage summary with cost data
-            usage_summary["monthly_cost_usd"] = round(monthly_cost, 4)
-            usage_summary["daily_cost_usd"] = round(daily_cost, 4)
-
+            # Cost-based enforcement: use values already computed in step 3b
             if monthly_cost_limit > 0 and monthly_cost >= monthly_cost_limit:
                 return build_response(200, {
                     "allowed": False,

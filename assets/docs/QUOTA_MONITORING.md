@@ -283,7 +283,7 @@ The browser page displays:
 
 In addition to browser notifications, the terminal shows:
 
-**Warning (80%+ usage):**
+**Warning (80%+ usage) — Token Mode:**
 ```
 ============================================================
 QUOTA WARNING
@@ -293,7 +293,17 @@ QUOTA WARNING
 ============================================================
 ```
 
-**Blocked (100%+ usage):**
+**Warning (80%+ usage) — Cost Mode:**
+```
+============================================================
+QUOTA WARNING
+============================================================
+  Monthly: $400.00 / $500.00 (80.0%)
+  Daily: $40.00 / $50.00 (80.0%)
+============================================================
+```
+
+**Blocked (100%+ usage) — Token Mode:**
 ```
 ============================================================
 ACCESS BLOCKED - QUOTA EXCEEDED
@@ -304,6 +314,24 @@ Contact your administrator for assistance.
 
 Current Usage:
   Monthly: 225,000,000 / 225,000,000 tokens (100.0%)
+
+Policy: user:john.doe@company.com
+
+To request an unblock, contact your administrator.
+============================================================
+```
+
+**Blocked (100%+ usage) — Cost Mode:**
+```
+============================================================
+ACCESS BLOCKED - QUOTA EXCEEDED
+============================================================
+
+Monthly spend limit exceeded: $500.00 / $500.00 (100.0%).
+Contact your administrator.
+
+Current Usage:
+  Monthly: $500.00 / $500.00 (100.0%)
 
 Policy: user:john.doe@company.com
 

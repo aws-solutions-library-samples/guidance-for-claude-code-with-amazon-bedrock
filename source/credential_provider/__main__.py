@@ -1880,10 +1880,17 @@ class MultiProviderAuth:
 
         if usage:
             print("Current Usage:", file=sys.stderr)
-            if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
-            if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+            quota_mode = usage.get("quota_mode", "token")
+            if quota_mode == "cost":
+                if "monthly_cost_usd" in usage and "monthly_cost_limit_usd" in usage:
+                    print(f"  Monthly: ${usage['monthly_cost_usd']:.2f} / ${usage['monthly_cost_limit_usd']:.2f} ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+                if "daily_cost_usd" in usage and "daily_cost_limit_usd" in usage:
+                    print(f"  Daily: ${usage['daily_cost_usd']:.2f} / ${usage['daily_cost_limit_usd']:.2f} ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
+            else:
+                if "monthly_tokens" in usage and "monthly_limit" in usage:
+                    print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({usage.get('monthly_percent', 0):.1f}%)", file=sys.stderr)
+                if "daily_tokens" in usage and "daily_limit" in usage:
+                    print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({usage.get('daily_percent', 0):.1f}%)", file=sys.stderr)
 
         if policy:
             print(f"\nPolicy: {policy.get('type', 'unknown')}:{policy.get('identifier', 'unknown')}", file=sys.stderr)
@@ -1915,11 +1922,20 @@ class MultiProviderAuth:
             monthly_percent = usage.get("monthly_percent", 0)
             daily_percent = usage.get("daily_percent", 0)
 
+            # Detect cost mode
+            quota_mode = usage.get("quota_mode", "token")
+
             # Format numbers for display
             monthly_tokens = usage.get("monthly_tokens", 0)
             monthly_limit = usage.get("monthly_limit", 0)
             daily_tokens = usage.get("daily_tokens", 0)
             daily_limit = usage.get("daily_limit", 0)
+
+            # Cost mode values
+            monthly_cost = usage.get("monthly_cost_usd", 0)
+            monthly_cost_limit = usage.get("monthly_cost_limit_usd", 0)
+            daily_cost = usage.get("daily_cost_usd", 0)
+            daily_cost_limit = usage.get("daily_cost_limit_usd", 0)
 
             def format_tokens(n):
                 if n >= 1_000_000_000:
@@ -2049,8 +2065,8 @@ class MultiProviderAuth:
         <div class="content">
             <div class="usage-section">
                 <div class="usage-label">
-                    <span>Monthly Usage</span>
-                    <span class="usage-value">{format_tokens(monthly_tokens)} / {format_tokens(monthly_limit)} ({monthly_percent:.1f}%)</span>
+                    <span>Monthly {"Spend" if quota_mode == "cost" else "Usage"}</span>
+                    <span class="usage-value">{f"${monthly_cost:.2f} / ${monthly_cost_limit:.2f}" if quota_mode == "cost" else f"{format_tokens(monthly_tokens)} / {format_tokens(monthly_limit)}"} ({monthly_percent:.1f}%)</span>
                 </div>
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: {min(monthly_percent, 100)}%; background: {monthly_bar_color};">
@@ -2058,11 +2074,11 @@ class MultiProviderAuth:
                     </div>
                 </div>
             </div>
-            {"" if not daily_limit else f'''
+            {"" if (quota_mode == "cost" and not daily_cost_limit) or (quota_mode != "cost" and not daily_limit) else f'''
             <div class="usage-section">
                 <div class="usage-label">
-                    <span>Daily Usage</span>
-                    <span class="usage-value">{format_tokens(daily_tokens)} / {format_tokens(daily_limit)} ({daily_percent:.1f}%)</span>
+                    <span>Daily {"Spend" if quota_mode == "cost" else "Usage"}</span>
+                    <span class="usage-value">{f"${daily_cost:.2f} / ${daily_cost_limit:.2f}" if quota_mode == "cost" else f"{format_tokens(daily_tokens)} / {format_tokens(daily_limit)}"} ({daily_percent:.1f}%)</span>
                 </div>
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: {min(daily_percent, 100)}%; background: {daily_bar_color};">
@@ -2139,10 +2155,19 @@ class MultiProviderAuth:
         print("=" * 60, file=sys.stderr)
 
         if usage:
-            if "monthly_tokens" in usage and "monthly_limit" in usage:
-                print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
-            if "daily_tokens" in usage and "daily_limit" in usage:
-                print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
+            quota_mode = usage.get("quota_mode", "token")
+            if quota_mode == "cost":
+                # Cost-based display
+                if "monthly_cost_usd" in usage and "monthly_cost_limit_usd" in usage:
+                    print(f"  Monthly: ${usage['monthly_cost_usd']:.2f} / ${usage['monthly_cost_limit_usd']:.2f} ({monthly_percent:.1f}%)", file=sys.stderr)
+                if "daily_cost_usd" in usage and "daily_cost_limit_usd" in usage:
+                    print(f"  Daily: ${usage['daily_cost_usd']:.2f} / ${usage['daily_cost_limit_usd']:.2f} ({daily_percent:.1f}%)", file=sys.stderr)
+            else:
+                # Token-based display (existing behavior)
+                if "monthly_tokens" in usage and "monthly_limit" in usage:
+                    print(f"  Monthly: {usage['monthly_tokens']:,} / {usage['monthly_limit']:,} tokens ({monthly_percent:.1f}%)", file=sys.stderr)
+                if "daily_tokens" in usage and "daily_limit" in usage:
+                    print(f"  Daily: {usage['daily_tokens']:,} / {usage['daily_limit']:,} tokens ({daily_percent:.1f}%)", file=sys.stderr)
 
         print("=" * 60 + "\n", file=sys.stderr)
 
