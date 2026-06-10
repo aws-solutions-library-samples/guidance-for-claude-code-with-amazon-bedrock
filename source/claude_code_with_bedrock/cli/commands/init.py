@@ -1187,6 +1187,14 @@ class InitCommand(Command):
         if enable_cowork:
             console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
 
+            # Preserve existing custom MDM keys; advise JSON editing for additions
+            existing_extra = config.get("cowork_3p", {}).get("extra_keys", {})
+            if existing_extra:
+                console.print(f"[dim]Custom MDM keys configured: {len(existing_extra)} key(s)[/dim]")
+            else:
+                console.print("[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]")
+                console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
+            config["cowork_3p"]["extra_keys"] = existing_extra
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
@@ -1837,6 +1845,11 @@ class InitCommand(Command):
         if config.get("tags"):
             table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
+        # Show custom MDM keys
+        extra_keys = config.get("cowork_3p", {}).get("extra_keys", {})
+        if extra_keys:
+            table.add_row("Custom MDM Keys", ", ".join(f"{k}={v}" for k, v in extra_keys.items()))
+
         console.print(table)
 
         # Show what will be created
@@ -2084,6 +2097,7 @@ class InitCommand(Command):
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
+            "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2431,7 +2445,10 @@ class InitCommand(Command):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
 
             # Add CoWork 3P configuration
-            existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+            cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
+            if profile.cowork_3p_extra_keys:
+                cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
+            existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
