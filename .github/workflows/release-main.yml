@@ -54,6 +54,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
