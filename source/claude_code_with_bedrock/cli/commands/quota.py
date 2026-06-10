@@ -127,6 +127,34 @@ def _parse_tokens(value: str) -> int:
     return int(value)
 
 
+class QuotaCommand(Command):
+    """Manage quota policies."""
+
+    name = "quota"
+    description = "Manage quota policies (run 'ccwb quota --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available quota subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  quota <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>quota set-user</comment>     Set quota policy for a specific user")
+        self.line("  <comment>quota set-group</comment>    Set quota policy for a group")
+        self.line("  <comment>quota set-default</comment>  Set the default quota policy")
+        self.line("  <comment>quota list</comment>         List all quota policies")
+        self.line("  <comment>quota show</comment>         Show quota for a specific user or group")
+        self.line("  <comment>quota usage</comment>        Show quota usage and consumption")
+        self.line("  <comment>quota delete</comment>       Delete a quota policy")
+        self.line("  <comment>quota unblock</comment>      Temporarily unblock a quota-exceeded user")
+        self.line("  <comment>quota export</comment>       Export quota policies to a file")
+        self.line("  <comment>quota import</comment>       Import quota policies from a file")
+        self.line("")
+        self.line("Run <comment>ccwb quota <subcommand> --help</comment> for details on a subcommand.")
+        return 0
+
+
 class QuotaSetUserCommand(Command):
     """Set quota policy for a specific user."""
 
@@ -1048,7 +1076,7 @@ class QuotaExportCommand(Command):
             if to_stdout:
                 print(output)
             else:
-                with open(file_path, "w") as f:
+                with open(file_path, "w", encoding="utf-8") as f:
                     f.write(output)
                 console.print(f"[green]Exported {len(policies)} policies to {file_path}[/green]")
 
@@ -1201,7 +1229,7 @@ class QuotaImportCommand(Command):
         """
         file_ext = Path(file_path).suffix.lower()
 
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             if file_ext == ".csv":
                 reader = csv.DictReader(f)
                 return list(reader)

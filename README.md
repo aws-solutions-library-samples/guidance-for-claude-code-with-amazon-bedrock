@@ -6,7 +6,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 
 ### For Organizations
 
-- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, etc.)
+- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, Google, etc.)
 - **AWS SSO / IAM Identity Center**: Native AWS identity path for teams already using IAM Identity Center — no external IdP required
 - **Centralized Access Control**: Manage Claude Code access through your identity provider
 - **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
@@ -29,7 +29,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 - **Claude Desktop Experience**: Research, document analysis, data processing, and report generation
 - **No CLI Required**: Users just open Claude Desktop — authentication is handled by the credential helper
 - **MDM Deployment**: Configure via Jamf, Intune, or Group Policy using generated .mobileconfig/.reg files
-- **Projects, Artifacts, and MCP**: Full Claude Desktop capabilities including connectors and plugins
+- **Projects, Artifacts, and MCP**: Core Claude Desktop capabilities including projects, artifacts, and MCP servers. Feature availability on Bedrock may differ from claude.ai.
 - **Consumption-Based Pricing**: No Anthropic seat licensing — billed through your existing AWS agreement
 
 ## Table of Contents
@@ -44,7 +44,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 
 ## Quick Start
 
-This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, or Cognito User Pools) to provide federated access to Amazon Bedrock.
+This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, Google, or Cognito User Pools) to provide federated access to Amazon Bedrock.
 
 ### What You Need
 
@@ -128,11 +128,11 @@ When SSO authentication is disabled:
 
 To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
 
-> **New in v2.2+:** IAM Identity Center is now a first-class authentication option. Select **"AWS IAM Identity Center (SSO)"** in `ccwb init` to get guided setup, `~/.aws/config` generation, and the correct CloudFormation stack — without the undocumented workaround of disabling SSO. See the [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md) for details.
+> **IAM Identity Center** works today via SSO-disabled mode — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Full first-class IDC support (dedicated auth stack, OTEL attribution, quota enforcement) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
 
 ## Authentication Modes
 
-This guidance supports three identity paths. All paths deliver per-user identity resolution, centralized access control, audit trails, and usage monitoring.
+This guidance supports three identity paths. Each path provides usage monitoring and audit trails. Per-user identity resolution and quota enforcement depend on the authentication mode chosen.
 
 | Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
 |------|--------------------|----------------|----------------|-------------------|----------|
@@ -143,7 +143,7 @@ This guidance supports three identity paths. All paths deliver per-user identity
 **Choosing a path:**
 
 - Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
-- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. See [IAM Identity Center Setup Guide](assets/docs/providers/iam-identity-center-setup.md).
+- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Full IAM IDC integration (dedicated auth stack, OTEL attribution, quota support) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
 - Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
 
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
@@ -154,7 +154,7 @@ For deployment patterns and best practices, see the [Claude Code deployment patt
 
 **Software Requirements:**
 
-- Python 3.10-3.13
+- Python 3.10-3.12
 - Poetry (dependency management)
 - AWS CLI v2
 - Git
@@ -222,7 +222,7 @@ The authentication tools support all major platforms:
 
 | Platform | Architecture          | Build Method                | Installation |
 | -------- | --------------------- | --------------------------- | ------------ |
-| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat  |
+| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat + ccwb-install.ps1 |
 | macOS    | ARM64 (Apple Silicon) | Native (PyInstaller)        | install.sh   |
 | macOS    | Intel (x86_64)        | Cross-compile (PyInstaller) | install.sh   |
 | macOS    | Universal (both)      | Universal2 (PyInstaller)    | install.sh   |
@@ -442,6 +442,8 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Okta](assets/docs/providers/okta-setup.md)
 - [Microsoft Entra ID (Azure AD)](assets/docs/providers/microsoft-entra-id-setup.md)
 - [Auth0](assets/docs/providers/auth0-setup.md)
+- [Google](assets/docs/providers/google-oidc-setup.md)
+- [AWS Cognito User Pool](assets/docs/providers/cognito-user-pool-setup.md)
 - [Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)](assets/docs/providers/generic-oidc-setup.md)
 
 ## License

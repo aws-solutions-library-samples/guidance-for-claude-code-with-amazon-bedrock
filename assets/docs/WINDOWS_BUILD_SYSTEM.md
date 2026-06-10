@@ -1,5 +1,96 @@
 # Windows Build System Documentation
 
+> **NOTE: The Nuitka/CodeBuild build system documented below has been replaced by Go cross-compilation.** Go produces native statically-linked binaries for all 5 platforms from a single machine, eliminating the need for CodeBuild, Docker, and per-platform toolchains. See the [Go Build System](#go-build-system-recommended) section below.
+
+## Go Build System (Recommended)
+
+Native Go binaries replace the previous PyInstaller/Nuitka build pipeline. Key advantages:
+
+- **No AV false positives**: Go binaries pass Windows Defender (PyInstaller/Nuitka triggered Error 225)
+- **Cross-compile from any OS**: All 5 platforms built from a single `make all` command
+- **No CodeBuild needed**: Eliminates 3 CodeBuild projects and 30+ minute Windows builds
+- **4x smaller**: ~14 MB vs ~60-80 MB for credential-process
+- **Fast cross-compilation**: All 5 platforms built in ~10 seconds from any machine with Go installed
+
+### Windows-Specific Build Requirements
+
+Windows binaries have special requirements to avoid Defender cloud ML (Wacatac.B!ml) detections:
+
+1. **Do NOT strip**: No `-s -w` ldflags (stripping triggers Defender ML heuristics)
+2. **Embed PE version info**: Use `go-winres` to embed RT_VERSION + RT_MANIFEST resources
+3. **`.syso` files**: Located at `cmd/credential-process/rsrc_windows_amd64.syso` and `cmd/otel-helper/rsrc_windows_amd64.syso`, auto-linked by the Go compiler for Windows builds
+
+### Three build paths for end-user binaries
+
+| Path | Command | Requires | Runs on Windows admin? |
+|---|---|---|---|
+| **Go cross-compile via ccwb** (recommended) | `ccwb package --go` | Go 1.24+ installed | ✅ Yes, natively |
+| **Go cross-compile via Makefile** | `cd source/go && make all` | Go 1.24+ and a Unix shell (Git Bash, WSL, or macOS/Linux) | ⚠️ **No** — see below |
+| **Legacy** (default when no flag) | `ccwb package` | PyInstaller + Docker (Linux builds) + CodeBuild (Windows builds) | ⚠️ Partial — native Windows Nuitka works; Linux builds need Docker |
+
+**Pass `--go` explicitly to avoid the legacy path.** Bare `ccwb package` falls back to PyInstaller/Nuitka/Docker/CodeBuild, which is much heavier and more fragile. Most admins should standardize on `ccwb package --go`.
+
+### Building Windows binaries (cross-compile, any admin OS)
+
+```bash
+cd source/go
+
+# Build all 10 binaries (Windows unstripped, others stripped)
+make all
+
+# Or build just Windows:
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+  -ldflags "-X github.com/bluedoors/ccwb-binaries/internal/version.Version=2.0.0" \
+  -o bin/credential-process-windows.exe ./cmd/credential-process/
+
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+  -ldflags "-X github.com/bluedoors/ccwb-binaries/internal/version.Version=2.0.0" \
+  -o bin/otel-helper-windows.exe ./cmd/otel-helper/
+```
+
+Verified working from macOS Apple Silicon: all 10 binaries (5 platforms × 2 binaries) produced in ~3 minutes. Each binary matches its target platform (`file <binary>` confirms Mach-O/ELF/PE32+), passes strings-leak checks, and the native macOS binary runs successfully with `--version`.
+
+### Building on a Windows machine
+
+**`ccwb package --go` works natively on Windows** — Python subprocess calls `go build` directly and passes env vars as a dict (not shell syntax), with cross-platform `pathlib.Path` handling. Requires only Go 1.24+ installed and on `PATH`. **This is the recommended path for Windows admins.**
+
+Bare `ccwb package` (no flag) falls back to the legacy PyInstaller/Nuitka/Docker/CodeBuild path, which on Windows requires CodeBuild to be enabled during `ccwb init` and takes 12-15 minutes per build.
+
+**`make all` does NOT work on native Windows cmd.exe or PowerShell.** The Makefile uses Unix-only shell constructs (`mkdir -p`, `rm -rf`). Options if you must use the Makefile on Windows:
+
+1. **Git Bash** (bundled with Git for Windows): `make all` works as-is
+2. **WSL (Windows Subsystem for Linux)**: `make all` works after installing `make` and `go`
+3. **Native PowerShell alternative** — skip the Makefile and call `go build` directly:
+
+```powershell
+cd source\go
+$env:CGO_ENABLED="0"
+$env:GOOS="windows"
+$env:GOARCH="amd64"
+go build -trimpath -ldflags "-s -w" -o bin\credential-process-windows.exe .\cmd\credential-process\
+go build -trimpath -ldflags "-s -w" -o bin\otel-helper-windows.exe .\cmd\otel-helper\
+
+# For other platforms, change $env:GOOS and $env:GOARCH:
+$env:GOOS="linux"; $env:GOARCH="amd64"
+go build -trimpath -ldflags "-s -w" -o bin\credential-process-linux-x64 .\cmd\credential-process\
+# ...etc
+```
+
+**Recommended path for Windows admins**: always pass `ccwb package --go` explicitly. The Makefile is only needed if you want to build outside of the `ccwb` tooling.
+
+### Verification
+
+Binaries have been verified on Windows EC2 with Defender real-time + cloud protection enabled:
+- Defender scan: **No threats found**
+- Binary execution: **Works** (credential-process --version)
+- Claude Code E2E: **Working** with OIDC auth flow
+
+---
+
+## Legacy Build System (Nuitka/CodeBuild)
+
+> **Deprecated**: The following documentation is preserved for reference. New deployments should use Go binaries.
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -14,7 +105,7 @@
 
 ## Overview
 
-The Windows build system enables IT administrators to create native Windows executables for Claude Code authentication tools. Due to Nuitka's requirement for native compilation on target platforms, Windows binaries must be built on Windows systems. This is accomplished using AWS CodeBuild with Windows Server 2022 containers.
+The legacy Windows build system used Nuitka via AWS CodeBuild with Windows Server 2022 containers. This approach has been replaced by Go cross-compilation due to Windows Defender false positives (Error 225) with Nuitka-compiled binaries.
 
 ### Key Features
 
@@ -369,7 +460,8 @@ dist/
 ├── otel-helper-macos-arm64            # macOS telemetry helper (~26 MB)
 ├── config.json                        # Configuration with Cognito settings
 ├── install.sh                         # macOS/Linux installer script
-├── install.bat                        # Windows installer script
+├── install.bat                        # Windows installer launcher
+├── ccwb-install.ps1                   # Windows PowerShell installer logic
 ├── README.md                          # Installation instructions
 └── .claude/
     └── settings.json                  # Claude Code telemetry settings
@@ -402,6 +494,7 @@ unzip claude-code-package.zip
 
 # Install
 cd dist
+chmod +x install.sh
 ./install.sh
 ```
 

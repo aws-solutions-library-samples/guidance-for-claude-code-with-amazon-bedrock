@@ -597,21 +597,21 @@ _CLAUDE_MODELS_RAW = {
                     "eu-central-1",  # Frankfurt
                     "eu-central-2",  # Zurich
                     "eu-north-1",  # Stockholm
+                    "eu-south-1",  # Milan
+                    "eu-south-2",  # Spain
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
-                    "eu-south-2",  # Spain
                 ],
                 "destination_regions": [
                     "eu-central-1",
                     "eu-central-2",
                     "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
-                    "eu-south-2",
-                    "eu-south-2",
                 ],
             },
             "jp": {
@@ -643,7 +643,7 @@ _CLAUDE_MODELS_RAW = {
                     "eu-west-1",  # Ireland
                     "eu-west-2",  # London
                     "eu-west-3",  # Paris
-                    "eu-south-2",  # Milan
+                    "eu-south-1",  # Milan
                     "eu-south-2",  # Spain
                     # Asia Pacific
                     "ap-southeast-3",  # Jakarta
@@ -672,7 +672,7 @@ _CLAUDE_MODELS_RAW = {
                     "eu-west-1",
                     "eu-west-2",
                     "eu-west-3",
-                    "eu-south-2",
+                    "eu-south-1",
                     "eu-south-2",
                     # Asia Pacific
                     "ap-southeast-3",
@@ -1207,6 +1207,35 @@ PROFILE_KEY_ALIASES = {
 # Data-residency prefixes: must NOT fall back to global/us.
 # These geographies have strict data residency requirements.
 DATA_RESIDENCY_PREFIXES = {"au", "jp", "eu"}
+
+# Auto-derived from MODEL_TIER_PREFERENCES: model_key → tier
+MODEL_KEY_TO_TIER: dict[str, str] = {
+    model_key: tier
+    for tier, model_keys in MODEL_TIER_PREFERENCES.items()
+    for model_key in model_keys
+}
+
+# Maps tier → Claude Code model alias used in ANTHROPIC_MODEL env var
+TIER_TO_CLAUDE_CODE_ALIAS: dict[str, str] = {
+    "sonnet": "sonnet",
+    "opus": "opus",
+    "haiku": "haiku",
+}
+
+
+def get_claude_code_alias(model_id: str) -> str | None:
+    """Given a full CRIS model ID, return the Claude Code tier alias.
+
+    Returns 'sonnet', 'opus', 'haiku', or None if model is unrecognised.
+    Callers may override the returned alias (e.g. replace 'opus' with
+    'opusplan') based on user preference stored in the profile.
+    """
+    for model_key, model_config in CLAUDE_MODELS.items():
+        for profile in model_config["profiles"].values():
+            if profile["model_id"] == model_id:
+                tier = MODEL_KEY_TO_TIER.get(model_key)
+                return TIER_TO_CLAUDE_CODE_ALIAS.get(tier) if tier else None
+    return None
 
 
 def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:

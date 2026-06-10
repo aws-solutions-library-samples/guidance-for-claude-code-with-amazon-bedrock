@@ -1,0 +1,21 @@
+{
+  "name": "ClaudeCode",
+  "provider_domain": "dev-12345.okta.com",
+  "client_id": "0oa123abc456",
+  "aws_region": "us-east-1",
+  "identity_pool_name": "ccwb-identity-pool",
+  "credential_storage": "session",
+  "provider_type": "okta",
+  "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockFederatedRole",
+  "federation_type": "direct",
+  "max_session_duration": 43200,
+  "sso_enabled": true,
+  "azure_auth_mode": null,
+  "client_secret": null,
+  "client_certificate_path": null,
+  "client_certificate_key_path": null,
+  "quota_monitoring_enabled": false,
+  "quota_api_endpoint": "https://quota.example.com",
+  "quota_fail_mode": "open",
+  "quota_check_interval": 30
+}

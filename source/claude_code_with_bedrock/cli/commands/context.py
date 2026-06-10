@@ -4,7 +4,7 @@
 """Context command - Manage deployment profile contexts."""
 
 from cleo.commands.command import Command
-from cleo.helpers import argument
+from cleo.helpers import argument, option
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -12,6 +12,28 @@ from rich.table import Table
 
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.validators import ProfileValidator
+
+
+class ContextCommand(Command):
+    """Manage deployment profile contexts."""
+
+    name = "context"
+    description = "Manage deployment profile contexts (run 'ccwb context --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available context subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  context <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>context list</comment>     List all available deployment profiles")
+        self.line("  <comment>context current</comment>  Show the currently active deployment profile")
+        self.line("  <comment>context use</comment>      Switch to a different deployment profile")
+        self.line("  <comment>context show</comment>     Show detailed information about a deployment profile")
+        self.line("")
+        self.line("Run <comment>ccwb context <subcommand> --help</comment> for details on a subcommand.")
+        return 0
 
 
 class ContextListCommand(Command):
@@ -243,6 +265,27 @@ class ContextShowCommand(Command):
             return 1
 
 
+class ConfigCommand(Command):
+    """Manage profile configuration."""
+
+    name = "config"
+    description = "Manage profile configuration (run 'ccwb config --help' for subcommands)"
+
+    def handle(self) -> int:
+        """Show available config subcommands."""
+        self.line("")
+        self.line("<info>Usage:</info>")
+        self.line("  config <subcommand> [options]")
+        self.line("")
+        self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>config validate</comment>  Validate profile configuration for errors")
+        self.line("  <comment>config export</comment>    Export profile configuration (sanitized for sharing)")
+        self.line("  <comment>config import</comment>    Import profile configuration from file")
+        self.line("")
+        self.line("Run <comment>ccwb config <subcommand> --help</comment> for details on a subcommand.")
+        return 0
+
+
 class ConfigValidateCommand(Command):
     """Validate profile configuration."""
 
@@ -360,14 +403,21 @@ class ConfigExportCommand(Command):
             optional=True,
         )
     ]
+    options = [
+        option("output", "o", description="Write output to a file instead of stdout", flag=False, default=None),
+        option("include-secrets", description="Include sensitive values (not recommended)", flag=True),
+    ]
 
     def handle(self) -> int:
         """Execute the config export command."""
+        import json
         import sys
 
         Console()
         console_err = Console(file=sys.stderr)
         profile_name = self.argument("profile")
+        output_path = self.option("output")
+        include_secrets = self.option("include-secrets")
 
         try:
             config = Config.load()
@@ -388,18 +438,25 @@ class ConfigExportCommand(Command):
                 console_err.print("\nUse [cyan]ccwb context list[/cyan] to see all profiles.\n")
                 return 1
 
-            # Sanitize profile (remove secrets)
+            # Sanitize profile (remove secrets) unless --include-secrets is set
             profile_dict = profile.to_dict()
-            sanitized = self._sanitize_profile(profile_dict)
+            exported = profile_dict if include_secrets else self._sanitize_profile(profile_dict)
+            json_output = json.dumps(exported, indent=2)
 
-            # Output JSON to stdout
-            import json
+            if output_path:
+                try:
+                    with open(output_path, "w", encoding="utf-8") as f:
+                        f.write(json_output + "\n")
+                except OSError as e:
+                    console_err.print(f"\n[red]Error writing to '{output_path}': {e}[/red]")
+                    return 1
+                console_err.print(f"\n[green]\u2713 Exported profile:[/green] {profile_name} \u2192 {output_path}")
+            else:
+                print(json_output)
+                console_err.print(f"\n[green]\u2713 Exported profile:[/green] {profile_name}")
 
-            print(json.dumps(sanitized, indent=2))
-
-            # Log to stderr
-            console_err.print(f"\n[green]✓ Exported profile:[/green] {profile_name} (sanitized)")
-            console_err.print("[dim]Secrets have been removed for safe sharing.[/dim]\n")
+            if not include_secrets:
+                console_err.print("[dim]Secrets have been removed for safe sharing.[/dim]\n")
 
             return 0
 
@@ -482,7 +539,7 @@ class ConfigImportCommand(Command):
                 console.print(f"\n[red]Error: File not found: {file_path}[/red]\n")
                 return 1
 
-            with open(file_path_obj) as f:
+            with open(file_path_obj, encoding="utf-8") as f:
                 profile_data = json.load(f)
 
             # Use provided name or name from file

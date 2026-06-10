@@ -31,6 +31,7 @@ from pathlib import Path
 
 try:
     import boto3
+    from botocore.config import Config as BotocoreConfig
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
@@ -173,10 +174,15 @@ def extract_user_info(payload):
 
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
-                if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+                if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                     org_id = "okta"
                 elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
+                elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
+                    org_id = "cognito"
+                elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                    org_id = "cognito"
                 elif hostname_lower.endswith(".microsoftonline.com") or hostname_lower == "microsoftonline.com":
                     org_id = "azure"
         except Exception:
@@ -184,12 +190,12 @@ def extract_user_info(payload):
 
     # Extract team/department information - these fields vary by IdP
     # Provide defaults for consistent metric dimensions
-    department = payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
-    team = payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
-    cost_center = payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
-    manager = payload.get("manager") or payload.get("manager_email") or "unassigned"
-    location = payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
-    role = payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    department = payload.get("custom:department") or payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
+    team = payload.get("custom:team") or payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
+    cost_center = payload.get("custom:cost_center") or payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
+    manager = payload.get("custom:manager") or payload.get("manager") or payload.get("manager_email") or "unassigned"
+    location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
+    role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
 
     return {
         "email": email,
@@ -252,10 +258,10 @@ def read_cached_headers():
         cache_path = get_cache_path()
         if not cache_path.exists():
             return None
-        with open(cache_path) as f:
+        with open(cache_path, encoding="utf-8") as f:
             cached = json.load(f)
         headers = cached.get("headers")
-        if not headers:
+        if not isinstance(headers, dict):
             return None
 
         # Check if Bearer token in headers is still valid
@@ -291,7 +297,12 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump({"headers": headers, "token_exp": token_exp, "cached_at": int(time.time())}, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(cache_path))
+            # os.replace (not os.rename) so the destination is atomically
+            # overwritten if it already exists. On Windows os.rename raises
+            # FileExistsError (WinError 183) when the target exists, which
+            # silently broke cache refresh and forced a slow credential-process
+            # call on every invocation.
+            os.replace(tmp_path, str(cache_path))
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -303,7 +314,9 @@ def write_cached_headers(headers, token_exp):
             with os.fdopen(fd, "w") as f:
                 json.dump(headers, f)
             os.chmod(tmp_path, 0o600)
-            os.rename(tmp_path, str(raw_path))
+            # os.replace for atomic overwrite (see note above; os.rename fails
+            # on Windows when the destination already exists).
+            os.replace(tmp_path, str(raw_path))
         except Exception:
             os.unlink(tmp_path)
             raise
@@ -375,7 +388,10 @@ def get_aws_caller_identity():
         return cached["identity"]
 
     try:
-        sts_client = boto3.client('sts')
+        sts_client = boto3.client(
+            'sts',
+            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={'max_attempts': 0}),
+        )
         identity = sts_client.get_caller_identity()
 
         # Store in cache
@@ -608,6 +624,30 @@ def create_anonymous_user_info(caller_identity=None):
         }
 
 
+def build_proxy_user_headers() -> dict:
+    """Return enrichment headers (identity + Bearer) for the OTLP proxy.
+
+    Module-level so tests can call it directly without binding a real socket via
+    run_proxy(). Includes the Bearer token so the upstream ALB jwt-validation
+    action accepts forwarded requests.
+    """
+    token = None
+    if not ANONYMOUS_MODE:
+        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+
+    if token:
+        payload = decode_jwt_payload(token)
+        user_info = extract_user_info(payload)
+    else:
+        caller_identity = get_aws_caller_identity()
+        user_info = create_anonymous_user_info(caller_identity)
+
+    headers = format_as_headers_dict(user_info)
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
 def run_proxy(target_url: str, port: int = 4318):
     """Run a local OTLP proxy that injects user identity headers before forwarding.
 
@@ -624,21 +664,6 @@ def run_proxy(target_url: str, port: int = 4318):
     target_url = target_url.rstrip("/")
     logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
 
-    def get_user_headers():
-        """Return enrichment headers derived from the cached monitoring token."""
-        token = None
-        if not ANONYMOUS_MODE:
-            token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
-
-        if token:
-            payload = decode_jwt_payload(token)
-            user_info = extract_user_info(payload)
-        else:
-            caller_identity = get_aws_caller_identity()
-            user_info = create_anonymous_user_info(caller_identity)
-
-        return format_as_headers_dict(user_info)
-
     # Pre-fetch headers once at startup; refresh on each request so token
     # rotations are picked up without restarting the proxy.
     _header_cache = {"headers": {}, "fetched_at": 0}
@@ -648,7 +673,7 @@ def run_proxy(target_url: str, port: int = 4318):
         now = time.time()
         if now - _header_cache["fetched_at"] > _HEADER_REFRESH_SECONDS:
             try:
-                _header_cache["headers"] = get_user_headers()
+                _header_cache["headers"] = build_proxy_user_headers()
                 _header_cache["fetched_at"] = now
             except Exception as e:
                 logger.warning(f"Could not refresh user headers: {e}")
@@ -798,7 +823,20 @@ def main():
     # Layer 1: Check file cache first (avoids credential-process entirely)
     if not TEST_MODE:
         cached_headers = read_cached_headers()
-        if cached_headers:
+        if cached_headers is not None:
+            # Resolve Bearer fresh — the cache stores attribution headers only,
+            # never the token itself. Try env var (free) then credential-process (~20ms).
+            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+            if _bearer_token:
+                cached_headers["authorization"] = f"Bearer {_bearer_token}"
+            else:
+                # No token from env var or credential-process. Emit cached attribution
+                # anyway (otelHeadersHelper contract), but log so an ALB 401 is
+                # diagnosable instead of silent — Layer 3 logs the same way.
+                logger.info(
+                    "Layer 1 cache hit but no Bearer token available "
+                    "(env var empty, credential-process failed); emitting headers without authorization"
+                )
             print(json.dumps(cached_headers))
             return 0
         logger.info("Cache expired or missing, refreshing via credential-process")
@@ -833,6 +871,11 @@ def main():
         headers_dict = format_as_headers_dict(user_info)
         # In test mode, print detailed output
         if TEST_MODE:
+            # Show the Bearer in --test output (parity with the Go helper, which adds
+            # it before printTestOutput). Added only on this branch — test mode never
+            # writes the cache, so the token stays off disk.
+            if token:
+                headers_dict["authorization"] = f"Bearer {token}"
             print("===== TEST MODE OUTPUT =====\n")
             if token:
                 print("Mode: Authenticated (JWT Token)")
@@ -870,7 +913,8 @@ def main():
             print("\n========================")
         else:
             # Normal mode: Output as JSON (flat object with string values)
-            # Cache headers for future calls (avoids credential-process on next invocation)
+            # Cache attribution headers only — Bearer token must never be persisted
+            # to the plaintext cache file. Add it to output AFTER the cache write.
             if token:
                 token_exp = payload.get("exp")
                 if token_exp:
@@ -880,6 +924,8 @@ def main():
             else:
                 # Anonymous mode: cache with a synthetic TTL (5 minutes)
                 write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
+            if token:
+                headers_dict["authorization"] = f"Bearer {token}"
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:
@@ -889,8 +935,29 @@ def main():
 
     except Exception as e:
         logger.error(f"Error processing token: {e}")
-        # Return failure on error - Claude Code should handle this gracefully
-        return 1
+        # Claude Code's otelHeadersHelper contract requires a valid JSON object
+        # on stdout; exiting non-zero (or printing nothing) makes it log
+        # "otelHeadersHelper did not return a valid value" on every export cycle
+        # and drop the telemetry batch. Emit empty headers instead so export
+        # proceeds unattributed. (TEST_MODE prints its own human-readable output
+        # above, so only emit JSON in normal mode.)
+        #
+        # This is deliberately NOT a behavioural mirror of the Go helper's
+        # emitEmptyHeaders, and we intentionally do not cache {} here:
+        #   * The Go binary reaches its empty-headers path for the *common*
+        #     no-token case, so it caches {} (short TTL) to keep credential-
+        #     process off the per-turn hot path.
+        #   * This Python path handles the no-token case differently — it falls
+        #     through to anonymous mode above (get_aws_caller_identity ->
+        #     create_anonymous_user_info), which produces *populated* STS-derived
+        #     attribution and caches that. This except block is only the
+        #     last-resort guard for an unexpected failure (e.g. a malformed JWT
+        #     or an STS error). Caching {} here would suppress that anonymous
+        #     attribution for the whole TTL on the next turn, so we print {} for
+        #     this cycle only and leave the cache untouched to retry next time.
+        if not TEST_MODE:
+            print(json.dumps({}))
+        return 0
 
     return 0
 

@@ -34,7 +34,7 @@ class TestNamedValidationFunctions:
         for name in invalid_names:
             result = validate_identity_pool_name(name)
             assert (
-                result == "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                result == "Invalid name (alphanumeric, underscore, hyphen only)"
             ), f"Expected '{name}' to be invalid, but got: {result}"
 
     def test_validate_cognito_user_pool_id_valid(self):
@@ -63,7 +63,7 @@ class TestInitCommandValidation:
         # Extract the validator from line 352
         # The validator validates alphanumeric, underscore, hyphen only
         def validator(x):
-            error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+            error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
             return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
         valid_names = [
@@ -87,7 +87,7 @@ class TestInitCommandValidation:
         """Test that invalid identity pool names fail validation."""
 
         def validator(x):
-            error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+            error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
             return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
         invalid_names = [
@@ -105,7 +105,7 @@ class TestInitCommandValidation:
         for name in invalid_names:
             result = validator(name)
             assert (
-                result == "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                result == "Invalid name (alphanumeric, underscore, hyphen only)"
             ), f"Expected '{name}' to be invalid, but got: {result}"
 
     def test_cognito_user_pool_id_validator_valid_ids(self):
@@ -165,7 +165,7 @@ class TestInitCommandValidation:
 
             # This simulates the lambda on line 352
             def identity_validator(x):
-                error_msg = "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                error_msg = "Invalid name (alphanumeric, underscore, hyphen only)"
                 return bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or error_msg
 
             # This simulates the lambda on line 275
@@ -197,7 +197,7 @@ class TestInitCommandValidation:
         def identity_validator(x):
             return (
                 bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-                or "Invalid pool name (alphanumeric, underscore, hyphen only)"
+                or "Invalid name (alphanumeric, underscore, hyphen only)"
             )
 
         def cognito_validator(x):
@@ -286,7 +286,7 @@ class TestInitCommandRegression:
             Path(__file__).parent.parent.parent.parent / "claude_code_with_bedrock" / "cli" / "commands" / "init.py"
         )
 
-        with open(init_file_path) as f:
+        with open(init_file_path, encoding="utf-8") as f:
             content = f.read()
 
         # Count occurrences of 'import re'
@@ -314,7 +314,7 @@ class TestInitCommandRegression:
         # We test this by creating similar lambdas here
         test_lambdas = [
             lambda x: bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-            or "Invalid pool name (alphanumeric, underscore, hyphen only)",
+            or "Invalid name (alphanumeric, underscore, hyphen only)",
             lambda x: bool(re.match(r"^[\w-]+_[0-9a-zA-Z]+$", x)) or "Invalid User Pool ID format",
         ]
 
@@ -423,6 +423,293 @@ class TestNamedFunctionsIntegration:
         assert hasattr(init_module, "validate_cognito_user_pool_id")
         assert callable(init_module.validate_identity_pool_name)
         assert callable(init_module.validate_cognito_user_pool_id)
+
+
+class TestSsoDisabledRendering:
+    """Regression tests for issue #430.
+
+    Ensure the wizard does not crash with KeyError: 'okta' when SSO is
+    disabled. The okta key is only populated by the OIDC flow, so methods
+    that render or persist it must guard against its absence.
+    """
+
+    @pytest.fixture
+    def cmd(self):
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+        return InitCommand()
+
+    @pytest.fixture
+    def base_aws(self):
+        return {
+            "region": "us-east-1",
+            "identity_pool_name": "demo-pool",
+            "allowed_bedrock_regions": ["us-east-1"],
+            "stacks": {},
+        }
+
+    def test_review_configuration_without_okta_key_does_not_raise(self, cmd, base_aws):
+        config = {
+            "sso_enabled": False,
+            "credential_storage": "session",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        # Must not raise KeyError: 'okta'
+        assert cmd._review_configuration(config) is True
+
+    def test_review_configuration_sso_enabled_still_renders_okta(self, cmd, base_aws):
+        config = {
+            "sso_enabled": True,
+            "okta": {"domain": "company.okta.com", "client_id": "abcdef1234567890abcdef"},
+            "credential_storage": "keyring",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        assert cmd._review_configuration(config) is True
+
+    def test_show_existing_deployment_without_okta_key_does_not_raise(self, cmd, base_aws):
+        config = {
+            "sso_enabled": False,
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        # Must not raise KeyError: 'okta'
+        cmd._show_existing_deployment(config)
+
+    def test_update_parameters_file_without_okta_key_writes_none(self, cmd, base_aws, tmp_path):
+        import json
+
+        params_file = tmp_path / "params.json"
+        config = {
+            "sso_enabled": False,
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        cmd._update_parameters_file(params_file, config)
+
+        with open(params_file) as f:
+            params = json.load(f)
+        param_map = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_map["OktaDomain"] == "none"
+        assert param_map["OktaClientId"] == "none"
+
+    def test_review_configuration_with_empty_okta_dict_does_not_raise(self, cmd, base_aws):
+        """Edge case: SSO enabled but the user cancelled before entering a domain.
+
+        Config can end up with `okta: {}`. The defensive .get() chain must
+        handle this without raising KeyError on missing 'domain' / 'client_id'.
+        """
+        config = {
+            "sso_enabled": True,
+            "okta": {},  # OIDC flow started but cancelled before fields were set
+            "credential_storage": "session",
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        assert cmd._review_configuration(config) is True
+
+    def test_save_configuration_sso_disabled_creates_profile(self, cmd, base_aws, tmp_path):
+        """_save_configuration must create a valid Profile when SSO is disabled.
+
+        The Profile dataclass has required fields (provider_domain, client_id)
+        that must be populated with sensible defaults when no OIDC flow ran.
+        """
+        import json
+        from unittest.mock import patch
+        from claude_code_with_bedrock.config import Config
+
+        config_data = {
+            "sso_enabled": False,
+            "aws": {
+                **base_aws,
+                "cross_region_profile": "us",
+                "selected_model": None,
+            },
+            "monitoring": {"enabled": False},
+            "credential_storage": "session",
+        }
+
+        config_dir = tmp_path / ".ccwb"
+        config_dir.mkdir()
+        profiles_dir = config_dir / "profiles"
+        profiles_dir.mkdir()
+        config_file = config_dir / "config.json"
+        config_file.write_text(json.dumps({"schema_version": "2.0", "active_profile": None}))
+
+        with patch.object(Config, "CONFIG_DIR", config_dir), \
+             patch.object(Config, "CONFIG_FILE", config_file), \
+             patch.object(Config, "PROFILES_DIR", profiles_dir):
+            # Must not raise KeyError or TypeError
+            cmd._save_configuration(config_data, "test-no-sso")
+
+            # Verify the saved profile has sensible defaults
+            profile_file = profiles_dir / "test-no-sso.json"
+            assert profile_file.exists()
+            saved = json.loads(profile_file.read_text())
+            assert saved["provider_domain"] == "none"
+            assert saved["client_id"] == "none"
+            assert saved["sso_enabled"] is False
+
+    def test_save_configuration_round_trip_preserves_sso_enabled(self, cmd, base_aws, tmp_path):
+        """A profile saved with sso_enabled=False must reload with sso_enabled=False.
+
+        Regression guard: if the field isn't persisted, re-running ccwb init
+        on an existing deployment could flip sso_enabled back to True (the default),
+        which would re-enable the auth stack and break the deployment.
+        """
+        import json
+        from unittest.mock import patch
+        from claude_code_with_bedrock.config import Config
+
+        config_data = {
+            "sso_enabled": False,
+            "aws": {
+                **base_aws,
+                "cross_region_profile": "us",
+                "selected_model": None,
+            },
+            "monitoring": {"enabled": False},
+            "credential_storage": "session",
+        }
+
+        config_dir = tmp_path / ".ccwb"
+        config_dir.mkdir()
+        profiles_dir = config_dir / "profiles"
+        profiles_dir.mkdir()
+        config_file = config_dir / "config.json"
+        config_file.write_text(json.dumps({"schema_version": "2.0", "active_profile": "test-roundtrip"}))
+
+        with patch.object(Config, "CONFIG_DIR", config_dir), \
+             patch.object(Config, "CONFIG_FILE", config_file), \
+             patch.object(Config, "PROFILES_DIR", profiles_dir):
+            cmd._save_configuration(config_data, "test-roundtrip")
+
+            # Reload from disk
+            reloaded = Config.load()
+            profile = reloaded.get_profile("test-roundtrip")
+            assert profile is not None
+            assert profile.sso_enabled is False
+            assert profile.provider_domain == "none"
+
+    def test_update_parameters_file_sso_enabled_uses_real_values(self, cmd, base_aws, tmp_path):
+        """When SSO is enabled, OktaDomain/OktaClientId must use real values (not 'none').
+
+        Prevents a regression where the sso_enabled guard is inverted or
+        the .get() chain defaults mask a real configuration.
+        """
+        import json
+
+        params_file = tmp_path / "params.json"
+        config = {
+            "sso_enabled": True,
+            "okta": {"domain": "company.okta.com", "client_id": "abc123xyz"},
+            "aws": base_aws,
+            "monitoring": {"enabled": False},
+        }
+        cmd._update_parameters_file(params_file, config)
+
+        with open(params_file) as f:
+            params = json.load(f)
+        param_map = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_map["OktaDomain"] == "company.okta.com"
+        assert param_map["OktaClientId"] == "abc123xyz"
+
+
+class TestLandingPageRegionResolution:
+    """Regression tests for region UnboundLocalError on the skip_aws landing-page path.
+
+    When AWS setup is skipped (last_step in aws_complete/monitoring_complete/
+    bedrock_complete with no existing_config), `region` is never assigned by the
+    AWS-setup block. The landing-page distribution block still runs and uses
+    `region` for Cognito detection AND for the Secrets Manager client. Every IdP
+    provider (okta/azure/auth0/cognito/google) must resolve `region` from saved
+    config instead of crashing with UnboundLocalError.
+
+    The original fix (commit c314ada) only bound `region` inside the
+    `if idp_provider == "cognito":` branch, so the four non-cognito providers
+    still crashed. This guards all five.
+    """
+
+    class _StopAfterSecrets(Exception):
+        """Raised at the custom-domain prompt, downstream of the secrets block."""
+
+    def _run_landing_page(self, idp_provider):
+        """Drive _gather_configuration down the skip_aws landing-page path.
+
+        Returns the region_name passed to boto3's secretsmanager client.
+        Raises UnboundLocalError if the bug is present.
+        """
+        from unittest.mock import MagicMock, patch
+
+        import questionary
+
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        # last_step="bedrock_complete" -> skip_okta/skip_aws/skip_monitoring/skip_bedrock
+        # all True, so the only prompts before the secrets block are distribution + IdP fields.
+        progress = MagicMock()
+        progress.get_last_step.return_value = "bedrock_complete"
+        progress.get_saved_data.return_value = {
+            "sso_enabled": False,
+            "auth_type": "none",
+            "aws": {"region": "ap-southeast-1", "identity_pool_name": "claude-code-auth"},
+        }
+
+        def fake_select(message, *a, **k):
+            m = MagicMock()
+            text = str(message)
+            if "Distribution method" in text:
+                m.ask.return_value = "landing-page"
+            elif "Identity provider" in text:
+                m.ask.return_value = idp_provider
+            else:
+                m.ask.return_value = None
+            return m
+
+        def fake_text(message, *a, **k):
+            m = MagicMock()
+            if "Custom domain" in str(message):
+                # We've passed the secrets block (line ~1336); stop deterministically.
+                m.ask.side_effect = self._StopAfterSecrets
+            else:
+                m.ask.return_value = "dummy.example.com"
+            return m
+
+        def fake_password(*a, **k):
+            m = MagicMock()
+            m.ask.return_value = "dummy-secret"
+            return m
+
+        def fake_confirm(*a, **k):
+            m = MagicMock()
+            m.ask.return_value = False
+            return m
+
+        captured = {}
+
+        def spy_client(name, *a, **k):
+            if name == "secretsmanager":
+                captured["region_name"] = k.get("region_name")
+            return MagicMock()
+
+        cmd = InitCommand()
+        with patch.object(questionary, "select", fake_select), \
+             patch.object(questionary, "text", fake_text), \
+             patch.object(questionary, "password", fake_password), \
+             patch.object(questionary, "confirm", fake_confirm), \
+             patch("boto3.client", spy_client):
+            try:
+                cmd._gather_configuration(progress)
+            except self._StopAfterSecrets:
+                pass
+        return captured.get("region_name")
+
+    @pytest.mark.parametrize("idp_provider", ["okta", "azure", "auth0", "cognito", "google"])
+    def test_region_bound_for_all_providers_when_aws_skipped(self, idp_provider):
+        """region must resolve from saved config for every IdP provider, not crash."""
+        # Pre-fix: raises UnboundLocalError for okta/azure/auth0/google.
+        region_name = self._run_landing_page(idp_provider)
+        assert region_name == "ap-southeast-1"
 
 
 if __name__ == "__main__":

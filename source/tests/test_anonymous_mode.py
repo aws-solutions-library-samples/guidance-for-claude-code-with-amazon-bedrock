@@ -3,6 +3,7 @@
 
 import hashlib
 import time
+import unittest.mock
 from unittest.mock import MagicMock, patch
 
 import sys
@@ -334,7 +335,7 @@ class TestGetAwsCallerIdentity:
         assert result is not None
         assert result["Arn"] == "arn:aws:iam::123456789012:user/test"
         assert result["Account"] == "123456789012"
-        mock_boto3.client.assert_called_once_with("sts")
+        mock_boto3.client.assert_called_once_with("sts", config=unittest.mock.ANY)
 
     @patch("otel_helper.__main__.BOTO3_AVAILABLE", True)
     @patch("otel_helper.__main__.boto3")

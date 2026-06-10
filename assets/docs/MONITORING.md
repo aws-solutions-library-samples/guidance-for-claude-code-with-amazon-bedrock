@@ -6,24 +6,55 @@ When you enable monitoring during deployment, the system collects and visualizes
 
 ## Monitoring Modes
 
-### Central Collector (ECS Fargate)
+| | Central | Sidecar |
+|---|---|---|
+| **Cloud infrastructure** | VPC + ECS Fargate + ALB | None |
+| **AWS cost** | ~$30-50/month | $0 |
+| **Athena SQL queries** | Yes | No |
+| **PromQL dashboards** | Yes | Yes |
+| **Client reports to** | ALB endpoint | CloudWatch OTLP directly |
+
+**Sidecar mode** requires no cloud collector infrastructure — each client sends metrics directly to the CloudWatch OTLP endpoint (`monitoring.<region>.amazonaws.com`) using SigV4 auth. Only the CloudWatch dashboard stack is deployed on the AWS side.
+
+**Central mode** deploys a shared ECS Fargate collector behind an ALB. Required if you need the Athena SQL analytics pipeline (EMF logs → Firehose → S3 → Athena).
+
+## Central Collector (ECS Fargate)
 
 - Server-side OpenTelemetry collector running on ECS Fargate behind an ALB
 - Supports optional Athena SQL pipeline (EMF logs → Kinesis Firehose → S3 → Athena) for ad-hoc SQL queries
 - Requires VPC and networking infrastructure
-- ~$30-50/month server cost
-- Best for: organizations wanting centralized metrics aggregation, IT-managed collector, or ad-hoc SQL queries via Athena
+- Requires the `AWSServiceRoleForECS` service-linked role (created automatically by `ccwb deploy`; if deploying templates manually, create it first: `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`)
 
-### Sidecar Collector (Local)
+### Central mode deployment
 
-- Lightweight (~15-20MB) collector binary runs on each developer's machine
+```bash
+# During ccwb init, select "Central" when prompted for monitoring mode
+poetry run ccwb init
+
+# Deploy (creates VPC, ECS, ALB, dashboard)
+poetry run ccwb deploy
+```
+
+## Sidecar Collector (Local)
+
+- Lightweight (~15-20MB) Go binary (`otel-helper`) runs on each developer's machine
 - Sends metrics directly to CloudWatch OTLP endpoint using SigV4 auth from federated credentials
-- No server-side infrastructure required
-- $0 server cost
-- Athena SQL pipeline not available (PromQL dashboards and long-term CloudWatch metric storage are fully supported)
-- Best for: small teams, cost-sensitive deployments, or quick evaluation
+- No server-side infrastructure required — only the CloudWatch dashboard stack is deployed
 
-Both modes provide full analytics via the same PromQL-based CloudWatch dashboard with long-term metric storage. The Athena SQL pipeline (central-mode only) is an optional add-on for ad-hoc SQL queries against raw metric data.
+### Sidecar mode deployment
+
+```bash
+# During ccwb init, select "Sidecar" when prompted for monitoring mode
+poetry run ccwb init
+
+# Deploy (creates only the dashboard stack — no VPC, no ECS)
+poetry run ccwb deploy
+
+# Package includes otel-helper binary automatically
+poetry run ccwb package --go --target-platform all
+```
+
+End users receive the `otel-helper` binary in their install package. It starts automatically when Claude Code launches and sends metrics to CloudWatch using the same federated credentials.
 
 ## Architecture (Central Collector)
 

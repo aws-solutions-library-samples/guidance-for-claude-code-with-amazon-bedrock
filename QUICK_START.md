@@ -50,6 +50,7 @@ This guide covers the **AWS infrastructure** side of the deployment. It assumes 
 | **Okta** | [Okta Setup Guide](assets/docs/providers/okta-setup.md) |
 | **Microsoft Entra ID (Azure AD)** | [Microsoft Entra ID Setup Guide](assets/docs/providers/microsoft-entra-id-setup.md) |
 | **Auth0** | [Auth0 Setup Guide](assets/docs/providers/auth0-setup.md) |
+| **Google** | [Google Setup Guide](assets/docs/providers/google-oidc-setup.md) |
 | **AWS Cognito User Pool** | [Cognito User Pool Setup Guide](assets/docs/providers/cognito-user-pool-setup.md) |
 | **PingFederate, Keycloak, ForgeRock, or other generic OIDC** | [Generic OIDC Setup Guide](assets/docs/providers/generic-oidc-setup.md) |
 
@@ -253,7 +254,7 @@ Choose whether developers will authenticate through an OIDC identity provider to
 | **Yes** (default) | You have Okta, Azure AD, Auth0, or Cognito User Pool — full per-user attribution and quota enforcement |
 | **No** | Analytics-only deployment, or developers already have IAM/role access to Bedrock |
 
-> **Note:** AWS IAM Identity Center (SSO) support is coming in a future release. If your org uses AWS SSO today, choose **No** and configure developer access via your existing IAM Identity Center setup outside this tool.
+> **Note:** AWS IAM Identity Center (SSO) integration is coming soon. If your org uses IAM IDC today, choose **No** for SSO and use your existing `aws sso login` credentials — the solution works with any valid AWS credentials that have Bedrock access.
 
 ---
 
@@ -624,15 +625,17 @@ poetry run ccwb status
 Build the package for end users:
 
 ```bash
-# Build all platforms (starts Windows build in background)
-poetry run ccwb package --target-platform all
+# Build all platforms using Go cross-compilation (recommended)
+poetry run ccwb package --go --target-platform all
 
-# Check Windows build status (optional)
-poetry run ccwb builds
-
-# When ready, create distribution URL (optional)
-poetry run ccwb distribute
+# Creates ready-to-distribute packages for:
+# - macOS ARM64 (Apple Silicon) and Intel
+# - Linux x64 and ARM64
+# - Windows x64
+# All from a single command, any admin OS. Requires: Go 1.24+
 ```
+
+> **Note:** Running `ccwb package` without `--go` falls back to the legacy PyInstaller/CodeBuild pipeline which requires Docker and platform-specific toolchains. Use `--go` for all new deployments.
 
 **Choosing macOS targets:**
 
@@ -668,10 +671,20 @@ Pick based on what your developers report:
 
 **Package Workflow:**
 
-1. **Local builds**: macOS/Linux executables are built locally using PyInstaller
+1. **Local builds**: macOS and Linux executables are built locally using PyInstaller. See the host-OS matrix below — PyInstaller cannot cross-compile across operating systems, so **macOS binaries must be built on macOS** and **Linux binaries must be built on Linux** (or on macOS via Docker).
 2. **Windows builds**: Trigger AWS CodeBuild for Windows executables (20+ minutes) - requires enabling CodeBuild during `init`
 3. **Check status**: Monitor build progress with `poetry run ccwb builds`
 4. **Create distribution**: Use `distribute` to upload and generate presigned URLs
+
+**Host-OS requirements for each target:**
+
+| Target binary | Build host must be | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | macOS | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container used when building from macOS) |
+| `windows` | any host with CodeBuild enabled | AWS CodeBuild (remote build) |
+
+> **Linux admins cannot build macOS binaries.** PyInstaller on Linux emits Linux ELF binaries regardless of the requested target architecture, and macOS cannot load ELF. If you run `ccwb package --target-platform=macos-arm64` on Linux, the build refuses with a clear error. To produce macOS binaries, use a macOS workstation or a CI macOS runner (e.g. GitHub Actions `macos-latest`) and collect the artifacts from there.
 
 > **Note**: Windows builds are optional and require CodeBuild to be enabled during the `init` process. If not enabled, the package command will skip Windows builds and continue with other platforms.
 
@@ -683,15 +696,17 @@ The `dist/` folder will contain:
 - `credential-process-linux` - Authentication executable for Linux (if built on Linux)
 - `config.json` - Embedded configuration
 - `install.sh` - Installation script for Unix systems
-- `install.bat` - Installation script for Windows
+- `install.bat` - Installation script for Windows (launcher)
+- `ccwb-install.ps1` - PowerShell installer logic (called by install.bat)
 - `README.md` - User instructions
 - `.claude/settings.json` - Claude Code telemetry settings (if monitoring enabled)
 - `otel-helper-*` - OTEL helper executables for each platform (if monitoring enabled)
 
 The package builder:
 
-- Automatically builds binaries for both macOS and Linux by default
-- Uses Docker to cross-compile Linux binaries when running on macOS — **Docker Desktop must be installed and running**; if not present, Linux builds are skipped with a warning and macOS/Windows builds continue unaffected
+- Builds binaries for the platforms your current host supports (see host-OS matrix above). On a macOS host that's macOS natively plus Linux via Docker; on a Linux host that's Linux only
+- Uses Docker to produce Linux binaries from a macOS host — **Docker Desktop must be installed and running**; if not present, Linux builds are skipped with a warning and other platforms continue unaffected
+- Refuses to attempt macOS targets from a non-macOS host (fails fast with a clear error rather than silently producing invalid binaries)
 - Includes the OTEL helper for extracting user attributes from JWT tokens
 - Creates a unified installer that auto-detects the user's platform
 

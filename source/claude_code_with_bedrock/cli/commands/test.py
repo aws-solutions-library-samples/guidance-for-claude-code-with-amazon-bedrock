@@ -171,7 +171,7 @@ class TestCommand(Command):
         console.print("✓ Found config.json")
 
         # Read and display config details
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             pkg_config = json.load(f)
             # Try to read from the specified profile name, fall back to "ClaudeCode" for backward compatibility
             profile_config = pkg_config.get(test_profile_name) or pkg_config.get("ClaudeCode", {})
@@ -232,7 +232,12 @@ class TestCommand(Command):
 
             # Set up temporary AWS profile for testing
             test_profile = f"ccwb-test-{uuid.uuid4().hex[:8]}"
-            credential_command = f"/bin/sh -c 'CCWB_PROFILE={test_profile_name} {credential_binary}'"
+            # Pass the profile via --profile flag (cross-platform, no shell wrapper).
+            # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
+            # exist on Windows, so the --profile flag is used instead.
+            # Quote the binary path so a space in it survives botocore's shell split
+            # (shlex on POSIX); the profile name is validated to [A-Za-z0-9-] so needs none.
+            credential_command = f'"{credential_binary}" --profile {test_profile_name}'
             subprocess.run(
                 ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
                 capture_output=True,
@@ -271,9 +276,12 @@ class TestCommand(Command):
         console.print(f"[dim]Using temporary profile: {test_profile}[/dim]")
 
         # Configure the test profile
-        # Set environment variable to tell credential binary which profile to use from config.json
-        # Use shell to set environment variable
-        credential_command = f"/bin/sh -c 'CCWB_PROFILE={test_profile_name} {credential_binary}'"
+        # Pass the profile via --profile flag (cross-platform, no shell wrapper).
+        # The binary also reads CCWB_PROFILE, but a POSIX shell wrapper does not
+        # exist on Windows, so the --profile flag is used instead.
+        # Quote the binary path so a space in it survives botocore's shell split
+        # (shlex on POSIX); the profile name is validated to [A-Za-z0-9-] so needs none.
+        credential_command = f'"{credential_binary}" --profile {test_profile_name}'
         aws_config_result = subprocess.run(
             ["aws", "configure", "set", f"profile.{test_profile}.credential_process", credential_command],
             capture_output=True,
@@ -500,7 +508,7 @@ class TestCommand(Command):
             if not aws_config_file.exists():
                 return {"status": "✗", "details": "AWS config file not found"}
 
-            with open(aws_config_file) as f:
+            with open(aws_config_file, encoding="utf-8") as f:
                 content = f.read()
                 if f"[profile {profile_name}]" in content:
                     return {"status": "✓", "details": f"Profile '{profile_name}' found"}
@@ -862,7 +870,7 @@ class TestCommand(Command):
         if not config_file.exists():
             return None
         try:
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 config = json.load(f)
             # config.json has profile names as top-level keys
             # Return the first (usually only) profile
@@ -991,7 +999,7 @@ class TestCommand(Command):
             if result.returncode == 0:
                 # Check if we got a response
                 try:
-                    with open("/tmp/bedrock-test-output.json") as f:
+                    with open("/tmp/bedrock-test-output.json", encoding="utf-8") as f:
                         response = json.load(f)
                         if "content" in response and len(response["content"]) > 0:
                             text = response["content"][0].get("text", "").strip()
@@ -1030,6 +1038,10 @@ class TestCommand(Command):
     def _get_expected_account(self, config_profile) -> str:
         """Get the expected AWS account ID from the deployed stack."""
         try:
+            # Skip auth stack lookup when SSO is disabled
+            if not getattr(config_profile, "sso_enabled", True):
+                return None
+
             # Try to get account ID from the auth stack
             stack_name = config_profile.stack_names.get("auth", f"{config_profile.identity_pool_name}-stack")
 

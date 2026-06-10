@@ -33,11 +33,13 @@ class Profile:
     allowed_bedrock_regions: list[str] = field(default_factory=list)
     cross_region_profile: str | None = None  # Cross-region profile: "us", "europe", "apac"
     selected_model: str | None = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
+    model_alias: str | None = None  # Claude Code alias for ANTHROPIC_MODEL: "sonnet", "opus", "opusplan", "haiku"
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "generic"
+    provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
+    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
@@ -74,6 +76,10 @@ class Profile:
     quota_api_endpoint: str | None = None  # API Gateway endpoint for real-time quota checks
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
+    enable_bypass_detection: bool = False  # Detect Bedrock use without a running OTEL sidecar (opt-in)
+
+    # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
+    otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
@@ -144,6 +150,12 @@ class Profile:
         if "credential_storage" not in data:
             data["credential_storage"] = "session"
 
+        # Infer sso_enabled for profiles saved before PR #71 introduced the field:
+        # if provider_domain is set to a real value, SSO was enabled.
+        if "sso_enabled" not in data:
+            domain = data.get("provider_domain", "none")
+            data["sso_enabled"] = bool(domain and domain != "none")
+
         # Auto-detect provider type if not set
         if "provider_type" not in data and "provider_domain" in data:
             domain = data["provider_domain"]
@@ -163,7 +175,8 @@ class Profile:
 
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
-                        if hostname_lower.endswith(".okta.com") or hostname_lower == "okta.com":
+                        okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
+                        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
                             data["provider_type"] = "okta"
                         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                             data["provider_type"] = "auth0"
@@ -173,6 +186,10 @@ class Profile:
                             data["provider_type"] = "azure"
                         elif hostname_lower.endswith(".amazoncognito.com") or hostname_lower == "amazoncognito.com":
                             data["provider_type"] = "cognito"
+                        elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
+                            data["provider_type"] = "cognito"
+                        elif hostname_lower == "accounts.google.com":
+                            data["provider_type"] = "google"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 
@@ -239,7 +256,7 @@ class Config:
         # Load global config
         if cls.CONFIG_FILE.exists():
             try:
-                with open(cls.CONFIG_FILE) as f:
+                with open(cls.CONFIG_FILE, encoding="utf-8") as f:
                     data = json.load(f)
 
                 return cls(
@@ -261,7 +278,7 @@ class Config:
             "profiles_dir": str(self.PROFILES_DIR),
         }
 
-        with open(self.CONFIG_FILE, "w") as f:
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def load_profile(self, name: str | None = None) -> Profile:
@@ -288,7 +305,7 @@ class Config:
             raise FileNotFoundError(f"Profile not found: {profile_name}")
 
         try:
-            with open(profile_path) as f:
+            with open(profile_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             return Profile.from_dict(data)
@@ -318,7 +335,7 @@ class Config:
         # Save to file
         profile_path = self.PROFILES_DIR / f"{profile.name}.json"
 
-        with open(profile_path, "w") as f:
+        with open(profile_path, "w", encoding="utf-8") as f:
             json.dump(profile.to_dict(), f, indent=2)
 
         # Set as active if it's the first profile

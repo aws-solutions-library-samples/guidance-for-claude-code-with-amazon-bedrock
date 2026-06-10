@@ -1,6 +1,37 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Authenticated distribution landing page with ALB + Lambda + OIDC + S3'
 
+# ELB access-log service account IDs per region. Older regions require the
+# regional account ID on the bucket policy; newer regions (opt-in, launched
+# Aug 2022+) and GovCloud use the `logdelivery.elasticloadbalancing.amazonaws.com`
+# service principal. The bucket policy below covers both forms so the
+# template works in any commercial region.
+# Source: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html#attach-bucket-policy
+Mappings:
+  ELBServiceAccounts:
+    us-east-1:      { AccountId: '127311923021' }
+    us-east-2:      { AccountId: '033677994240' }
+    us-west-1:      { AccountId: '027434742980' }
+    us-west-2:      { AccountId: '797873946194' }
+    af-south-1:     { AccountId: '098369216593' }
+    ca-central-1:   { AccountId: '985666609251' }
+    eu-central-1:   { AccountId: '054676820928' }
+    eu-west-1:      { AccountId: '156460612806' }
+    eu-west-2:      { AccountId: '652711504416' }
+    eu-west-3:      { AccountId: '009996457667' }
+    eu-south-1:     { AccountId: '635631232127' }
+    eu-north-1:     { AccountId: '897822967062' }
+    ap-east-1:      { AccountId: '754344448648' }
+    ap-northeast-1: { AccountId: '582318560864' }
+    ap-northeast-2: { AccountId: '600734575887' }
+    ap-northeast-3: { AccountId: '383597477331' }
+    ap-southeast-1: { AccountId: '114774131450' }
+    ap-southeast-2: { AccountId: '783225319266' }
+    ap-southeast-3: { AccountId: '589379963580' }
+    ap-south-1:     { AccountId: '718504428378' }
+    me-south-1:     { AccountId: '076674570225' }
+    sa-east-1:      { AccountId: '507241528517' }
+
 Parameters:
   IdentityPoolName:
     Type: String
@@ -164,7 +195,13 @@ Resources:
         - Key: Purpose
           Value: ALBAccessLogs
 
-  # ALB Logs Bucket Policy
+  # ALB Logs Bucket Policy.
+  #
+  # Older commercial regions (launched before Aug 2022) require the regional
+  # ELB service account as the AWS principal on PutObject. Newer opt-in
+  # regions and GovCloud use the logdelivery service principal instead. We
+  # grant both so the template is region-portable; S3 simply evaluates
+  # whichever the caller happens to match.
   ALBLogsBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -172,12 +209,23 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AWSLogDeliveryWrite
+          - Sid: AWSLogDeliveryWriteRegionalAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub
+                - 'arn:${AWS::Partition}:iam::${AccountId}:root'
+                - AccountId: !FindInMap [ELBServiceAccounts, !Ref 'AWS::Region', AccountId]
+            Action: s3:PutObject
+            Resource: !Sub '${ALBLogsBucket.Arn}/*'
+          - Sid: AWSLogDeliveryWriteServicePrincipal
             Effect: Allow
             Principal:
               Service: logdelivery.elasticloadbalancing.amazonaws.com
             Action: s3:PutObject
             Resource: !Sub '${ALBLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
           - Sid: AWSLogDeliveryAclCheck
             Effect: Allow
             Principal:
@@ -262,6 +310,12 @@ Resources:
                   if path.startswith('/docs'):
                       return serve_documentation(path)
 
+                  # Handle download redirects via custom domain (avoids Chrome Safe Browsing
+                  # warnings that occur when linking directly to s3.amazonaws.com URLs)
+                  if path.startswith('/download/'):
+                      platform = path.split('/download/', 1)[-1].strip('/')
+                      return handle_download(platform)
+
                   # Extract user email from ALB authentication headers
                   # ALB has already validated authentication - trust the header
                   user_email = extract_user_email(event)
@@ -272,13 +326,13 @@ Resources:
                   # List packages in S3
                   packages = list_packages()
 
-                  # Generate presigned URLs for each package
+                  # Use /download/<platform> paths instead of direct S3 presigned URLs.
+                  # This routes downloads through the trusted custom domain, avoiding
+                  # Chrome Safe Browsing warnings for s3.amazonaws.com download URLs.
                   download_urls = {}
                   for platform in ['windows', 'linux', 'mac', 'all-platforms']:
                       if platform in packages:
-                          download_urls[platform] = generate_presigned_url(
-                              f"packages/{platform}/latest.zip"
-                          )
+                          download_urls[platform] = f"/download/{platform}"
 
                   # Get metadata from first available package (prefer windows)
                   metadata_source = packages.get('windows') or packages.get('mac') or packages.get('linux') or packages.get('all-platforms', {})
@@ -379,17 +433,62 @@ Resources:
 
               return packages
 
-          def generate_presigned_url(s3_key):
-              """Generate presigned URL for S3 object"""
+          def handle_download(platform):
+              """Redirect to presigned S3 URL via custom domain.
+              Serving downloads through /download/<platform> keeps presigned URLs
+              out of the page HTML and routes the download through the trusted custom
+              domain, which avoids Chrome Safe Browsing warnings for s3.amazonaws.com."""
+              valid_platforms = ['windows', 'linux', 'mac', 'all-platforms']
+              if platform not in valid_platforms:
+                  return {
+                      'statusCode': 404,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>404 - Package Not Found</h1></body></html>'
+                  }
+
+              s3_key = f"packages/{platform}/latest.zip"
+
+              # Verify the package exists before redirecting
               try:
-                  return s3_client.generate_presigned_url(
+                  s3_client.head_object(Bucket=BUCKET_NAME, Key=s3_key)
+              except Exception:
+                  return {
+                      'statusCode': 404,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>Package not available</h1><p>No package has been uploaded for this platform yet.</p></body></html>'
+                  }
+
+              filename_map = {
+                  'windows': 'claude-code-windows-installer.zip',
+                  'linux': 'claude-code-linux-installer.zip',
+                  'mac': 'claude-code-mac-installer.zip',
+                  'all-platforms': 'claude-code-all-platforms-installer.zip',
+              }
+              filename = filename_map[platform]
+
+              try:
+                  url = s3_client.generate_presigned_url(
                       'get_object',
-                      Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+                      Params={
+                          'Bucket': BUCKET_NAME,
+                          'Key': s3_key,
+                          'ResponseContentDisposition': f'attachment; filename="{filename}"',
+                          'ResponseContentType': 'application/zip',
+                      },
                       ExpiresIn=PRESIGNED_URL_EXPIRY
                   )
+                  return {
+                      'statusCode': 302,
+                      'headers': {'Location': url},
+                      'body': ''
+                  }
               except Exception as e:
-                  print(f"Error generating presigned URL for {s3_key}: {e}")
-                  return '#'
+                  print(f"Error generating download URL for {platform}: {e}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Content-Type': 'text/html; charset=utf-8'},
+                      'body': '<html><body><h1>Error</h1><p>Could not generate download link.</p></body></html>'
+                  }
 
           def serve_documentation(path):
               """Serve documentation HTML from S3 docs/ prefix"""
@@ -743,7 +842,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     DependsOn: LambdaInvokePermission
     Properties:
-      Name: !Sub '${IdentityPoolName}-landing-page-tg'
+      # Name omitted — auto-generated to avoid 32-char limit (issue #86)
       TargetType: lambda
       Targets:
         - Id: !GetAtt LandingPageFunction.Arn

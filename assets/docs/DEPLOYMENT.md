@@ -59,31 +59,41 @@ With infrastructure deployed, you're ready to create the package that end users 
 
 ### Multi-Platform Build Support
 
-Claude Code supports building for all major platforms:
+The packaging system uses Go cross-compilation to produce native binaries for all platforms from a single machine:
 
 ```bash
-# Build for all platforms (recommended)
-poetry run ccwb package --target-platform=all
-
-# Build for specific platforms
-poetry run ccwb package --target-platform=windows    # Windows via CodeBuild
-poetry run ccwb package --target-platform=macos      # Current macOS architecture
-poetry run ccwb package --target-platform=linux      # Linux via Docker
+# Build for all platforms (recommended — works from any OS)
+poetry run ccwb package --go --target-platform all
 ```
 
-**Platform Build Methods (Hybrid System):**
+This single command:
+- Cross-compiles Go binaries for all 5 platforms (macOS ARM64/Intel, Linux x64/ARM64, Windows x64)
+- Generates customer-specific `config.json` and `settings.json` from your deployment profile
+- Includes `otel-helper` binary if monitoring is enabled
+- Produces ready-to-distribute install packages with platform-specific installers
+
+**Requirements:** Go 1.24+ installed. Go supports native cross-compilation, so all 5 platform binaries are produced from any single machine (macOS, Linux, or Windows) without Docker or CodeBuild. Build time: ~10 seconds for all platforms.
+
+> **Legacy mode:** Running `ccwb package` without `--go` uses the PyInstaller/Nuitka/Docker/CodeBuild pipeline. This is retained for backward compatibility.
+
+<details>
+<summary>Legacy build mode details</summary>
+
+PyInstaller emits binaries in the host OS's native format, so the build host must match the target OS. Only Windows (via CodeBuild) escapes this constraint.
+
+| Target binary | Build host required | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | **macOS** | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container when building from macOS) |
+| `windows` | any host | AWS CodeBuild (remote) |
 
 - **Windows**: Uses Nuitka via AWS CodeBuild
-  - Optimized for performance and minimal antivirus false positives
-- **macOS**: Uses PyInstaller with architecture-specific builds
-  - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
-  - Intel: Runs natively on Intel Macs and on Apple Silicon via Rosetta — covers all Mac users with one binary
-  - Cross-arch: **Optional** — build the other architecture from your current Mac; requires a universal2 Python (see below)
+- **macOS**: Uses PyInstaller with architecture-specific builds (ARM64 or Intel)
 - **Linux x64/ARM64**: Uses PyInstaller in Docker containers (cross-compiled from macOS)
-  - Automatically builds both architectures when Docker is available
-  - Docker Desktop handles architecture emulation via Rosetta
-  - **Requires Docker Desktop installed and running** — if absent, Linux builds are skipped with a warning and all other platforms continue normally
-  - macOS and Windows builds have no dependency on Docker
+
+**Linux admins cannot produce macOS binaries** — the package command refuses this combination with a clear error.
+
+</details>
 
 **Which macOS binary should you ship?**
 
@@ -96,9 +106,9 @@ poetry run ccwb package --target-platform=linux      # Linux via Docker
 
 > **Rosetta translation:** Intel (`x86_64`) binaries run on Apple Silicon via Apple's Rosetta 2 translation layer — users don't need to do anything. ARM64 binaries cannot run on Intel Macs at all.
 
-**Optional: Cross-arch macOS Builds**
+**Optional: Cross-arch macOS Builds (legacy mode only)**
 
-By default, `ccwb package` builds only for your Mac's own architecture (arm64 on Apple Silicon, x86_64 on Intel). To build for the other architecture — for example, an Apple Silicon admin building the Intel binary to cover Intel Mac users — install a universal2 Python:
+By default, legacy-mode `ccwb package` builds only for your Mac's own architecture (arm64 on Apple Silicon, x86_64 on Intel). To build for the other architecture — for example, an Apple Silicon admin building the Intel binary to cover Intel Mac users — install a universal2 Python:
 
 1. Download the **macOS 64-bit universal2 installer** for Python 3.12 from [python.org/downloads/macos](https://www.python.org/downloads/macos/)
 2. Run the installer — it places Python at `/Library/Frameworks/Python.framework/`
@@ -108,13 +118,13 @@ On first cross-arch build, `ccwb` creates an isolated build environment at `~/.c
 
 Without universal2 Python: `--target-platform=all` skips the cross-arch target with a note and continues normally. Explicitly requesting the cross-arch target (e.g. `--target-platform=macos-intel` on Apple Silicon) fails with a clear error pointing to the python.org installer.
 
-This command performs several operations. First, it retrieves the Cognito Identity Pool ID from your deployed CloudFormation stack. Then it compiles the Python authentication code into standalone executables using PyInstaller for macOS/Linux and Nuitka for Windows. Your organization's configuration - provider domain, client ID, and infrastructure details - gets written to a config.json file that the executables read at runtime.
+(Cross-arch builds are not needed with `--go` — Go cross-compiles all platforms natively.)
 
 The resulting `dist/` folder contains everything users need:
 
 - Platform-specific executables (`credential-process-<platform>`) handle the OAuth2 authentication flow
 - The configuration file includes all necessary settings
-- Intelligent installer scripts (`install.sh` for Unix, `install.bat` for Windows) detect the user's architecture and set up their AWS profile automatically
+- Intelligent installer scripts (`install.sh` for Unix, `install.bat` + `ccwb-install.ps1` for Windows) detect the user's architecture and set up their AWS profile automatically
 - If you enabled monitoring, OTEL helper executables and Claude Code telemetry settings that point to your OpenTelemetry collector
 
 ### Windows Build System (Optional)
@@ -190,7 +200,7 @@ Share the `dist/` folder through your normal software distribution channels - pe
 **Installation by Platform:**
 
 - **Windows**: Users run `install.bat`
-- **macOS/Linux**: Users run `./install.sh`
+- **macOS/Linux**: Users run `chmod +x install.sh && ./install.sh`
 
 Regardless of distribution method, the user experience remains simple. They receive the package, run the installer for their platform, and they're done. The installer:
 

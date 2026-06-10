@@ -104,7 +104,7 @@ class TestCloudFormationCrossRegion:
         template_path = (
             Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "cognito-identity-pool.yaml"
         )
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             return yaml.load(f, Loader=CloudFormationLoader)
 
     def test_allowed_bedrock_regions_default(self):
@@ -284,7 +284,7 @@ class TestBedrockAuthGenericTemplate:
         template_path = (
             Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-generic.yaml"
         )
-        with open(template_path) as f:
+        with open(template_path, encoding="utf-8") as f:
             return yaml.load(f, Loader=CloudFormationLoader)
 
     def test_template_loads(self):

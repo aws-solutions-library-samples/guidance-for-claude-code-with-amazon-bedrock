@@ -25,7 +25,10 @@ def mock_cache_dir(tmp_path):
 @pytest.fixture
 def mock_cache_file(mock_cache_dir, monkeypatch):
     """Mock the cache file path to use temporary directory."""
+    # Path.home() reads HOME on POSIX but USERPROFILE on Windows, so set both
+    # to keep the otel-helper's cache dir pointed at the temp dir on every OS.
     monkeypatch.setenv("HOME", str(mock_cache_dir.parent))
+    monkeypatch.setenv("USERPROFILE", str(mock_cache_dir.parent))
     monkeypatch.setenv("AWS_PROFILE", "test-profile")
     cache_path = mock_cache_dir / "test-profile-otel-headers.json"
     return cache_path

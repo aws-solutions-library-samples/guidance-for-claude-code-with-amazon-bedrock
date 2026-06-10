@@ -238,32 +238,58 @@ poetry run ccwb package [options]
 **Options:**
 
 - `--target-platform <platform>` - Target platform for binary (default: "all")
-  - `macos` - Build for current macOS architecture
-  - `macos-arm64` - Build for Apple Silicon Macs
-  - `macos-intel` - Build for Intel Macs (cross-arch on Apple Silicon requires universal2 Python)
-  - `linux` - Build for Linux (native, current architecture)
-  - `linux-x64` - Build for Linux x64 using Docker
-  - `linux-arm64` - Build for Linux ARM64 using Docker
-  - `windows` - Build for Windows (uses CodeBuild - requires enabling during init)
-  - `all` - Build for all available platforms
+  - `macos-arm64` - Apple Silicon Macs (M1/M2/M3/M4)
+  - `macos-intel` - Intel Macs
+  - `linux-x64` - Linux x86-64
+  - `linux-arm64` - Linux ARM64 (Graviton, etc.)
+  - `windows` - Windows x64
+  - `all` - All 5 platforms
+- `--go` - Cross-compile Go binaries locally (requires Go 1.24+ installed)
 - `--distribute` - Upload package and generate distribution URL
 - `--expires-hours <hours>` - Distribution URL expiration in hours (with --distribute) [default: "48"]
-- `--profile <name>` - Configuration profile to use [default: "default"]
+- `--profile <name>` - Configuration profile to use [default: active profile]
+- `--regenerate-installers` - Regenerate config and install scripts using existing binaries from latest dist
 
 **What it does:**
 
-- Builds Nuitka executable from authentication code
-- Creates configuration file with:
-  - OIDC provider settings
-  - Identity Pool ID from deployed stack
-  - Credential storage method (keyring or session)
-  - Selected Claude model and cross-region profile
-  - Source region for model inference
-- Generates installer script (install.sh for Unix, install.bat for Windows)
-- Creates user documentation
-- Optionally uploads to S3 and generates presigned URL (with --distribute)
+1. Cross-compiles native Go binaries for all selected platforms (with `--go`)
+2. Creates `config.json` with federation config read from the admin profile
+3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint
+4. Creates installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
+5. Outputs to `dist/{profile}/{timestamp}/`
 
-**Platform Support (Hybrid Build System):**
+**Build Modes:**
+
+| Mode | Flag | Requirements | Best for |
+|---|---|---|---|
+| **Go cross-compile** (recommended) | `--go` | Go 1.24+ installed | All admins — fast, all platforms from one machine |
+| **Legacy** | (default) | PyInstaller, Docker, CodeBuild | Backward compatibility with Python binaries |
+
+**Platform Support (Go Cross-Compilation):**
+
+With `--go`, all 5 platforms are always available regardless of the admin's OS. No Docker, CodeBuild, x86 venvs, or platform-specific toolchains needed.
+
+- **macOS ARM64**: Native Apple Silicon binary (~9 MB)
+- **macOS Intel**: Native x86-64 binary (~10 MB)
+- **Linux x64**: Statically linked, works on any distro (~10 MB)
+- **Linux ARM64**: Statically linked for Graviton/ARM (~9 MB)
+- **Windows x64**: Native PE with embedded version info (~14 MB, unstripped for Defender compatibility)
+
+**Offline Packaging:**
+
+**Legacy mode platform details (PyInstaller / Nuitka / Docker):**
+
+PyInstaller is a runtime bundler, not a cross-OS compiler. It emits binaries in the host OS's native format (Mach-O on macOS, ELF on Linux). That constrains which targets each build host can produce:
+
+| Target binary | Build host required | Tooling |
+|---|---|---|
+| `macos-arm64`, `macos-intel` | **macOS** | PyInstaller (native) |
+| `linux-x64`, `linux-arm64` | Linux, **or** macOS with Docker Desktop | PyInstaller (Docker container when building from macOS) |
+| `windows` | any host | AWS CodeBuild (remote) |
+
+> **Linux admins cannot build macOS binaries.** There is no supported path for producing Mach-O binaries on Linux — Apple's platform design makes this infeasible. If `ccwb package` detects a macOS target on a non-macOS host, the build refuses with a clear error rather than silently producing an ELF binary labeled as macOS (which would fail on end-user Macs with `exec format error`).
+>
+> To produce macOS binaries, use a macOS workstation, a CI macOS runner (GitHub Actions `macos-latest`, AWS CodeBuild macOS project, or a self-hosted Mac runner), or an EC2 Mac instance, and collect the artifacts from there.
 
 - **macOS**: Uses PyInstaller with architecture-specific builds
   - ARM64: Native build on Apple Silicon Macs only — cannot run on Intel Macs
@@ -274,15 +300,15 @@ poetry run ccwb package [options]
   - ARM64: Uses linux/arm64 Docker platform
   - Docker Desktop handles architecture emulation automatically
   - **Requires Docker Desktop to be installed and running** — see Graceful Fallback Behavior below
-  - Not required for macOS or Windows builds
+  - On a Linux host, PyInstaller runs natively — Docker is not required
 - **Windows**: Uses Nuitka via AWS CodeBuild (if enabled during init)
   - Automated builds take 12-15 minutes
   - Requires CodeBuild to be enabled during `init`
   - Will be skipped if CodeBuild is not enabled
 
-**Cross-arch macOS Build Setup (Optional):**
+**Cross-arch macOS Build Setup (legacy mode only, optional):**
 
-By default, `ccwb package` builds a binary for your Mac's own architecture. The Intel (`macos-intel`) binary covers all Mac users — it runs natively on Intel Macs and via Rosetta on Apple Silicon — so an Apple Silicon admin who needs to support Intel Mac users should build the Intel binary using this setup.
+By default, legacy-mode `ccwb package` builds a binary for your Mac's own architecture. The Intel (`macos-intel`) binary covers all Mac users — it runs natively on Intel Macs and via Rosetta on Apple Silicon — so an Apple Silicon admin who needs to support Intel Mac users should build the Intel binary using this setup.
 
 To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM64 binary on Intel), install a universal2 Python:
 
@@ -292,6 +318,8 @@ To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM6
 
 `ccwb` creates an isolated per-arch build environment at `~/.ccwb/build-venvs/` on first cross-arch build (~30s). Subsequent runs reuse it.
 
+(With `--go`, cross-arch builds are unnecessary — Go cross-compiles all platforms natively.)
+
 **Behavior when universal2 Python is not installed:**
 
 - For `--target-platform=all`: Skips the cross-arch target with a note, builds all other platforms normally
@@ -299,7 +327,7 @@ To build for the other architecture (e.g. Intel binary on Apple Silicon, or ARM6
 - The package process continues successfully without cross-arch binaries
 - Note: Intel (`macos-intel`) binaries run natively on Intel Macs and via Rosetta on Apple Silicon — they cover all Mac users. ARM64 binaries only run on Apple Silicon and cannot run on Intel Macs.
 
-**Graceful Fallback Behavior:**
+**Graceful Fallback Behavior (legacy mode):**
 
 The package command is designed to handle missing optional components gracefully:
 
@@ -309,6 +337,7 @@ The package command is designed to handle missing optional components gracefully
   - Docker is not installed (`docker` binary not found in `$PATH`) — install Docker Desktop from https://docs.docker.com/get-docker/
   - Docker is installed but the daemon is not running — open Docker Desktop and wait for it to start, then retry
   - macOS and Windows builds are **unaffected** by Docker availability
+- **macOS builds (from non-macOS host)**: Refused with a clear error explaining that PyInstaller cannot cross-compile and listing alternative paths (macOS workstation, CI runner, EC2 Mac). Other targets in the same `ccwb package` invocation continue to build normally.
 - **At least one platform must build successfully** for the package command to succeed
 
 This ensures that packaging always works, even if some optional platforms are not available.
@@ -324,7 +353,8 @@ This ensures that packaging always works, even if some optional platforms are no
 - `otel-helper-<platform>` - OTEL helper (if monitoring enabled)
 - `config.json` - Configuration
 - `install.sh` - Unix installer script (auto-detects architecture)
-- `install.bat` - Windows installer script
+- `install.bat` - Windows installer launcher
+- `ccwb-install.ps1` - Windows PowerShell installer logic (called by install.bat)
 - `README.md` - Installation instructions
 - Includes Claude Code telemetry settings (if monitoring enabled)
 - Configures environment variables for model selection (ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL)
@@ -388,7 +418,8 @@ dist/
 ├── otel-helper-windows.exe           # Windows OTEL helper
 ├── config.json                       # Configuration
 ├── install.sh                        # Unix installer (auto-detects architecture)
-├── install.bat                       # Windows installer
+├── install.bat                       # Windows installer launcher
+├── ccwb-install.ps1                  # Windows PowerShell installer logic
 ├── README.md                         # User instructions
 └── .claude/
     └── settings.json                 # Telemetry settings (optional)
@@ -1141,7 +1172,7 @@ poetry run ccwb destroy [stack] [options]
 
 **Arguments:**
 
-- `stack` - Specific stack to destroy: auth, networking, monitoring, dashboard, or analytics (optional)
+- `stack` - Specific stack to destroy: codebuild, analytics, quota, cowork-dashboard, dashboard, monitoring, distribution, networking, s3bucket, or auth (optional)
 
 **Options:**
 
@@ -1150,7 +1181,7 @@ poetry run ccwb destroy [stack] [options]
 
 **What it does:**
 
-- Deletes CloudFormation stacks in reverse order (analytics → dashboard → monitoring → networking → auth)
+- Deletes CloudFormation stacks in reverse dependency order (codebuild → analytics → quota → cowork-dashboard → dashboard → monitoring → distribution → networking → s3bucket → auth), skipping any not enabled for the profile
 - Shows resources to be deleted before proceeding
 - Warns about manual cleanup requirements (e.g., CloudWatch LogGroups)
 

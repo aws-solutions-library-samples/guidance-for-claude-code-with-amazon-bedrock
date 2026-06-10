@@ -1,0 +1,12 @@
+{
+  "name": "ClaudeCode",
+  "provider_domain": "dev-12345.okta.com",
+  "client_id": "0oa123abc456",
+  "aws_region": "us-east-1",
+  "identity_pool_name": "ccwb-identity-pool",
+  "credential_storage": "session",
+  "provider_type": "okta",
+  "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockFederatedRole",
+  "federation_type": "direct",
+  "max_session_duration": 43200
+}

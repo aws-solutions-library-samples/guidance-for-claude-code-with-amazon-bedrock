@@ -41,9 +41,14 @@ def validate_identity_pool_name(value: str) -> bool | str:
     Returns:
         True if valid, error message if invalid
     """
-    if value and re.match(r"^[a-zA-Z0-9_-]+$", value):
-        return True
-    return "Invalid pool name (alphanumeric, underscore, hyphen only)"
+    if not value or not re.match(r"^[a-zA-Z0-9_-]+$", value):
+        return "Invalid name (alphanumeric, underscore, hyphen only)"
+    # Stack names use identity_pool_name as prefix: e.g. {name}-otel-collector (16 chars suffix)
+    # Various AWS resources append further suffixes. Removing explicit Names in CF
+    # templates avoids hard limits, but shorter names prevent other edge cases.
+    if len(value) > 20:
+        return "Name too long (max 20 characters). This is used as the base for all CloudFormation stack names and AWS resources."
+    return True
 
 
 def validate_cognito_user_pool_id(value: str) -> bool | str:
@@ -393,6 +398,8 @@ class InitCommand(Command):
                     elif hostname_lower.startswith("cognito-idp.") and ".amazonaws.com" in hostname_lower:
                         # Handle cognito-idp.{region}.amazonaws.com format (commercial and GovCloud)
                         provider_type = "cognito"
+                    elif hostname_lower == "accounts.google.com":
+                        provider_type = "google"
                     elif questionary.confirm("Is this a custom domain for AWS Cognito User Pool?", default=False).ask():
                         provider_type = "cognito"
             except Exception:
@@ -411,6 +418,7 @@ class InitCommand(Command):
                         questionary.Choice("Microsoft Entra ID / Azure AD", value="azure"),
                         questionary.Choice("Auth0", value="auth0"),
                         questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                        questionary.Choice("Google", value="google"),
                         questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
                     ],
                     instruction="(Used to select the correct CloudFormation template)",
@@ -983,23 +991,38 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                console.print("\n[bold]Quota Monitoring[/bold]")
-                console.print("Track per-user token consumption, set limits, and receive alerts")
-                console.print("when users approach or exceed their quotas.")
-                console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
-                console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
-                enable_quota_monitoring = questionary.confirm(
-                    "Enable quota monitoring?",
-                    default=config.get("quota", {}).get("enabled", True),
-                ).ask()
+                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
+                # the API Gateway authorizer cannot validate requests without one.
+                # Skip the prompt entirely when SSO is disabled (issue #454).
+                if not config.get("sso_enabled", True):
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = False
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print(
+                        "[dim]Skipped — quota monitoring requires SSO authentication "
+                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
+                    )
+                else:
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print("Track per-user token consumption, set limits, and receive alerts")
+                    console.print("when users approach or exceed their quotas.")
+                    console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
+                    console.print(
+                        "[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]"
+                    )
+                    enable_quota_monitoring = questionary.confirm(
+                        "Enable quota monitoring?",
+                        default=config.get("quota", {}).get("enabled", True),
+                    ).ask()
 
-                # Preserve existing quota settings, only update enabled flag
-                if "quota" not in config:
-                    config["quota"] = {}
-                config["quota"]["enabled"] = enable_quota_monitoring
+                    # Preserve existing quota settings, only update enabled flag
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = enable_quota_monitoring
 
-                if enable_quota_monitoring:
-                    console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
+                    if enable_quota_monitoring:
+                        console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
 
                     # Monthly token limit
                     console.print("\n[bold]Monthly Limit[/bold]")
@@ -1101,11 +1124,34 @@ class InitCommand(Command):
                     ).ask()
                     config["quota"]["check_interval"] = int(check_interval)
 
+                    # Sidecar bypass detection (opt-in compliance/audit control)
+                    monitoring_mode = config.get("monitoring", {}).get("mode", "sidecar")
+                    if monitoring_mode == "sidecar":
+                        console.print("\n[bold]Sidecar Bypass Detection[/bold]")
+                        console.print("Quota usage is measured from telemetry sent by the local OTEL sidecar.")
+                        console.print("If a user stops the sidecar, their usage is not counted toward quotas.")
+                        console.print(
+                            "[dim]This opt-in detective control joins CloudTrail Bedrock activity against[/dim]"
+                        )
+                        console.print(
+                            "[dim]reported telemetry to flag users invoking Bedrock without a running sidecar.[/dim]"
+                        )
+                        enable_bypass_detection = questionary.confirm(
+                            "Enable sidecar bypass detection (CloudWatch metrics + SNS alerts)?",
+                            default=config.get("quota", {}).get("enable_bypass_detection", False),
+                        ).ask()
+                        config["quota"]["enable_bypass_detection"] = enable_bypass_detection
+                    else:
+                        # Central mode runs the collector server-side; users can't stop it.
+                        config["quota"]["enable_bypass_detection"] = False
+
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
                     console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
                     console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
                     console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
+                    if config["quota"].get("enable_bypass_detection"):
+                        console.print("  • Sidecar bypass detection: enabled")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -1174,12 +1220,17 @@ class InitCommand(Command):
             console.print("\n[bold]Landing Page Configuration[/bold]")
             console.print("Configure IdP authentication for the distribution landing page")
 
+            # Resolve region for landing-page infra ops (Cognito detection + Secrets Manager) even
+            # when AWS setup was skipped (skip_aws=True), so region is bound for all IdP providers.
+            region = config.get("aws", {}).get("region", get_current_region())
+
             # IdP provider selection
             idp_choices = [
                 questionary.Choice("Okta", value="okta"),
                 questionary.Choice("Azure AD / Entra ID", value="azure"),
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                questionary.Choice("Google", value="google"),
             ]
 
             idp_provider = questionary.select(
@@ -1199,7 +1250,7 @@ class InitCommand(Command):
                 console.print("\n[bold]Cognito Configuration Detection[/bold]")
                 console.print("Searching for deployed Cognito User Pool stack...")
 
-                # Try to auto-detect Cognito stack
+                # Try to auto-detect Cognito stack (region resolved at top of landing-page block)
                 cognito_stack_info = detect_cognito_stack(region)
 
                 if cognito_stack_info:
@@ -1687,16 +1738,22 @@ class InitCommand(Command):
         table.add_column("Setting", style="white", no_wrap=True)
         table.add_column("Value", style="green")
 
-        table.add_row("OIDC Provider", config["okta"]["domain"])
-        table.add_row(
-            "OIDC Client ID",
-            (
-                config["okta"]["client_id"][:20] + "..."
-                if len(config["okta"]["client_id"]) > 20
-                else config["okta"]["client_id"]
-            ),
-        )
-
+        sso_enabled = config.get("sso_enabled", True)
+        if sso_enabled:
+            okta_config = config.get("okta", {})
+            okta_domain = okta_config.get("domain", "")
+            okta_client_id = okta_config.get("client_id", "")
+            table.add_row("OIDC Provider", okta_domain or "—")
+            table.add_row(
+                "OIDC Client ID",
+                (
+                    okta_client_id[:20] + "..."
+                    if len(okta_client_id) > 20
+                    else (okta_client_id or "—")
+                ),
+            )
+        else:
+            table.add_row("Authentication", "AWS SSO / IAM Identity Center (no OIDC)")
         table.add_row(
             "Credential Storage",
             (
@@ -1935,8 +1992,13 @@ class InitCommand(Command):
     def _save_configuration(self, config_data: dict[str, Any], profile_name: str) -> None:
         """Save configuration to file.
 
+        Loads the existing profile (if any) and updates only the fields managed
+        by the init wizard. Fields not present in config_data are preserved from
+        the existing profile, preventing silent resets of settings like
+        include_coauthored_by, quota_fail_mode, federated_role_arn, etc.
+
         Args:
-            config_data: Configuration data to save
+            config_data: Configuration data gathered by the wizard
             profile_name: Name of the profile to save
         """
         config = Config.load()
@@ -1957,68 +2019,85 @@ class InitCommand(Command):
         provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
 
-        profile = Profile(
-            name=profile_name,
-            provider_domain=provider_domain,
-            client_id=client_id,
-            credential_storage=config_data.get("credential_storage", "session"),
-            aws_region=config_data["aws"]["region"],
-            identity_pool_name=config_data["aws"]["identity_pool_name"],
-            stack_names=config_data["aws"]["stacks"],
-            monitoring_enabled=config_data["monitoring"]["enabled"],
-            monitoring_mode=config_data.get("monitoring", {}).get("mode", "sidecar"),
-            monitoring_config=monitoring_config,
-            analytics_enabled=(
+        # Load existing profile to preserve fields not managed by the wizard
+        existing_profile = config.get_profile(profile_name)
+
+        # Fields gathered by the init wizard — these always get overwritten
+        wizard_fields = {
+            "name": profile_name,
+            "provider_domain": provider_domain,
+            "client_id": client_id,
+            "credential_storage": config_data.get("credential_storage", "session"),
+            "aws_region": config_data["aws"]["region"],
+            "identity_pool_name": config_data["aws"]["identity_pool_name"],
+            "stack_names": config_data["aws"]["stacks"],
+            "monitoring_enabled": config_data["monitoring"]["enabled"],
+            "monitoring_mode": config_data.get("monitoring", {}).get("mode", "sidecar"),
+            "monitoring_config": monitoring_config,
+            "analytics_enabled": (
                 config_data.get("analytics", {}).get("enabled", True)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
             ),
-            allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
-            cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
-            selected_model=config_data["aws"].get("selected_model"),
-            selected_source_region=config_data["aws"].get("selected_source_region"),
-            inference_profile_opus_arn=config_data["aws"].get("inference_profile_opus_arn"),
-            inference_profile_sonnet_arn=config_data["aws"].get("inference_profile_sonnet_arn"),
-            inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
-            provider_type=config_data.get("provider_type"),
-            cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
-            oidc_issuer_url=config_data.get("oidc_issuer_url"),
-            oidc_authorization_endpoint=config_data.get("oidc_authorization_endpoint"),
-            oidc_token_endpoint=config_data.get("oidc_token_endpoint"),
-            oidc_jwks_uri=config_data.get("oidc_jwks_uri"),
-            oidc_thumbprint=config_data.get("oidc_thumbprint"),
-            federation_type=config_data.get("federation_type", "cognito"),
-            max_session_duration=config_data.get("max_session_duration", 28800),
-            sso_enabled=config_data.get("sso_enabled", True),
-            azure_auth_mode=config_data.get("azure_auth_mode"),
-            client_certificate_path=config_data.get("client_certificate_path"),
-            client_certificate_key_path=config_data.get("client_certificate_key_path"),
-            enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
-            enable_distribution=config_data.get("distribution", {}).get("enabled", False),
-            distribution_type=config_data.get("distribution", {}).get("type"),
-            distribution_idp_provider=config_data.get("distribution", {}).get("idp_provider"),
-            distribution_idp_domain=config_data.get("distribution", {}).get("idp_domain"),
-            distribution_idp_client_id=config_data.get("distribution", {}).get("idp_client_id"),
-            distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
-            distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
-            distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
-            quota_monitoring_enabled=(
+            "allowed_bedrock_regions": config_data["aws"]["allowed_bedrock_regions"],
+            "cross_region_profile": config_data["aws"].get("cross_region_profile", "us"),
+            "selected_model": config_data["aws"].get("selected_model"),
+            "model_alias": config_data["aws"].get("model_alias"),
+            "selected_source_region": config_data["aws"].get("selected_source_region"),
+            "inference_profile_opus_arn": config_data["aws"].get("inference_profile_opus_arn"),
+            "inference_profile_sonnet_arn": config_data["aws"].get("inference_profile_sonnet_arn"),
+            "inference_profile_haiku_arn": config_data["aws"].get("inference_profile_haiku_arn"),
+            "provider_type": config_data.get("provider_type"),
+            "cognito_user_pool_id": config_data.get("cognito_user_pool_id"),
+            "oidc_issuer_url": config_data.get("oidc_issuer_url"),
+            "oidc_authorization_endpoint": config_data.get("oidc_authorization_endpoint"),
+            "oidc_token_endpoint": config_data.get("oidc_token_endpoint"),
+            "oidc_jwks_uri": config_data.get("oidc_jwks_uri"),
+            "oidc_thumbprint": config_data.get("oidc_thumbprint"),
+            "federation_type": config_data.get("federation_type", "cognito"),
+            "max_session_duration": config_data.get("max_session_duration", 28800),
+            "sso_enabled": config_data.get("sso_enabled", True),
+            "azure_auth_mode": config_data.get("azure_auth_mode"),
+            "client_certificate_path": config_data.get("client_certificate_path"),
+            "client_certificate_key_path": config_data.get("client_certificate_key_path"),
+            "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
+            "enable_distribution": config_data.get("distribution", {}).get("enabled", False),
+            "distribution_type": config_data.get("distribution", {}).get("type"),
+            "distribution_idp_provider": config_data.get("distribution", {}).get("idp_provider"),
+            "distribution_idp_domain": config_data.get("distribution", {}).get("idp_domain"),
+            "distribution_idp_client_id": config_data.get("distribution", {}).get("idp_client_id"),
+            "distribution_idp_client_secret_arn": config_data.get("distribution", {}).get("idp_client_secret_arn"),
+            "distribution_custom_domain": config_data.get("distribution", {}).get("custom_domain"),
+            "distribution_hosted_zone_id": config_data.get("distribution", {}).get("hosted_zone_id"),
+            "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
             ),
-            monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
-            warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
-            warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
-            daily_token_limit=config_data.get("quota", {}).get("daily_limit"),
-            burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
-            daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
-            monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
-            quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
-            cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
-            tags=config_data.get("tags", {}),
-            redirect_port=config_data.get("redirect_port"),
-        )
+            "monthly_token_limit": config_data.get("quota", {}).get("monthly_limit", 300000000),
+            "warning_threshold_80": config_data.get("quota", {}).get("warning_threshold_80", 240000000),
+            "warning_threshold_90": config_data.get("quota", {}).get("warning_threshold_90", 270000000),
+            "daily_token_limit": config_data.get("quota", {}).get("daily_limit"),
+            "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
+            "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
+            "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
+            "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
+            "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
+            "tags": config_data.get("tags", {}),
+            "redirect_port": config_data.get("redirect_port"),
+        }
+
+        if existing_profile:
+            # Update existing profile — preserves fields not managed by the wizard
+            # (e.g. include_coauthored_by, federated_role_arn, quota_fail_mode,
+            # otel_collector_endpoint, model_alias, okta_auth_server, etc.)
+            for field, value in wizard_fields.items():
+                setattr(existing_profile, field, value)
+            profile = existing_profile
+        else:
+            # New profile — construct from scratch
+            profile = Profile(**wizard_fields)
 
         config.add_profile(profile)
         # Set as active profile when creating/updating
@@ -2115,15 +2194,18 @@ class InitCommand(Command):
         """Update the CloudFormation parameters file with our configuration."""
         # Load existing parameters
         if params_file.exists():
-            with open(params_file) as f:
+            with open(params_file, encoding="utf-8") as f:
                 params = json.load(f)
         else:
             params = []
 
         # Update with our values
+        sso_enabled = config.get("sso_enabled", True)
+        okta_domain = config.get("okta", {}).get("domain", "none") if sso_enabled else "none"
+        okta_client_id = config.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
         param_map = {
-            "OktaDomain": config["okta"]["domain"],
-            "OktaClientId": config["okta"]["client_id"],
+            "OktaDomain": okta_domain,
+            "OktaClientId": okta_client_id,
             "IdentityPoolName": config["aws"]["identity_pool_name"],
             "AllowedBedrockRegions": ",".join(config["aws"]["allowed_bedrock_regions"]),
             "EnableMonitoring": "true" if config["monitoring"]["enabled"] else "false",
@@ -2153,7 +2235,7 @@ class InitCommand(Command):
 
         # Save updated parameters
         params_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(params_file, "w") as f:
+        with open(params_file, "w", encoding="utf-8") as f:
             json.dump(params, f, indent=2)
 
     def _deploy_stack(self, stack_name: str, template_file: Path, params_file: Path, region: str) -> bool:
@@ -2402,7 +2484,10 @@ class InitCommand(Command):
         """Show summary of existing deployment."""
         console = Console()
 
-        console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        if config.get("sso_enabled", True) and "okta" in config and "domain" in config["okta"]:
+            console.print(f"• OIDC Provider: [cyan]{config['okta']['domain']}[/cyan]")
+        else:
+            console.print("• Authentication: [cyan]AWS SSO / IAM Identity Center (no OIDC)[/cyan]")
 
         # Show Cognito-specific fields if using Cognito User Pool
         if "cognito_user_pool_id" in config:
