@@ -4,7 +4,7 @@ This guide explains how to use this solution's credential helper with **Claude C
 
 ## Overview
 
-[Claude Cowork with third-party platforms](https://support.claude.com/en/articles/14680741-install-and-configure-claude-cowork-with-third-party-platforms) allows IT administrators to deploy Claude Desktop with Amazon Bedrock as the inference backend, managed via MDM configuration profiles. Users get core Claude Desktop capabilities including projects, artifacts, memory, file upload/export, remote connectors, skills, plugins, and MCP servers — with consumption-based pricing through your existing AWS billing (no Anthropic seat licensing).
+[Claude Cowork with third-party platforms](https://support.claude.com/en/articles/14680741-install-and-configure-claude-cowork-with-third-party-platforms) allows IT administrators to deploy Claude Desktop with Amazon Bedrock as the inference backend, managed via MDM configuration profiles. Users get core Claude Desktop capabilities including projects, artifacts, memory, file upload/export, and MCP servers — with consumption-based pricing through your existing AWS billing (no Anthropic seat licensing). Feature availability on Bedrock may differ from claude.ai.
 
 > **Note:** Features that require Anthropic-hosted inference — including the Chat tab, Computer Use, and the Skills Marketplace — are not available in third-party platform mode. See the [Feature Matrix](https://claude.com/docs/cowork/3p/feature-matrix) for a full comparison.
 
