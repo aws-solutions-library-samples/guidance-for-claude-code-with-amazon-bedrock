@@ -707,7 +707,10 @@ class PackageCommand(Command):
 
                 self.line(f"  Building <comment>{output_name}</comment>...")
 
-                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                # macOS credential-process needs CGO_ENABLED=1 for keychain access
+                # (99designs/keyring's keychain backend requires cgo).
+                cgo = "1" if goos == "darwin" and binary == "credential-process" else "0"
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": cgo}
                 # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml)
                 # flags stripped Go binaries. The .syso PE version-info files in
                 # cmd/*/ are auto-linked by the Go compiler to help further.
