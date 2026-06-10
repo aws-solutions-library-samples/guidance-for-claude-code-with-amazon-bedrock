@@ -54,6 +54,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
@@ -64,12 +66,12 @@ jobs:
   build-binaries:
     name: Build ${{ matrix.artifact }}
     needs: release
-    if: needs.release.outputs.skip != 'true'
+    if: always() && needs.release.result != 'failure'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -102,6 +104,7 @@ jobs:
           go-version-file: source/go/go.mod
 
       - name: Build binaries
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -114,10 +117,12 @@ jobs:
           go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
 
       - name: Generate checksums
+        shell: bash
         run: |
           sha256sum credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* > checksums-${{ matrix.artifact_prefix }}.txt
 
       - name: Upload to release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
