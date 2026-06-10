@@ -78,6 +78,11 @@ type ProfileConfig struct {
 	// from "explicitly false" (passthrough mode).
 	SsoEnabled *bool `json:"sso_enabled,omitempty"`
 
+	// Non-confidential client secret read from config.json (e.g. Google Desktop
+	// OAuth requires a client_secret for token exchange, but Google documents it
+	// as non-confidential for installed/native apps). Empty means PKCE-only.
+	ClientSecret string `json:"client_secret,omitempty"`
+
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
 	OktaClientID string `json:"okta_client_id"`
