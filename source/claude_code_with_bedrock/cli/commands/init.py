@@ -1083,6 +1083,13 @@ class InitCommand(Command):
                     if custom_daily:
                         console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
 
+                    console.print(
+                        "\n[dim]Note: Limits include all token types including cache reads.\n"
+                        "Typical Claude Code usage has ~80% cache hit ratio — multiply\n"
+                        "your desired inference-only limit by 5x to account for cached\n"
+                        "token volume.[/dim]"
+                    )
+
                     # Enforcement mode configuration
                     console.print("\n[bold]Enforcement Modes[/bold]")
                     console.print("Choose how limits are enforced:")

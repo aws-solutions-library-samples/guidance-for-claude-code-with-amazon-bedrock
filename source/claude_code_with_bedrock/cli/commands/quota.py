@@ -82,6 +82,26 @@ def _get_quota_manager(profile) -> QuotaPolicyManager:
     return QuotaPolicyManager(table_name, profile.aws_region)
 
 
+# Disclosure text shown when setting or viewing quotas
+CACHE_READ_DISCLOSURE = (
+    "\n[dim]Note: Limits include all token types including cache reads.\n"
+    "Typical Claude Code usage has ~80% cache hit ratio — multiply\n"
+    "your desired inference-only limit by 5x to account for cached\n"
+    "token volume.\n"
+    "\n"
+    "  Cache hit ratio guide:\n"
+    "    multiplier = 1 / (1 - cache_hit_ratio)\n"
+    "    75% cache hits → multiply by 4x\n"
+    "    80% cache hits → multiply by 5x\n"
+    "    90% cache hits → multiply by 10x[/dim]"
+)
+
+
+def _print_cache_read_disclosure(console: Console) -> None:
+    """Print cache read disclosure note."""
+    console.print(CACHE_READ_DISCLOSURE)
+
+
 def _format_tokens(tokens: int) -> str:
     """Format token count for display.
 
@@ -240,6 +260,7 @@ class QuotaSetUserCommand(Command):
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            _print_cache_read_disclosure(console)
             return 0
 
         except PolicyAlreadyExistsError:
@@ -258,6 +279,7 @@ class QuotaSetUserCommand(Command):
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                _print_cache_read_disclosure(console)
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -347,6 +369,7 @@ class QuotaSetGroupCommand(Command):
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            _print_cache_read_disclosure(console)
             return 0
 
         except PolicyAlreadyExistsError:
@@ -365,6 +388,7 @@ class QuotaSetGroupCommand(Command):
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                _print_cache_read_disclosure(console)
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -449,6 +473,7 @@ class QuotaSetDefaultCommand(Command):
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
             console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            _print_cache_read_disclosure(console)
             return 0
 
         except PolicyAlreadyExistsError:
@@ -467,6 +492,7 @@ class QuotaSetDefaultCommand(Command):
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
                 console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                _print_cache_read_disclosure(console)
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -680,6 +706,7 @@ class QuotaShowCommand(Command):
             table.add_row("Critical (90%)", _format_tokens(policy.warning_threshold_90))
 
             console.print(table)
+            console.print("\n[dim]Token limits include all token types (includes cache reads)[/dim]")
 
             if groups:
                 console.print(f"\n[dim]Groups evaluated: {', '.join(groups)}[/dim]")
@@ -787,6 +814,7 @@ class QuotaUsageCommand(Command):
                 )
 
             console.print(table)
+            console.print("\n[dim]Token usage includes all token types (includes cache reads)[/dim]")
 
             # Show warning if near/over quota
             if monthly_pct >= 100:
