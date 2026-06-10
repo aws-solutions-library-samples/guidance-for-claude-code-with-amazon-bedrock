@@ -1060,7 +1060,10 @@ sso_registration_scopes = sso:account:access"""
 
                     existing_custom_domain = config["monitoring"].get("custom_domain")
                     existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                    already_configured = bool(existing_custom_domain and existing_zone_id)
+                    existing_cert_arn = config["monitoring"].get("certificate_arn")
+                    already_configured = bool(
+                        existing_custom_domain and (existing_zone_id or existing_cert_arn)
+                    )
 
                     if already_configured:
                         console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
@@ -1100,6 +1103,7 @@ sso_registration_scopes = sso:account:access"""
 
                             zone_id = selected_zone.split("(")[-1].rstrip(")")
                             config["monitoring"]["hosted_zone_id"] = zone_id
+                            config["monitoring"]["certificate_arn"] = None
                             console.print(
                                 f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
                             )
@@ -1108,19 +1112,43 @@ sso_registration_scopes = sso:account:access"""
                                 console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
                             else:
                                 console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
-                            console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
-                            manual_zone_id = questionary.text(
-                                "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
-                                default=existing_zone_id if existing_zone_id else "",
+                            console.print(
+                                "[dim]You can provide an existing ACM certificate ARN instead "
+                                "(e.g., for domains managed by Cloudflare, GoDaddy, etc.).[/dim]"
+                            )
+                            use_external_cert = questionary.confirm(
+                                "Do you have an existing ACM certificate for this domain?",
+                                default=bool(existing_cert_arn),
                             ).ask()
-                            if manual_zone_id and manual_zone_id.strip():
-                                config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+
+                            if use_external_cert:
+                                cert_arn = questionary.text(
+                                    "Enter ACM certificate ARN:",
+                                    validate=lambda x: x.startswith("arn:aws:acm:"),
+                                    default=existing_cert_arn if existing_cert_arn else "",
+                                ).ask()
+                                config["monitoring"]["hosted_zone_id"] = None
+                                config["monitoring"]["certificate_arn"] = cert_arn
+                                console.print(
+                                    f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain} "
+                                    f"using external certificate"
+                                )
                             else:
-                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                                console.print("[dim]Enter the Route53 hosted zone ID manually:[/dim]")
+                                manual_zone_id = questionary.text(
+                                    "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                                    default=existing_zone_id if existing_zone_id else "",
+                                ).ask()
+                                if manual_zone_id and manual_zone_id.strip():
+                                    config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                                    config["monitoring"]["certificate_arn"] = None
+                                    console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                                else:
+                                    console.print("[yellow]⚠[/yellow] Domain saved but no zone ID or cert set. Update before deploying.")
                     else:
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
+                        config["monitoring"]["certificate_arn"] = None
 
                     # Analytics configuration (central mode only)
                     console.print("\n[bold]Analytics Pipeline[/bold]")
@@ -2199,6 +2227,8 @@ sso_registration_scopes = sso:account:access"""
             monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
+        if monitoring_dict.get("certificate_arn"):
+            monitoring_config["certificate_arn"] = monitoring_dict["certificate_arn"]
 
         # Get authentication configuration
         auth_type = config_data.get("auth_type", "oidc")
