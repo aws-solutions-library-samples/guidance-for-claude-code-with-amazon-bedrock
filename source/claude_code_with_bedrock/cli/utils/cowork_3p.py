@@ -34,6 +34,7 @@ def build_mdm_config(
     bedrock_region: str,
     model_aliases: list[str],
     profile_name: str = "ClaudeCode",
+    extra_keys: dict[str, str] | None = None,
 ) -> dict:
     """Build the base CoWork 3P MDM configuration dictionary.
 
@@ -48,11 +49,16 @@ def build_mdm_config(
         bedrock_region: AWS region for Bedrock API calls.
         model_aliases: List of model aliases (e.g., ["opus", "sonnet", "haiku"]).
         profile_name: AWS named profile (matches ~/.aws/config stanza).
+        extra_keys: Optional dictionary of additional MDM keys to merge into the
+            configuration. Values should be strings (JSON-encoded for complex types).
+            These are appended after the base keys, allowing administrators to set
+            keys like coworkEgressAllowedHosts, coworkWebSearchEnabled, or
+            managedMcpServers without modifying source code.
 
     Returns:
         Dictionary of MDM configuration key-value pairs.
     """
-    return {
+    config = {
         "inferenceProvider": "bedrock",
         "inferenceBedrockRegion": bedrock_region,
         "inferenceBedrockProfile": profile_name,
@@ -63,6 +69,11 @@ def build_mdm_config(
         "isDesktopExtensionSignatureRequired": True,
         "isLocalDevMcpEnabled": True,
     }
+
+    if extra_keys:
+        config.update(extra_keys)
+
+    return config
 
 
 

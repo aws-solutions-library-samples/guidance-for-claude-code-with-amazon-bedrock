@@ -3056,6 +3056,7 @@ Available metrics include:
                 bedrock_region=bedrock_region,
                 model_aliases=model_aliases,
                 profile_name=profile_name,
+                extra_keys=profile.cowork_3p_extra_keys or None,
             )
 
             add_monitoring_config(mdm_config, profile, console)
