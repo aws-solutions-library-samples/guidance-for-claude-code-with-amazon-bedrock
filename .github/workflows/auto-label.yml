@@ -1,0 +1,35 @@
+---
+name: Auto-label PRs
+on:
+  pull_request:
+    types: [opened, edited]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const mapping = {
+              'feat': 'enhancement',
+              'fix': 'bug',
+              'docs': 'documentation',
+              'test': 'testing',
+              'ci': 'ci',
+              'chore': 'maintenance',
+              'refactor': 'maintenance',
+            };
+            const match = title.match(/^(\w+)/);
+            if (match && mapping[match[1]]) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [mapping[match[1]]]
+              });
+            }

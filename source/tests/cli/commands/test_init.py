@@ -615,6 +615,103 @@ class TestSsoDisabledRendering:
         assert param_map["OktaClientId"] == "abc123xyz"
 
 
+class TestLandingPageRegionResolution:
+    """Regression tests for region UnboundLocalError on the skip_aws landing-page path.
+
+    When AWS setup is skipped (last_step in aws_complete/monitoring_complete/
+    bedrock_complete with no existing_config), `region` is never assigned by the
+    AWS-setup block. The landing-page distribution block still runs and uses
+    `region` for Cognito detection AND for the Secrets Manager client. Every IdP
+    provider (okta/azure/auth0/cognito/google) must resolve `region` from saved
+    config instead of crashing with UnboundLocalError.
+
+    The original fix (commit c314ada) only bound `region` inside the
+    `if idp_provider == "cognito":` branch, so the four non-cognito providers
+    still crashed. This guards all five.
+    """
+
+    class _StopAfterSecrets(Exception):
+        """Raised at the custom-domain prompt, downstream of the secrets block."""
+
+    def _run_landing_page(self, idp_provider):
+        """Drive _gather_configuration down the skip_aws landing-page path.
+
+        Returns the region_name passed to boto3's secretsmanager client.
+        Raises UnboundLocalError if the bug is present.
+        """
+        from unittest.mock import MagicMock, patch
+
+        import questionary
+
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        # last_step="bedrock_complete" -> skip_okta/skip_aws/skip_monitoring/skip_bedrock
+        # all True, so the only prompts before the secrets block are distribution + IdP fields.
+        progress = MagicMock()
+        progress.get_last_step.return_value = "bedrock_complete"
+        progress.get_saved_data.return_value = {
+            "sso_enabled": False,
+            "auth_type": "none",
+            "aws": {"region": "ap-southeast-1", "identity_pool_name": "claude-code-auth"},
+        }
+
+        def fake_select(message, *a, **k):
+            m = MagicMock()
+            text = str(message)
+            if "Distribution method" in text:
+                m.ask.return_value = "landing-page"
+            elif "Identity provider" in text:
+                m.ask.return_value = idp_provider
+            else:
+                m.ask.return_value = None
+            return m
+
+        def fake_text(message, *a, **k):
+            m = MagicMock()
+            if "Custom domain" in str(message):
+                # We've passed the secrets block (line ~1336); stop deterministically.
+                m.ask.side_effect = self._StopAfterSecrets
+            else:
+                m.ask.return_value = "dummy.example.com"
+            return m
+
+        def fake_password(*a, **k):
+            m = MagicMock()
+            m.ask.return_value = "dummy-secret"
+            return m
+
+        def fake_confirm(*a, **k):
+            m = MagicMock()
+            m.ask.return_value = False
+            return m
+
+        captured = {}
+
+        def spy_client(name, *a, **k):
+            if name == "secretsmanager":
+                captured["region_name"] = k.get("region_name")
+            return MagicMock()
+
+        cmd = InitCommand()
+        with patch.object(questionary, "select", fake_select), \
+             patch.object(questionary, "text", fake_text), \
+             patch.object(questionary, "password", fake_password), \
+             patch.object(questionary, "confirm", fake_confirm), \
+             patch("boto3.client", spy_client):
+            try:
+                cmd._gather_configuration(progress)
+            except self._StopAfterSecrets:
+                pass
+        return captured.get("region_name")
+
+    @pytest.mark.parametrize("idp_provider", ["okta", "azure", "auth0", "cognito", "google"])
+    def test_region_bound_for_all_providers_when_aws_skipped(self, idp_provider):
+        """region must resolve from saved config for every IdP provider, not crash."""
+        # Pre-fix: raises UnboundLocalError for okta/azure/auth0/google.
+        region_name = self._run_landing_page(idp_provider)
+        assert region_name == "ap-southeast-1"
+
+
 if __name__ == "__main__":
     # Run the tests
     pytest.main([__file__, "-v"])

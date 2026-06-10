@@ -1,0 +1,124 @@
+---
+name: Stable Release
+description: |
+  Auto-triggered when beta is merged to main.
+  Creates a stable version tag and publishes a GitHub release with
+  auto-generated notes and pre-compiled Go binaries for all platforms.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # manual trigger for testing from any branch
+
+permissions: {}
+
+jobs:
+  release:
+    name: Tag and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(grep -m1 'version' source/pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION → tag: $TAG"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists — skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag and release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --latest
+
+  build-binaries:
+    name: Build ${{ matrix.artifact }}
+    needs: release
+    if: needs.release.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact_prefix: windows-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact_prefix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            artifact_prefix: linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact_prefix: darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact_prefix: darwin-amd64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version-file: source/go/go.mod
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          cd source/go
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-s -w" -o ../../credential-process-${{ matrix.artifact_prefix }}${EXT} ./cmd/credential-process/
+          go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
+
+      - name: Generate checksums
+        run: |
+          sha256sum credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* > checksums-${{ matrix.artifact_prefix }}.txt
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.release.outputs.tag }} credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* checksums-${{ matrix.artifact_prefix }}.txt

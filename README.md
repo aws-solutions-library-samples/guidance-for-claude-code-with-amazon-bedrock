@@ -29,7 +29,7 @@ This guidance provides enterprise deployment patterns for Claude Code and Claude
 - **Claude Desktop Experience**: Research, document analysis, data processing, and report generation
 - **No CLI Required**: Users just open Claude Desktop — authentication is handled by the credential helper
 - **MDM Deployment**: Configure via Jamf, Intune, or Group Policy using generated .mobileconfig/.reg files
-- **Projects, Artifacts, and MCP**: Full Claude Desktop capabilities including connectors and plugins
+- **Projects, Artifacts, and MCP**: Core Claude Desktop capabilities including projects, artifacts, and MCP servers. Feature availability on Bedrock may differ from claude.ai.
 - **Consumption-Based Pricing**: No Anthropic seat licensing — billed through your existing AWS agreement
 
 ## Table of Contents
@@ -128,11 +128,11 @@ When SSO authentication is disabled:
 
 To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
 
-> **IAM Identity Center support** is coming soon. In the meantime, IAM IDC users can deploy with SSO disabled and use their existing `aws sso login` credentials directly.
+> **IAM Identity Center** works today via SSO-disabled mode — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Full first-class IDC support (dedicated auth stack, OTEL attribution, quota enforcement) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
 
 ## Authentication Modes
 
-This guidance supports three identity paths. All paths deliver per-user identity resolution, centralized access control, audit trails, and usage monitoring.
+This guidance supports three identity paths. Each path provides usage monitoring and audit trails. Per-user identity resolution and quota enforcement depend on the authentication mode chosen.
 
 | Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
 |------|--------------------|----------------|----------------|-------------------|----------|
@@ -143,7 +143,7 @@ This guidance supports three identity paths. All paths deliver per-user identity
 **Choosing a path:**
 
 - Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
-- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Full IAM IDC integration is coming soon.
+- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Full IAM IDC integration (dedicated auth stack, OTEL attribution, quota support) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
 - Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
 
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.

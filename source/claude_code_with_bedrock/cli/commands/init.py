@@ -1386,6 +1386,10 @@ sso_registration_scopes = sso:account:access"""
             console.print("\n[bold]Landing Page Configuration[/bold]")
             console.print("Configure IdP authentication for the distribution landing page")
 
+            # Resolve region for landing-page infra ops (Cognito detection + Secrets Manager) even
+            # when AWS setup was skipped (skip_aws=True), so region is bound for all IdP providers.
+            region = config.get("aws", {}).get("region", get_current_region())
+
             # IdP provider selection
             idp_choices = [
                 questionary.Choice("Okta", value="okta"),
@@ -1412,7 +1416,7 @@ sso_registration_scopes = sso:account:access"""
                 console.print("\n[bold]Cognito Configuration Detection[/bold]")
                 console.print("Searching for deployed Cognito User Pool stack...")
 
-                # Try to auto-detect Cognito stack
+                # Try to auto-detect Cognito stack (region resolved at top of landing-page block)
                 cognito_stack_info = detect_cognito_stack(region)
 
                 if cognito_stack_info:
