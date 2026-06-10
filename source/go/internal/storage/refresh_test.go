@@ -11,8 +11,11 @@ func TestSaveAndLoadRefreshToken(t *testing.T) {
 	// Use a temp dir as session dir
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir) // Windows: os.UserHomeDir() uses USERPROFILE
 	defer os.Setenv("HOME", origHome)
+	defer os.Setenv("USERPROFILE", origUserProfile)
 
 	// Ensure session dir exists
 	os.MkdirAll(filepath.Join(tmpDir, ".claude-code-session"), 0700)

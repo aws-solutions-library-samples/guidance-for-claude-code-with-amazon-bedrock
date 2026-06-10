@@ -35,6 +35,8 @@ def mock_cache_dir(tmp_path, monkeypatch):
     cache_dir = tmp_path / ".claude-code-session"
     cache_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows, Path.home() uses USERPROFILE instead of HOME
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("AWS_PROFILE", "test-profile")
     return cache_dir
 
