@@ -104,6 +104,7 @@ jobs:
           go-version-file: source/go/go.mod
 
       - name: Build binaries
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -116,10 +117,12 @@ jobs:
           go build -ldflags="-s -w" -o ../../otel-helper-${{ matrix.artifact_prefix }}${EXT} ./cmd/otel-helper/
 
       - name: Generate checksums
+        shell: bash
         run: |
           sha256sum credential-process-${{ matrix.artifact_prefix }}* otel-helper-${{ matrix.artifact_prefix }}* > checksums-${{ matrix.artifact_prefix }}.txt
 
       - name: Upload to release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
