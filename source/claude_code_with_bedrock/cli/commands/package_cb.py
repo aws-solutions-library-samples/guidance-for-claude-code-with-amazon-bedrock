@@ -461,7 +461,10 @@ class PackageCbCommand(Command):
                             {
                                 "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                                 "OTEL_METRICS_EXPORTER": "otlp",
-                                "OTEL_LOGS_EXPORTER": "otlp",
+                                # The collector defines only a metrics pipeline, so /v1/logs is
+                                # dropped (4xx). Explicitly disable logs export rather than
+                                # deleting the key so a global/user default can't re-enable "otlp".
+                                "OTEL_LOGS_EXPORTER": "none",
                                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                                 "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                                 "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
