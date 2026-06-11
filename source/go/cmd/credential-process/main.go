@@ -696,15 +696,108 @@ func (a *credentialApp) performQuotaRecheck() {
 	_ = claims // suppress unused
 	if !qr.Allowed {
 		printQuotaBlocked(qr)
+	} else {
+		printQuotaWarning(qr)
 	}
 }
 
+func printQuotaWarning(qr *quota.Result) {
+	usage := qr.Usage
+	if usage == nil {
+		return
+	}
+
+	monthlyPercent, _ := usage["monthly_percent"].(float64)
+	dailyPercent, _ := usage["daily_percent"].(float64)
+
+	// Only show warning at 80%+ threshold
+	if monthlyPercent < 80 && dailyPercent < 80 {
+		return
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "============================================================")
+	fmt.Fprintln(os.Stderr, "QUOTA WARNING")
+	fmt.Fprintln(os.Stderr, "============================================================")
+
+	if monthlyTokens, ok := usage["monthly_tokens"].(float64); ok {
+		if monthlyLimit, ok2 := usage["monthly_limit"].(float64); ok2 {
+			fmt.Fprintf(os.Stderr, "  Monthly: %s / %s tokens (%.1f%%)\n",
+				formatTokens(monthlyTokens), formatTokens(monthlyLimit), monthlyPercent)
+		}
+	}
+	if dailyTokens, ok := usage["daily_tokens"].(float64); ok {
+		if dailyLimit, ok2 := usage["daily_limit"].(float64); ok2 {
+			fmt.Fprintf(os.Stderr, "  Daily: %s / %s tokens (%.1f%%)\n",
+				formatTokens(dailyTokens), formatTokens(dailyLimit), dailyPercent)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "============================================================")
+}
+
+func formatTokens(n float64) string {
+	return fmt.Sprintf("%s", humanizeNumber(int64(n)))
+}
+
+func humanizeNumber(n int64) string {
+	if n < 0 {
+		return "-" + humanizeNumber(-n)
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	result := ""
+	for n > 0 {
+		if result != "" {
+			result = "," + result
+		}
+		if n >= 1000 {
+			result = fmt.Sprintf("%03d", n%1000) + result
+		} else {
+			result = fmt.Sprintf("%d", n) + result
+		}
+		n /= 1000
+	}
+	return result
+}
+
 func printQuotaBlocked(qr *quota.Result) {
+	usage := qr.Usage
+	policy := qr.Policy
+
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "============================================================")
 	fmt.Fprintln(os.Stderr, "ACCESS BLOCKED - QUOTA EXCEEDED")
 	fmt.Fprintln(os.Stderr, "============================================================")
 	fmt.Fprintf(os.Stderr, "\n%s\n", qr.Message)
+
+	if usage != nil {
+		fmt.Fprintln(os.Stderr, "\nCurrent Usage:")
+		if monthlyTokens, ok := usage["monthly_tokens"].(float64); ok {
+			if monthlyLimit, ok2 := usage["monthly_limit"].(float64); ok2 {
+				monthlyPercent, _ := usage["monthly_percent"].(float64)
+				fmt.Fprintf(os.Stderr, "  Monthly: %s / %s tokens (%.1f%%)\n",
+					formatTokens(monthlyTokens), formatTokens(monthlyLimit), monthlyPercent)
+			}
+		}
+		if dailyTokens, ok := usage["daily_tokens"].(float64); ok {
+			if dailyLimit, ok2 := usage["daily_limit"].(float64); ok2 {
+				dailyPercent, _ := usage["daily_percent"].(float64)
+				fmt.Fprintf(os.Stderr, "  Daily: %s / %s tokens (%.1f%%)\n",
+					formatTokens(dailyTokens), formatTokens(dailyLimit), dailyPercent)
+			}
+		}
+	}
+
+	if policy != nil {
+		pType, _ := policy["type"].(string)
+		pID, _ := policy["identifier"].(string)
+		if pType != "" || pID != "" {
+			fmt.Fprintf(os.Stderr, "\nPolicy: %s:%s\n", pType, pID)
+		}
+	}
+
 	fmt.Fprintln(os.Stderr, "\nTo request an unblock, contact your administrator.")
 	fmt.Fprintln(os.Stderr, "============================================================")
 }
