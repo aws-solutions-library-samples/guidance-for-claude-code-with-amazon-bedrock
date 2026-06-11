@@ -820,7 +820,11 @@ def main():
     # Ensure collector sidecar is running (no-op if not installed)
     ensure_collector_running()
 
-    # Layer 1: Check file cache first (avoids credential-process entirely)
+    # Layer 1: Serve attribution from the file cache. The cache stores
+    # attribution headers only, never the token, so the Bearer is still
+    # resolved below (env var, then credential-process). credential-process
+    # is the correct fallback here — it owns token refresh, keyring storage,
+    # and serve-past-expiry, none of which a direct monitoring.json read does.
     if not TEST_MODE:
         cached_headers = read_cached_headers()
         if cached_headers is not None:
