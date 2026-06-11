@@ -68,7 +68,11 @@ func run(testMode bool) int {
 		profile = "ClaudeCode"
 	}
 
-	// Layer 1: Check file cache first (avoids credential-process entirely)
+	// Layer 1: Serve attribution from the file cache. The cache stores
+	// attribution headers only, never the token, so the Bearer is still
+	// resolved below (env var, then credential-process). credential-process
+	// is the correct fallback here — it owns token refresh, keyring storage,
+	// and serve-past-expiry, none of which a direct monitoring.json read does.
 	if !testMode {
 		headers, err := otel.ReadCachedHeaders(profile)
 		if err == nil && headers != nil {
