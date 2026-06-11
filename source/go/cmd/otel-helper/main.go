@@ -45,6 +45,16 @@ func debugPrint(format string, args ...interface{}) {
 	}
 }
 
+// attachBearer sets the Authorization header. Intentionally exp-AGNOSTIC:
+// the Layer-1 cache-hit path never decodes the token, so token validation
+// lives at the token source (see storage.GetMonitoringToken), NOT here.
+// Do not add an exp check inside this function.
+func attachBearer(headers map[string]string, token string) {
+	if token != "" {
+		headers["authorization"] = "Bearer " + token
+	}
+}
+
 func main() {
 	testMode := flag.Bool("test", false, "Run in test mode with verbose output")
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
@@ -80,9 +90,9 @@ func run(testMode bool) int {
 			// Resolve Bearer fresh — the cache stores attribution headers only,
 			// never the token itself. Try env var (free) then credential-process (~20ms).
 			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" {
-				headers["authorization"] = "Bearer " + t
+				attachBearer(headers, t)
 			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
-				headers["authorization"] = "Bearer " + t
+				attachBearer(headers, t)
 			} else {
 				// No token from env var or credential-process. Emit cached attribution
 				// anyway (otelHeadersHelper contract), but log so an ALB 401 is
@@ -137,7 +147,7 @@ func run(testMode bool) int {
 
 	if testMode {
 		// Include Bearer in test output so --test shows the full header set.
-		headers["authorization"] = "Bearer " + token
+		attachBearer(headers, token)
 		printTestOutput(userInfo, headers)
 	} else {
 		// Cache attribution headers only — Bearer token must never be persisted
@@ -150,7 +160,7 @@ func run(testMode bool) int {
 		} else {
 			debugPrint("JWT has no exp claim, skipping cache write")
 		}
-		headers["authorization"] = "Bearer " + token
+		attachBearer(headers, token)
 		outputJSON(headers)
 	}
 
