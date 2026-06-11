@@ -180,9 +180,13 @@ Resources:
               commands:
                 - echo Build completed
                 - echo Validating all required binaries exist...
-                - if (-not (Test-Path credential-process-windows.exe)) { Write-Error "FATAL: credential-process-windows.exe was not built. Nuitka compilation failed."; exit 1 }
-                - if (-not (Test-Path otel-helper-windows.exe)) { Write-Error "FATAL: otel-helper-windows.exe was not built. Nuitka compilation failed. Consider using 'ccwb package --go' for reliable Go-based builds."; exit 1 }
-                - Get-ChildItem *.exe | ForEach-Object { Write-Host "$($_.Name) - $([math]::Round($_.Length/1MB, 1)) MB" }
+                # PowerShell commands containing ': ' and '{ }' must be YAML-quoted, or
+                # CodeBuild's buildspec parser reads them as mappings ("found subkeys").
+                # Single quotes keep the inner PowerShell double quotes and $(...) intact;
+                # the literal single quotes around 'ccwb package --go' are doubled per YAML.
+                - 'if (-not (Test-Path credential-process-windows.exe)) { Write-Error "FATAL: credential-process-windows.exe was not built. Nuitka compilation failed."; exit 1 }'
+                - 'if (-not (Test-Path otel-helper-windows.exe)) { Write-Error "FATAL: otel-helper-windows.exe was not built. Nuitka compilation failed. Consider using ''ccwb package --go'' for reliable Go-based builds."; exit 1 }'
+                - 'Get-ChildItem *.exe | ForEach-Object { Write-Host "$($_.Name) - $([math]::Round($_.Length/1MB, 1)) MB" }'
 
           artifacts:
             files:
