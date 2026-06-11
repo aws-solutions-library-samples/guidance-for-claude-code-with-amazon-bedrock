@@ -412,6 +412,13 @@ The optional CloudWatch dashboard provides:
 - **Cache Performance**: Cache hit rates and token savings from prompt caching
 - **Operations Breakdown**: Distribution of Claude Code operations (file edits, searches, reads, etc.)
 
+### Monthly Usage Sampler (SmartNews)
+
+A self-contained tool that samples the Bedrock invocation logs each month, classifies sessions into a
+cognitive-activity taxonomy (Sonnet), and generates a leadership report (Opus). Lives in
+[`source/sampling/`](source/sampling/README.md) — see its README for setup, the 7-step pipeline,
+model-selection rationale, and the `--classify` / `--report-only` flags.
+
 ## Troubleshooting
 
 ### Clearing Cached Credentials

@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "bedrock-log-sampler"
+version = "0.1.0"
+description = "Monthly sampler for CCE Bedrock invocation logs"
+authors = ["SmartNews CCE <claude-code@smartnews.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+boto3 = "^1.28.0"
+requests = "^2.31.0"
+pandas = "^2.2.0"
+pyarrow = "^15.0.0"
+
+[tool.poetry.scripts]
+bedrock-log-sampler = "bedrock_log_sampler:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
