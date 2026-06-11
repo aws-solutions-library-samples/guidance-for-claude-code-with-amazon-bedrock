@@ -1180,17 +1180,18 @@ sso_registration_scopes = sso:account:access"""
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
-                # the API Gateway authorizer cannot validate requests without one.
-                # Skip the prompt entirely when auth_type is not OIDC (issue #454).
-                if config.get("auth_type") not in ("oidc",):
+                # Quota enforcement works with both auth types:
+                # - OIDC: API Gateway JWT authorizer validates ID token
+                # - IDC: SigV4-signed requests with email from STS identity (PR #461)
+                # Skip only when auth_type is 'none' (no user identity available).
+                if config.get("auth_type") not in ("oidc", "idc"):
                     if "quota" not in config:
                         config["quota"] = {}
                     config["quota"]["enabled"] = False
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print(
-                        "[dim]Skipped — quota monitoring requires OIDC authentication "
-                        "(per-user JWT tokens) and is disabled for IDC/none auth types.[/dim]"
+                        "[dim]Skipped — quota monitoring requires user authentication "
+                        "(OIDC or IAM Identity Center) and is disabled for this profile.[/dim]"
                     )
                 else:
                     console.print("\n[bold]Quota Monitoring[/bold]")

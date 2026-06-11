@@ -151,13 +151,13 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
-                if profile.effective_auth_type not in ("oidc",):
+                if profile.effective_auth_type not in ("oidc", "idc"):
                     console.print(
-                        "[yellow]Quota monitoring requires OIDC authentication "
-                        "(per-user JWT tokens) and cannot be deployed for IDC/none auth types.[/yellow]"
+                        "[yellow]Quota monitoring requires user authentication "
+                        "(OIDC or IAM Identity Center) and cannot be deployed without it.[/yellow]"
                     )
                     console.print(
-                        "[dim]See issue #454. Use OIDC authentication to deploy quota monitoring.[/dim]"
+                        "[dim]See issue #454. Enable OIDC or IDC authentication to deploy quota monitoring.[/dim]"
                     )
                     return 1
                 if profile.monitoring_enabled:
@@ -236,16 +236,15 @@ class DeployCommand(Command):
                 # has no valid issuer URL otherwise. Skip with a warning rather
                 # than letting CloudFormation fail mid-deploy (issue #454).
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    if profile.effective_auth_type == "oidc":
+                    if profile.effective_auth_type in ("oidc", "idc"):
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
                     else:
                         console.print(
                             "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
-                            "OIDC authentication (per-user JWT tokens) but auth type is not OIDC.[/yellow]"
+                            "user authentication (OIDC or IAM Identity Center).[/yellow]"
                         )
                         console.print(
-                            "[dim]Re-run 'ccwb init' with OIDC authentication to deploy quota monitoring. "
-                            "See issue #454.[/dim]"
+                            "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy quota monitoring.[/dim]"
                         )
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
