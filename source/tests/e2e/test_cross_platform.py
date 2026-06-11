@@ -718,8 +718,9 @@ class TestAuthContractAlignment:
         # In the main auth flow (not Layer 1 cache hit), WriteCachedHeaders
         # must appear BEFORE the authorization header is added to output.
         # Look for the pattern: WriteCachedHeaders(profile, headers, ...)
-        # followed later by headers["authorization"] = "Bearer " + token
-        # and then outputJSON(headers)
+        # followed later by the Bearer attach — either the inline
+        # headers["authorization"] = "Bearer " + token or the centralized
+        # attachBearer(headers, token) helper call — and then outputJSON(headers).
         main_cache_write_line = None
         main_auth_line = None
         in_main_flow = False
@@ -731,7 +732,11 @@ class TestAuthContractAlignment:
             if in_main_flow:
                 if "WriteCachedHeaders" in line and main_cache_write_line is None:
                     main_cache_write_line = i
-                if '"authorization"' in line and "Bearer" in line and main_auth_line is None:
+                # The Bearer attach is the centralized attachBearer() call; the
+                # inline literal form is also matched so the ordering guard holds
+                # regardless of which form the helper uses.
+                is_attach = ('"authorization"' in line and "Bearer" in line) or "attachBearer(" in line
+                if is_attach and main_auth_line is None:
                     main_auth_line = i
 
         assert main_cache_write_line is not None, (

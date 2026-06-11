@@ -322,169 +322,26 @@ class InitCommand(Command):
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            # Skip the auth type selection when updating an existing profile — preserve the saved value
-            if existing_config and ("auth_type" in existing_config or "sso_enabled" in existing_config):
-                # Backward compatibility: derive auth_type from sso_enabled if not set
-                if "auth_type" not in existing_config:
-                    if existing_config.get("sso_enabled", True):
-                        config["auth_type"] = "oidc"
-                    else:
-                        config["auth_type"] = "none"
-                else:
-                    config["auth_type"] = existing_config["auth_type"]
-                config["sso_enabled"] = (config["auth_type"] == "oidc")
-            else:
-                console.print("\n[bold]Authentication Configuration[/bold]")
-                console.print("Choose how users will authenticate to access Claude Code:")
-                console.print()
+            console.print("\n[bold]SSO Authentication[/bold]")
+            console.print("Enable Single Sign-On authentication via identity providers")
+            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
+            console.print("\nWhen disabled:")
+            console.print("  • Uses AWS IAM roles for access control")
+            console.print("  • Metrics will use anonymous tracking based on IAM identity")
+            console.print("  • No user authentication required\n")
 
-                auth_type = questionary.select(
-                    "Select authentication method:",
-                    choices=[
-                        questionary.Choice(
-                            "OIDC / Direct IdP (Okta, Azure AD, Auth0, Cognito, Google)",
-                            value="oidc"
-                        ),
-                        questionary.Choice(
-                            "AWS IAM Identity Center (SSO)",
-                            value="idc"
-                        ),
-                        questionary.Choice(
-                            "None (use existing AWS credentials)",
-                            value="none"
-                        )
-                    ],
-                    default=config.get("auth_type", "oidc"),
-                ).ask()
-
-                if auth_type is None:
-                    return None
-
-                config["auth_type"] = auth_type
-                config["sso_enabled"] = (auth_type == "oidc")
-
-        # IAM Identity Center Configuration
-        if not skip_okta and config.get("auth_type") == "idc":
-            console.print("\n[bold blue]AWS IAM Identity Center Configuration[/bold blue]")
-            console.print("─" * 40)
-            
-            # IDC start URL
-            idc_start_url = questionary.text(
-                "Enter your IAM Identity Center start URL:",
-                validate=lambda x: (
-                    (x.startswith("https://") and ".awsapps.com" in x) or
-                    "Start URL must begin with https:// and contain .awsapps.com"
-                ),
-                instruction="(e.g., https://company.awsapps.com/start)",
-                default=config.get("idc_start_url", ""),
+            sso_enabled = questionary.confirm(
+                "Enable SSO authentication?",
+                default=config.get("sso_enabled", True),
             ).ask()
-            
-            if not idc_start_url:
+
+            if sso_enabled is None:
                 return None
-                
-            config["idc_start_url"] = idc_start_url.rstrip("/")
-            
-            # SSO region (extracted from start URL or asked separately)
-            try:
-                region_match = re.search(r'https://[^.]+\.awsapps\.com', idc_start_url)
-                if region_match:
-                    # Try to extract region from URL structure if possible
-                    suggested_region = config.get("aws", {}).get("region", "us-east-1")
-                else:
-                    suggested_region = "us-east-1"
-            except:
-                suggested_region = "us-east-1"
-                
-            sso_region = questionary.text(
-                "Enter your SSO region (where Identity Center is configured):",
-                validate=lambda x: (
-                    bool(x and re.match(r'^[a-z]{2}-[a-z]+-\d+$', x)) or
-                    "Invalid region format (e.g., us-east-1)"
-                ),
-                default=config.get("sso_region", suggested_region),
-            ).ask()
-            
-            if not sso_region:
-                return None
-                
-            config["sso_region"] = sso_region
-            
-            # AWS Account ID
-            account_id = questionary.text(
-                "Enter your AWS Account ID:",
-                validate=lambda x: (
-                    (len(x) == 12 and x.isdigit()) or
-                    "Account ID must be 12 digits"
-                ),
-                instruction="(12-digit AWS account number)",
-                default=config.get("idc_account_id", ""),
-            ).ask()
-            
-            if not account_id:
-                return None
-                
-            config["idc_account_id"] = account_id
-            
-            # Permission set name
-            permission_set = questionary.text(
-                "Enter the permission set name:",
-                validate=lambda x: bool(x) or "Permission set name cannot be empty",
-                default=config.get("idc_permission_set_name", "BedrockDeveloperAccess"),
-                instruction="(e.g., BedrockDeveloperAccess, PowerUserAccess)",
-            ).ask()
-            
-            if not permission_set:
-                return None
-                
-            config["idc_permission_set_name"] = permission_set
-            
-            # Generate AWS config block
-            session_name = f"ClaudeCode-{config.get('aws', {}).get('identity_pool_name', 'Default')}"
-            aws_region = config.get("aws", {}).get("region", "us-east-1")
-            
-            aws_config_block = f"""[profile ClaudeCode]
-sso_session = {session_name}
-sso_account_id = {account_id}
-sso_role_name = {permission_set}
-region = {aws_region}
 
-[sso-session {session_name}]
-sso_start_url = {idc_start_url}
-sso_region = {sso_region}
-sso_registration_scopes = sso:account:access"""
-            
-            console.print("\n[bold]AWS Configuration[/bold]")
-            console.print("Add this configuration to your ~/.aws/config file:\n")
-            console.print(f"[dim]{aws_config_block}[/dim]\n")
-            
-            append_config = questionary.confirm(
-                "Would you like to append this to ~/.aws/config automatically?",
-                default=True,
-            ).ask()
-            
-            if append_config:
-                try:
-                    import os
-                    aws_config_path = Path.home() / ".aws" / "config"
-                    aws_config_path.parent.mkdir(exist_ok=True)
-                    
-                    with open(aws_config_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n# Claude Code with Bedrock - IAM Identity Center\n")
-                        f.write(f"{aws_config_block}\n")
-                    
-                    console.print("[green]✓ Configuration appended to ~/.aws/config[/green]")
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Could not write to ~/.aws/config: {e}[/yellow]")
-                    console.print("Please add the configuration manually.")
-                    
-            console.print("\n[bold]Next Steps:[/bold]")
-            console.print("• Run: [cyan]aws sso login --profile ClaudeCode[/cyan]")
-            console.print("• Test access: [cyan]aws sts get-caller-identity --profile ClaudeCode[/cyan]")
-            console.print("• Then continue with: [cyan]poetry run ccwb deploy[/cyan]")
-            console.print()
+            config["sso_enabled"] = sso_enabled
 
         # OIDC Provider Configuration
-        if not skip_okta and config.get("auth_type") == "oidc":
+        if not skip_okta and config.get("sso_enabled", True):
             console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
             console.print("─" * 30)
 
@@ -736,24 +593,6 @@ sso_registration_scopes = sso:account:access"""
             client_secret = None
             client_certificate_path = None
             client_certificate_key_path = None
-
-            # Google Desktop OAuth requires a client_secret for token exchange.
-            # Google documents this as non-confidential for installed/native apps,
-            # so we store it in config.json (not the OS keyring).
-            if provider_type == "google":
-                console.print("\n[bold]Client Secret[/bold]")
-                console.print(
-                    "Google OAuth requires a client secret for desktop applications.\n"
-                    "Find it in Google Cloud Console → Credentials → your OAuth client.\n"
-                    "[dim]Note: Google considers desktop app secrets non-confidential.[/dim]"
-                )
-                client_secret = questionary.password(
-                    "Client secret (from Google Cloud Console):",
-                    validate=lambda x: bool(x) or "Client secret is required for Google OAuth",
-                ).ask()
-                if not client_secret:
-                    return None
-                config["client_secret"] = client_secret
 
             if provider_type == "azure":
                 console.print("\n[bold]Azure AD Authentication Mode[/bold]")
@@ -1060,10 +899,7 @@ sso_registration_scopes = sso:account:access"""
 
                     existing_custom_domain = config["monitoring"].get("custom_domain")
                     existing_zone_id = config["monitoring"].get("hosted_zone_id")
-                    existing_cert_arn = config["monitoring"].get("certificate_arn")
-                    already_configured = bool(
-                        existing_custom_domain and (existing_zone_id or existing_cert_arn)
-                    )
+                    already_configured = bool(existing_custom_domain and existing_zone_id)
 
                     if already_configured:
                         console.print(f"[dim]Current configuration: {existing_custom_domain}[/dim]")
@@ -1103,7 +939,6 @@ sso_registration_scopes = sso:account:access"""
 
                             zone_id = selected_zone.split("(")[-1].rstrip(")")
                             config["monitoring"]["hosted_zone_id"] = zone_id
-                            config["monitoring"]["certificate_arn"] = None
                             console.print(
                                 f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
                             )
@@ -1112,43 +947,19 @@ sso_registration_scopes = sso:account:access"""
                                 console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
                             else:
                                 console.print("[yellow]No Route53 hosted zones found in this account.[/yellow]")
-                            console.print(
-                                "[dim]You can provide an existing ACM certificate ARN instead "
-                                "(e.g., for domains managed by Cloudflare, GoDaddy, etc.).[/dim]"
-                            )
-                            use_external_cert = questionary.confirm(
-                                "Do you have an existing ACM certificate for this domain?",
-                                default=bool(existing_cert_arn),
+                            console.print("[dim]Domain saved. Enter the Route53 hosted zone ID manually:[/dim]")
+                            manual_zone_id = questionary.text(
+                                "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
+                                default=existing_zone_id if existing_zone_id else "",
                             ).ask()
-
-                            if use_external_cert:
-                                cert_arn = questionary.text(
-                                    "Enter ACM certificate ARN:",
-                                    validate=lambda x: x.startswith("arn:aws:acm:"),
-                                    default=existing_cert_arn if existing_cert_arn else "",
-                                ).ask()
-                                config["monitoring"]["hosted_zone_id"] = None
-                                config["monitoring"]["certificate_arn"] = cert_arn
-                                console.print(
-                                    f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain} "
-                                    f"using external certificate"
-                                )
+                            if manual_zone_id and manual_zone_id.strip():
+                                config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
+                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
                             else:
-                                console.print("[dim]Enter the Route53 hosted zone ID manually:[/dim]")
-                                manual_zone_id = questionary.text(
-                                    "Hosted Zone ID (e.g., Z1234ABCDEFGH, leave blank to set later):",
-                                    default=existing_zone_id if existing_zone_id else "",
-                                ).ask()
-                                if manual_zone_id and manual_zone_id.strip():
-                                    config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                                    config["monitoring"]["certificate_arn"] = None
-                                    console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
-                                else:
-                                    console.print("[yellow]⚠[/yellow] Domain saved but no zone ID or cert set. Update before deploying.")
+                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
                     else:
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
-                        config["monitoring"]["certificate_arn"] = None
 
                     # Analytics configuration (central mode only)
                     console.print("\n[bold]Analytics Pipeline[/bold]")
@@ -1180,18 +991,17 @@ sso_registration_scopes = sso:account:access"""
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                # Quota enforcement works with both auth types:
-                # - OIDC: API Gateway JWT authorizer validates ID token
-                # - IDC: SigV4-signed requests with email from STS identity (PR #461)
-                # Skip only when auth_type is 'none' (no user identity available).
-                if config.get("auth_type") not in ("oidc", "idc"):
+                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
+                # the API Gateway authorizer cannot validate requests without one.
+                # Skip the prompt entirely when SSO is disabled (issue #454).
+                if not config.get("sso_enabled", True):
                     if "quota" not in config:
                         config["quota"] = {}
                     config["quota"]["enabled"] = False
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print(
-                        "[dim]Skipped — quota monitoring requires user authentication "
-                        "(OIDC or IAM Identity Center) and is disabled for this profile.[/dim]"
+                        "[dim]Skipped — quota monitoring requires SSO authentication "
+                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
                     )
                 else:
                     console.print("\n[bold]Quota Monitoring[/bold]")
@@ -1314,11 +1124,34 @@ sso_registration_scopes = sso:account:access"""
                     ).ask()
                     config["quota"]["check_interval"] = int(check_interval)
 
+                    # Sidecar bypass detection (opt-in compliance/audit control)
+                    monitoring_mode = config.get("monitoring", {}).get("mode", "sidecar")
+                    if monitoring_mode == "sidecar":
+                        console.print("\n[bold]Sidecar Bypass Detection[/bold]")
+                        console.print("Quota usage is measured from telemetry sent by the local OTEL sidecar.")
+                        console.print("If a user stops the sidecar, their usage is not counted toward quotas.")
+                        console.print(
+                            "[dim]This opt-in detective control joins CloudTrail Bedrock activity against[/dim]"
+                        )
+                        console.print(
+                            "[dim]reported telemetry to flag users invoking Bedrock without a running sidecar.[/dim]"
+                        )
+                        enable_bypass_detection = questionary.confirm(
+                            "Enable sidecar bypass detection (CloudWatch metrics + SNS alerts)?",
+                            default=config.get("quota", {}).get("enable_bypass_detection", False),
+                        ).ask()
+                        config["quota"]["enable_bypass_detection"] = enable_bypass_detection
+                    else:
+                        # Central mode runs the collector server-side; users can't stop it.
+                        config["quota"]["enable_bypass_detection"] = False
+
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
                     console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
                     console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
                     console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
+                    if config["quota"].get("enable_bypass_detection"):
+                        console.print("  • Sidecar bypass detection: enabled")
 
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
@@ -1354,6 +1187,14 @@ sso_registration_scopes = sso:account:access"""
         if enable_cowork:
             console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
 
+            # Preserve existing custom MDM keys; advise JSON editing for additions
+            existing_extra = config.get("cowork_3p", {}).get("extra_keys", {})
+            if existing_extra:
+                console.print(f"[dim]Custom MDM keys configured: {len(existing_extra)} key(s)[/dim]")
+            else:
+                console.print("[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]")
+                console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
+            config["cowork_3p"]["extra_keys"] = existing_extra
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
@@ -1484,39 +1325,24 @@ sso_registration_scopes = sso:account:access"""
                 # IdP domain
                 idp_domain = questionary.text(
                     "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
-                    default=config.get("distribution", {}).get("idp_domain") or "",
+                    default=config.get("distribution", {}).get("idp_domain", ""),
                 ).ask()
 
-                if not idp_domain:
-                    console.print("[yellow]Skipping landing page configuration (no domain provided)[/yellow]")
-                    config["distribution"]["type"] = None
-                    config["distribution"]["enabled"] = False
-                else:
-                    # Web app client ID
-                    idp_client_id = questionary.text(
-                        "Web application client ID (separate from CLI native app):",
-                        default=config.get("distribution", {}).get("idp_client_id") or "",
-                    ).ask()
+                # Web app client ID
+                idp_client_id = questionary.text(
+                    "Web application client ID (separate from CLI native app):",
+                    default=config.get("distribution", {}).get("idp_client_id", ""),
+                ).ask()
 
-                    if not idp_client_id:
-                        console.print("[yellow]Skipping landing page configuration (no client ID provided)[/yellow]")
-                        config["distribution"]["type"] = None
-                        config["distribution"]["enabled"] = False
-                    else:
-                        # Web app client secret
-                        idp_client_secret = questionary.password(
-                            "Web application client secret:",
-                        ).ask()
+                # Web app client secret
+                idp_client_secret = questionary.password(
+                    "Web application client secret:",
+                ).ask()
 
-                        if not idp_client_secret:
-                            console.print("[yellow]Skipping landing page configuration (no secret provided)[/yellow]")
-                            config["distribution"]["type"] = None
-                            config["distribution"]["enabled"] = False
-
-            # Store secret in AWS Secrets Manager (only if not auto-configured and values provided)
+            # Store secret in AWS Secrets Manager (only if not auto-configured)
             import boto3
 
-            if not cognito_auto_configured and config.get("distribution", {}).get("type") is not None:
+            if not cognito_auto_configured:
                 try:
                     secrets_client = boto3.client("secretsmanager", region_name=region)
                     account_id = boto3.client("sts").get_caller_identity()["Account"]
@@ -1547,90 +1373,80 @@ sso_registration_scopes = sso:account:access"""
                     console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
                     secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
 
-            # Custom domain and remaining config (only if landing page setup wasn't skipped)
-            if config.get("distribution", {}).get("type") is None:
-                pass  # Skipped above - no further prompts needed
-            else:
-                console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
-                console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
-                console.print("You will need:")
-                console.print("  • A custom domain (e.g., downloads.company.com)")
-                console.print("  • An ACM certificate for this domain in the same region")
+            # Custom domain (REQUIRED for authenticated landing page)
+            console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
+            console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
+            console.print("You will need:")
+            console.print("  • A custom domain (e.g., downloads.company.com)")
+            console.print("  • An ACM certificate for this domain in the same region")
 
-                custom_domain = questionary.text(
-                    "Custom domain (e.g., downloads.company.com):",
-                    default=config.get("distribution", {}).get("custom_domain") or "",
-                    validate=lambda text: len(text.strip()) > 0
-                    or "Custom domain is required for authenticated landing page",
-                ).ask()
+            custom_domain = questionary.text(
+                "Custom domain (e.g., downloads.company.com):",
+                default=config.get("distribution", {}).get("custom_domain", ""),
+                validate=lambda text: len(text.strip()) > 0
+                or "Custom domain is required for authenticated landing page",
+            ).ask()
 
-                if not custom_domain:
-                    console.print("[yellow]Skipping landing page configuration[/yellow]")
-                    config["distribution"]["type"] = None
-                    config["distribution"]["enabled"] = False
+            # Check for Route53 hosted zones
+            console.print("\n[bold]Route53 Configuration[/bold]")
+            console.print("Looking for Route53 hosted zones...")
 
-            # Route53 and final save (only if still enabled)
-            if config.get("distribution", {}).get("type") is not None:
-                # Check for Route53 hosted zones
-                console.print("\n[bold]Route53 Configuration[/bold]")
-                console.print("Looking for Route53 hosted zones...")
+            hosted_zone_id = None
+            try:
+                route53_client = boto3.client("route53")
+                zones_response = route53_client.list_hosted_zones()
+                hosted_zones = zones_response.get("HostedZones", [])
 
-                hosted_zone_id = None
-                try:
-                    route53_client = boto3.client("route53")
-                    zones_response = route53_client.list_hosted_zones()
-                    hosted_zones = zones_response.get("HostedZones", [])
+                if hosted_zones:
+                    console.print(f"Found {len(hosted_zones)} hosted zone(s)")
 
-                    if hosted_zones:
-                        console.print(f"Found {len(hosted_zones)} hosted zone(s)")
+                    # Get existing hosted zone if configured
+                    existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
 
-                        # Get existing hosted zone if configured
-                        existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
+                    # Create zone choices
+                    zone_choices = [
+                        questionary.Choice(
+                            f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
+                        )
+                        for zone in hosted_zones
+                    ]
+                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
 
-                        # Create zone choices
-                        zone_choices = [
-                            questionary.Choice(
-                                f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
-                            )
-                            for zone in hosted_zones
-                        ]
-                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                    # Find the default choice based on existing zone
+                    default_choice = None
+                    if existing_zone_id:
+                        for choice in zone_choices:
+                            if choice.value == existing_zone_id:
+                                default_choice = choice
+                                break
 
-                        # Find the default choice based on existing zone
-                        default_choice = None
-                        if existing_zone_id:
-                            for choice in zone_choices:
-                                if choice.value == existing_zone_id:
-                                    default_choice = choice
-                                    break
-
-                        hosted_zone_id = questionary.select(
-                            "Select Route53 hosted zone:",
-                            choices=zone_choices,
-                            default=default_choice if default_choice else zone_choices[0],
-                        ).ask()
-                    else:
-                        console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
-                        console.print("You can still use custom domain if it's managed externally")
-                        hosted_zone_id = None
-
-                except Exception as e:
-                    console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
+                    hosted_zone_id = questionary.select(
+                        "Select Route53 hosted zone:",
+                        choices=zone_choices,
+                        default=default_choice if default_choice else zone_choices[0],
+                    ).ask()
+                else:
+                    console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
+                    console.print("You can still use custom domain if it's managed externally")
                     hosted_zone_id = None
 
-                # Save landing page configuration
-                config["distribution"].update(
-                    {
-                        "idp_provider": idp_provider,
-                        "idp_domain": idp_domain,
-                        "idp_client_id": idp_client_id,
-                        "idp_client_secret_arn": secret_arn,
-                        "custom_domain": custom_domain,
-                        "hosted_zone_id": hosted_zone_id,
-                    }
-                )
+            except Exception as e:
+                console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
+                hosted_zone_id = None
 
-                console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
+            # Save landing page configuration
+            config["distribution"].update(
+                {
+                    "idp_provider": idp_provider,
+                    "idp_domain": idp_domain,
+                    "idp_client_id": idp_client_id,
+                    "idp_client_secret_arn": secret_arn,
+                    "custom_domain": custom_domain,
+                    "hosted_zone_id": hosted_zone_id,
+                }
+            )
+
+            console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
         elif distribution_type == "presigned-s3":
             console.print("[green]✓[/green] Presigned S3 distribution will be deployed")
@@ -1734,34 +1550,6 @@ sso_registration_scopes = sso:account:access"""
             model_id = get_model_id_for_profile(selected_model_key, selected_profile)
             config["aws"]["selected_model"] = model_id
             config["aws"]["cross_region_profile"] = selected_profile
-
-            # For Opus models, ask whether to use opusplan or standard opus
-            if selected_model_key.startswith("opus"):
-                saved_alias = config.get("aws", {}).get("model_alias")
-                opus_alias = questionary.select(
-                    "How should Claude Code use this Opus model?",
-                    choices=[
-                        questionary.Choice(
-                            title="opusplan  Use Opus during plan mode, then switch to Sonnet for execution",
-                            value="opusplan",
-                        ),
-                        questionary.Choice(
-                            title="opus       Standard Opus for all interactions",
-                            value="opus",
-                        ),
-                    ],
-                    default=saved_alias if saved_alias in ("opusplan", "opus") else "opusplan",
-                    instruction="(Use arrow keys to select, Enter to confirm)",
-                ).ask()
-
-                if opus_alias is None:  # User cancelled
-                    return None
-
-                config["aws"]["model_alias"] = opus_alias
-                console.print(f"[green]✓[/green] Model alias: {opus_alias}")
-            else:
-                # For non-Opus models, alias is derived automatically from the tier
-                config["aws"].pop("model_alias", None)
 
             # Get destination regions for the model/profile combination
             destination_regions = get_destination_regions_for_model_profile(selected_model_key, selected_profile)
@@ -1982,12 +1770,9 @@ sso_registration_scopes = sso:account:access"""
                 else "Session Files (temporary)"
             ),
         )
-        if sso_enabled:
-            table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
-            table.add_row("Identity Pool", config.get("aws", {}).get("identity_pool_name", "—"))
-        else:
-            table.add_row("Infrastructure Region", f"{config['aws']['region']} (IAM, Monitoring)")
-        table.add_row("Monitoring", "✓ Enabled" if config.get("monitoring", {}).get("enabled") else "✗ Disabled")
+        table.add_row("Infrastructure Region", f"{config['aws']['region']} (Cognito, IAM, Monitoring)")
+        table.add_row("Identity Pool", config["aws"]["identity_pool_name"])
+        table.add_row("Monitoring", "✓ Enabled" if config["monitoring"]["enabled"] else "✗ Disabled")
         if config.get("monitoring", {}).get("enabled"):
             mode = config.get("monitoring", {}).get("mode", "sidecar")
             mode_label = "Central (ECS Fargate)" if mode == "central" else "Sidecar (local collector)"
@@ -2060,15 +1845,19 @@ sso_registration_scopes = sso:account:access"""
         if config.get("tags"):
             table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
+        # Show custom MDM keys
+        extra_keys = config.get("cowork_3p", {}).get("extra_keys", {})
+        if extra_keys:
+            table.add_row("Custom MDM Keys", ", ".join(f"{k}={v}" for k, v in extra_keys.items()))
+
         console.print(table)
 
         # Show what will be created
         console.print("\n[bold yellow]Resources to be created:[/bold yellow]")
-        if sso_enabled:
-            if config.get("federation_type") == "direct":
-                console.print("• IAM OIDC Provider for authentication")
-            else:
-                console.print("• Cognito Identity Pool for authentication")
+        if config.get("federation_type") == "direct":
+            console.print("• IAM OIDC Provider for authentication")
+        else:
+            console.print("• Cognito Identity Pool for authentication")
         console.print("• IAM roles and policies for Bedrock access")
         if config.get("monitoring", {}).get("enabled"):
             mode = config.get("monitoring", {}).get("mode", "sidecar")
@@ -2216,8 +2005,13 @@ sso_registration_scopes = sso:account:access"""
     def _save_configuration(self, config_data: dict[str, Any], profile_name: str) -> None:
         """Save configuration to file.
 
+        Loads the existing profile (if any) and updates only the fields managed
+        by the init wizard. Fields not present in config_data are preserved from
+        the existing profile, preventing silent resets of settings like
+        include_coauthored_by, quota_fail_mode, federated_role_arn, etc.
+
         Args:
-            config_data: Configuration data to save
+            config_data: Configuration data gathered by the wizard
             profile_name: Name of the profile to save
         """
         config = Config.load()
@@ -2232,82 +2026,92 @@ sso_registration_scopes = sso:account:access"""
             monitoring_config["custom_domain"] = monitoring_dict["custom_domain"]
         if monitoring_dict.get("hosted_zone_id"):
             monitoring_config["hosted_zone_id"] = monitoring_dict["hosted_zone_id"]
-        if monitoring_dict.get("certificate_arn"):
-            monitoring_config["certificate_arn"] = monitoring_dict["certificate_arn"]
 
-        # Get authentication configuration
-        auth_type = config_data.get("auth_type", "oidc")
+        # Get SSO configuration or use defaults if SSO is disabled
         sso_enabled = config_data.get("sso_enabled", True)
         provider_domain = config_data.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         client_id = config_data.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
 
-        profile = Profile(
-            name=profile_name,
-            provider_domain=provider_domain,
-            client_id=client_id,
-            credential_storage=config_data.get("credential_storage", "session"),
-            aws_region=config_data["aws"]["region"],
-            identity_pool_name=config_data["aws"]["identity_pool_name"],
-            stack_names=config_data["aws"]["stacks"],
-            monitoring_enabled=config_data["monitoring"]["enabled"],
-            monitoring_mode=config_data.get("monitoring", {}).get("mode", "sidecar"),
-            monitoring_config=monitoring_config,
-            analytics_enabled=(
+        # Load existing profile to preserve fields not managed by the wizard
+        existing_profile = config.get_profile(profile_name)
+
+        # Fields gathered by the init wizard — these always get overwritten
+        wizard_fields = {
+            "name": profile_name,
+            "provider_domain": provider_domain,
+            "client_id": client_id,
+            "credential_storage": config_data.get("credential_storage", "session"),
+            "aws_region": config_data["aws"]["region"],
+            "identity_pool_name": config_data["aws"]["identity_pool_name"],
+            "stack_names": config_data["aws"]["stacks"],
+            "monitoring_enabled": config_data["monitoring"]["enabled"],
+            "monitoring_mode": config_data.get("monitoring", {}).get("mode", "sidecar"),
+            "monitoring_config": monitoring_config,
+            "analytics_enabled": (
                 config_data.get("analytics", {}).get("enabled", True)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
             ),
-            allowed_bedrock_regions=config_data["aws"]["allowed_bedrock_regions"],
-            cross_region_profile=config_data["aws"].get("cross_region_profile", "us"),
-            selected_model=config_data["aws"].get("selected_model"),
-            model_alias=config_data["aws"].get("model_alias"),
-            selected_source_region=config_data["aws"].get("selected_source_region"),
-            inference_profile_opus_arn=config_data["aws"].get("inference_profile_opus_arn"),
-            inference_profile_sonnet_arn=config_data["aws"].get("inference_profile_sonnet_arn"),
-            inference_profile_haiku_arn=config_data["aws"].get("inference_profile_haiku_arn"),
-            provider_type=config_data.get("provider_type"),
-            cognito_user_pool_id=config_data.get("cognito_user_pool_id"),
-            oidc_issuer_url=config_data.get("oidc_issuer_url"),
-            oidc_authorization_endpoint=config_data.get("oidc_authorization_endpoint"),
-            oidc_token_endpoint=config_data.get("oidc_token_endpoint"),
-            oidc_jwks_uri=config_data.get("oidc_jwks_uri"),
-            oidc_thumbprint=config_data.get("oidc_thumbprint"),
-            federation_type=config_data.get("federation_type", "cognito"),
-            max_session_duration=config_data.get("max_session_duration", 28800),
-            sso_enabled=config_data.get("sso_enabled", True),
-            auth_type=config_data.get("auth_type", "oidc"),
-            idc_start_url=config_data.get("idc_start_url"),
-            idc_account_id=config_data.get("idc_account_id"),
-            idc_permission_set_name=config_data.get("idc_permission_set_name"),
-            azure_auth_mode=config_data.get("azure_auth_mode"),
-            client_certificate_path=config_data.get("client_certificate_path"),
-            client_certificate_key_path=config_data.get("client_certificate_key_path"),
-            enable_codebuild=config_data.get("codebuild", {}).get("enabled", False),
-            enable_distribution=config_data.get("distribution", {}).get("enabled", False),
-            distribution_type=config_data.get("distribution", {}).get("type"),
-            distribution_idp_provider=config_data.get("distribution", {}).get("idp_provider"),
-            distribution_idp_domain=config_data.get("distribution", {}).get("idp_domain"),
-            distribution_idp_client_id=config_data.get("distribution", {}).get("idp_client_id"),
-            distribution_idp_client_secret_arn=config_data.get("distribution", {}).get("idp_client_secret_arn"),
-            distribution_custom_domain=config_data.get("distribution", {}).get("custom_domain"),
-            distribution_hosted_zone_id=config_data.get("distribution", {}).get("hosted_zone_id"),
-            quota_monitoring_enabled=(
+            "allowed_bedrock_regions": config_data["aws"]["allowed_bedrock_regions"],
+            "cross_region_profile": config_data["aws"].get("cross_region_profile", "us"),
+            "selected_model": config_data["aws"].get("selected_model"),
+            "model_alias": config_data["aws"].get("model_alias"),
+            "selected_source_region": config_data["aws"].get("selected_source_region"),
+            "inference_profile_opus_arn": config_data["aws"].get("inference_profile_opus_arn"),
+            "inference_profile_sonnet_arn": config_data["aws"].get("inference_profile_sonnet_arn"),
+            "inference_profile_haiku_arn": config_data["aws"].get("inference_profile_haiku_arn"),
+            "provider_type": config_data.get("provider_type"),
+            "cognito_user_pool_id": config_data.get("cognito_user_pool_id"),
+            "oidc_issuer_url": config_data.get("oidc_issuer_url"),
+            "oidc_authorization_endpoint": config_data.get("oidc_authorization_endpoint"),
+            "oidc_token_endpoint": config_data.get("oidc_token_endpoint"),
+            "oidc_jwks_uri": config_data.get("oidc_jwks_uri"),
+            "oidc_thumbprint": config_data.get("oidc_thumbprint"),
+            "federation_type": config_data.get("federation_type", "cognito"),
+            "max_session_duration": config_data.get("max_session_duration", 28800),
+            "sso_enabled": config_data.get("sso_enabled", True),
+            "azure_auth_mode": config_data.get("azure_auth_mode"),
+            "client_certificate_path": config_data.get("client_certificate_path"),
+            "client_certificate_key_path": config_data.get("client_certificate_key_path"),
+            "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
+            "enable_distribution": config_data.get("distribution", {}).get("enabled", False),
+            "distribution_type": config_data.get("distribution", {}).get("type"),
+            "distribution_idp_provider": config_data.get("distribution", {}).get("idp_provider"),
+            "distribution_idp_domain": config_data.get("distribution", {}).get("idp_domain"),
+            "distribution_idp_client_id": config_data.get("distribution", {}).get("idp_client_id"),
+            "distribution_idp_client_secret_arn": config_data.get("distribution", {}).get("idp_client_secret_arn"),
+            "distribution_custom_domain": config_data.get("distribution", {}).get("custom_domain"),
+            "distribution_hosted_zone_id": config_data.get("distribution", {}).get("hosted_zone_id"),
+            "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
                 else False
             ),
-            monthly_token_limit=config_data.get("quota", {}).get("monthly_limit", 300000000),
-            warning_threshold_80=config_data.get("quota", {}).get("warning_threshold_80", 240000000),
-            warning_threshold_90=config_data.get("quota", {}).get("warning_threshold_90", 270000000),
-            daily_token_limit=config_data.get("quota", {}).get("daily_limit"),
-            burst_buffer_percent=config_data.get("quota", {}).get("burst_buffer_percent", 10),
-            daily_enforcement_mode=config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
-            monthly_enforcement_mode=config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
-            quota_check_interval=config_data.get("quota", {}).get("check_interval", 30),
-            cowork_3p_enabled=config_data.get("cowork_3p", {}).get("enabled", True),
-            tags=config_data.get("tags", {}),
-            redirect_port=config_data.get("redirect_port"),
-        )
+            "monthly_token_limit": config_data.get("quota", {}).get("monthly_limit", 300000000),
+            "warning_threshold_80": config_data.get("quota", {}).get("warning_threshold_80", 240000000),
+            "warning_threshold_90": config_data.get("quota", {}).get("warning_threshold_90", 270000000),
+            "daily_token_limit": config_data.get("quota", {}).get("daily_limit"),
+            "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
+            "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
+            "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
+            "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
+            "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
+            "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
+            "tags": config_data.get("tags", {}),
+            "redirect_port": config_data.get("redirect_port"),
+        }
+
+        if existing_profile:
+            # Update existing profile — preserves fields not managed by the wizard
+            # (e.g. include_coauthored_by, federated_role_arn, quota_fail_mode,
+            # otel_collector_endpoint, model_alias, okta_auth_server, etc.)
+            for field, value in wizard_fields.items():
+                setattr(existing_profile, field, value)
+            profile = existing_profile
+        else:
+            # New profile — construct from scratch
+            profile = Profile(**wizard_fields)
 
         config.add_profile(profile)
         # Set as active profile when creating/updating
@@ -2596,10 +2400,6 @@ sso_registration_scopes = sso:account:access"""
                 },
             }
 
-            # Preserve sso_enabled flag (added in PR #71; missing here caused it to always default to True)
-            if hasattr(profile, "sso_enabled"):
-                existing_config["sso_enabled"] = profile.sso_enabled
-
             # Add provider type if present (critical to preserve during updates)
             if hasattr(profile, "provider_type") and profile.provider_type:
                 existing_config["provider_type"] = profile.provider_type
@@ -2645,7 +2445,10 @@ sso_registration_scopes = sso:account:access"""
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
 
             # Add CoWork 3P configuration
-            existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+            cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
+            if profile.cowork_3p_extra_keys:
+                cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
+            existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):

@@ -108,6 +108,8 @@ jobs:
 
           for f in $CHANGED_PY; do
             [ -f "$f" ] || continue
+            # Skip test files — they reference unsafe patterns in assertions/docstrings
+            if echo "$f" | grep -qE '(^|/)tests?/'; then continue; fi
 
             # 1. SO_REUSEADDR without platform guard (HIGH — causes silent behavioral differences)
             if grep -n 'SO_REUSEADDR' "$f" > /tmp/matches 2>/dev/null; then

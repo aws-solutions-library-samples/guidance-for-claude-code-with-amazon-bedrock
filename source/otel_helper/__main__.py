@@ -266,6 +266,12 @@ def format_as_headers_dict(attributes):
     return headers
 
 
+def _attach_bearer(headers, token):
+    """Set the Authorization header. Exp-AGNOSTIC by design — see attachBearer in main.go."""
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+
+
 def get_cache_path():
     """Get the path to the OTEL headers cache file."""
     cache_dir = Path.home() / ".claude-code-session"
@@ -671,7 +677,7 @@ def build_proxy_user_headers() -> dict:
 
     headers = format_as_headers_dict(user_info)
     if token:
-        headers["authorization"] = f"Bearer {token}"
+        _attach_bearer(headers, token)
     return headers
 
 
@@ -847,7 +853,11 @@ def main():
     # Ensure collector sidecar is running (no-op if not installed)
     ensure_collector_running()
 
-    # Layer 1: Check file cache first (avoids credential-process entirely)
+    # Layer 1: Serve attribution from the file cache. The cache stores
+    # attribution headers only, never the token, so the Bearer is still
+    # resolved below (env var, then credential-process). credential-process
+    # is the correct fallback here — it owns token refresh, keyring storage,
+    # and serve-past-expiry, none of which a direct monitoring.json read does.
     if not TEST_MODE:
         cached_headers = read_cached_headers()
         if cached_headers is not None:
@@ -855,7 +865,7 @@ def main():
             # never the token itself. Try env var (free) then credential-process (~20ms).
             _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
             if _bearer_token:
-                cached_headers["authorization"] = f"Bearer {_bearer_token}"
+                _attach_bearer(cached_headers, _bearer_token)
             else:
                 # No token from env var or credential-process. Emit cached attribution
                 # anyway (otelHeadersHelper contract), but log so an ALB 401 is
@@ -902,7 +912,7 @@ def main():
             # it before printTestOutput). Added only on this branch — test mode never
             # writes the cache, so the token stays off disk.
             if token:
-                headers_dict["authorization"] = f"Bearer {token}"
+                _attach_bearer(headers_dict, token)
             print("===== TEST MODE OUTPUT =====\n")
             if token:
                 print("Mode: Authenticated (JWT Token)")
@@ -952,7 +962,7 @@ def main():
                 # Anonymous mode: cache with a synthetic TTL (5 minutes)
                 write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
             if token:
-                headers_dict["authorization"] = f"Bearer {token}"
+                _attach_bearer(headers_dict, token)
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

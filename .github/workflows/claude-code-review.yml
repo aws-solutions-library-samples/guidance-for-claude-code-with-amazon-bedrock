@@ -1,0 +1,51 @@
+---
+name: Claude Code — PR Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    # Skip draft PRs, bot PRs, and fork PRs (secrets unavailable)
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.user.login != 'github-actions[bot]') ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_CLAUDE }}
+          aws-region: us-west-2
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          use_bedrock: "true"
+          claude_args: |
+            --model global.anthropic.claude-sonnet-4-6
+          timeout_minutes: "15"
+          prompt: |
+            Review this PR with a focus on RELIABILITY and AVOIDING REGRESSIONS.
+
+            Check for:
+            1. Backwards compatibility — will this break existing deployments?
+            2. Regression risk — are there tests covering the changed code paths?
+            3. Correctness and potential bugs
+            4. Cross-platform safety (Windows/macOS/Linux)
+            5. Go/Python parity if credential-helper code is touched
+            6. Auth-type parity (OIDC/IDC/none) per .claude/rules/auth-type-compat.md
+            7. Test coverage — flag any new code paths without regression tests
+
+            For each concern, reference the specific .claude/rules/ file that applies.
+            If the PR lacks tests for a changed code path, explicitly flag it as a regression risk.

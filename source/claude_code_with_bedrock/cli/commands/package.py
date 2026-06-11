@@ -496,11 +496,28 @@ class PackageCommand(Command):
                         except Exception as e:
                             console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
 
-        # Check if any binaries were built
-        if not built_executables:
+        # A Windows build runs asynchronously in CodeBuild and produces no local
+        # binary now (_build_executable returns None), so built_executables can be
+        # empty even though the build was submitted successfully. Treat that as a
+        # success and still generate the config/installer for distribution.
+        windows_codebuild_pending = any(
+            platform_name == "windows" and platform_name not in [p for p, _ in built_executables]
+            for platform_name in platforms_to_build
+        ) and bool(profile and getattr(profile, "enable_codebuild", False))
+
+        # Check if any binaries were built (or are pending in CodeBuild)
+        if not built_executables and not windows_codebuild_pending:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
+
+        if windows_codebuild_pending and not built_executables:
+            console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
+            console.print("Local configuration files will be generated now for distribution.")
+            console.print("\nTo check build status:")
+            console.print("  [cyan]poetry run ccwb builds[/cyan]")
+            console.print("\nOnce complete, retrieve binaries with:")
+            console.print("  [cyan]poetry run ccwb distribute[/cyan]\n")
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
@@ -707,7 +724,10 @@ class PackageCommand(Command):
 
                 self.line(f"  Building <comment>{output_name}</comment>...")
 
-                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                # macOS credential-process needs CGO_ENABLED=1 for keychain access
+                # (99designs/keyring's keychain backend requires cgo).
+                cgo = "1" if goos == "darwin" and binary == "credential-process" else "0"
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": cgo}
                 # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml)
                 # flags stripped Go binaries. The .syso PE version-info files in
                 # cmd/*/ are auto-linked by the Go compiler to help further.
@@ -2993,7 +3013,10 @@ Available metrics include:
                         {
                             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                             "OTEL_METRICS_EXPORTER": "otlp",
-                            "OTEL_LOGS_EXPORTER": "otlp",
+                            # The collector defines only a metrics pipeline, so /v1/logs is
+                            # dropped (4xx). Explicitly disable logs export rather than deleting
+                            # the key so a global/user default can't re-enable "otlp".
+                            "OTEL_LOGS_EXPORTER": "none",
                             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                             "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                             "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
@@ -3041,7 +3064,6 @@ Available metrics include:
             build_mdm_config,
             derive_model_aliases,
             generate_all,
-            generate_credential_helper_wrapper,
         )
 
         console = Console()
@@ -3054,9 +3076,9 @@ Available metrics include:
                 bedrock_region=bedrock_region,
                 model_aliases=model_aliases,
                 profile_name=profile_name,
+                extra_keys=profile.cowork_3p_extra_keys or None,
             )
 
-            generate_credential_helper_wrapper(profile_name, bedrock_region)
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 

@@ -8,6 +8,41 @@ import (
 	"testing"
 )
 
+// TestAttachBearer is the behavioral half of the Go↔Python Bearer parity check
+// (the static half lives in tests/test_otel_bearer_parity.py). It pins the
+// contract the single attachBearer choke point must hold: a non-empty token
+// yields exactly "Bearer <token>" under the "authorization" key, and an empty
+// token attaches nothing (sending "Bearer " with no JWT is worse than omitting
+// the header — the ALB would 401 on it).
+func TestAttachBearer(t *testing.T) {
+	t.Run("non-empty token sets Bearer header", func(t *testing.T) {
+		headers := map[string]string{}
+		attachBearer(headers, "abc.def.ghi")
+		if got := headers["authorization"]; got != "Bearer abc.def.ghi" {
+			t.Errorf("authorization = %q, want %q", got, "Bearer abc.def.ghi")
+		}
+	})
+
+	t.Run("empty token omits the key", func(t *testing.T) {
+		headers := map[string]string{}
+		attachBearer(headers, "")
+		if _, ok := headers["authorization"]; ok {
+			t.Errorf("empty token must not set 'authorization', got %q", headers["authorization"])
+		}
+	})
+
+	t.Run("existing attribution is preserved", func(t *testing.T) {
+		headers := map[string]string{"x-user-email": "a@b.com"}
+		attachBearer(headers, "tok")
+		if headers["x-user-email"] != "a@b.com" {
+			t.Errorf("attachBearer clobbered attribution: x-user-email = %q", headers["x-user-email"])
+		}
+		if headers["authorization"] != "Bearer tok" {
+			t.Errorf("authorization = %q, want 'Bearer tok'", headers["authorization"])
+		}
+	})
+}
+
 // TestRun_NoToken_EmitsEmptyHeadersAndExitsZero is the regression test for the
 // Windows symptom "otelHeadersHelper did not return a valid value": when no
 // monitoring token is available the helper must still print a valid JSON object
