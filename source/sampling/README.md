@@ -4,6 +4,36 @@ Monthly sampler for CCE Bedrock invocation logs. See `../../bedrock-sampling-log
 
 This is a self-contained Poetry sub-project so its heavy deps (pandas, pyarrow) don't leak into the main `ccwb` package or the credential-process binary.
 
+## What it does
+
+Once a month, read every Claude Code / Bedrock interaction, figure out **what people used AI for**,
+and produce a leadership-friendly report — without ever exposing anyone's transcript text. It's a
+7-step pipeline; steps 1–4 always run, steps 5–7 run with `--classify`:
+
+| Step | Does | Model |
+|---|---|---|
+| 1. S3 ingest | List + download the month's invocation-log files from the audit bucket, parse each call into a row (who, when, model, tokens, body location). Glacier-archived files are skipped. | — |
+| 2. Org join | Attach division/department/team from `org-lookup.csv` by email prefix; unmatched → `(unknown)`. | — |
+| 3. Session detection | Group each user's back-to-back calls into sessions (new session after a 30-min idle gap). | — |
+| 4. Stratified sampling | Pick a representative per-division subset (8%, floor 20, cap 200, fixed seed) so classification stays affordable. | — |
+| 5. Classification | For each sampled session: fetch the transcript, segment it into activity *spans* against the 4-pillar / 16-leaf taxonomy, plus friction signals + a one-line summary. | **Sonnet** |
+| 6. `appendix.csv` | One privacy-safe row per session: hashed user id, org metadata, span/friction counts. **No transcript text.** | — |
+| 7. `report.md` | Roll the appendix into aggregates, then write the two-part Markdown report (exec brief + per-division analyst tables). | **Opus** |
+
+### Design choices
+
+- **Two models on purpose.** Step 5 fans out ~700 calls, so it runs on the cheaper **Sonnet**. Step 7
+  is a single high-stakes call, so it runs on **Opus** — Opus follows the length/format instructions,
+  whereas Sonnet over-generates the per-division tables and truncates the report. Override with
+  `--sonnet-model` / `--report-model`.
+- **Math in Python, not in the model.** Per-activity shares and session counts are computed in code and
+  handed to the report model to *transcribe*, so it can't invent numbers (the prompt also says "use only
+  the aggregates provided").
+- **Privacy by construction.** Transcripts are read transiently only during step 5; nothing from step 6
+  on contains raw text or un-hashed user ids.
+- **Cheap iteration.** Steps 1–5 are the slow/expensive part. `--report-only` rewrites just `report.md`
+  from an existing `appendix.csv` (one Opus call) so the report can be tuned without a full re-run.
+
 ## Setup
 
 ```bash
@@ -27,11 +57,30 @@ poetry run bedrock-log-sampler --month 2026-04 --out ./reports/2026-04/
 
 By default this runs steps 1–4 (S3 ingest → org join → session detection → sampling) and writes the
 parquet files. Add `--classify` to also run steps 5–7 (fetch transcripts → Sonnet span segmentation →
-`appendix.csv` → `report.md`):
+`appendix.csv` → Opus `report.md`):
 
 ```bash
 poetry run bedrock-log-sampler --month 2026-04 --out ./reports/2026-04/ --classify
 ```
+
+> **Two models, on purpose.** Step 5 (per-session classification, ~700 calls) runs on **Sonnet**
+> (`--sonnet-model`) — cheap and good enough for span segmentation. Step 7 (the single `report.md`
+> call) runs on **Opus** (`--report-model`). Opus follows the length/format instructions; Sonnet
+> over-generates the per-division tables and truncates the report mid-way.
+
+### Regenerate just the report (`--report-only`)
+
+To iterate on the report prompt or model **without** re-ingesting S3 or re-classifying every session,
+run `--report-only`. It reads the existing `<out>/appendix.csv` and rewrites only `report.md` — one
+Bedrock (Opus) call, ~90s, ~no cost:
+
+```bash
+poetry run bedrock-log-sampler --month 2026-05 --out ./reports/2026-05/ --report-only
+```
+
+Requires a prior `--classify` run to have produced `appendix.csv` (the script errors if it's missing).
+This is the normal way to refresh a report after a prompt/format change — a full re-run is only needed
+when the underlying sampling or classification changes.
 
 > **Run as an admin/analyst identity, not the end-user CCE role.** `--classify` reads transcript
 > bodies from the logs bucket; the `BedrockOktaFederatedRole` has no S3 read there by design. The
@@ -72,8 +121,10 @@ Knobs:
 | `--seed` | 42 | reproducible sampling |
 | `--limit-objects` | (none) | debug knob: read at most N S3 objects |
 | `--redash-api-key` | env `REDASH_API_KEY` | API key for Redash query #74157 |
-| `--classify` | off | run steps 5–7 (Sonnet classification + appendix + report) |
-| `--sonnet-model` | `global.anthropic.claude-sonnet-4-6` | model for classification + report |
+| `--classify` | off | run steps 5–7 (classification + appendix + report) |
+| `--report-only` | off | skip steps 1–6; regenerate `report.md` from existing `appendix.csv` |
+| `--sonnet-model` | `global.anthropic.claude-sonnet-4-6` | model for step 5 per-session classification |
+| `--report-model` | `global.anthropic.claude-opus-4-6-v1` | model for step 7 report generation (Opus) |
 | `--bedrock-region` | `us-west-2` | region for bedrock-runtime calls |
 | `--max-transcript-chars` | 320000 | middle-truncate transcripts over this (~80k tokens) |
 | `--classify-concurrency` | 4 | parallel Bedrock classification calls |
@@ -98,5 +149,5 @@ With `--classify`, additionally:
 ## Scope
 
 Implements the full design (§5 steps 1–7). Steps 1–4 run by default; steps 5–7 (Sonnet span
-segmentation, `appendix.csv`, `report.md`) run with `--classify`. The classification taxonomy is the
-4-pillar / 16-leaf cognitive model from §6 of the design doc.
+segmentation → `appendix.csv` → Opus `report.md`) run with `--classify`. The classification taxonomy
+is the 4-pillar / 16-leaf cognitive model from §6 of the design doc.

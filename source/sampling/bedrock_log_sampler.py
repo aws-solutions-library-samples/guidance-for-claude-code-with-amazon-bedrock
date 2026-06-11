@@ -50,7 +50,9 @@ class Args:
     redash_api_key: str
     s3_concurrency: int
     classify: bool
+    report_only: bool
     sonnet_model: str
+    report_model: str
     bedrock_region: str
     max_transcript_chars: int
     classify_concurrency: int
@@ -80,7 +82,12 @@ def parse_args(argv: list[str] | None = None) -> Args:
                    "segmentation, appendix.csv, report.md. Off by default.")
     p.add_argument("--sonnet-model",
                    default="global.anthropic.claude-sonnet-4-6",
-                   help="Bedrock model id for classification + report")
+                   help="Bedrock model id for per-session classification (step 5)")
+    p.add_argument("--report-model",
+                   default="global.anthropic.claude-opus-4-6-v1",
+                   help="Bedrock model id for report generation (step 7). Opus by "
+                   "default: it follows the length/format instructions, whereas "
+                   "Sonnet over-generates the per-division tables and truncates.")
     p.add_argument("--bedrock-region", default="us-west-2",
                    help="Region for bedrock-runtime calls")
     p.add_argument("--max-transcript-chars", type=int, default=320_000,
@@ -90,6 +97,10 @@ def parse_args(argv: list[str] | None = None) -> Args:
                    help="Parallel Bedrock classification calls")
     p.add_argument("--hash-salt", default=os.environ.get("HASH_SALT", "cce-sampler"),
                    help="Salt for hashing user ids in appendix.csv")
+    p.add_argument("--report-only", action="store_true",
+                   help="Skip steps 1-6: regenerate report.md from the existing "
+                   "<out>/appendix.csv. Cheap (one Bedrock call, no S3 ingest or "
+                   "re-classification). Use after tweaking the report prompt/model.")
     ns = p.parse_args(argv)
 
     try:
@@ -688,6 +699,20 @@ def build_appendix(sampled: pd.DataFrame, classified: pd.DataFrame,
 
 # -- Step 7: report.md --------------------------------------------------------
 
+def _activity_table(counts: Counter) -> list[dict]:
+    """Render a Counter of activity→spans as ordered rows with share-of-total %.
+
+    Percentages are computed here (not left to the model) so Part A and Part B
+    both carry pre-computed shares the model only has to transcribe.
+    """
+    total = sum(counts.values())
+    return [
+        {"activity": a, "spans": n,
+         "share_pct": round(100.0 * n / total, 1) if total else 0.0}
+        for a, n in counts.most_common()
+    ]
+
+
 def _aggregate_for_report(appendix: pd.DataFrame) -> dict:
     """Roll appendix rows up to the counts the report narrates. No transcripts."""
     total_sessions = len(appendix)
@@ -695,6 +720,7 @@ def _aggregate_for_report(appendix: pd.DataFrame) -> dict:
     pillar_total: Counter = Counter()
     friction_total: Counter = Counter()
     per_division: dict[str, Counter] = {}
+    per_division_sessions: Counter = Counter()
     total_spans = 0
 
     for _, r in appendix.iterrows():
@@ -705,11 +731,23 @@ def _aggregate_for_report(appendix: pd.DataFrame) -> dict:
         total_spans += sum(af.values())
         div = r.get("division") or "(unknown)"
         per_division.setdefault(div, Counter()).update(af)
+        per_division_sessions[div] += 1
         for sig in (r.get("friction_signals") or "").split(";"):
             if sig and sig != "none":
                 friction_total[sig] += 1
 
     unmatched = int((appendix["division"] == "(unknown)").sum())
+    # Per-division block carries each division's sampled session count and its
+    # activity table with pre-computed share-of-total %, so Part B can show both
+    # without the model doing arithmetic (which risks invented numbers).
+    per_division_block = {
+        d: {
+            "session_count": per_division_sessions[d],
+            "total_spans": sum(c.values()),
+            "activities": _activity_table(c),
+        }
+        for d, c in per_division.items()
+    }
     return {
         "total_sessions": total_sessions,
         "total_spans": total_spans,
@@ -718,7 +756,7 @@ def _aggregate_for_report(appendix: pd.DataFrame) -> dict:
         "activity_total": dict(activity_total.most_common()),
         "pillar_total": dict(pillar_total.most_common()),
         "friction_total": dict(friction_total.most_common(5)),
-        "per_division": {d: dict(c.most_common()) for d, c in per_division.items()},
+        "per_division": per_division_block,
     }
 
 
@@ -736,7 +774,9 @@ def write_report(brt, model_id: str, appendix: pd.DataFrame, month: str) -> str:
         f"Aggregated usage data (JSON):\n{json.dumps(agg, ensure_ascii=False, indent=2)}\n\n"
         "Pillars: I=Cognitive Intake, II=Cognitive Output, III=Cognitive "
         "Processing, IV=Cognitive Action.\n\n"
-        "Write `report.md` with TWO parts:\n\n"
+        "Write the report body in Markdown. Start with an H1 title in the form "
+        "'# SmartNews AI Tool Usage Report — <Month Year>' (NOT the filename). "
+        "Then TWO parts:\n\n"
         "PART A — Executive brief (narrative, minimal jargon):\n"
         "  1. Headline numbers (sessions, spans, divisions, avg spans/session).\n"
         "  2. Top activities overall with % share, rolled up to the 4 pillars.\n"
@@ -744,7 +784,12 @@ def write_report(brt, model_id: str, appendix: pd.DataFrame, month: str) -> str:
         "  4. Top friction signals.\n"
         "  5. 3-5 concrete action items.\n\n"
         "PART B — Detailed analyst section:\n"
-        "  - Per-division activity-frequency tables.\n"
+        "  - Per-division activity-frequency tables. For EACH division, state its "
+        "sampled session count (per_division.<div>.session_count) in the heading "
+        "so the reader can gauge sample size, and render a three-column table: "
+        "Activity | Spans | Share of Total. Use the pre-computed share_pct values "
+        "from per_division.<div>.activities verbatim — do not recompute them. "
+        "Add a Total row summing the spans.\n"
         "  - Methodology & caveats: sampled subset only; sessions with an "
         f"unmatched org-join appear as '(unknown)' ({agg['unmatched_sessions']} "
         f"of {agg['total_sessions']} sampled sessions).\n\n"
@@ -754,8 +799,17 @@ def write_report(brt, model_id: str, appendix: pd.DataFrame, month: str) -> str:
         modelId=model_id,
         system=[{"text": REPORT_SYSTEM}],
         messages=[{"role": "user", "content": [{"text": user_prompt}]}],
-        inferenceConfig={"maxTokens": 4000, "temperature": 0.3},
+        # 16000 gives the 3-column per-division tables + Methodology comfortable
+        # headroom (Opus produces ~4200 output tokens for an 11-division month).
+        # At 4000 the report truncated mid-table and dropped Methodology.
+        inferenceConfig={"maxTokens": 16000, "temperature": 0.3},
     )
+    # Fail loudly if the model still hit the output ceiling — a silently
+    # truncated report.md (half a table, no caveats) is worse than an error.
+    if resp.get("stopReason") == "max_tokens":
+        raise RuntimeError(
+            "report generation hit maxTokens — output truncated; raise the "
+            "limit in write_report() or split the report into multiple calls")
     text = "".join(b.get("text", "")
                    for b in resp["output"]["message"]["content"]).strip()
     # Strip an outer ```markdown … ``` fence the model sometimes wraps around the
@@ -772,20 +826,52 @@ def write_report(brt, model_id: str, appendix: pd.DataFrame, month: str) -> str:
 
 # -- Driver -------------------------------------------------------------------
 
-def setup_logging(out_dir: Path) -> None:
+def setup_logging(out_dir: Path, log_mode: str = "w") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     fmt = "%(asctime)s %(levelname)s %(message)s"
     handlers: list[logging.Handler] = [
         logging.StreamHandler(sys.stderr),
-        logging.FileHandler(out_dir / "run.log", mode="w"),
+        logging.FileHandler(out_dir / "run.log", mode=log_mode),
     ]
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
 
 
+def run_report_only(args: Args) -> int:
+    """Regenerate report.md from an existing <out>/appendix.csv (steps 1-6 skipped).
+
+    Cheap path for iterating on the report prompt/model without re-ingesting S3
+    or re-classifying every session.
+    """
+    appendix_path = args.out / "appendix.csv"
+    if not appendix_path.exists():
+        log.error("--report-only needs %s, which does not exist. Run a full "
+                  "--classify pass first to produce it.", appendix_path)
+        return 1
+    appendix = pd.read_csv(appendix_path)
+    log.info("report-only: loaded %s (%d rows)", appendix_path, len(appendix))
+
+    brt = boto3.client(
+        "bedrock-runtime", region_name=args.bedrock_region,
+        config=Config(retries={"max_attempts": 6, "mode": "adaptive"}),
+    )
+    report_md = write_report(brt, args.report_model, appendix, args.month)
+    report_path = args.out / "report.md"
+    report_path.write_text(report_md, encoding="utf-8")
+    log.info("report-only complete: wrote %s (%d chars)", report_path, len(report_md))
+    print(f"\nRegenerated {report_path} from {appendix_path} "
+          f"({len(appendix)} sessions, model={args.report_model})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    setup_logging(args.out)
-    log.info("starting bedrock_log_sampler month=%s out=%s", args.month, args.out)
+    # Report-only appends to run.log (a full run owns the file and starts fresh).
+    setup_logging(args.out, log_mode="a" if args.report_only else "w")
+    log.info("starting bedrock_log_sampler month=%s out=%s report_only=%s",
+             args.month, args.out, args.report_only)
+
+    if args.report_only:
+        return run_report_only(args)
 
     s3 = boto3.client(
         "s3",
@@ -842,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         appendix.to_csv(appendix_path, index=False, quoting=csv.QUOTE_MINIMAL)
         log.info("step 6 complete: wrote %s (%d rows)", appendix_path, len(appendix))
 
-        report_md = write_report(brt, args.sonnet_model, appendix, args.month)
+        report_md = write_report(brt, args.report_model, appendix, args.month)
         report_path = args.out / "report.md"
         report_path.write_text(report_md, encoding="utf-8")
         log.info("step 7 complete: wrote %s (%d chars)", report_path, len(report_md))
