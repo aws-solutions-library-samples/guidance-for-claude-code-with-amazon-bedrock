@@ -1772,7 +1772,7 @@ class MultiProviderAuth:
 
         return list(set(groups))  # Remove duplicates
 
-    def _check_quota(self, token_claims: dict, id_token: str = None) -> dict:
+    def _check_quota(self, token_claims: dict, id_token: str = None, frozen_credentials=None) -> dict:
         """Check user quota via the quota check API.
 
         Supports two auth modes:
@@ -1783,6 +1783,10 @@ class MultiProviderAuth:
             token_claims: JWT token claims containing user info (for logging/fallback).
                           For IDC, may be empty — email is resolved from IAM ARN server-side.
             id_token: Raw JWT token for OIDC path. None for IDC path.
+            frozen_credentials: Pre-resolved boto credentials for SigV4 signing.
+                               When provided, used directly instead of resolving from
+                               ambient chain. Fixes 403 when ambient creds differ from
+                               the profile's SSO credentials.
 
         Returns:
             Quota check result dict with 'allowed' key
@@ -1814,13 +1818,25 @@ class MultiProviderAuth:
                     timeout=timeout
                 )
             else:
-                # IDC/IAM path: SigV4-signed request using current AWS credentials
+                # IDC/IAM path: SigV4-signed request using resolved credentials
                 import botocore.session
                 from botocore.auth import SigV4Auth
                 from botocore.awsrequest import AWSRequest
+                from botocore.credentials import Credentials
 
-                session = botocore.session.get_session()
-                credentials = session.get_credentials().get_frozen_credentials()
+                if frozen_credentials:
+                    # Use pre-resolved credentials (from passthrough/IDC path).
+                    # frozen_credentials is a ReadOnlyCredentials namedtuple;
+                    # wrap into botocore Credentials for SigV4Auth.
+                    credentials = Credentials(
+                        access_key=frozen_credentials.access_key,
+                        secret_key=frozen_credentials.secret_key,
+                        token=frozen_credentials.token,
+                    )
+                else:
+                    # Fallback: resolve from ambient chain (may differ from profile)
+                    session = botocore.session.get_session()
+                    credentials = session.get_credentials().get_frozen_credentials()
                 url = f"{quota_api_endpoint}/check"
                 request = AWSRequest(method="GET", url=url)
                 SigV4Auth(credentials, "execute-api", self.config.get("aws_region", "us-east-1")).add_auth(request)
@@ -2232,7 +2248,7 @@ class MultiProviderAuth:
         # Quota enforcement (SigV4-signed — email resolved from IAM ARN server-side).
         if self._should_check_quota():
             self._debug_print("IDC/passthrough: performing SigV4 quota check")
-            quota_result = self._check_quota(token_claims={}, id_token=None)
+            quota_result = self._check_quota(token_claims={}, id_token=None, frozen_credentials=frozen)
             if not quota_result.get("allowed", True):
                 reason = quota_result.get("reason", "quota exceeded")
                 message = quota_result.get("message", "Usage quota exceeded. Contact your administrator.")
