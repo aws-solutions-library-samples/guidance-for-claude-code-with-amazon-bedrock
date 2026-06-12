@@ -14,9 +14,6 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-# Default regions for AWS profile based on cross-region profile
-from dataclasses import dataclass, field
-
 
 @dataclass(frozen=True)
 class InferenceProfile:
