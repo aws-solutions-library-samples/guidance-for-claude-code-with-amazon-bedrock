@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+
+	"ccwb-go/internal/quota"
 )
 
 // passthroughOutput is the credential_process output format used by the
@@ -48,7 +50,7 @@ func (a *credentialApp) runPassthrough() int {
 		loadOpts = append(loadOpts, config.WithRegion(region))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
@@ -70,6 +72,20 @@ func (a *credentialApp) runPassthrough() int {
 		fmt.Fprintln(os.Stderr, "Hint: check your AWS CLI configuration or run 'aws sso login'.")
 		return 1
 	}
+
+	// Quota check (SigV4-signed — empty token routes to CheckWithIAM).
+	if a.cfg.QuotaAPIEndpoint != "" {
+		debugPrint("Performing quota check via SigV4...")
+		qr := quota.Check(a.cfg.QuotaAPIEndpoint, "", a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
+		if !qr.Allowed {
+			printQuotaBlocked(qr)
+			return 1
+		}
+		printQuotaWarning(qr)
+	}
+
+	// Write OTEL attribution cache (email from STS ARN session name).
+	a.writeOtelCacheFromSTS()
 
 	out := passthroughOutput{
 		Version:         1,

@@ -83,6 +83,15 @@ type ProfileConfig struct {
 	// as non-confidential for installed/native apps). Empty means PKCE-only.
 	ClientSecret string `json:"client_secret,omitempty"`
 
+	// IAM Identity Center fields (populated when auth_type == "idc").
+	// When present, credential-process drives the SSO OIDC device-auth flow
+	// directly (auto-opens browser) instead of relying on ambient credentials.
+	AuthType             string `json:"auth_type,omitempty"`              // "oidc" | "idc" | ""
+	IDCStartURL          string `json:"idc_start_url,omitempty"`         // e.g. https://d-xxxxxxxxxx.awsapps.com/start
+	IDCAccountID         string `json:"idc_account_id,omitempty"`        // AWS account ID for role assumption
+	IDCPermissionSetName string `json:"idc_permission_set_name,omitempty"` // IAM role name / permission set
+	IDCRegion            string `json:"idc_region,omitempty"`            // SSO endpoint region (defaults to aws_region)
+
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
 	OktaClientID string `json:"okta_client_id"`
@@ -276,4 +285,14 @@ func (p *ProfileConfig) IsSsoEnabled() bool {
 		return true
 	}
 	return *p.SsoEnabled
+}
+
+// IsIDC reports whether the profile uses IAM Identity Center active auth.
+// True when auth_type is explicitly "idc", or when SSO is disabled but IDC
+// fields are present (indicating an IDC deployment rather than pure passthrough).
+func (p *ProfileConfig) IsIDC() bool {
+	if p == nil {
+		return false
+	}
+	return p.AuthType == "idc" || (!p.IsSsoEnabled() && p.IDCStartURL != "")
 }
