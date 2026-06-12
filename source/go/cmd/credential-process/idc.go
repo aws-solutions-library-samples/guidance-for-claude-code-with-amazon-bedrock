@@ -113,10 +113,16 @@ func (a *credentialApp) runIDC() int {
 
 	debugPrint("IDC credentials retrieved successfully (key=%s...)", creds.AccessKeyID[:8])
 
-	// Quota check (SigV4-signed — empty token routes to CheckWithIAM).
+	// Quota check (SigV4-signed with the IDC credentials we just resolved).
 	if a.cfg.QuotaAPIEndpoint != "" {
-		debugPrint("Performing quota check via SigV4...")
-		qr := quota.Check(a.cfg.QuotaAPIEndpoint, "", a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
+		debugPrint("Performing quota check via SigV4 with IDC credentials...")
+		qr := quota.CheckWithResolvedCreds(
+			a.cfg.QuotaAPIEndpoint,
+			creds,
+			region,
+			a.cfg.QuotaCheckTimeout,
+			a.cfg.QuotaFailMode,
+		)
 		if !qr.Allowed {
 			printQuotaBlocked(qr)
 			return 1

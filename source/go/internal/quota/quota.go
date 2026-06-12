@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
@@ -22,6 +23,7 @@ type Result struct {
 }
 
 // Check calls the quota API endpoint with the given JWT token.
+// When idToken is empty, falls back to IAM/SigV4 auth (IDC path).
 func Check(endpoint, idToken string, timeout int, failMode string) *Result {
 	if idToken == "" {
 		// No JWT token — try IAM auth (IDC path)
@@ -81,6 +83,20 @@ func CheckWithIAM(endpoint string, timeout int, failMode string) *Result {
 		return failResult(failMode, "iam_creds_error", fmt.Sprintf("Could not retrieve AWS credentials: %v", err))
 	}
 
+	return checkWithSigV4(endpoint, creds, cfg.Region, timeout, failMode)
+}
+
+// CheckWithResolvedCreds calls the quota API using pre-resolved AWS credentials.
+// Use this when credentials have already been obtained (e.g. from IDC SSO flow)
+// and the default credential chain may resolve a different principal.
+func CheckWithResolvedCreds(endpoint string, creds aws.Credentials, region string, timeout int, failMode string) *Result {
+	return checkWithSigV4(endpoint, creds, region, timeout, failMode)
+}
+
+// checkWithSigV4 signs and sends the quota check request using the provided credentials.
+func checkWithSigV4(endpoint string, creds aws.Credentials, region string, timeout int, failMode string) *Result {
+	ctx := context.Background()
+
 	url := endpoint + "/check"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -90,7 +106,7 @@ func CheckWithIAM(endpoint string, timeout int, failMode string) *Result {
 	// Sign the request with SigV4 for execute-api service
 	signer := v4.NewSigner()
 	hash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // SHA256 of empty body
-	err = signer.SignHTTP(ctx, creds, req, hash, "execute-api", cfg.Region, time.Now())
+	err = signer.SignHTTP(ctx, creds, req, hash, "execute-api", region, time.Now())
 	if err != nil {
 		return failResult(failMode, "sigv4_error", fmt.Sprintf("Could not sign request: %v", err))
 	}
