@@ -778,6 +778,15 @@ class DeployCommand(Command):
                     oidc_issuer_url = profile.provider_domain
                     if oidc_issuer_url and not oidc_issuer_url.startswith(("http://", "https://")):
                         oidc_issuer_url = f"https://{oidc_issuer_url}"
+                    # Okta authenticates via its custom default authorization server, so
+                    # issued tokens carry iss=https://<domain>/oauth2/default. The quota JWT
+                    # authorizer must match that exact issuer or every /check 401s (fail-open).
+                    if (
+                        profile.provider_type == "okta"
+                        and oidc_issuer_url
+                        and not oidc_issuer_url.rstrip("/").endswith("/oauth2/default")
+                    ):
+                        oidc_issuer_url = f"{oidc_issuer_url.rstrip('/')}/oauth2/default"
                 if profile.provider_type == "auth0" and oidc_issuer_url and not oidc_issuer_url.endswith("/"):
                     oidc_issuer_url = f"{oidc_issuer_url}/"
                 oidc_client_id = profile.client_id
