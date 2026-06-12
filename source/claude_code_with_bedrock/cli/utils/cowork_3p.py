@@ -76,7 +76,6 @@ def build_mdm_config(
     return config
 
 
-
 def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     """Add OTLP endpoint to MDM config if monitoring stack is deployed."""
     if not profile.monitoring_enabled:
@@ -91,9 +90,7 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     # Try to resolve collector endpoint from stack outputs first,
     # fall back to profile.otel_collector_endpoint if stack query fails.
     endpoint = None
-    monitoring_stack = profile.stack_names.get(
-        "monitoring", f"{profile.identity_pool_name}-otel-collector"
-    )
+    monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
     try:
         outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
         endpoint = outputs.get("CollectorEndpoint")
