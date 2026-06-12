@@ -2229,6 +2229,18 @@ class MultiProviderAuth:
                   "Check your AWS CLI configuration or run 'aws sso login'.", file=sys.stderr)
             return 1
 
+        # Quota enforcement (SigV4-signed — email resolved from IAM ARN server-side).
+        if self._should_check_quota():
+            self._debug_print("IDC/passthrough: performing SigV4 quota check")
+            quota_result = self._check_quota(token_claims={}, id_token=None)
+            if not quota_result.get("allowed", True):
+                reason = quota_result.get("reason", "quota exceeded")
+                message = quota_result.get("message", "Usage quota exceeded. Contact your administrator.")
+                print(f"Error: {message}", file=sys.stderr)
+                print(f"Reason: {reason}", file=sys.stderr)
+                return 1
+            self._save_quota_check_timestamp()
+
         output = {
             "Version": 1,
             "AccessKeyId": frozen.access_key,

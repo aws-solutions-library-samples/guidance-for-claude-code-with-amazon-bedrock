@@ -72,6 +72,9 @@ func TestCheck_FailClosed_BlocksOnError(t *testing.T) {
 	result := Check("http://localhost:1", "token", 1, "closed")
 	if result.Allowed {
 		t.Error("fail-closed mode should block on connection error")
+	}
+}
+
 func TestCheck_Allowed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(Result{

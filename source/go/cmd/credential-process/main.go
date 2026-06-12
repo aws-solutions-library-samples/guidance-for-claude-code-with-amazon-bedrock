@@ -75,28 +75,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	// SSO-disabled (passthrough) mode. Resolve before provider-type detection
-	// because cfg.ProviderDomain is intentionally "none" for these profiles
-	// and would trip the auto-detect error otherwise. Mirrors Python PR #303.
+	// Build a minimal app for flag dispatch (works for all auth types).
+	app := &credentialApp{
+		profile: profile,
+		cfg:     cfg,
+	}
+
+	// Flag dispatch — must run before auth-type branching so IDC users
+	// can use --get-monitoring-token, --show-tags, etc.
+	if *clearCache {
+		app.clearCache()
+		os.Exit(0)
+	}
+	if *showTags {
+		os.Exit(app.showTags())
+	}
+	if *getTag != "" {
+		os.Exit(app.getTag(*getTag))
+	}
+	if *getMonitoring {
+		os.Exit(app.getMonitoringToken())
+	}
+	if *checkExpiration {
+		os.Exit(app.checkExpiration())
+	}
+
+	// Auth dispatch: IDC > legacy passthrough > OIDC
+	if cfg.IsIDC() {
+		os.Exit(app.runIDC())
+	}
 	if !cfg.IsSsoEnabled() {
-		// Build a minimal app — we don't need providerType or redirectPort for
-		// passthrough, only the ambient AWS chain.
-		app := &credentialApp{
-			profile: profile,
-			cfg:     cfg,
-		}
-		// Honor the small-but-useful flag set that doesn't depend on OIDC.
-		if *clearCache {
-			app.clearCache()
-			os.Exit(0)
-		}
+		// Legacy passthrough: no IDC fields, just ambient credential chain.
 		os.Exit(app.runPassthrough())
 	}
 
-	// Resolve provider type
+	// OIDC path — resolve provider type and redirect port
 	providerType := resolveProviderType(cfg)
-
-	// Resolve redirect port: REDIRECT_PORT env > config.json > 8400
 	redirectPort := 8400
 	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
 		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
@@ -105,34 +119,8 @@ func main() {
 	} else if cfg.RedirectPort > 0 {
 		redirectPort = cfg.RedirectPort
 	}
-
-	app := &credentialApp{
-		profile:      profile,
-		cfg:          cfg,
-		providerType: providerType,
-		redirectPort: redirectPort,
-	}
-
-	if *clearCache {
-		app.clearCache()
-		os.Exit(0)
-	}
-
-	if *showTags {
-		os.Exit(app.showTags())
-	}
-
-	if *getTag != "" {
-		os.Exit(app.getTag(*getTag))
-	}
-
-	if *getMonitoring {
-		os.Exit(app.getMonitoringToken())
-	}
-
-	if *checkExpiration {
-		os.Exit(app.checkExpiration())
-	}
+	app.providerType = providerType
+	app.redirectPort = redirectPort
 
 	if *refreshIfNeeded {
 		if cfg.CredentialStorage != "session" {
@@ -727,7 +715,8 @@ func (a *credentialApp) performQuotaRecheck() {
 // attribution for IDC users who don't have a JWT token.
 //
 // The email is extracted from the assumed-role ARN session name:
-//   arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
+//
+//	arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
 //
 // Returns true if the cache was written successfully.
 func (a *credentialApp) writeOtelCacheFromSTS() bool {
@@ -787,6 +776,8 @@ func extractEmailFromARN(arn string) string {
 		return sessionName
 	}
 	return ""
+}
+
 func printQuotaWarning(qr *quota.Result) {
 	usage := qr.Usage
 	if usage == nil {
