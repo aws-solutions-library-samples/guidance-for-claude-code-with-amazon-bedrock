@@ -1349,29 +1349,26 @@ class InitCommand(Command):
 
                     secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
 
-                    # Try to create or update secret
-                    try:
-                        secret_response = secrets_client.create_secret(
-                            Name=secret_name,
-                            SecretString=idp_client_secret,
-                            Description=f"IdP client secret for "
-                            f"{config['aws']['identity_pool_name']} distribution landing page",
-                        )
-                        secret_arn = secret_response["ARN"]
-                    except secrets_client.exceptions.ResourceExistsException:
-                        # Secret already exists, update it
-                        secret_response = secrets_client.update_secret(
-                            SecretId=secret_name,
-                            SecretString=idp_client_secret,
-                        )
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                    secret_arn = self._store_idp_secret(
+                        secrets_client,
+                        secret_name,
+                        idp_client_secret,
+                        description=f"IdP client secret for "
+                        f"{config['aws']['identity_pool_name']} distribution landing page",
+                    )
 
                     console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
 
                 except Exception as e:
                     console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
                     console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
-                    secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                    # Storing failed, so we have no API response. Recover the real
+                    # ARN (with its random suffix) via describe_secret if the secret
+                    # exists; only fall back to a hand-built ARN as a last resort.
+                    try:
+                        secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
+                    except Exception:
+                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -1732,6 +1729,30 @@ class InitCommand(Command):
             config["tags"] = config.get("tags", {})
 
         return config
+
+    @staticmethod
+    def _store_idp_secret(secrets_client, secret_name: str, secret_value: str, description: str = "") -> str:
+        """Create or update the distribution IdP client secret; return its full ARN.
+
+        Always returns the ARN from the Secrets Manager API response. Secrets
+        Manager appends a random 6-char suffix to every secret ARN (e.g.
+        ``-FhLi4n``); a hand-built ``arn:...:secret:<name>`` omits it, and the
+        ``{{resolve:secretsmanager:<arn>}}`` reference in the landing-page ALB
+        HTTPS listener then fails with ResourceNotFoundException. Using the
+        response ARN keeps create and update paths consistent.
+        """
+        try:
+            response = secrets_client.create_secret(
+                Name=secret_name,
+                SecretString=secret_value,
+                Description=description,
+            )
+        except secrets_client.exceptions.ResourceExistsException:
+            response = secrets_client.update_secret(
+                SecretId=secret_name,
+                SecretString=secret_value,
+            )
+        return response["ARN"]
 
     def _review_configuration(self, config: dict[str, Any]) -> bool:
         """Review configuration with user."""

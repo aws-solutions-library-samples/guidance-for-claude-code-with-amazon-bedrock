@@ -712,6 +712,57 @@ class TestLandingPageRegionResolution:
         assert region_name == "ap-southeast-1"
 
 
+class TestStoreIdpSecret:
+    """Regression tests for _store_idp_secret ARN handling.
+
+    Secrets Manager appends a random 6-char suffix to every secret ARN. A
+    hand-built ``arn:...:secret:<name>`` omits it, so the
+    ``{{resolve:secretsmanager:<arn>}}`` reference in the landing-page ALB
+    HTTPS listener fails with ResourceNotFoundException. _store_idp_secret must
+    return the suffixed ARN from the API response on BOTH create and update.
+    """
+
+    def _client(self, *, exists: bool):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+
+        class _ResourceExists(Exception):
+            pass
+
+        client.exceptions.ResourceExistsException = _ResourceExists
+        suffixed = (
+            "arn:aws:secretsmanager:ap-southeast-1:111111111111:"
+            "secret:my-pool-distribution-idp-secret-FhLi4n"
+        )
+        if exists:
+            client.create_secret.side_effect = _ResourceExists()
+            client.update_secret.return_value = {"ARN": suffixed}
+        else:
+            client.create_secret.return_value = {"ARN": suffixed}
+        return client, suffixed
+
+    def test_create_path_returns_suffixed_arn(self):
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        client, suffixed = self._client(exists=False)
+        arn = InitCommand._store_idp_secret(client, "my-pool-distribution-idp-secret", "secret-value")
+        assert arn == suffixed
+        assert arn.endswith("-FhLi4n")
+
+    def test_update_path_returns_suffixed_arn(self):
+        """The bug: existing secret -> update path must NOT hand-build a suffix-less ARN."""
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        client, suffixed = self._client(exists=True)
+        arn = InitCommand._store_idp_secret(client, "my-pool-distribution-idp-secret", "secret-value")
+        assert arn == suffixed
+        assert arn.endswith("-FhLi4n")
+        # The pre-fix bug returned a bare ARN ending in the plain secret name.
+        assert not arn.endswith("-distribution-idp-secret")
+        client.update_secret.assert_called_once()
+
+
 if __name__ == "__main__":
     # Run the tests
     pytest.main([__file__, "-v"])
