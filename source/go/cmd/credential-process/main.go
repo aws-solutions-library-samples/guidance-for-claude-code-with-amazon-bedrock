@@ -715,7 +715,8 @@ func (a *credentialApp) performQuotaRecheck() {
 // attribution for IDC users who don't have a JWT token.
 //
 // The email is extracted from the assumed-role ARN session name:
-//   arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
+//
+//	arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
 //
 // Returns true if the cache was written successfully.
 func (a *credentialApp) writeOtelCacheFromSTS() bool {

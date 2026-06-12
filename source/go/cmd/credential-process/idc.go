@@ -51,8 +51,18 @@ func (a *credentialApp) runIDC() int {
 	roleName := a.cfg.IDCPermissionSetName
 
 	if startURL == "" || accountID == "" || roleName == "" {
-		fmt.Fprintln(os.Stderr, "Error: incomplete IDC configuration.")
-		fmt.Fprintln(os.Stderr, "Required fields in config.json: idc_start_url, idc_account_id, idc_permission_set_name")
+		fmt.Fprintln(os.Stderr, "Error: incomplete IDC configuration in config.json.")
+		if startURL == "" {
+			fmt.Fprintln(os.Stderr, "  Missing: idc_start_url (e.g. https://d-xxxxxxxxxx.awsapps.com/start)")
+		}
+		if accountID == "" {
+			fmt.Fprintln(os.Stderr, "  Missing: idc_account_id (AWS account ID for role assumption)")
+		}
+		if roleName == "" {
+			fmt.Fprintln(os.Stderr, "  Missing: idc_permission_set_name (IAM role / permission set name)")
+		}
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Run 'ccwb init' to reconfigure, or edit config.json directly.")
 		return 1
 	}
 
@@ -119,10 +129,10 @@ func (a *credentialApp) runIDC() int {
 
 	// Output credential_process JSON.
 	out := passthroughOutput{
-		Version:        1,
-		AccessKeyID:    creds.AccessKeyID,
+		Version:         1,
+		AccessKeyID:     creds.AccessKeyID,
 		SecretAccessKey: creds.SecretAccessKey,
-		SessionToken:   creds.SessionToken,
+		SessionToken:    creds.SessionToken,
 	}
 	if creds.CanExpire {
 		out.Expiration = creds.Expires.UTC().Format(time.RFC3339)
