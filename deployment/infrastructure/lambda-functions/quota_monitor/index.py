@@ -124,8 +124,22 @@ def update_quota_metrics(usage_data):
             daily_reset = existing.get("daily_date") != current_date
 
             update_expr = "ADD total_tokens :delta, input_tokens :inp, output_tokens :out, cache_tokens :cache"
+            expr_values = {
+                ":delta": Decimal(str(int(delta))),
+                ":inp": Decimal(str(int(usage.get("input_tokens", 0)))),
+                ":out": Decimal(str(int(usage.get("output_tokens", 0)))),
+                ":cache": Decimal(str(int(usage.get("cache_tokens", 0)))),
+                ":ts": now.isoformat().replace("+00:00", "Z"),
+                ":ttl": ttl,
+                ":email": email,
+            }
             if daily_reset:
                 update_expr += " SET daily_tokens = :delta, daily_date = :date, last_updated = :ts, #ttl = :ttl, email = :email"
+                # :date is only referenced on the reset path; including it otherwise
+                # makes DynamoDB reject the whole UpdateItem with a ValidationException
+                # ("Value provided in ExpressionAttributeValues unused"), which silently
+                # froze same-day usage accumulation after the first daily write.
+                expr_values[":date"] = current_date
             else:
                 update_expr += ", daily_tokens :delta SET last_updated = :ts, #ttl = :ttl, email = :email"
 
@@ -133,16 +147,7 @@ def update_quota_metrics(usage_data):
                 Key={"pk": f"USER#{email}", "sk": f"MONTH#{current_month}"},
                 UpdateExpression=update_expr,
                 ExpressionAttributeNames={"#ttl": "ttl"},
-                ExpressionAttributeValues={
-                    ":delta": Decimal(str(int(delta))),
-                    ":inp": Decimal(str(int(usage.get("input_tokens", 0)))),
-                    ":out": Decimal(str(int(usage.get("output_tokens", 0)))),
-                    ":cache": Decimal(str(int(usage.get("cache_tokens", 0)))),
-                    ":date": current_date,
-                    ":ts": now.isoformat().replace("+00:00", "Z"),
-                    ":ttl": ttl,
-                    ":email": email,
-                },
+                ExpressionAttributeValues=expr_values,
             )
         except Exception as e:
             print(f"Error updating quota for {email}: {e}")
