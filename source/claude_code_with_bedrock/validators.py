@@ -103,9 +103,7 @@ class ProfileValidator:
         # Validate profile name format
         name = profile_data.get("name", "")
         if not ProfileValidator._is_valid_profile_name(name):
-            errors.append(
-                f"Invalid profile name '{name}'. " "Must be alphanumeric with hyphens only, max 64 characters"
-            )
+            errors.append(f"Invalid profile name '{name}'. Must be alphanumeric with hyphens only, max 64 characters")
 
         # Validate provider domain format
         domain = profile_data.get("provider_domain", "")
@@ -165,7 +163,7 @@ class ProfileValidator:
         if distribution_type:
             if distribution_type not in ["presigned-s3", "landing-page"]:
                 errors.append(
-                    f"Invalid distribution_type: {distribution_type}. " "Must be 'presigned-s3' or 'landing-page'"
+                    f"Invalid distribution_type: {distribution_type}. Must be 'presigned-s3' or 'landing-page'"
                 )
 
             # Landing page requires additional fields
@@ -213,7 +211,7 @@ class ProfileValidator:
             valid_profiles = ["us", "europe", "apac", "global", "japan", "eu"]
             if cross_region not in valid_profiles:
                 warnings.append(
-                    f"Unknown cross_region_profile: {cross_region}. " f"Expected one of: {', '.join(valid_profiles)}"
+                    f"Unknown cross_region_profile: {cross_region}. Expected one of: {', '.join(valid_profiles)}"
                 )
 
         # Validate quota settings
@@ -242,7 +240,7 @@ class ProfileValidator:
                 errors.append("data_retention_days must be a positive integer")
             elif retention_days > 365:
                 warnings.append(
-                    f"data_retention_days ({retention_days}) is over 1 year. " "This may incur significant costs."
+                    f"data_retention_days ({retention_days}) is over 1 year. This may incur significant costs."
                 )
 
         # Validate schema version

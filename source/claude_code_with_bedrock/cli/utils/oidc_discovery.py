@@ -50,9 +50,7 @@ def discover_oidc_endpoints(issuer_url: str, timeout: float = 10.0) -> dict[str,
         raise OidcDiscoveryError(f"Could not reach {discovery_url}: {e}") from e
 
     if response.status_code != 200:
-        raise OidcDiscoveryError(
-            f"Discovery endpoint returned HTTP {response.status_code} from {discovery_url}"
-        )
+        raise OidcDiscoveryError(f"Discovery endpoint returned HTTP {response.status_code} from {discovery_url}")
 
     try:
         data: Any = response.json()

@@ -77,6 +77,7 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
             return venv_dir
         # Wrong arch — rebuild
         import shutil
+
         console.print(f"[yellow]Rebuilding {arch} build venv (wrong architecture detected)[/yellow]")
         shutil.rmtree(venv_dir, ignore_errors=True)
 
@@ -85,7 +86,8 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
 
     create = subprocess.run(  # nosec B603 B607
         ["/usr/bin/arch", f"-{arch}", str(universal2_python), "-m", "venv", str(venv_dir)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if create.returncode != 0:
         raise RuntimeError(f"Failed to create {arch} build venv: {create.stderr}")
@@ -93,7 +95,8 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
     pip = venv_dir / "bin" / "pip"
     install = subprocess.run(  # nosec B603 B607
         ["/usr/bin/arch", f"-{arch}", str(pip), "install", "--quiet", _PYINSTALLER_PIN, *runtime_packages],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if install.returncode != 0:
         raise RuntimeError(f"Failed to install deps into {arch} build venv: {install.stderr or install.stdout}")
@@ -163,8 +166,16 @@ class PackageCommand(Command):
         option("build-local", description="Build binaries locally instead of downloading pre-built", flag=True),
         option("no-cache", description="Force re-download of pre-built binaries", flag=True),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
-        option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
-        option("go", description="Build binaries using Go cross-compilation (native binaries, no AV false positives)", flag=True),
+        option(
+            "regenerate-installers",
+            description="Regenerate installer scripts using existing binaries from latest dist",
+            flag=True,
+        ),
+        option(
+            "go",
+            description="Build binaries using Go cross-compilation (native binaries, no AV false positives)",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -254,8 +265,7 @@ class PackageCommand(Command):
                 cost_center = questionary.text("Cost center:", default="default").ask()
                 organization = questionary.text("Organization:", default="default").ask()
                 otel_resource_attributes = (
-                    f"department={department},team.id={team_id},"
-                    f"cost_center={cost_center},organization={organization}"
+                    f"department={department},team.id={team_id},cost_center={cost_center},organization={organization}"
                 )
 
         # Validate platform
@@ -479,7 +489,9 @@ class PackageCommand(Command):
                     else:
                         built_executables.append((platform_name, executable_path))
                 except Exception as e:
-                    console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
+                    console.print(
+                        f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]"
+                    )
 
                 # Build OTEL helper if monitoring is enabled
                 if profile.monitoring_enabled:
@@ -494,7 +506,9 @@ class PackageCommand(Command):
                             if otel_helper_path is not None:
                                 built_otel_helpers.append((platform_name, otel_helper_path))
                         except Exception as e:
-                            console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
+                            console.print(
+                                f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]"
+                            )
 
         # Check if any binaries were built
         if not built_executables:
@@ -669,8 +683,7 @@ class PackageCommand(Command):
             self.line(f"  <info>{result.stdout.strip()}</info>")
         except (FileNotFoundError, subprocess.CalledProcessError):
             raise RuntimeError(
-                "Go is not installed or not in PATH. Install from https://go.dev/dl/ "
-                "or run: brew install go"
+                "Go is not installed or not in PATH. Install from https://go.dev/dl/ or run: brew install go"
             )
 
         platform_map = {
@@ -713,10 +726,13 @@ class PackageCommand(Command):
                 # cmd/*/ are auto-linked by the Go compiler to help further.
                 ldflags = "" if plat == "windows" else "-s -w"
                 cmd = [
-                    "go", "build",
+                    "go",
+                    "build",
                     "-trimpath",
-                    "-ldflags", ldflags,
-                    "-o", str(output_path),
+                    "-ldflags",
+                    ldflags,
+                    "-o",
+                    str(output_path),
                     f"./cmd/{binary}/",
                 ]
                 result = subprocess.run(cmd, cwd=str(go_src), env=env, capture_output=True, text=True)
@@ -1009,9 +1025,12 @@ class PackageCommand(Command):
             work_root = Path.home() / ".ccwb" / "build-work"
             work_root.mkdir(parents=True, exist_ok=True)
             cmd = [
-                "/usr/bin/arch", f"-{arch}",
+                "/usr/bin/arch",
+                f"-{arch}",
                 str(venv_dir / "bin" / "pyinstaller"),
-                "--onefile", "--clean", "--noconfirm",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 f"--workpath={str(work_root / arch)}",
@@ -1027,8 +1046,12 @@ class PackageCommand(Command):
         else:
             # Native build: use Poetry environment directly
             cmd = [
-                "poetry", "run", "pyinstaller",
-                "--onefile", "--clean", "--noconfirm",
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--target-arch={arch}",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
@@ -1772,15 +1795,20 @@ RUN pyinstaller \
             # Cross-arch build: need a per-arch venv seeded from a universal2 Python
             universal2_python = _find_universal2_python()
             if universal2_python is None:
-                console.print(f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires universal2 Python (not found)[/yellow]")
+                console.print(
+                    f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires universal2 Python (not found)[/yellow]"
+                )
                 return output_dir / binary_name
             venv_dir = _ensure_cross_arch_venv(arch, universal2_python, _OTEL_HELPER_RUNTIME_DEPS, console)
             work_root = Path.home() / ".ccwb" / "build-work"
             work_root.mkdir(parents=True, exist_ok=True)
             cmd = [
-                "/usr/bin/arch", f"-{arch}",
+                "/usr/bin/arch",
+                f"-{arch}",
                 str(venv_dir / "bin" / "pyinstaller"),
-                "--onefile", "--clean", "--noconfirm",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 f"--workpath={str(work_root / arch)}",
@@ -1790,8 +1818,12 @@ RUN pyinstaller \
             ]
         else:
             cmd = [
-                "poetry", "run", "pyinstaller",
-                "--onefile", "--clean", "--noconfirm",
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 "--workpath=/tmp/pyinstaller",
@@ -2037,17 +2069,14 @@ RUN pyinstaller \
 
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes?", default=False
-            ).ask()
+            customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
             if customize_otel:
                 department = questionary.text("Department:", default="engineering").ask()
                 team_id = questionary.text("Team ID:", default="default").ask()
                 cost_center = questionary.text("Cost center:", default="default").ask()
                 organization = questionary.text("Organization:", default="default").ask()
                 otel_resource_attributes = (
-                    f"department={department},team.id={team_id},"
-                    f"cost_center={cost_center},organization={organization}"
+                    f"department={department},team.id={team_id},cost_center={cost_center},organization={organization}"
                 )
 
         # Regenerate config.json
@@ -2079,7 +2108,9 @@ RUN pyinstaller \
         if (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json")
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
-        console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
+        console.print(
+            "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]"
+        )
         return 0
 
     def _create_config(
@@ -2154,9 +2185,7 @@ RUN pyinstaller \
                     "\n[yellow]Warning: certificate paths in config.json are absolute and will not "
                     "resolve on machines where the files are stored elsewhere.[/yellow]"
                 )
-                console.print(
-                    "[yellow]Instruct end users to set the following environment variables:[/yellow]"
-                )
+                console.print("[yellow]Instruct end users to set the following environment variables:[/yellow]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
@@ -2214,7 +2243,11 @@ RUN pyinstaller \
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
             okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-            if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+            if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                "okta.com",
+                "oktapreview.com",
+                "okta-emea.com",
+            ):
                 return "okta"
             elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
@@ -2828,7 +2861,7 @@ Available metrics include:
 """
             readme_content += analytics_section
 
-        readme_content += "\n" ""
+        readme_content += "\n"
 
         with open(output_dir / "README.md", "w", encoding="utf-8") as f:
             f.write(readme_content)
@@ -2913,8 +2946,12 @@ Available metrics include:
                     # Try multiple possible stack name patterns
                     possible_stacks = [
                         profile.stack_names.get("monitoring"),
-                        f"{profile.identity_pool_name}-otel-collector" if hasattr(profile, "identity_pool_name") and profile.identity_pool_name else None,
-                        f"{profile.stack_names.get('auth', '')}-otel-collector" if profile.stack_names.get("auth") else None,
+                        f"{profile.identity_pool_name}-otel-collector"
+                        if hasattr(profile, "identity_pool_name") and profile.identity_pool_name
+                        else None,
+                        f"{profile.stack_names.get('auth', '')}-otel-collector"
+                        if profile.stack_names.get("auth")
+                        else None,
                     ]
                     # Remove None/empty entries
                     possible_stacks = [s for s in possible_stacks if s]
@@ -2950,19 +2987,27 @@ Available metrics include:
                             profile.otel_collector_endpoint = endpoint
                             try:
                                 from claude_code_with_bedrock.config import Config
+
                                 config = Config.load()
                                 config.save_profile(profile)
-                                console.print(f"[dim]Found endpoint from stack '{monitoring_stack}', saved to profile[/dim]")
+                                console.print(
+                                    f"[dim]Found endpoint from stack '{monitoring_stack}', saved to profile[/dim]"
+                                )
                             except Exception:
                                 pass
                             break
 
                 if not endpoint:
                     # Monitoring stack not deployed or endpoint not found
-                    console.print("[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]")
-                    console.print("[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]")
+                    console.print(
+                        "[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]"
+                    )
+                    console.print(
+                        "[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]"
+                    )
                     try:
                         import questionary
+
                         endpoint = questionary.text(
                             "OTel collector endpoint URL (leave blank to skip telemetry):",
                             default="",
@@ -2974,6 +3019,7 @@ Available metrics include:
                             profile.otel_collector_endpoint = endpoint
                             try:
                                 from claude_code_with_bedrock.config import Config
+
                                 config = Config.load()
                                 config.save_profile(profile)
                                 console.print(f"[dim]Saved endpoint to profile[/dim]")
@@ -3023,7 +3069,6 @@ Available metrics include:
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")
-
 
     def _generate_cowork_3p_mdm_config(
         self,

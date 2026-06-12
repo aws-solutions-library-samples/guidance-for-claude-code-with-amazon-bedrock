@@ -328,6 +328,7 @@ class BuildsCommand(Command):
                             except PermissionError:
                                 if attempt < 2:
                                     import time
+
                                     time.sleep(1)
                                 else:
                                     raise
