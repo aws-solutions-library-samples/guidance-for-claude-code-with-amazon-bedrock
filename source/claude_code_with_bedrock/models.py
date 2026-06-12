@@ -811,6 +811,52 @@ _CLAUDE_MODELS_RAW = {
             },
         },
     },
+    "fable-5": {
+        "name": "Claude Fable 5",
+        "base_model_id": "anthropic.claude-fable-5",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-fable-5",
+                "description": "US CRIS - US and Canada regions",
+                "source_regions": [
+                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "ca-central-1", "ca-west-1",
+                ],
+                "destination_regions": [
+                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "ca-central-1", "ca-west-1",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-fable-5",
+                "description": "Global CRIS - All commercial AWS regions worldwide",
+                "source_regions": [
+                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "ca-central-1", "ca-west-1",
+                    "eu-central-1", "eu-central-2", "eu-north-1",
+                    "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-2", "eu-west-3",
+                    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+                    "ap-south-1", "ap-south-2",
+                    "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4",
+                    "me-south-1", "me-central-1",
+                    "af-south-1", "il-central-1", "sa-east-1",
+                ],
+                "destination_regions": ["all-commercial"],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-fable-5",
+                "description": "EU CRIS - European regions",
+                "source_regions": [
+                    "eu-central-1", "eu-central-2", "eu-north-1",
+                    "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1", "eu-central-2", "eu-north-1",
+                    "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3",
+                ],
+            },
+        },
+    },
     "sonnet-3-7-govcloud": {
         "name": "Claude 3.7 Sonnet (GovCloud)",
         "base_model_id": "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -1192,6 +1238,7 @@ MODEL_TIER_PREFERENCES = {
     "haiku": ["haiku-4-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
     "sonnet": ["sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
     "opus": ["opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
+    "fable": ["fable-5"],
 }
 
 
@@ -1220,13 +1267,14 @@ TIER_TO_CLAUDE_CODE_ALIAS: dict[str, str] = {
     "sonnet": "sonnet",
     "opus": "opus",
     "haiku": "haiku",
+    "fable": "fable",
 }
 
 
 def get_claude_code_alias(model_id: str) -> str | None:
     """Given a full CRIS model ID, return the Claude Code tier alias.
 
-    Returns 'sonnet', 'opus', 'haiku', or None if model is unrecognised.
+    Returns 'sonnet', 'opus', 'haiku', 'fable', or None if model is unrecognised.
     Callers may override the returned alias (e.g. replace 'opus' with
     'opusplan') based on user preference stored in the profile.
     """
@@ -1249,7 +1297,7 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
     to avoid silently breaking data residency requirements.
 
     Args:
-        tier: 'haiku', 'sonnet', or 'opus'
+        tier: 'haiku', 'sonnet', 'opus', or 'fable'
         cris_prefix: e.g. 'eu', 'europe', 'us', 'global', 'au', 'apac', 'japan'
 
     Returns:
@@ -1273,8 +1321,8 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
     # e.g. jp.opus doesn't exist → fall back to jp.sonnet-4-6.
     if resolved_prefix in DATA_RESIDENCY_PREFIXES:
         # Search all models (newest first) for ANY model with this prefix
-        all_model_keys = ["sonnet-4-6", "sonnet-4-5", "sonnet-4", "opus-4-6", "opus-4-5",
-                          "haiku-4-5", "sonnet-3-7", "opus-4-1", "opus-4"]
+        all_model_keys = ["fable-5", "opus-4-7", "sonnet-4-6", "sonnet-4-5", "sonnet-4",
+                          "opus-4-6", "opus-4-5", "haiku-4-5", "sonnet-3-7", "opus-4-1", "opus-4"]
         for model_key in all_model_keys:
             if model_key in CLAUDE_MODELS:
                 profiles = CLAUDE_MODELS[model_key].get("profiles", {})
