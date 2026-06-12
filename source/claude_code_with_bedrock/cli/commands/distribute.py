@@ -259,7 +259,9 @@ class DistributeCommand(Command):
 
                 result = subprocess.run(
                     ["tasklist", "/FI", "IMAGENAME eq ZSATunnel.exe", "/NH"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if "ZSATunnel" in result.stdout:
                     corporate_proxy_detected = True
@@ -267,7 +269,9 @@ class DistributeCommand(Command):
                 else:
                     result = subprocess.run(
                         ["tasklist", "/FI", "IMAGENAME eq nscommon.exe", "/NH"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
                     if "nscommon" in result.stdout:
                         corporate_proxy_detected = True
@@ -280,8 +284,12 @@ class DistributeCommand(Command):
                 f"\n[yellow]Note: {proxy_name} detected. If S3 uploads fail with 'Access Denied' or SSL errors, "
                 f"use one of these fixes:[/yellow]"
             )
-            console.print(f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)")
-            console.print(f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)")
+            console.print(
+                f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)"
+            )
+            console.print(
+                f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)"
+            )
             console.print()
 
     def handle(self) -> int:
@@ -691,7 +699,9 @@ class DistributeCommand(Command):
                     for source_file, archive_name in files:
                         source_path = package_path / source_file
                         if source_path.exists():
-                            zipf.writestr(f"claude-code-package/{archive_name}", self._read_file_with_retry(source_path))
+                            zipf.writestr(
+                                f"claude-code-package/{archive_name}", self._read_file_with_retry(source_path)
+                            )
 
                     # Include claude-settings if it exists
                     settings_dir = package_path / "claude-settings"
@@ -699,7 +709,9 @@ class DistributeCommand(Command):
                         for file in settings_dir.rglob("*"):
                             if file.is_file():
                                 rel_path = file.relative_to(package_path)
-                                zipf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file))
+                                zipf.writestr(
+                                    f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file)
+                                )
 
                 # Upload to S3 at packages/{platform}/latest.zip
                 s3_key = f"packages/{platform}/latest.zip"
@@ -1245,7 +1257,9 @@ class DistributeCommand(Command):
             if s3 and bucket_name:
                 package_key = f"packages/{timestamp}/{filename}"
                 try:
-                    self._upload_file_with_retry(s3, str(archive_path), bucket_name, package_key, config=self.S3_TRANSFER_CONFIG)
+                    self._upload_file_with_retry(
+                        s3, str(archive_path), bucket_name, package_key, config=self.S3_TRANSFER_CONFIG
+                    )
                     url = s3.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": bucket_name, "Key": package_key},
@@ -1305,11 +1319,11 @@ class DistributeCommand(Command):
             )
             console.print("[yellow]Fixes:[/yellow]")
             console.print("  1. [cyan]pip install truststore[/cyan]  (makes Python trust your corporate CA)")
-            console.print("  2. [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/cyan]  (ask IT for the .pem file)")
-        elif "access denied" in error_str or "accessdenied" in error_str or isinstance(error, PermissionError):
             console.print(
-                "\n[yellow]This may be caused by:[/yellow]"
+                "  2. [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/cyan]  (ask IT for the .pem file)"
             )
+        elif "access denied" in error_str or "accessdenied" in error_str or isinstance(error, PermissionError):
+            console.print("\n[yellow]This may be caused by:[/yellow]")
             console.print("  1. Corporate security tool (Zscaler, Netskope) intercepting S3 traffic")
             console.print("  2. Insufficient S3 permissions")
             console.print("  3. Antivirus scanning the ZIP file")
@@ -1345,7 +1359,16 @@ class DistributeCommand(Command):
                     ) from e
 
     @staticmethod
-    def _upload_file_with_retry(s3_client, file_path: str, bucket: str, key: str, extra_args=None, config=None, callback=None, max_attempts: int = 5):
+    def _upload_file_with_retry(
+        s3_client,
+        file_path: str,
+        bucket: str,
+        key: str,
+        extra_args=None,
+        config=None,
+        callback=None,
+        max_attempts: int = 5,
+    ):
         """Upload a file to S3 with retry for Windows Defender scan locks.
 
         boto3.upload_file internally opens the file for reading. On Windows,
@@ -1663,6 +1686,7 @@ class DistributeCommand(Command):
                             except PermissionError:
                                 if attempt < 2:
                                     import time
+
                                     time.sleep(1)
                                 else:
                                     raise

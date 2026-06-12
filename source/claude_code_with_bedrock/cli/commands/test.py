@@ -458,7 +458,9 @@ class TestCommand(Command):
                 "auth0": "Auth0",
                 "cognito": "AWS Cognito",
             }
-            provider_label = provider_labels.get(provider_type, provider_type.title() if provider_type else "your identity provider")
+            provider_label = provider_labels.get(
+                provider_type, provider_type.title() if provider_type else "your identity provider"
+            )
             console.print(f"• Ensure you have access to the {provider_label} application")
             console.print("• Check that the Cognito Identity Pool is deployed")
             console.print("• Verify IAM roles have correct permissions")
@@ -607,7 +609,9 @@ class TestCommand(Command):
         except Exception as e:
             return {"status": "✗", "details": str(e)}
 
-    def _test_bedrock_access(self, profile_name: str, region: str, with_api: bool = False, selected_model: str = None) -> dict:
+    def _test_bedrock_access(
+        self, profile_name: str, region: str, with_api: bool = False, selected_model: str = None
+    ) -> dict:
         """Test Bedrock access in a specific region."""
         try:
             # Clear AWS credentials from environment
@@ -852,7 +856,8 @@ class TestCommand(Command):
         try:
             proc = subprocess.Popen(
                 [str(binary), "--config", str(config)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
             time.sleep(2)
             if proc.poll() is not None:
@@ -943,6 +948,7 @@ class TestCommand(Command):
     def _get_fallback_test_model() -> str:
         """Get a fallback test model using the cheapest available model."""
         from claude_code_with_bedrock.models import resolve_model_for_tier
+
         return resolve_model_for_tier("haiku", "us") or "anthropic.claude-haiku-4-5-20251001-v1:0"
 
     def _test_model_invocation(self, profile_name: str, region: str, selected_model: str = None) -> dict:
@@ -1146,7 +1152,9 @@ class TestCommand(Command):
             try:
                 resolved = manager.resolve_quota_for_user(test_email, groups=None)
                 if resolved and resolved.identifier == test_email:
-                    results.append({"name": "Resolve Quota", "status": "✓", "details": "User policy correctly resolved"})
+                    results.append(
+                        {"name": "Resolve Quota", "status": "✓", "details": "User policy correctly resolved"}
+                    )
                 else:
                     results.append(
                         {"name": "Resolve Quota", "status": "!", "details": "Policy resolved but not user-specific"}
@@ -1374,8 +1382,7 @@ class TestCommand(Command):
 
         console.print(
             Panel.fit(
-                "[bold cyan]Quota Monitoring Tests[/bold cyan]\n\n"
-                f"Testing profile: [bold]{profile_name}[/bold]",
+                f"[bold cyan]Quota Monitoring Tests[/bold cyan]\n\nTesting profile: [bold]{profile_name}[/bold]",
                 border_style="cyan",
                 padding=(1, 2),
             )
@@ -1398,7 +1405,9 @@ class TestCommand(Command):
             if endpoint:
                 task = progress.add_task("Testing quota API...", total=None)
                 api_result = self._test_quota_api(credential_binary, endpoint, package_dir, profile_name)
-                test_results.append({"name": "Quota API", "status": api_result["status"], "details": api_result["details"]})
+                test_results.append(
+                    {"name": "Quota API", "status": api_result["status"], "details": api_result["details"]}
+                )
                 progress.update(task, completed=True)
             else:
                 test_results.append({"name": "Quota API", "status": "!", "details": "No endpoint configured"})

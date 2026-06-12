@@ -39,7 +39,9 @@ class Profile:
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
-    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    okta_auth_server: str = (
+        ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    )
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
@@ -176,7 +178,11 @@ class Profile:
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
                         okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                        if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                            "okta.com",
+                            "oktapreview.com",
+                            "okta-emea.com",
+                        ):
                             data["provider_type"] = "okta"
                         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                             data["provider_type"] = "auth0"
@@ -322,8 +328,7 @@ class Config:
         # Validate profile name
         if not self._is_valid_profile_name(profile.name):
             raise ValueError(
-                f"Invalid profile name: {profile.name}. "
-                "Name must be alphanumeric with hyphens only, max 64 characters."
+                f"Invalid profile name: {profile.name}. Name must be alphanumeric with hyphens only, max 64 characters."
             )
 
         # Update timestamp

@@ -30,9 +30,7 @@ from claude_code_with_bedrock.config import Config
 #   login.microsoftonline.com/{tenant-id}/v2.0
 #   https://login.microsoftonline.com/{tenant-id}
 #   {tenant-id} (bare GUID)
-_AZURE_GUID_PATTERN = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+_AZURE_GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _extract_azure_tenant_id(domain: str) -> str:
@@ -141,7 +139,9 @@ class DeployCommand(Command):
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
                 if getattr(profile, "monitoring_mode", "central") == "sidecar":
-                    console.print("[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]")
+                    console.print(
+                        "[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]"
+                    )
                     return 1
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
             elif stack_arg == "analytics":
@@ -244,8 +244,7 @@ class DeployCommand(Command):
                             "SSO authentication (per-user JWT tokens) but SSO is disabled in this profile.[/yellow]"
                         )
                         console.print(
-                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. "
-                            "See issue #454.[/dim]"
+                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. See issue #454.[/dim]"
                         )
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
@@ -504,6 +503,7 @@ class DeployCommand(Command):
                 bedrock_regions = profile.allowed_bedrock_regions
                 if not bedrock_regions:
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
@@ -775,9 +775,7 @@ class DeployCommand(Command):
                 params = [
                     f"MetricsRegion={profile.aws_region}",
                 ]
-                return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CoWork dashboard..."
-                )
+                return deploy_with_cf(template, stack_name, params, task_description="Deploying CoWork dashboard...")
 
             elif stack_type == "analytics":
                 template = project_root / "deployment" / "infrastructure" / "analytics-pipeline.yaml"
@@ -894,9 +892,13 @@ class DeployCommand(Command):
             elif stack_type == "codebuild":
                 # WINDOWS_SERVER_2022_CONTAINER is only available in select regions
                 codebuild_supported_regions = [
-                    "us-east-1", "us-east-2", "us-west-2",
-                    "eu-central-1", "eu-west-1",
-                    "ap-northeast-1", "ap-southeast-2",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-2",
+                    "eu-central-1",
+                    "eu-west-1",
+                    "ap-northeast-1",
+                    "ap-southeast-2",
                     "sa-east-1",
                 ]
                 if profile.aws_region not in codebuild_supported_regions:
@@ -946,6 +948,7 @@ class DeployCommand(Command):
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
                 from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
@@ -987,16 +990,20 @@ class DeployCommand(Command):
                         if "." in profile.provider_domain
                         else profile.provider_domain
                     )
-                    params.extend([
-                        f"CognitoUserPoolId={profile.cognito_user_pool_id}",
-                        f"CognitoUserPoolClientId={profile.client_id}",
-                        f"CognitoUserPoolDomain={cognito_domain}",
-                    ])
-                params.extend([
-                    f"IdentityPoolName={profile.identity_pool_name}",
-                    f"AllowedBedrockRegions={','.join(bedrock_regions)}",
-                    f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
-                ])
+                    params.extend(
+                        [
+                            f"CognitoUserPoolId={profile.cognito_user_pool_id}",
+                            f"CognitoUserPoolClientId={profile.client_id}",
+                            f"CognitoUserPoolDomain={cognito_domain}",
+                        ]
+                    )
+                params.extend(
+                    [
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+                )
                 print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         elif stack_type == "networking":
@@ -1308,6 +1315,7 @@ class DeployCommand(Command):
                     console.print("[green]✓ ECS service linked role created[/green]")
                     # Wait for IAM propagation before proceeding with ECS cluster creation
                     import time
+
                     console.print("[dim]Waiting for IAM role propagation...[/dim]")
                     time.sleep(10)
                 except iam_client.exceptions.InvalidInputException as e:

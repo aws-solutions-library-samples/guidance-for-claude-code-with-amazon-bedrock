@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class InferenceProfile:
     """A CRIS inference profile for a specific geography."""
+
     model_id: str
     description: str
     source_regions: tuple[str, ...]
@@ -46,6 +47,7 @@ class InferenceProfile:
 @dataclass(frozen=True)
 class ClaudeModel:
     """A Claude model with its available inference profiles."""
+
     name: str
     base_model_id: str
     profiles: dict[str, InferenceProfile]
@@ -97,7 +99,13 @@ def _build_model(data: dict) -> ClaudeModel:
     )
 
 
-DEFAULT_REGIONS = {"us": "us-east-1", "eu": "eu-west-1", "europe": "eu-west-1", "apac": "ap-northeast-1", "us-gov": "us-gov-west-1"}
+DEFAULT_REGIONS = {
+    "us": "us-east-1",
+    "eu": "eu-west-1",
+    "europe": "eu-west-1",
+    "apac": "ap-northeast-1",
+    "us-gov": "us-gov-west-1",
+}
 
 # Claude model configurations
 # Each model defines its availability across different cross-region profiles
@@ -110,26 +118,57 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "us.anthropic.claude-sonnet-4-6",
                 "description": "US CRIS - US and Canada regions",
                 "source_regions": [
-                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-                    "ca-central-1", "ca-west-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
                 ],
                 "destination_regions": [
-                    "us-east-1", "us-east-2", "us-west-2",
-                    "ca-central-1", "ca-west-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
                 ],
             },
             "global": {
                 "model_id": "global.anthropic.claude-sonnet-4-6",
                 "description": "Global CRIS - All commercial AWS regions worldwide",
                 "source_regions": [
-                    "af-south-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-                    "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
-                    "ap-southeast-4", "ap-southeast-5", "ap-southeast-7",
-                    "ca-central-1", "ca-west-1",
-                    "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
-                    "eu-west-1", "eu-west-2", "eu-west-3",
-                    "il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1",
-                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "af-south-1",
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    "ca-central-1",
+                    "ca-west-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "mx-central-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
                 ],
                 "destination_regions": ["all-commercial"],
             },
@@ -137,7 +176,14 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "eu.anthropic.claude-sonnet-4-6",
                 "description": "EU CRIS - European regions",
                 "source_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
-                "destination_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
             },
             "au": {
                 "model_id": "au.anthropic.claude-sonnet-4-6",
@@ -399,11 +445,16 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
                 "description": "US CRIS - US and Canada regions",
                 "source_regions": [
-                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
                     "ca-central-1",
                 ],
                 "destination_regions": [
-                    "us-east-1", "us-east-2", "us-west-2",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-2",
                     "ca-central-1",
                 ],
             },
@@ -411,14 +462,38 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
                 "description": "Global CRIS - All commercial AWS regions worldwide",
                 "source_regions": [
-                    "af-south-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-                    "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
-                    "ap-southeast-4", "ap-southeast-5", "ap-southeast-7",
-                    "ca-central-1", "ca-west-1",
-                    "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
-                    "eu-west-1", "eu-west-2", "eu-west-3",
-                    "il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1",
-                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "af-south-1",
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    "ca-central-1",
+                    "ca-west-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "mx-central-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
                 ],
                 "destination_regions": ["all-commercial"],
             },
@@ -426,7 +501,14 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
                 "description": "EU CRIS - European regions",
                 "source_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
-                "destination_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
             },
         },
     },
@@ -780,14 +862,38 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
                 "description": "All commercial regions",
                 "source_regions": [
-                    "af-south-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-                    "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
-                    "ap-southeast-4", "ap-southeast-5", "ap-southeast-7",
-                    "ca-central-1", "ca-west-1",
-                    "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
-                    "eu-west-1", "eu-west-2", "eu-west-3",
-                    "il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1",
-                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "af-south-1",
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    "ca-central-1",
+                    "ca-west-1",
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "il-central-1",
+                    "me-central-1",
+                    "me-south-1",
+                    "mx-central-1",
+                    "sa-east-1",
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
                 ],
                 "destination_regions": ["all-commercial"],
             },
@@ -795,7 +901,14 @@ _CLAUDE_MODELS_RAW = {
                 "model_id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
                 "description": "EU CRIS - European regions",
                 "source_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
-                "destination_regions": ["eu-central-1", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1", "eu-west-3"],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
             },
             "au": {
                 "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1176,11 +1289,13 @@ def get_throttle_metrics() -> list[dict]:
                 suffix = f" ({region})"
                 if profile_key not in ("us",):
                     suffix = f" {profile_key.upper()} ({region})"
-                metrics.append({
-                    "model_id": model_id,
-                    "label": f"{name}{suffix}",
-                    "region": region,
-                })
+                metrics.append(
+                    {
+                        "model_id": model_id,
+                        "label": f"{name}{suffix}",
+                        "region": region,
+                    }
+                )
     return metrics
 
 
@@ -1210,9 +1325,7 @@ DATA_RESIDENCY_PREFIXES = {"au", "jp", "eu"}
 
 # Auto-derived from MODEL_TIER_PREFERENCES: model_key → tier
 MODEL_KEY_TO_TIER: dict[str, str] = {
-    model_key: tier
-    for tier, model_keys in MODEL_TIER_PREFERENCES.items()
-    for model_key in model_keys
+    model_key: tier for tier, model_keys in MODEL_TIER_PREFERENCES.items() for model_key in model_keys
 }
 
 # Maps tier → Claude Code model alias used in ANTHROPIC_MODEL env var
@@ -1273,8 +1386,17 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
     # e.g. jp.opus doesn't exist → fall back to jp.sonnet-4-6.
     if resolved_prefix in DATA_RESIDENCY_PREFIXES:
         # Search all models (newest first) for ANY model with this prefix
-        all_model_keys = ["sonnet-4-6", "sonnet-4-5", "sonnet-4", "opus-4-6", "opus-4-5",
-                          "haiku-4-5", "sonnet-3-7", "opus-4-1", "opus-4"]
+        all_model_keys = [
+            "sonnet-4-6",
+            "sonnet-4-5",
+            "sonnet-4",
+            "opus-4-6",
+            "opus-4-5",
+            "haiku-4-5",
+            "sonnet-3-7",
+            "opus-4-1",
+            "opus-4",
+        ]
         for model_key in all_model_keys:
             if model_key in CLAUDE_MODELS:
                 profiles = CLAUDE_MODELS[model_key].get("profiles", {})

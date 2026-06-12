@@ -65,7 +65,6 @@ def build_mdm_config(
     }
 
 
-
 def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     """Add OTLP endpoint to MDM config if monitoring stack is deployed."""
     if not profile.monitoring_enabled:
@@ -77,9 +76,7 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         console.print("[dim]Sidecar mode — Cowork telemetry not supported, skipping OTLP config[/dim]")
         return
 
-    monitoring_stack = profile.stack_names.get(
-        "monitoring", f"{profile.identity_pool_name}-otel-collector"
-    )
+    monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
     try:
         outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
         endpoint = outputs.get("CollectorEndpoint")
