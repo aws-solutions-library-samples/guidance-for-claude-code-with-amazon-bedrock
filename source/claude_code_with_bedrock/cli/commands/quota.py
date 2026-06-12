@@ -127,6 +127,24 @@ def _parse_tokens(value: str) -> int:
     return int(value)
 
 
+def _parse_enforcement(
+    value: str | None, console, default: EnforcementMode = EnforcementMode.ALERT
+) -> tuple[EnforcementMode, bool]:
+    """Parse an enforcement-mode option value.
+
+    Returns (mode, ok). On an invalid value, prints an error and ok=False.
+    """
+    if not value:
+        return default, True
+    v = value.lower().strip()
+    if v == "block":
+        return EnforcementMode.BLOCK, True
+    if v == "alert":
+        return EnforcementMode.ALERT, True
+    console.print(f"[red]Invalid enforcement mode: {value}. Use 'alert' or 'block'.[/red]")
+    return default, False
+
+
 class QuotaCommand(Command):
     """Manage quota policies."""
 
@@ -169,7 +187,8 @@ class QuotaSetUserCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
 
@@ -225,6 +244,10 @@ class QuotaSetUserCommand(Command):
 
         enabled = not self.option("disabled")
 
+        daily_enforcement_mode, ok = _parse_enforcement(self.option("daily-enforcement"), console)
+        if not ok:
+            return 1
+
         try:
             manager = _get_quota_manager(profile)
             policy = manager.create_policy(
@@ -233,13 +256,14 @@ class QuotaSetUserCommand(Command):
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
                 enforcement_mode=enforcement_mode,
+                daily_enforcement_mode=daily_enforcement_mode,
                 enabled=enabled,
             )
             console.print(f"[green]Created user quota policy for {email}[/green]")
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
             return 0
 
         except PolicyAlreadyExistsError:
@@ -251,13 +275,14 @@ class QuotaSetUserCommand(Command):
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
                     enforcement_mode=enforcement_mode,
+                    daily_enforcement_mode=daily_enforcement_mode,
                     enabled=enabled,
                 )
                 console.print(f"[yellow]Updated existing user quota policy for {email}[/yellow]")
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -282,7 +307,8 @@ class QuotaSetGroupCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
 
@@ -332,6 +358,10 @@ class QuotaSetGroupCommand(Command):
 
         enabled = not self.option("disabled")
 
+        daily_enforcement_mode, ok = _parse_enforcement(self.option("daily-enforcement"), console)
+        if not ok:
+            return 1
+
         try:
             manager = _get_quota_manager(profile)
             policy = manager.create_policy(
@@ -340,13 +370,14 @@ class QuotaSetGroupCommand(Command):
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
                 enforcement_mode=enforcement_mode,
+                daily_enforcement_mode=daily_enforcement_mode,
                 enabled=enabled,
             )
             console.print(f"[green]Created group quota policy for '{group}'[/green]")
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
             return 0
 
         except PolicyAlreadyExistsError:
@@ -358,13 +389,14 @@ class QuotaSetGroupCommand(Command):
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
                     enforcement_mode=enforcement_mode,
+                    daily_enforcement_mode=daily_enforcement_mode,
                     enabled=enabled,
                 )
                 console.print(f"[yellow]Updated existing group quota policy for '{group}'[/yellow]")
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -385,7 +417,8 @@ class QuotaSetDefaultCommand(Command):
         option("profile", description="Configuration profile", flag=False, default=None),
         option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
-        option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
     ]
 
@@ -434,6 +467,10 @@ class QuotaSetDefaultCommand(Command):
 
         enabled = not self.option("disabled")
 
+        daily_enforcement_mode, ok = _parse_enforcement(self.option("daily-enforcement"), console)
+        if not ok:
+            return 1
+
         try:
             manager = _get_quota_manager(profile)
             policy = manager.create_policy(
@@ -442,13 +479,14 @@ class QuotaSetDefaultCommand(Command):
                 monthly_token_limit=monthly_limit,
                 daily_token_limit=daily_limit,
                 enforcement_mode=enforcement_mode,
+                daily_enforcement_mode=daily_enforcement_mode,
                 enabled=enabled,
             )
             console.print("[green]Created default quota policy[/green]")
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
             return 0
 
         except PolicyAlreadyExistsError:
@@ -460,13 +498,14 @@ class QuotaSetDefaultCommand(Command):
                     monthly_token_limit=monthly_limit,
                     daily_token_limit=daily_limit,
                     enforcement_mode=enforcement_mode,
+                    daily_enforcement_mode=daily_enforcement_mode,
                     enabled=enabled,
                 )
                 console.print("[yellow]Updated existing default quota policy[/yellow]")
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value}")
+                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")

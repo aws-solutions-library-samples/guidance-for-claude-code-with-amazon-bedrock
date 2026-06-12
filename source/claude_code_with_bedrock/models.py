@@ -976,6 +976,10 @@ class QuotaPolicy:
 
     # Enforcement (Phase 1: alert only, Phase 2: block support)
     enforcement_mode: EnforcementMode = EnforcementMode.ALERT
+    # Daily enforcement is independent of the monthly enforcement_mode so a daily
+    # cap can block while the monthly limit only alerts (or vice versa). The quota
+    # check Lambda reads this field; default "alert" preserves prior behavior.
+    daily_enforcement_mode: EnforcementMode = EnforcementMode.ALERT
 
     # Metadata
     created_at: datetime | None = None
@@ -1000,6 +1004,7 @@ class QuotaPolicy:
             "warning_threshold_80": self.warning_threshold_80,
             "warning_threshold_90": self.warning_threshold_90,
             "enforcement_mode": self.enforcement_mode.value,
+            "daily_enforcement_mode": self.daily_enforcement_mode.value,
             "enabled": self.enabled,
         }
 
@@ -1028,6 +1033,7 @@ class QuotaPolicy:
             warning_threshold_80=int(item.get("warning_threshold_80", 0)),
             warning_threshold_90=int(item.get("warning_threshold_90", 0)),
             enforcement_mode=EnforcementMode(item.get("enforcement_mode", "alert")),
+            daily_enforcement_mode=EnforcementMode(item.get("daily_enforcement_mode", "alert")),
             enabled=item.get("enabled", True),
             created_at=datetime.fromisoformat(item["created_at"]) if item.get("created_at") else None,
             updated_at=datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else None,
