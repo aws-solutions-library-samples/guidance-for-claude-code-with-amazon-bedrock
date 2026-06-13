@@ -83,3 +83,4 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+__pycache__/

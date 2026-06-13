@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cost estimator — computes per-user, per-model token cost from CloudWatch metrics'
+
+Parameters:
+  MetricsNamespace:
+    Type: String
+    Default: ClaudeCode
+    Description: CloudWatch metrics namespace
+
+  ScheduleExpression:
+    Type: String
+    Default: 'rate(1 hour)'
+    Description: How often to run cost estimation
+
+  UserDimension:
+    Type: String
+    Default: ''
+    Description: >-
+      Override for user identity dimension. Leave empty for auto-detection
+      (tries user.email first, falls back to user.id). Set explicitly only
+      if auto-detection picks the wrong dimension.
+
+  PricingRatesJson:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional JSON override for Bedrock pricing rates (per 1M tokens).
+      Format: {"opus": {"input": 5.0, "output": 25.0, ...}, ...}
+      Leave empty to use built-in defaults (updated with each release).
+
+Resources:
+  CostEstimatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CloudWatchMetricsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  CostEstimatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CostEstimatorRole.Arn
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          METRICS_NAMESPACE: !Ref MetricsNamespace
+          USER_DIMENSION: !Ref UserDimension
+          BEDROCK_PRICING_RATES_JSON: !Ref PricingRatesJson
+      Code:
+        ZipFile: |
+          # Placeholder — actual code deployed via aws cloudformation package
+          def lambda_handler(event, context):
+              return {"statusCode": 200}
+
+  CostEstimatorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger cost estimation on schedule
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Id: CostEstimatorTarget
+          Arn: !GetAtt CostEstimatorFunction.Arn
+
+  CostEstimatorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CostEstimatorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CostEstimatorSchedule.Arn
+
+Outputs:
+  CostEstimatorFunctionArn:
+    Description: ARN of the cost estimator Lambda
+    Value: !GetAtt CostEstimatorFunction.Arn
+
+  ScheduleArn:
+    Description: ARN of the EventBridge schedule rule
+    Value: !GetAtt CostEstimatorSchedule.Arn
+
+  CostDisclaimer:
+    Description: Cost accuracy notice
+    Value: >-
+      Cost metrics are estimates based on published Bedrock pricing rates.
+      Actual costs may vary due to committed throughput discounts, pricing
+      changes between releases, or custom pricing agreements. Use AWS Cost
+      Explorer for authoritative billing data.
