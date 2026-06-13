@@ -102,6 +102,13 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         mdm_config["otlpEndpoint"] = endpoint
         mdm_config["otlpProtocol"] = "http/protobuf"
         console.print(f"[dim]OTLP endpoint: {endpoint}[/dim]")
+
+        # Add CoWork service token for ALB auth bypass (if configured).
+        # CoWork cannot do OIDC — this static token header bypasses JWT validation.
+        cowork_token = getattr(profile, "cowork_service_token", None)
+        if cowork_token:
+            mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})
+            console.print("[dim]CoWork auth token configured for ALB bypass[/dim]")
     else:
         console.print("[dim]Monitoring endpoint not found — skipping OTLP config[/dim]")
 

@@ -1195,6 +1195,22 @@ class InitCommand(Command):
                 console.print("[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]")
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
+
+            # Generate CoWork service token for ALB auth bypass (central mode only).
+            # CoWork can't do OIDC, so this static token in X-Cowork-Token header
+            # bypasses JWT validation on the ALB listener.
+            monitoring_mode = config.get("monitoring", {}).get("mode", "central")
+            if monitoring_mode == "central":
+                existing_token = config.get("cowork_3p", {}).get("service_token", "")
+                if not existing_token:
+                    import uuid
+                    token = str(uuid.uuid4())
+                    config["cowork_3p"]["service_token"] = token
+                    console.print("[green]✓[/green] Generated CoWork service token for ALB auth bypass")
+                    console.print("[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]")
+                else:
+                    console.print("[dim]CoWork service token already configured[/dim]")
+
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")

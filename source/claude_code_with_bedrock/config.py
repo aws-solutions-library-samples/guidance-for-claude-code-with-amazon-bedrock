@@ -114,6 +114,7 @@ class Profile:
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
+    cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
 
     # Legacy field support
     @property

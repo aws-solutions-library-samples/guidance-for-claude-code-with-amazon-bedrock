@@ -46,11 +46,27 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable dual-export (OTLP + EMF) for analytics pipeline. When false, only OTLP export is used.
 
+  CoWorkServiceToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Optional static token for CoWork (Claude Desktop) telemetry.
+      When set, a listener rule allows requests with header
+      X-Cowork-Token matching this value to bypass JWT validation.
+      CoWork cannot perform OIDC auth (no browser/helper), so this
+      provides an alternative auth path for its OTLP events.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
+  HasCoWorkToken: !Not [!Equals [!Ref CoWorkServiceToken, '']]
+  HasCoWorkAuthBypass: !And
+    - !Condition HasCustomDomain
+    - !Condition HasJwtAuth
+    - !Condition HasCoWorkToken
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
 
 # Rules section removed - validation handled by deployment script
@@ -250,6 +266,25 @@ Resources:
         - - Type: forward
             TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
+
+  # CoWork auth bypass: allows CoWork traffic (which cannot do OIDC) to reach
+  # the collector by presenting a static service token in a custom header.
+  # Only created when CoWorkServiceToken parameter is set AND JWT auth is enabled.
+  CoWorkListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasCoWorkAuthBypass
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Cowork-Token
+            Values:
+              - !Ref CoWorkServiceToken
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
 
   # IAM Roles
   TaskExecutionRole:
