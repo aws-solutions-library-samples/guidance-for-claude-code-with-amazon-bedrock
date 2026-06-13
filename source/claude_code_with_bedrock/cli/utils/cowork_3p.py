@@ -88,6 +88,9 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         console.print("[dim]Sidecar mode — Cowork telemetry not supported, skipping OTLP config[/dim]")
         return
 
+    # Try to resolve collector endpoint from stack outputs first,
+    # fall back to profile.otel_collector_endpoint if stack query fails.
+    endpoint = None
     monitoring_stack = profile.stack_names.get(
         "monitoring", f"{profile.identity_pool_name}-otel-collector"
     )
@@ -95,8 +98,11 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
         endpoint = outputs.get("CollectorEndpoint")
     except Exception:
-        console.print("[dim]Could not query monitoring stack — skipping OTLP config[/dim]")
-        return
+        pass
+
+    if not endpoint:
+        # Fallback: use profile-level endpoint if configured
+        endpoint = getattr(profile, "otel_collector_endpoint", None)
 
     if endpoint:
         mdm_config["otlpEndpoint"] = endpoint
@@ -110,7 +116,10 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
             mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})
             console.print("[dim]CoWork auth token configured for ALB bypass[/dim]")
     else:
-        console.print("[dim]Monitoring endpoint not found — skipping OTLP config[/dim]")
+        console.print(
+            "[yellow]⚠ Could not resolve monitoring endpoint for CoWork telemetry.[/yellow]\n"
+            "[dim]  Set otel_collector_endpoint in your profile, or deploy the monitoring stack first.[/dim]"
+        )
 
 
 def _mdm_keys(config: dict) -> dict:

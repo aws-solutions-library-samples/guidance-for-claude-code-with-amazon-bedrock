@@ -1,5 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudWatch dashboard for Claude CoWork usage metrics using native PromQL widgets over OTLP-ingested metrics'
+Description: >-
+  CloudWatch dashboard and metric filters for Claude CoWork (Claude Desktop) telemetry.
+  Reads events from /aws/claude-cowork/events log group and extracts token/cost metrics.
 
 Parameters:
   DashboardName:
@@ -10,9 +12,88 @@ Parameters:
   MetricsRegion:
     Type: String
     Default: us-east-1
-    Description: Region where OTLP metrics are ingested
+    Description: Region where CoWork events are ingested
 
 Resources:
+  # CloudWatch Metric Filters — extract metrics from CoWork log events.
+  # CoWork emits lam_session_turn_completed events with token counts and cost.
+  # These filters create CloudWatch metrics in the ClaudeCoWork namespace.
+  # Note: AWS limits MetricTransformations to 1 per filter, so each metric
+  # requires its own filter resource.
+
+  InputTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-input-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.input
+          MetricValue: $.body.attributes.input_tokens
+          DefaultValue: 0
+
+  OutputTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-output-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.output
+          MetricValue: $.body.attributes.output_tokens
+          DefaultValue: 0
+
+  CacheReadTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-cache-read-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.cache_read
+          MetricValue: $.body.attributes.cache_read_input_tokens
+          DefaultValue: 0
+
+  CacheCreationTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-cache-creation-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.cache_creation
+          MetricValue: $.body.attributes.cache_creation_input_tokens
+          DefaultValue: 0
+
+  CostMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-cost
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: cost.usage
+          MetricValue: $.body.attributes.total_cost_usd
+          DefaultValue: 0
+
+  SessionCountMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-sessions
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: session.turns
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # Dashboard — uses the extracted CloudWatch metrics
   Dashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
@@ -23,198 +104,112 @@ Resources:
             {
               "type": "text",
               "x": 0, "y": 0, "width": 24, "height": 2,
-              "properties": { "markdown": "## Overview", "background": "transparent" }
+              "properties": { "markdown": "## CoWork (Claude Desktop) — Telemetry Dashboard\n\nMetrics extracted from CoWork events via CloudWatch Metric Filters on `/aws/claude-cowork/events`.\n\n**Note:** CoWork does not emit per-user identity. All metrics are aggregate across the deployment." }
             },
             {
-              "type": "chart",
+              "type": "metric",
               "x": 0, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "title": "Total Tokens Used",
-                "view": "number",
+                "title": "Total Tokens (Input + Output)",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "Tokens" }] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "token.usage.input", {"stat": "Sum", "label": "Input"}],
+                  ["ClaudeCoWork", "token.usage.output", {"stat": "Sum", "label": "Output"}]
+                ],
+                "view": "singleValue",
+                "period": 3600
               }
             },
             {
-              "type": "chart",
+              "type": "metric",
               "x": 6, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "title": "Active Users",
-                "view": "number",
+                "title": "Total Cost (USD)",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user.id\")({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"}))", "step": 60, "label": "Users" }] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "cost.usage", {"stat": "Sum", "label": "Cost (USD)"}]
+                ],
+                "view": "singleValue",
+                "period": 3600
               }
             },
             {
-              "type": "chart",
+              "type": "metric",
               "x": 12, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "title": "Total Sessions",
-                "view": "number",
+                "title": "Session Turns",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "Sessions" }] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "session.turns", {"stat": "Sum", "label": "Turns"}]
+                ],
+                "view": "singleValue",
+                "period": 3600
               }
             },
             {
-              "type": "chart",
+              "type": "metric",
               "x": 18, "y": 2, "width": 6, "height": 4,
               "properties": {
-                "title": "Total Cost (USD)",
-                "view": "number",
+                "title": "Cache Hit Tokens",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.cost.usage\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "USD" }] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "token.usage.cache_read", {"stat": "Sum", "label": "Cache Read"}],
+                  ["ClaudeCoWork", "token.usage.cache_creation", {"stat": "Sum", "label": "Cache Creation"}]
+                ],
+                "view": "singleValue",
+                "period": 3600
               }
             },
-
             {
-              "type": "text",
-              "x": 0, "y": 6, "width": 24, "height": 2,
-              "properties": { "markdown": "## Usage Over Time", "background": "transparent" }
-            },
-            {
-              "type": "chart",
-              "x": 0, "y": 8, "width": 12, "height": 6,
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
               "properties": {
                 "title": "Token Usage Over Time",
-                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "total", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.token.usage\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "Total Tokens" }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "token.usage.input", {"stat": "Sum", "label": "Input", "period": 3600}],
+                  ["ClaudeCoWork", "token.usage.output", {"stat": "Sum", "label": "Output", "period": 3600}],
+                  ["ClaudeCoWork", "token.usage.cache_read", {"stat": "Sum", "label": "Cache Read", "period": 3600}]
+                ],
+                "view": "timeSeries",
+                "stacked": true,
+                "period": 3600
               }
             },
             {
-              "type": "chart",
-              "x": 12, "y": 8, "width": 12, "height": 6,
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
               "properties": {
                 "title": "Cost Over Time (USD)",
-                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "cost", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.cost.usage\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "Cost (USD)" }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "cost.usage", {"stat": "Sum", "label": "Cost (USD)", "period": 3600}]
+                ],
+                "view": "timeSeries",
+                "period": 3600
               }
             },
             {
-              "type": "chart",
-              "x": 0, "y": 14, "width": 12, "height": 6,
+              "type": "metric",
+              "x": 0, "y": 12, "width": 12, "height": 6,
               "properties": {
-                "title": "Token Usage by Model",
-                "view": "line",
+                "title": "Turns Per Hour",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.token.usage\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "metrics": [
+                  ["ClaudeCoWork", "session.turns", {"stat": "Sum", "label": "Turns", "period": 3600}]
+                ],
+                "view": "timeSeries",
+                "period": 3600
               }
             },
             {
-              "type": "chart",
-              "x": 12, "y": 14, "width": 12, "height": 6,
+              "type": "log",
+              "x": 12, "y": 12, "width": 12, "height": 6,
               "properties": {
-                "title": "Active Sessions Over Time",
-                "view": "line",
+                "title": "Recent CoWork Events (Raw)",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"})", "step": 60, "label": "Sessions" }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-
-            {
-              "type": "text",
-              "x": 0, "y": 20, "width": 24, "height": 2,
-              "properties": { "markdown": "## Model & Token Breakdown", "background": "transparent" }
-            },
-            {
-              "type": "chart",
-              "x": 0, "y": 22, "width": 8, "height": 6,
-              "properties": {
-                "title": "Token Usage by Model",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.token.usage\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-            {
-              "type": "chart",
-              "x": 8, "y": 22, "width": 8, "height": 6,
-              "properties": {
-                "title": "Cost by Model (USD)",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (model)({\"claude_code.cost.usage\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-            {
-              "type": "chart",
-              "x": 16, "y": 22, "width": 8, "height": 6,
-              "properties": {
-                "title": "Token Usage by Type",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (type)({\"claude_code.token.usage\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-
-            {
-              "type": "text",
-              "x": 0, "y": 28, "width": 24, "height": 2,
-              "properties": { "markdown": "## Platform & Environment", "background": "transparent" }
-            },
-            {
-              "type": "chart",
-              "x": 0, "y": 30, "width": 8, "height": 6,
-              "properties": {
-                "title": "Sessions by Operating System",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"@resource.os.type\")({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-            {
-              "type": "chart",
-              "x": 8, "y": 30, "width": 8, "height": 6,
-              "properties": {
-                "title": "CoWork Versions in Use",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"@resource.service.version\")({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
-              }
-            },
-            {
-              "type": "chart",
-              "x": 16, "y": 30, "width": 8, "height": 6,
-              "properties": {
-                "title": "Sessions by Architecture",
-                "view": "pie",
-                "region": "${MetricsRegion}",
-                "data": { "queries": [
-                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (\"@resource.host.arch\")({\"claude_code.session.count\", \"@resource.service.name\"=\"cowork\"}))", "step": 60 }
-                ] },
-                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, body.name, body.attributes.model, body.attributes.input_tokens, body.attributes.output_tokens, body.attributes.total_cost_usd | sort @timestamp desc | limit 20",
+                "view": "table"
               }
             }
           ]
@@ -223,4 +218,4 @@ Resources:
 Outputs:
   DashboardURL:
     Description: Direct URL to the CoWork CloudWatch dashboard
-    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}"

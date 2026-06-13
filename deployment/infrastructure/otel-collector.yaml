@@ -349,9 +349,12 @@ Resources:
                     - logs:CreateLogStream
                     - logs:PutLogEvents
                     - logs:CreateLogGroup
+                    - logs:PutRetentionPolicy
                   Resource:
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events:*'
                 - !Ref 'AWS::NoValue'
         # We keep the CloudWatch permissions but remove the AssumeRole permission
         # that was related to the overly permissive trust policy
@@ -481,6 +484,12 @@ Resources:
                   - dimensions: [[decision, OTelLib]]
                     metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
+
             service:
               extensions: [health_check, sigv4auth]
               telemetry:
@@ -494,6 +503,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp, awsemf]
+                logs:
+                  receivers: [otlp]
+                  processors: [resource]
+                  exporters: [awscloudwatchlogs/cowork]
         - !Sub |
             extensions:
               health_check:
@@ -565,6 +578,12 @@ Resources:
                 auth:
                   authenticator: sigv4auth
 
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
+
             service:
               extensions: [health_check, sigv4auth]
               telemetry:
@@ -578,6 +597,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp]
+                logs:
+                  receivers: [otlp]
+                  processors: [resource]
+                  exporters: [awscloudwatchlogs/cowork]
 
   # ECS Task Definition
   TaskDefinition:
