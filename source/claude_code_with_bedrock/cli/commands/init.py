@@ -1110,6 +1110,35 @@ class InitCommand(Command):
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
                     config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
+                    # Quota mode selection
+                    console.print("\n[bold]Quota Mode[/bold]")
+                    console.print("Choose how usage is measured against limits:")
+                    console.print("  • token: count raw tokens (simple, existing behavior)")
+                    console.print("  • cost: estimate USD spend using Bedrock rates (handles cache reads accurately)")
+                    quota_mode = questionary.select(
+                        "Quota enforcement mode:",
+                        choices=[
+                            questionary.Choice("token (count raw tokens)", value="token"),
+                            questionary.Choice("cost (estimate USD spend)", value="cost"),
+                        ],
+                        default=config.get("quota", {}).get("quota_mode", "token"),
+                    ).ask()
+                    config["quota"]["quota_mode"] = quota_mode
+
+                    if quota_mode == "cost":
+                        console.print("\n[dim]Set dollar limits. Costs are estimated from Bedrock on-demand rates.")
+                        console.print("Use AWS Cost Explorer for authoritative billing data.[/dim]")
+                        monthly_cost = questionary.text(
+                            "Monthly cost limit per user (USD, 0=unlimited):",
+                            default=str(config.get("quota", {}).get("monthly_cost_limit", 500)),
+                        ).ask()
+                        daily_cost = questionary.text(
+                            "Daily cost limit per user (USD, 0=unlimited):",
+                            default=str(config.get("quota", {}).get("daily_cost_limit", 50)),
+                        ).ask()
+                        config["quota"]["monthly_cost_limit"] = float(monthly_cost)
+                        config["quota"]["daily_cost_limit"] = float(daily_cost)
+
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
                     console.print("How often to re-check quota with cached credentials:")
@@ -2115,6 +2144,9 @@ class InitCommand(Command):
             "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
             "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
             "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
+            "quota_mode": config_data.get("quota", {}).get("quota_mode", "token"),
+            "monthly_cost_limit": config_data.get("quota", {}).get("monthly_cost_limit", 0.0),
+            "daily_cost_limit": config_data.get("quota", {}).get("daily_cost_limit", 0.0),
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
@@ -2491,6 +2523,9 @@ class InitCommand(Command):
                     "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
                     "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
                     "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                    "quota_mode": getattr(profile, "quota_mode", "token"),
+                    "monthly_cost_limit": getattr(profile, "monthly_cost_limit", 0.0),
+                    "daily_cost_limit": getattr(profile, "daily_cost_limit", 0.0),
                 }
 
             # Add analytics configuration if present

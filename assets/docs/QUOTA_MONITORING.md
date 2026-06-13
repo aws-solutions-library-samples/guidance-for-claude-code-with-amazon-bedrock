@@ -95,6 +95,26 @@ Each limit type can be configured with different enforcement:
 - **Daily**: `alert` - Warn about unusual patterns, don't interrupt work
 - **Monthly**: `block` - Hard stop at budget limit
 
+### Quota Modes
+
+Two enforcement modes control how usage is measured:
+
+| Mode | Limits set as | What's compared | Best for |
+|------|---------------|-----------------|----------|
+| **token** (default) | Token counts (e.g., 10M/month) | Raw total tokens consumed | Simple deployments, predictable single-model usage |
+| **cost** | USD amounts (e.g., $500/month) | Estimated spend using Bedrock rates | Multi-model deployments, teams confused by cache-inflated token counts |
+
+**Cost mode** applies per-token-type pricing (input, output, cache read, cache write) so cache-heavy usage doesn't trigger false alerts. A user consuming 15M cache read tokens costs ~$4.65, not the $45 that raw token counting implies.
+
+Configure via the `QuotaMode` CloudFormation parameter:
+```yaml
+QuotaMode: cost
+MonthlyCostLimitUsd: 500
+DailyCostLimitUsd: 50
+```
+
+> **Note:** Cost estimates use published Bedrock on-demand rates shipped with each release. Actual costs may differ due to committed throughput discounts or pricing changes. Use AWS Cost Explorer for billing truth.
+
 ### Example Configuration
 
 ```
@@ -263,7 +283,7 @@ The browser page displays:
 
 In addition to browser notifications, the terminal shows:
 
-**Warning (80%+ usage):**
+**Warning (80%+ usage) — Token Mode:**
 ```
 ============================================================
 QUOTA WARNING
@@ -273,7 +293,17 @@ QUOTA WARNING
 ============================================================
 ```
 
-**Blocked (100%+ usage):**
+**Warning (80%+ usage) — Cost Mode:**
+```
+============================================================
+QUOTA WARNING
+============================================================
+  Monthly: $400.00 / $500.00 (80.0%)
+  Daily: $40.00 / $50.00 (80.0%)
+============================================================
+```
+
+**Blocked (100%+ usage) — Token Mode:**
 ```
 ============================================================
 ACCESS BLOCKED - QUOTA EXCEEDED
@@ -284,6 +314,24 @@ Contact your administrator for assistance.
 
 Current Usage:
   Monthly: 225,000,000 / 225,000,000 tokens (100.0%)
+
+Policy: user:john.doe@company.com
+
+To request an unblock, contact your administrator.
+============================================================
+```
+
+**Blocked (100%+ usage) — Cost Mode:**
+```
+============================================================
+ACCESS BLOCKED - QUOTA EXCEEDED
+============================================================
+
+Monthly spend limit exceeded: $500.00 / $500.00 (100.0%).
+Contact your administrator.
+
+Current Usage:
+  Monthly: $500.00 / $500.00 (100.0%)
 
 Policy: user:john.doe@company.com
 
