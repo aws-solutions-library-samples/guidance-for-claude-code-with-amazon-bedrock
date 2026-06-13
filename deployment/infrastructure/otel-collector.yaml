@@ -314,6 +314,7 @@ Resources:
                     - logs:CreateLogStream
                     - logs:PutLogEvents
                     - logs:CreateLogGroup
+                    - logs:PutRetentionPolicy
                   Resource:
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'

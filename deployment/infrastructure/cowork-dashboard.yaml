@@ -216,6 +216,6 @@ Resources:
         }
 
 Outputs:
-  DashboardUrl:
+  DashboardURL:
     Description: Direct URL to the CoWork CloudWatch dashboard
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}"
