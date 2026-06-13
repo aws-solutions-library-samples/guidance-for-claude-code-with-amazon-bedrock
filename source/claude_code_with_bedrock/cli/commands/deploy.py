@@ -1353,6 +1353,17 @@ class DeployCommand(Command):
             if issuer_url and not issuer_url.startswith(("http://", "https://")):
                 issuer_url = f"https://{issuer_url}"
 
+        # Okta authenticates via its default custom authorization server, so issued
+        # tokens carry iss=https://<domain>/oauth2/default. The quota JWT authorizer
+        # must match that exact issuer or every /check request 401s (and, with
+        # fail-open, silently disables enforcement).
+        if (
+            profile.provider_type == "okta"
+            and issuer_url
+            and not issuer_url.rstrip("/").endswith("/oauth2/default")
+        ):
+            issuer_url = f"{issuer_url.rstrip('/')}/oauth2/default"
+
         # Auth0 tokens include trailing slash in iss claim, so authorizer must match
         if profile.provider_type == "auth0" and issuer_url and not issuer_url.endswith("/"):
             issuer_url += "/"

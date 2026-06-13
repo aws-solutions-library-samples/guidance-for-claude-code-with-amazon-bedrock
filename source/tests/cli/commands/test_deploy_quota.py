@@ -123,15 +123,30 @@ class TestResolveOidcConfig:
         assert client_id == ""
 
     def test_sso_enabled_okta_returns_valid_issuer(self, command):
-        """Okta provider returns https:// prefixed domain."""
+        """Okta returns the default authz server issuer (https://<domain>/oauth2/default).
+
+        Okta tokens are minted by the default custom authorization server, so the
+        quota JWT authorizer issuer must include the /oauth2/default suffix to match
+        the token's iss claim.
+        """
         profile = Mock()
         profile.sso_enabled = True
         profile.provider_type = "okta"
         profile.provider_domain = "company.okta.com"
         profile.client_id = "abc123"
         issuer, client_id = command._resolve_oidc_config(profile)
-        assert issuer == "https://company.okta.com"
+        assert issuer == "https://company.okta.com/oauth2/default"
         assert client_id == "abc123"
+
+    def test_sso_enabled_okta_does_not_double_append_oauth2_default(self, command):
+        """If provider_domain already includes /oauth2/default, it isn't appended twice."""
+        profile = Mock()
+        profile.sso_enabled = True
+        profile.provider_type = "okta"
+        profile.provider_domain = "https://company.okta.com/oauth2/default"
+        profile.client_id = "abc123"
+        issuer, _ = command._resolve_oidc_config(profile)
+        assert issuer == "https://company.okta.com/oauth2/default"
 
     def test_sso_enabled_cognito_returns_pool_url(self, command):
         """Cognito provider returns cognito-idp issuer URL."""

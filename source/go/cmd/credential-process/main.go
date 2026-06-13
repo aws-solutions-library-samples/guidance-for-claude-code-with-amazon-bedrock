@@ -211,7 +211,27 @@ func (a *credentialApp) getMonitoringToken() int {
 		return 0
 	}
 
-	// No cached token — trigger authentication
+	// Cached monitoring token expired or near-expiry. Try refresh_token
+	// exchange (PR #447) before opening a browser — this is the only path
+	// that works for Cowork 3P (no browser popup possible) and eliminates
+	// per-prompt auth interruptions for terminal users whose monitoring
+	// token has aged past the 10-min buffer in storage.GetMonitoringToken
+	// while their refresh_token is still valid (typically 7-30 days).
+	//
+	// Note: trySilentRefresh() is intentionally not attempted here — its
+	// first step is storage.GetMonitoringToken(), which we just observed
+	// returns empty. Only refresh_token (separately stored) is meaningful.
+	if creds := a.tryRefreshToken(); creds != nil {
+		_ = creds // tryRefreshToken already saved AWS creds and the fresh monitoring token
+		if t, terr := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage); terr == nil && t != "" {
+			fmt.Println(t)
+			return 0
+		}
+		debugPrint("refresh_token exchange succeeded but monitoring token unreadable; falling through to browser auth")
+	}
+
+	// No refresh_token available, refresh failed, or refresh produced no
+	// readable monitoring token — fall back to browser authentication.
 	debugPrint("No valid monitoring token found, triggering authentication...")
 	authResult, err := a.authenticate()
 	if err != nil {

@@ -153,6 +153,108 @@ _CLAUDE_MODELS_RAW = {
             },
         },
     },
+    "opus-4-8": {
+        "name": "Claude Opus 4.8",
+        "base_model_id": "anthropic.claude-opus-4-8",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-opus-4-8",
+                "description": "US CRIS - US and Canada regions",
+                "source_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+                "destination_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-opus-4-8",
+                "description": "Global CRIS - All commercial AWS regions worldwide",
+                "source_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # Middle East & Africa
+                    "me-south-1",
+                    "me-central-1",
+                    "af-south-1",
+                    "il-central-1",
+                    # South America
+                    "sa-east-1",
+                ],
+                "destination_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    # Middle East & Africa
+                    "me-south-1",
+                    "me-central-1",
+                    "af-south-1",
+                    "il-central-1",
+                    # South America
+                    "sa-east-1",
+                ],
+            },
+        },
+    },
     "opus-4-7": {
         "name": "Claude Opus 4.7",
         "base_model_id": "anthropic.claude-opus-4-7",
@@ -976,6 +1078,10 @@ class QuotaPolicy:
 
     # Enforcement (Phase 1: alert only, Phase 2: block support)
     enforcement_mode: EnforcementMode = EnforcementMode.ALERT
+    # Daily enforcement is independent of the monthly enforcement_mode so a daily
+    # cap can block while the monthly limit only alerts (or vice versa). The quota
+    # check Lambda reads this field; default "alert" preserves prior behavior.
+    daily_enforcement_mode: EnforcementMode = EnforcementMode.ALERT
 
     # Metadata
     created_at: datetime | None = None
@@ -1000,6 +1106,7 @@ class QuotaPolicy:
             "warning_threshold_80": self.warning_threshold_80,
             "warning_threshold_90": self.warning_threshold_90,
             "enforcement_mode": self.enforcement_mode.value,
+            "daily_enforcement_mode": self.daily_enforcement_mode.value,
             "enabled": self.enabled,
         }
 
@@ -1028,6 +1135,7 @@ class QuotaPolicy:
             warning_threshold_80=int(item.get("warning_threshold_80", 0)),
             warning_threshold_90=int(item.get("warning_threshold_90", 0)),
             enforcement_mode=EnforcementMode(item.get("enforcement_mode", "alert")),
+            daily_enforcement_mode=EnforcementMode(item.get("daily_enforcement_mode", "alert")),
             enabled=item.get("enabled", True),
             created_at=datetime.fromisoformat(item["created_at"]) if item.get("created_at") else None,
             updated_at=datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else None,
@@ -1191,7 +1299,7 @@ def get_throttle_metrics() -> list[dict]:
 MODEL_TIER_PREFERENCES = {
     "haiku": ["haiku-4-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
     "sonnet": ["sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
-    "opus": ["opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
+    "opus": ["opus-4-8", "opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
 }
 
 

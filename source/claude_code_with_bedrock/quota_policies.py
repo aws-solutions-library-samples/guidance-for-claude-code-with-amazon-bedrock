@@ -116,6 +116,7 @@ class QuotaPolicyManager:
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode = EnforcementMode.ALERT,
+        daily_enforcement_mode: EnforcementMode = EnforcementMode.ALERT,
         enabled: bool = True,
         created_by: str | None = None,
     ) -> QuotaPolicy:
@@ -158,6 +159,7 @@ class QuotaPolicyManager:
             warning_threshold_80=warning_threshold_80,
             warning_threshold_90=warning_threshold_90,
             enforcement_mode=enforcement_mode,
+            daily_enforcement_mode=daily_enforcement_mode,
             enabled=enabled,
             created_at=now,
             updated_at=now,
@@ -216,6 +218,7 @@ class QuotaPolicyManager:
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode | None = None,
+        daily_enforcement_mode: EnforcementMode | None = None,
         enabled: bool | None = None,
     ) -> QuotaPolicy:
         """Update an existing policy.
@@ -278,6 +281,10 @@ class QuotaPolicyManager:
         if enforcement_mode is not None:
             update_parts.append("enforcement_mode = :mode")
             expression_values[":mode"] = enforcement_mode.value
+
+        if daily_enforcement_mode is not None:
+            update_parts.append("daily_enforcement_mode = :daily_mode")
+            expression_values[":daily_mode"] = daily_enforcement_mode.value
 
         if enabled is not None:
             update_parts.append("#enabled = :enabled")
