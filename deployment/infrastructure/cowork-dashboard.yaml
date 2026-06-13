@@ -18,34 +18,52 @@ Resources:
   # CloudWatch Metric Filters — extract metrics from CoWork log events.
   # CoWork emits lam_session_turn_completed events with token counts and cost.
   # These filters create CloudWatch metrics in the ClaudeCoWork namespace.
+  # Note: AWS limits MetricTransformations to 1 per filter, so each metric
+  # requires its own filter resource.
 
-  TokenUsageMetricFilter:
+  InputTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: /aws/claude-cowork/events
-      FilterName: cowork-token-usage
+      FilterName: cowork-input-tokens
       FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.input
           MetricValue: $.body.attributes.input_tokens
           DefaultValue: 0
+
+  OutputTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-output-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.output
           MetricValue: $.body.attributes.output_tokens
           DefaultValue: 0
 
-  CacheTokenMetricFilter:
+  CacheReadTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: /aws/claude-cowork/events
-      FilterName: cowork-cache-tokens
+      FilterName: cowork-cache-read-tokens
       FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_read
           MetricValue: $.body.attributes.cache_read_input_tokens
           DefaultValue: 0
+
+  CacheCreationTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-cache-creation-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_creation
           MetricValue: $.body.attributes.cache_creation_input_tokens
