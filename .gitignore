@@ -65,6 +65,7 @@ guidance-submission/
 tests/
 !source/tests/
 !source/tests/**
+source/tests/**/__pycache__/
 assets/docs/planning
 
 .pytest_cache/

@@ -1050,7 +1050,6 @@ class MultiProviderAuth:
         """
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
 
         # Env vars take precedence over config.json so paths stay portable across
         # machines (self-install and admin-push scenarios).  This follows the
