@@ -1,0 +1,31 @@
+{
+  "name": "e2e-test",
+  "provider_domain": "token.actions.githubusercontent.com",
+  "client_id": "sts.amazonaws.com",
+  "credential_storage": "session",
+  "aws_region": "us-east-1",
+  "identity_pool_name": "ccwb-e2e-test-pool",
+  "schema_version": "2.0",
+  "provider_type": "generic",
+  "federation_type": "direct",
+  "sso_enabled": false,
+  "cross_region_profile": "us",
+  "selected_model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "selected_source_region": "us-east-1",
+  "monitoring_enabled": true,
+  "monitoring_mode": "central",
+  "analytics_enabled": false,
+  "quota_monitoring_enabled": true,
+  "monthly_token_limit": 1000000,
+  "daily_token_limit": 100000,
+  "daily_enforcement_mode": "block",
+  "monthly_enforcement_mode": "block",
+  "enable_finegrained_quotas": false,
+  "enable_codebuild": false,
+  "enable_distribution": false,
+  "tags": {
+    "ccwb-test": "true",
+    "environment": "e2e-ci",
+    "managed-by": "github-actions"
+  }
+}

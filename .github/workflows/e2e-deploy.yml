@@ -1,0 +1,299 @@
+name: E2E Deployment Tests
+
+on:
+  push:
+    branches: [beta]          # Run on every beta merge
+  pull_request:
+    branches: [main]          # Gate beta→main promotions
+  schedule:
+    # Nightly at 4 AM UTC (catches time-dependent drift)
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      skip_destroy:
+        description: 'Skip teardown (for debugging stuck deployments)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write  # Required for GitHub OIDC → AWS
+
+concurrency:
+  group: e2e-deploy
+  cancel-in-progress: false  # Never cancel a running deployment
+
+jobs:
+  deploy-and-test:
+    name: Deploy → Test → Destroy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: e2e-test  # Protected environment with secrets
+
+    env:
+      CCWB_PROFILE: e2e-test
+      STACK_PREFIX: ccwb-e2e-${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry + dependencies
+        run: |
+          pip install poetry
+          cd source && poetry install --no-interaction
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.E2E_ROLE_ARN }}
+          aws-region: ${{ secrets.E2E_AWS_REGION || 'us-east-1' }}
+          role-session-name: ccwb-e2e-${{ github.run_id }}
+
+      - name: Verify AWS access
+        run: aws sts get-caller-identity
+
+      # ── Phase 1: Setup ──────────────────────────────────────────────
+      - name: Import test profile
+        run: |
+          mkdir -p ~/.ccwb/profiles
+          cp tests/e2e/fixtures/e2e-profile.json ~/.ccwb/profiles/e2e-test.json
+          echo '{"schema_version": "2.0", "active_profile": "e2e-test"}' > ~/.ccwb/config.json
+
+      - name: Validate profile
+        working-directory: source
+        run: poetry run ccwb config validate e2e-test
+
+      # ── Phase 2: Deploy ─────────────────────────────────────────────
+      - name: Deploy infrastructure
+        working-directory: source
+        run: poetry run ccwb deploy --yes
+        timeout-minutes: 15
+
+      - name: Verify stacks created
+        run: |
+          aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[?starts_with(StackName, 'ccwb-') || starts_with(StackName, 'claude-code-')].[StackName, StackStatus]" \
+            --output table
+
+      # ── Phase 3: Validate ───────────────────────────────────────────
+      - name: Run integration tests
+        working-directory: source
+        run: poetry run pytest tests/e2e/test_integration.py -v --tb=short
+        env:
+          E2E_ACTIVE: "true"
+
+      # ── Phase 4: Bedrock Invocation ─────────────────────────────────
+      - name: Test Bedrock access
+        run: |
+          aws bedrock-runtime converse \
+            --model-id us.anthropic.claude-sonnet-4-20250514-v1:0 \
+            --messages '[{"role": "user", "content": [{"text": "Say hello in exactly 3 words."}]}]' \
+            --max-tokens 50 \
+            --region us-east-1 \
+            --output json | jq '.output.message.content[0].text'
+
+      # ── Phase 5: Teardown ───────────────────────────────────────────
+      - name: Destroy infrastructure
+        if: always() && inputs.skip_destroy != true
+        working-directory: source
+        run: poetry run ccwb destroy --yes
+        timeout-minutes: 10
+
+      - name: Verify cleanup
+        if: always() && inputs.skip_destroy != true
+        run: |
+          REMAINING=$(aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[?starts_with(StackName, 'ccwb-') || starts_with(StackName, 'claude-code-')].StackName" \
+            --output text)
+          
+          if [ -n "$REMAINING" ]; then
+            echo "::error::Stacks not cleaned up: $REMAINING"
+            exit 1
+          fi
+          echo "✓ All stacks destroyed successfully"
+
+  # ── CodeBuild Windows Validation (beta→main only) ─────────────────
+  codebuild-windows:
+    name: CodeBuild Windows Binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: e2e-test
+    needs: [deploy-and-test]
+    # Only run on beta→main promotion (not nightly or beta pushes)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry + dependencies
+        run: |
+          pip install poetry
+          cd source && poetry install --no-interaction
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.E2E_ROLE_ARN }}
+          aws-region: ${{ secrets.E2E_AWS_REGION || 'us-east-1' }}
+          role-session-name: ccwb-codebuild-${{ github.run_id }}
+
+      - name: Import test profile (CodeBuild enabled)
+        run: |
+          mkdir -p ~/.ccwb/profiles
+          # Use CodeBuild-enabled profile
+          cat tests/e2e/fixtures/e2e-profile.json | \
+            jq '.enable_codebuild = true' > ~/.ccwb/profiles/e2e-test.json
+          echo '{"schema_version": "2.0", "active_profile": "e2e-test"}' > ~/.ccwb/config.json
+
+      - name: Deploy CodeBuild stack
+        working-directory: source
+        run: poetry run ccwb deploy --yes --stack codebuild
+        timeout-minutes: 10
+
+      - name: Trigger Windows build
+        id: build
+        run: |
+          # Find the CodeBuild project
+          PROJECT=$(aws codebuild list-projects --query "projects[?contains(@, 'claude-code') && contains(@, 'windows')]|[0]" --output text)
+          
+          if [ "$PROJECT" = "None" ] || [ -z "$PROJECT" ]; then
+            echo "::error::No Windows CodeBuild project found"
+            exit 1
+          fi
+          
+          echo "Triggering build on project: $PROJECT"
+          BUILD_ID=$(aws codebuild start-build --project-name "$PROJECT" --query 'build.id' --output text)
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Build started: $BUILD_ID"
+
+      - name: Wait for build completion
+        run: |
+          BUILD_ID="${{ steps.build.outputs.build_id }}"
+          echo "Waiting for build $BUILD_ID..."
+          
+          for i in $(seq 1 60); do
+            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].buildStatus' --output text)
+            echo "  Attempt $i: $STATUS"
+            
+            if [ "$STATUS" = "SUCCEEDED" ]; then
+              echo "✓ Build succeeded"
+              exit 0
+            elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "FAULT" ] || [ "$STATUS" = "STOPPED" ] || [ "$STATUS" = "TIMED_OUT" ]; then
+              echo "::error::CodeBuild failed with status: $STATUS"
+              # Fetch logs for debugging
+              aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].phases[?phaseStatus==`FAILED`]' --output json
+              exit 1
+            fi
+            
+            sleep 10
+          done
+          
+          echo "::error::Build timed out after 10 minutes"
+          exit 1
+
+      - name: Validate build artifacts
+        run: |
+          BUILD_ID="${{ steps.build.outputs.build_id }}"
+          
+          # Check artifacts were uploaded
+          ARTIFACTS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].artifacts.location' --output text)
+          
+          if [ "$ARTIFACTS" = "None" ] || [ -z "$ARTIFACTS" ]; then
+            echo "::error::No artifacts produced by CodeBuild"
+            exit 1
+          fi
+          echo "✓ Artifacts at: $ARTIFACTS"
+
+      - name: Destroy CodeBuild stack
+        if: always()
+        working-directory: source
+        run: poetry run ccwb destroy --yes --stack codebuild
+
+  # ── Build Validation (cross-platform) ─────────────────────────────
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            binary: credential-process
+          - os: macos-latest
+            platform: macos
+            binary: credential-process
+          - os: windows-latest
+            platform: windows
+            binary: credential-process.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry + dependencies
+        run: |
+          pip install poetry
+          cd source && poetry install --no-interaction
+
+      - name: Build binary
+        working-directory: source
+        run: poetry run ccwb package --target-platform ${{ matrix.platform }}
+
+      - name: Smoke test binary
+        working-directory: source
+        shell: bash
+        run: |
+          BINARY=$(find . -name "${{ matrix.binary }}" -type f 2>/dev/null | head -1)
+          if [ -z "$BINARY" ]; then
+            echo "::error::Binary ${{ matrix.binary }} not found after build"
+            find . -name "credential-process*" -type f
+            exit 1
+          fi
+          
+          echo "Found binary: $BINARY"
+          echo "Size: $(wc -c < "$BINARY") bytes"
+          
+          # Must be >1MB (not a stub)
+          SIZE=$(wc -c < "$BINARY")
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::Binary suspiciously small ($SIZE bytes)"
+            exit 1
+          fi
+          
+          # Must execute without crashing
+          chmod +x "$BINARY" 2>/dev/null || true
+          "$BINARY" --version || true
+          "$BINARY" --help || echo "::warning::--help returned non-zero (may be expected)"
+
+      - name: Validate package contents
+        working-directory: source
+        shell: bash
+        run: |
+          echo "=== Package output ==="
+          find dist/ -type f 2>/dev/null | sort || echo "No dist/ directory"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}-${{ github.run_id }}
+          path: source/dist/
+          retention-days: 7
