@@ -1,7 +1,7 @@
 {
   "name": "security",
-  "version": "1.0.0",
-  "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
+  "version": "1.1.0",
+  "description": "Security scanning, auditing, and compliance validation with 4 specialized agents, plus fail-closed enforcement hooks: PII/secrets prompt guard, tamper-evident HMAC-chained audit log with CloudWatch dual-write, and a per-session token-budget circuit breaker",
   "author": {
     "name": "AWS Solutions Library"
   }

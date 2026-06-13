@@ -21,7 +21,7 @@
       "description": "Frontend design skill for UI/UX implementation",
       "category": "skill"
     },
-        {
+    {
       "name": "requirements",
       "version": "1.0.0",
       "source": "./assets/claude-code-plugins/plugins/requirements",
@@ -34,7 +34,7 @@
       "source": "./assets/claude-code-plugins/plugins/troubleshooting",
       "description": "Troubleshooting command to assist with complex problems",
       "category": "troubleshooting"
-    },    
+    },
     {
       "name": "documentation",
       "version": "1.0.0",
@@ -51,9 +51,9 @@
     },
     {
       "name": "security",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "source": "./assets/claude-code-plugins/plugins/security",
-      "description": "Security scanning, auditing, and compliance validation with 4 specialized agents for automated security gates and analysis",
+      "description": "Security scanning, auditing, and compliance validation with 4 specialized agents, plus fail-closed hooks: PII/secrets guard, HMAC-chained tamper-evident audit (CloudWatch dual-write), token-budget circuit breaker",
       "category": "security"
     },
     {

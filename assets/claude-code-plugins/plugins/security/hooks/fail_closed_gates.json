@@ -1,0 +1,103 @@
+{
+  "name": "Fail-Closed Security Gates Configuration",
+  "description": "Fail-closed enforcement hooks: PII/secrets prompt guard, tamper-evident HMAC-chained audit log with optional CloudWatch dual-write, and a per-session token-budget circuit breaker. All hooks run through hook_wrapper.sh, which converts silent hook crashes/timeouts into explicit denials (exit 2) so a broken control fails safe instead of failing open. Complements security_gates.json (file-write and bash-command validation).",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/pii_prompt_guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/audit_chain_logger.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/pii_prompt_guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/token_budget_guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/audit_chain_logger.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/hooks/hook_wrapper.sh $CLAUDE_PROJECT_DIR/hooks/token_budget_guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "configuration": {
+    "fail_closed": true,
+    "telemetry_log": "~/.claude/claude-code-security/hooks.jsonl (override: CLAUDE_HOOK_TELEMETRY)",
+    "audit_log": "~/.claude/claude-code-security/audit.jsonl (override: CLAUDE_AUDIT_LOG)",
+    "token_budget_default": 1000000,
+    "call_budget_default": 500
+  },
+  "cloudwatch_integration": {
+    "description": "audit_chain_logger.sh can dual-write audit events to the CloudWatch logging this guidance provisions, keeping agent-action audit alongside the existing /aws/claude-code/metrics telemetry.",
+    "setup": [
+      "1. Create or choose a log group, e.g. /aws/claude-code/audit",
+      "2. export CLAUDE_AUDIT_CLOUDWATCH_GROUP=/aws/claude-code/audit",
+      "3. Ensure the instance/user role allows logs:CreateLogStream and logs:PutLogEvents on that group",
+      "4. Optional: set CLAUDE_AUDIT_SIEM_REQUIRED=1 to refuse startup without a working forwarder"
+    ]
+  },
+  "usage": {
+    "description": "Fail-closed enforcement layer for prompts, agent actions, and session budgets",
+    "setup_instructions": [
+      "1. Copy hook_wrapper.sh, pii_prompt_guard.sh, audit_chain_logger.sh, token_budget_guard.sh, chain_verify.sh to your project hooks/ directory",
+      "2. Make scripts executable: chmod +x hooks/*.sh",
+      "3. Add the hooks configuration above to your .claude/settings.json",
+      "4. Set AUDIT_HMAC_KEY (or provision /etc/claude-code/audit-key) for the tamper-evident chain",
+      "5. Verify the audit chain anytime: bash hooks/chain_verify.sh ~/.claude/claude-code-security/audit.jsonl"
+    ],
+    "testing": {
+      "pii_guard": [
+        "claude 'my AWS key is AKIAIOSFODNN7EXAMPLE'  # Should block before reaching the model",
+        "claude 'summarize this design doc'  # Should pass"
+      ],
+      "audit_chain": [
+        "bash hooks/chain_verify.sh ~/.claude/claude-code-security/audit.jsonl  # exit 0 = intact",
+        "sed -i '2d' ~/.claude/claude-code-security/audit.jsonl && bash hooks/chain_verify.sh ...  # exit 1 = tamper detected"
+      ],
+      "token_budget": [
+        "CLAUDE_TOKEN_BUDGET=1000 claude '<long agentic task>'  # Should trip the circuit breaker"
+      ]
+    }
+  },
+  "customization": {
+    "pii_prompt_guard_sh": "Each PII/secret pattern is one LABEL:::REGEX line — comment out to disable a region (covers US SSN/ITIN, UK NINO/NHS, JP My Number, KR RRN, SG NRIC/FIN, EU IBAN, AU TFN/Medicare, plus AWS keys, private keys, JWTs, DB strings, credit cards)",
+    "audit_chain_logger_sh": "Key sources: AUDIT_HMAC_KEY env, /etc/claude-code/audit-key, or AWS Secrets Manager; set CLAUDE_AUDIT_FAIL_OPEN=1 to soften (not recommended)",
+    "token_budget_guard_sh": "CLAUDE_TOKEN_BUDGET and CLAUDE_CALL_BUDGET env vars",
+    "hook_wrapper_sh": "CLAUDE_HOOK_TIMEOUT_MS (default 5000); telemetry path via CLAUDE_HOOK_TELEMETRY"
+  },
+  "enterprise_note": "Installed per-project these hooks run with user permissions and can be removed by the user — appropriate for evaluation and individual developers. For un-removable fleet-wide enforcement, deploy the same hooks via managed-settings.json with root-owned paths.",
+  "note": "Contributed via issue #494. Upstream source and 76-assertion test suite: https://github.com/timwukp/claude-code-on-aws-bedrock-best-practices (Apache-2.0; this copy relicensed MIT to match the repository)."
+}
