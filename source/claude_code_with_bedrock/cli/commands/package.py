@@ -19,6 +19,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
@@ -635,7 +636,7 @@ class PackageCommand(Command):
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
 
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -1565,7 +1566,7 @@ RUN pyinstaller \
 
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -1603,7 +1604,7 @@ RUN pyinstaller \
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -1625,7 +1626,7 @@ RUN pyinstaller \
 
             # Upload to S3
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
             try:
                 s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
@@ -1634,7 +1635,7 @@ RUN pyinstaller \
 
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]

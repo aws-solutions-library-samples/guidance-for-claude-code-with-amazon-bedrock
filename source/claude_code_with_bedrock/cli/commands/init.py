@@ -65,6 +65,21 @@ def validate_cognito_user_pool_id(value: str) -> bool | str:
     return "Invalid User Pool ID format"
 
 
+def _remember_prior_codebuild_region(config: dict, prior_region: str) -> None:
+    """Record a CodeBuild region being abandoned, so destroy can clean its orphan.
+
+    When the user changes the CodeBuild region during re-init, a stack may still
+    exist in the old region. ``ccwb destroy`` reads the *current* region, so it
+    can't reach the old one — we persist abandoned regions in
+    ``config["codebuild"]["prior_regions"]`` and have destroy iterate them.
+    Deduped, and never includes the region that is now current.
+    """
+    cb = config.setdefault("codebuild", {})
+    priors = cb.setdefault("prior_regions", [])
+    if prior_region and prior_region not in priors:
+        priors.append(prior_region)
+
+
 class InitCommand(Command):
     name = "init"
     description = "Interactive setup wizard for first-time deployment"
@@ -1173,6 +1188,88 @@ class InitCommand(Command):
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
 
+            # The Windows Server 2022 container fleet only exists in some regions.
+            # CodeBuild is build-only tooling (not user-facing), so when the main
+            # region is unsupported we let the user pick a nearby supported region
+            # here in the wizard — deploy then just executes that choice.
+            from claude_code_with_bedrock.cli.utils.helpers import (
+                CODEBUILD_WINDOWS_REGIONS,
+                find_nearest_codebuild_region,
+            )
+
+            selected_region = config.get("aws", {}).get("region")
+            if selected_region and selected_region not in CODEBUILD_WINDOWS_REGIONS:
+                nearest = find_nearest_codebuild_region(selected_region)
+                # "nearest" can cross continents when no supported region shares the
+                # main region's continent (e.g. af-*/me-* -> us-east-1). Surface that
+                # explicitly so a data-residency-sensitive user doesn't accept a
+                # cross-continent deployment by reflexively pressing Enter.
+                cross_continent = nearest.split("-", 1)[0] != selected_region.split("-", 1)[0]
+                console.print(
+                    f"\n[yellow]⚠ Windows CodeBuild containers are not available in {selected_region}.[/yellow]"
+                )
+                console.print(
+                    "[dim]CodeBuild is build-only tooling (not user-facing), so deploying it to a "
+                    "nearby region is fine — your main infrastructure stays put.[/dim]"
+                )
+                if cross_continent:
+                    console.print(
+                        f"[yellow]Note: no supported region shares your continent, so the nearest is "
+                        f"{nearest} (different geography). Your source code is uploaded to an S3 bucket "
+                        f"there during builds — confirm this is acceptable for data-residency.[/yellow]"
+                    )
+                nearest_label = (
+                    f"{nearest} (nearest supported — DIFFERENT continent)"
+                    if cross_continent
+                    else f"{nearest} (nearest supported)"
+                )
+                cb_choice = questionary.select(
+                    "Which region should CodeBuild deploy to?",
+                    choices=[
+                        questionary.Choice(nearest_label, value=nearest),
+                        *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                    ],
+                ).ask()
+
+                prior_region = config["codebuild"].get("region")
+                config["codebuild"]["region"] = cb_choice
+                if cb_choice:
+                    console.print(
+                        f"[green]✓[/green] CodeBuild will deploy to {cb_choice} "
+                        f"(main infrastructure stays in {selected_region})"
+                    )
+                    if prior_region and prior_region != cb_choice:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                else:
+                    # Skipping/disabling CodeBuild. If a stack was already deployed
+                    # cross-region, record it so destroy still cleans it up — otherwise
+                    # disabling here orphans it (destroy can't reach a region the config
+                    # no longer names).
+                    if prior_region:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                    config["codebuild"]["enabled"] = False
+                    console.print("[yellow]CodeBuild disabled — build Windows binaries manually.[/yellow]")
+            else:
+                # Supported region: CodeBuild deploys alongside the main stacks.
+                prior_region = config["codebuild"].get("region")
+                if prior_region and prior_region != selected_region:
+                    _remember_prior_codebuild_region(config, prior_region)
+                    console.print(
+                        f"[yellow]⚠ CodeBuild now deploys to the main region {selected_region}. "
+                        f"A CodeBuild stack may still exist in {prior_region}; it will be cleaned up "
+                        f"on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                    )
+                config["codebuild"]["region"] = None
+
         # Claude Cowork 3P MDM configuration
         console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
         console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
@@ -1194,7 +1291,9 @@ class InitCommand(Command):
             if existing_extra:
                 console.print(f"[dim]Custom MDM keys configured: {len(existing_extra)} key(s)[/dim]")
             else:
-                console.print("[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]")
+                console.print(
+                    "[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]"
+                )
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
 
@@ -1206,10 +1305,13 @@ class InitCommand(Command):
                 existing_token = config.get("cowork_3p", {}).get("service_token", "")
                 if not existing_token:
                     import uuid
+
                     token = str(uuid.uuid4())
                     config["cowork_3p"]["service_token"] = token
                     console.print("[green]✓[/green] Generated CoWork service token for ALB auth bypass")
-                    console.print("[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]")
+                    console.print(
+                        "[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]"
+                    )
                 else:
                     console.print("[dim]CoWork service token already configured[/dim]")
 
@@ -2118,6 +2220,8 @@ class InitCommand(Command):
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
+            "codebuild_region": config_data.get("codebuild", {}).get("region"),
+            "codebuild_prior_regions": config_data.get("codebuild", {}).get("prior_regions", []),
             "enable_distribution": config_data.get("distribution", {}).get("enabled", False),
             "distribution_type": config_data.get("distribution", {}).get("type"),
             "distribution_idp_provider": config_data.get("distribution", {}).get("idp_provider"),
@@ -2491,6 +2595,10 @@ class InitCommand(Command):
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
+                if getattr(profile, "codebuild_region", None):
+                    existing_config["codebuild"]["region"] = profile.codebuild_region
+                if getattr(profile, "codebuild_prior_regions", None):
+                    existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
             # Add CoWork 3P configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}

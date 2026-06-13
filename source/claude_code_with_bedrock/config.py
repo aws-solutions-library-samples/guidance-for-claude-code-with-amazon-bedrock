@@ -52,6 +52,10 @@ class Profile:
     oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
     oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
+    codebuild_region: str | None = None  # Region for CodeBuild stack/builds; falls back to aws_region when unset
+    codebuild_prior_regions: list[str] = field(
+        default_factory=list
+    )  # Regions a CodeBuild stack was previously deployed to (so destroy can clean orphans after a region change)
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
