@@ -19,6 +19,12 @@ import os
 # Current Bedrock pricing per 1M tokens (USD) — as of June 2026
 # Source: https://aws.amazon.com/bedrock/pricing/
 DEFAULT_RATES = {
+    "fable": {
+        "input": 10.00,
+        "output": 50.00,
+        "cache_read": 1.00,
+        "cache_write": 12.50,
+    },
     "opus": {
         "input": 5.00,
         "output": 25.00,
@@ -84,10 +90,13 @@ def get_model_family(model_id: str) -> str:
         "anthropic.claude-sonnet-4-6-20250514-v1:0" → "sonnet"
         "us.anthropic.claude-opus-4-8-20260301-v1:0" → "opus"
         "anthropic.claude-haiku-4-5-20250901-v1:0" → "haiku"
+        "anthropic.claude-fable-5-20260610-v1:0" → "fable"
         "claude-sonnet-4-6" → "sonnet"
     """
     model_lower = model_id.lower()
-    if "opus" in model_lower:
+    if "fable" in model_lower or "mythos" in model_lower:
+        return "fable"
+    elif "opus" in model_lower:
         return "opus"
     elif "haiku" in model_lower:
         return "haiku"
