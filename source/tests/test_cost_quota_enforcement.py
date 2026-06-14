@@ -13,6 +13,10 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(__file__), "..", "..", "deployment", "infrastructure", "lambda-functions"
 ))
 
+# quota_check.index creates boto3 clients at module level — need a default region
+# to avoid NoRegionError in CI environments without AWS config.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
 from quota_check.index import _calculate_usage_cost
 
 
