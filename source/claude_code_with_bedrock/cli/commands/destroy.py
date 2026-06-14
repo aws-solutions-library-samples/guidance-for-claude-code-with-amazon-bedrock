@@ -154,11 +154,15 @@ class DestroyCommand(Command):
 
             result = self._delete_stack(stack_name, stack_region, console)
             if result != 0:
-                # Don't break - collect failed resources and continue
+                # Don't break - record the failure and continue with remaining stacks.
+                # Always track the stack: a non-zero result means it did not delete cleanly.
+                # Enumerable DELETE_FAILED resources may be empty (e.g. a real delete error,
+                # or a client-side timeout while resources are still DELETE_IN_PROGRESS), and
+                # the summary must not report overall success in that case.
+                stacks_with_failures.append(stack_name)
                 failed = self._get_failed_resources(stack_name, stack_region)
                 if failed:
                     all_failed_resources.extend(failed)
-                    stacks_with_failures.append(stack_name)
                     console.print(f"[yellow]⚠ {stack.capitalize()} stack — failed resources:[/yellow]")
                     for r in failed:
                         console.print(f"    • {r['logical_id']} ({r['resource_type']}): {r['physical_id']}")
@@ -297,6 +301,22 @@ class DestroyCommand(Command):
             console.print()
 
         if not failed_resources:
+            # Stacks failed to delete but no DELETE_FAILED resources are enumerable
+            # (real delete error, or a client-side timeout mid-delete). Don't claim
+            # success. Point the user at the affected stacks to re-run / verify.
+            if stacks:
+                region = profile.aws_region
+                console.print("\n[yellow]⚠ The following stacks did not delete cleanly:[/yellow]")
+                for stack in stacks:
+                    console.print(f"  • {stack}")
+                    console.print(
+                        f"    [cyan]aws cloudformation delete-stack "
+                        f"--stack-name {stack} --region {region}[/cyan]"
+                    )
+                console.print(
+                    "\n[dim]A delete may still be in progress - re-run "
+                    "[cyan]ccwb destroy[/cyan] or check the CloudFormation console to confirm.[/dim]"
+                )
             return
 
         console.print("\n[yellow]⚠ Manual cleanup required for the following resources:[/yellow]\n")
