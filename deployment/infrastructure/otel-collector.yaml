@@ -106,6 +106,24 @@ Resources:
         - Key: Stack
           Value: !Ref AWS::StackName
 
+  # CoWork telemetry log group. The collector's awscloudwatchlogs/cowork exporter
+  # writes here, and the cowork-dashboard stack attaches MetricFilters to it. A
+  # MetricFilter requires its target log group to already exist at deploy time,
+  # so this group must be a managed resource (not left to runtime auto-creation by
+  # the exporter) — otherwise the cowork-dashboard deploy fails on a fresh stack
+  # with "The specified log group does not exist". RetentionInDays matches the
+  # exporter's log_retention (30).
+  CoWorkEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      RetentionInDays: 30
+      Tags:
+        - Key: Purpose
+          Value: Claude CoWork Telemetry
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
   # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup

@@ -255,3 +255,58 @@ class TestDeployCommandStackNames:
             assert "Resources" in content or "AWSTemplateFormatVersion" in content, (
                 f"Template {template_path.name} doesn't look like a valid CloudFormation template"
             )
+
+
+class TestCoWorkLogGroupContract:
+    """Contract: cowork-dashboard MetricFilters target a log group that the
+    monitoring stack actually creates.
+
+    Regression for the fresh-deploy failure "AWS::Logs::MetricFilter
+    (CostMetricFilter): The specified log group does not exist." A MetricFilter
+    requires its target log group to exist at deploy time; the cowork log group
+    must therefore be a managed AWS::Logs::LogGroup resource (in otel-collector),
+    not left to runtime auto-creation by the collector's exporter.
+    """
+
+    COWORK_LOG_GROUP = "/aws/claude-cowork/events"
+
+    def _log_group_names(self, template: dict) -> set:
+        names = set()
+        for resource in template.get("Resources", {}).values():
+            if resource.get("Type") == "AWS::Logs::LogGroup":
+                lg = resource.get("Properties", {}).get("LogGroupName")
+                if isinstance(lg, str):
+                    names.add(lg)
+        return names
+
+    def _metric_filter_log_groups(self, template: dict) -> set:
+        groups = set()
+        for resource in template.get("Resources", {}).values():
+            if resource.get("Type") == "AWS::Logs::MetricFilter":
+                lg = resource.get("Properties", {}).get("LogGroupName")
+                if isinstance(lg, str):
+                    groups.add(lg)
+        return groups
+
+    def test_cowork_dashboard_filters_target_cowork_log_group(self):
+        """Sanity: the cowork-dashboard filters do reference the cowork log group."""
+        dash = _load_template("cowork-dashboard.yaml")
+        assert self.COWORK_LOG_GROUP in self._metric_filter_log_groups(dash)
+
+    def test_cowork_log_group_is_created_by_monitoring_stack(self):
+        """otel-collector must create the cowork log group as a managed resource,
+        so it exists before cowork-dashboard's MetricFilters attach to it."""
+        otel = _load_template("otel-collector.yaml")
+        assert self.COWORK_LOG_GROUP in self._log_group_names(otel), (
+            f"{self.COWORK_LOG_GROUP} is referenced by cowork-dashboard MetricFilters but "
+            f"not created as an AWS::Logs::LogGroup in otel-collector.yaml — a fresh deploy "
+            f"will fail with 'The specified log group does not exist'."
+        )
+
+    def test_every_cowork_filter_group_has_a_creator(self):
+        """Every log group a cowork-dashboard MetricFilter targets must be created
+        somewhere in the monitoring stack (no assume-exists log groups)."""
+        dash_groups = self._metric_filter_log_groups(_load_template("cowork-dashboard.yaml"))
+        created = self._log_group_names(_load_template("otel-collector.yaml"))
+        missing = dash_groups - created
+        assert not missing, f"cowork-dashboard filters target log groups nobody creates: {missing}"
