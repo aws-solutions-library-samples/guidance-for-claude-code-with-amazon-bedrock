@@ -32,8 +32,7 @@ def clear_cached_credentials(profile_name: str) -> bool:
         # Only remove if it's a section created by this tool
         section_items = dict(config.items(profile_name))
         is_ours = any(
-            "credential-process" in v or "claude-code-with-bedrock" in v or "ccwb" in v
-            for v in section_items.values()
+            "credential-process" in v or "claude-code-with-bedrock" in v or "ccwb" in v for v in section_items.values()
         )
         if not is_ours:
             return False

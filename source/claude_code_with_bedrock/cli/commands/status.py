@@ -238,9 +238,7 @@ class StatusCommand(Command):
             monitoring_mode = getattr(profile, "monitoring_mode", "central")
             if monitoring_mode == "central":
                 # Get monitoring endpoint from CloudFormation
-                monitoring_stack = profile.stack_names.get(
-                    "monitoring", f"{profile.identity_pool_name}-otel-collector"
-                )
+                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
                 monitoring_outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
                 if monitoring_outputs:
                     endpoints["monitoring_endpoint"] = monitoring_outputs.get("CollectorEndpoint")
