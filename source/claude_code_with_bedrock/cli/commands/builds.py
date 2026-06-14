@@ -70,7 +70,7 @@ class BuildsCommand(Command):
         """Get all CodeBuild project names from stack outputs."""
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             return {}
 
@@ -268,7 +268,7 @@ class BuildsCommand(Command):
         # Get CodeBuild bucket
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             console.print("[red]CodeBuild stack not found.[/red]")
             return 1
@@ -294,7 +294,7 @@ class BuildsCommand(Command):
         console.print(f"[bold]Downloading to:[/bold] {display_path}")
         console.print()
 
-        s3 = boto3.client("s3", region_name=profile.aws_region)
+        s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
         downloaded = []
         download_failed = []
 

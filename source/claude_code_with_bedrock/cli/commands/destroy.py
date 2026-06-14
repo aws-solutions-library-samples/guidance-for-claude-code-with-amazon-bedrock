@@ -11,7 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
-from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials
+from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials, get_codebuild_region
 from claude_code_with_bedrock.config import Config
 
 
@@ -146,12 +146,16 @@ class DestroyCommand(Command):
                 continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
+            # CodeBuild may have been deployed cross-region (Windows container fleet
+            # isn't in every region); delete it where it actually lives, or it's
+            # silently orphaned in the build region while the destroy reports success.
+            stack_region = get_codebuild_region(profile) if stack == "codebuild" else profile.aws_region
             console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")
 
-            result = self._delete_stack(stack_name, profile.aws_region, console)
+            result = self._delete_stack(stack_name, stack_region, console)
             if result != 0:
                 # Don't break - collect failed resources and continue
-                failed = self._get_failed_resources(stack_name, profile.aws_region)
+                failed = self._get_failed_resources(stack_name, stack_region)
                 if failed:
                     all_failed_resources.extend(failed)
                     stacks_with_failures.append(stack_name)
@@ -165,7 +169,7 @@ class DestroyCommand(Command):
                 console.print()
             else:
                 # Check for silently retained resources (DeletionPolicy: Retain)
-                retained = self._get_retained_resources(stack_name, profile.aws_region)
+                retained = self._get_retained_resources(stack_name, stack_region)
                 if retained:
                     all_retained_resources.extend(retained)
                     console.print(f"[yellow]ℹ {stack.capitalize()} stack — retained resources (by policy):[/yellow]")
@@ -174,6 +178,28 @@ class DestroyCommand(Command):
                     console.print()
                 else:
                     console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
+
+        # Clean up CodeBuild stacks left in regions the build region was moved away
+        # from (cross-region was reconfigured via re-init). Without this they're
+        # orphaned: the loop above only deletes in the *current* codebuild region.
+        # NOT gated on enable_codebuild — disabling CodeBuild (init "Skip") is
+        # exactly when an old cross-region stack needs cleaning, and the main loop
+        # skips codebuild when it's disabled. prior_regions is only populated when
+        # there's an orphan to clean, so iterating it unconditionally is safe.
+        current_cb_region = get_codebuild_region(profile)
+        cb_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
+        for prior in getattr(profile, "codebuild_prior_regions", []) or []:
+            if prior == current_cb_region:
+                continue  # already handled by the main loop (if enabled)
+            console.print(f"Destroying orphaned CodeBuild stack in [cyan]{prior}[/cyan]: {cb_stack_name}")
+            if self._delete_stack(cb_stack_name, prior, console) == 0:
+                console.print(f"[green]✓ CodeBuild stack in {prior} destroyed[/green]\n")
+            else:
+                failed = self._get_failed_resources(cb_stack_name, prior)
+                if failed:
+                    all_failed_resources.extend(failed)
+                    stacks_with_failures.append(f"{cb_stack_name} ({prior})")
+                console.print(f"[yellow]⚠ CodeBuild stack in {prior} needs manual cleanup[/yellow]\n")
 
         # Clean up cached credentials for this profile
         if clear_cached_credentials(profile_name):

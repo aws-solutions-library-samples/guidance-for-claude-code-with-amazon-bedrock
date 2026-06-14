@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 
 
@@ -537,7 +538,7 @@ class DistributeCommand(Command):
             # Check if Windows build is completed and download it
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -802,7 +803,7 @@ class DistributeCommand(Command):
             try:
                 # Get CodeBuild project name from profile
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -843,7 +844,7 @@ class DistributeCommand(Command):
             # First check for any completed builds
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -885,7 +886,7 @@ class DistributeCommand(Command):
 
                     # Check build status
                     try:
-                        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
                         response = codebuild.batch_get_builds(ids=[build_info["build_id"]])
                         if response.get("builds"):
                             build = response["builds"][0]
@@ -1642,7 +1643,7 @@ class DistributeCommand(Command):
                 return False
 
             codebuild_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
-            codebuild_outputs = get_stack_outputs(codebuild_stack_name, profile.aws_region)
+            codebuild_outputs = get_stack_outputs(codebuild_stack_name, get_codebuild_region(profile))
 
             if not codebuild_outputs:
                 console.print("[red]CodeBuild stack not found[/red]")
@@ -1655,8 +1656,8 @@ class DistributeCommand(Command):
                 console.print("[red]Could not get CodeBuild bucket or project name from stack outputs[/red]")
                 return False
 
-            # Download from S3
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            # Download from S3 (CodeBuild BuildBucket, in the codebuild region)
+            s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
             zip_path = package_path / "windows-binaries.zip"
 
             # CodeBuild stores artifacts at root of bucket

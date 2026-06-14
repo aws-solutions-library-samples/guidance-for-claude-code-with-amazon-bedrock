@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import get_source_region_for_profile
 
@@ -163,7 +164,7 @@ class PackageCbCommand(Command):
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -180,7 +181,7 @@ class PackageCbCommand(Command):
             console.print("[yellow]No CodeBuild platforms selected.[/yellow]")
 
         # Check for in-progress builds
-        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
         for plat in list(selected_platforms):
             project_name = stack_outputs.get(CODEBUILD_PLATFORMS[plat]["output_key"])
             if not project_name:
@@ -302,7 +303,7 @@ class PackageCbCommand(Command):
                 progress.update(task, completed=True)
 
                 task = progress.add_task("Uploading source to S3...", total=None)
-                s3 = boto3.client("s3", region_name=profile.aws_region)
+                s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
                 try:
                     s3.upload_file(str(source_zip), bucket_name, "source.zip")
                 except ClientError as e:
