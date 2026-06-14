@@ -1488,7 +1488,7 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
