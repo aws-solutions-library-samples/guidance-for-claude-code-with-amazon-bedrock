@@ -86,7 +86,11 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 		}
 		baseURL := "https://" + domain
 		authURL = baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
-		tokenURL = baseURL + provCfg.TokenEndpoint
+		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
+			tokenURL = provCfg.TokenEndpoint
+		} else {
+			tokenURL = baseURL + provCfg.TokenEndpoint
+		}
 	}
 
 	// Start callback server

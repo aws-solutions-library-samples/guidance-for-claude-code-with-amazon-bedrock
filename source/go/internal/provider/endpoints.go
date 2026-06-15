@@ -60,6 +60,14 @@ var Configs = map[string]Config{
 		ResponseType:      "code",
 		ResponseMode:      "query",
 	},
+	"google": {
+		Name:              "Google",
+		AuthorizeEndpoint: "/o/oauth2/v2/auth",
+		TokenEndpoint:     "https://oauth2.googleapis.com/token",
+		Scopes:            "openid email profile",
+		ResponseType:      "code",
+		ResponseMode:      "query",
+	},
 	"generic": {
 		Name:              "Generic OIDC",
 		AuthorizeEndpoint: "", // Unused — full URLs come from ProfileConfig
