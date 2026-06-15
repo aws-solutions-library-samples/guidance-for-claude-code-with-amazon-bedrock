@@ -6,7 +6,7 @@ import (
 )
 
 // Detect returns the provider type for a given domain or URL.
-// Returns one of: "okta", "auth0", "azure", "cognito", "oidc".
+// Returns one of: "okta", "auth0", "azure", "cognito", "google", "oidc".
 func Detect(domain string) string {
 	if domain == "" {
 		return "oidc"
@@ -58,6 +58,11 @@ func Detect(domain string) string {
 	}
 	if strings.HasPrefix(h, "cognito-idp.") && strings.Contains(h, ".amazonaws.com") {
 		return "cognito"
+	}
+
+	// Google
+	if h == "accounts.google.com" {
+		return "google"
 	}
 
 	return "oidc"

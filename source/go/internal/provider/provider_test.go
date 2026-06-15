@@ -30,6 +30,11 @@ func TestDetect(t *testing.T) {
 		{"cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123", "cognito"},
 		{"cognito-idp.eu-west-1.amazonaws.com", "cognito"},
 
+		// Google
+		{"accounts.google.com", "google"},
+		{"https://accounts.google.com", "google"},
+		{"https://accounts.google.com/.well-known/openid-configuration", "google"},
+
 		// Unknown
 		{"example.com", "oidc"},
 		{"", "oidc"},
@@ -39,6 +44,9 @@ func TestDetect(t *testing.T) {
 		{"evil.com/okta.com", "oidc"},           // path injection
 		{"okta.com.evil.com", "oidc"},            // subdomain spoof
 		{"not-okta.com", "oidc"},                 // prefix attack
+		{"accounts.google.com.evil.com", "oidc"}, // Google subdomain spoof
+		{"fake-accounts.google.com", "oidc"},     // Google prefix spoof
+		{"google.com", "oidc"},                   // bare google.com is NOT the IdP
 		{"evil.com?host=okta.com", "oidc"},       // query param injection
 	}
 
@@ -111,7 +119,7 @@ func TestConfigFor_NonOktaIgnoresCASID(t *testing.T) {
 	// ignored (NOT substituted into their endpoints, which don't contain
 	// /oauth2/default/ anyway). Regression test against accidentally
 	// generic substitution.
-	for _, providerType := range []string{"auth0", "azure", "cognito"} {
+	for _, providerType := range []string{"auth0", "azure", "cognito", "google"} {
 		want := Configs[providerType]
 		got := ConfigFor(providerType, "notUsed")
 		if got != want {
@@ -144,6 +152,25 @@ func TestIsKnown_Generic(t *testing.T) {
 	}
 }
 
+func TestIsKnown_Google(t *testing.T) {
+	if !IsKnown("google") {
+		t.Error("IsKnown(\"google\") = false, want true")
+	}
+}
+
+func TestConfigFor_Google(t *testing.T) {
+	got := ConfigFor("google", "")
+	if got.Name != "Google" {
+		t.Errorf("ConfigFor(google).Name = %q, want \"Google\"", got.Name)
+	}
+	if got.AuthorizeEndpoint != "/o/oauth2/v2/auth" {
+		t.Errorf("ConfigFor(google).AuthorizeEndpoint = %q, want \"/o/oauth2/v2/auth\"", got.AuthorizeEndpoint)
+	}
+	if got.TokenEndpoint != "https://oauth2.googleapis.com/token" {
+		t.Errorf("ConfigFor(google).TokenEndpoint = %q, want \"https://oauth2.googleapis.com/token\"", got.TokenEndpoint)
+	}
+}
+
 func TestConfigFor_GenericProvider(t *testing.T) {
 	got := ConfigFor("generic", "")
 	if got.Name != "Generic OIDC" {
@@ -169,5 +196,27 @@ func TestDetect_CyberArk(t *testing.T) {
 		if got != "oidc" {
 			t.Errorf("Detect(%q) = %q, want \"oidc\" (should not match a named provider)", d, got)
 		}
+	}
+}
+
+func TestConfigFor_GoogleIgnoresCASID(t *testing.T) {
+	// Google config must not be altered by CAS id (non-Okta provider).
+	want := Configs["google"]
+	got := ConfigFor("google", "notUsed")
+	if got != want {
+		t.Errorf("ConfigFor(google, ...) = %+v, want %+v (CAS id must be ignored for non-Okta)", got, want)
+	}
+}
+
+func TestGoogle_TokenEndpointIsAbsolute(t *testing.T) {
+	// Google's token endpoint is on a different host (oauth2.googleapis.com)
+	// so it must be an absolute URL, not a relative path.
+	cfg := Configs["google"]
+	if cfg.TokenEndpoint != "https://oauth2.googleapis.com/token" {
+		t.Errorf("Google token endpoint must be absolute URL, got %q", cfg.TokenEndpoint)
+	}
+	// Auth endpoint is relative to accounts.google.com
+	if cfg.AuthorizeEndpoint[0] != '/' {
+		t.Errorf("Google authorize endpoint should be relative, got %q", cfg.AuthorizeEndpoint)
 	}
 }
