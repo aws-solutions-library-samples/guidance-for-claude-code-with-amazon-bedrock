@@ -212,7 +212,10 @@ class DestroyCommand(Command):
         # Show cleanup summary at the end
         self._show_cleanup_summary(all_failed_resources, all_retained_resources, stacks_with_failures, profile, console)
 
-        return 0
+        # Exit non-zero when any stack didn't delete cleanly so scripts/CI can
+        # fail fast on a broken teardown. Matches deploy/package, which already
+        # return 1 on failure. The summary above still surfaces what to clean up.
+        return 1 if stacks_with_failures else 0
 
     def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
         """Delete a CloudFormation stack using boto3.
