@@ -53,6 +53,29 @@ class TestResolvePersonaDirect:
         result = resolve_persona({"sales-team"}, self.PERSONAS, None)
         assert result["name"] == "sales"
 
+    def test_scalar_string_groups_claim_matches_like_go(self):
+        """A scalar (non-list) groups claim must match the whole string, not its chars.
+
+        Parity contract (spec §4.3 / credential-helper-parity.md): the Go resolver's
+        jwt.GetStringSlice normalizes a scalar claim ("eng-team") to a single-element
+        slice and matches the persona. A naive ``set("eng-team")`` would instead iterate
+        the string into characters {'e','n','g',...} and match nothing — diverging from
+        Go. This pins the wrap-not-iterate behavior so the two implementations agree on
+        the scalar shape too (the shared fixture types `groups` as a list and can't
+        exercise it).
+        """
+        result = resolve_persona("eng-team", self.PERSONAS, None)
+        assert result is not None and result["name"] == "engineering"
+
+    def test_scalar_string_no_match_is_not_a_substring_match(self):
+        """A scalar claim must compare by full-string equality, not character membership.
+
+        Guards the inverse of the previous test: a scalar that happens to share
+        characters with a group value (e.g. 'e','n','g' are in 'eng-team') must NOT
+        match — only the exact group string does.
+        """
+        assert resolve_persona("eng", self.PERSONAS, None) is None
+
     def test_no_match_no_fallback_returns_none(self):
         assert resolve_persona(["contractors"], self.PERSONAS, None) is None
 

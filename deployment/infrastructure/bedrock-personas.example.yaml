@@ -44,7 +44,7 @@ Resources:
           - bedrock:InvokeModelWithResponseStream
           - bedrock:CallWithBearerToken
           Resource:
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*
         - Sid: AllowBedrockListAndGet
           Effect: Allow
           Action:
@@ -120,7 +120,7 @@ Resources:
           - bedrock:InvokeModelWithResponseStream
           - bedrock:CallWithBearerToken
           Resource:
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*haiku*
         - Sid: DenyBedrockInvokeDeniedModels
           Effect: Deny
           Action:
@@ -134,8 +134,8 @@ Resources:
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*sonnet*
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*opus*
         - Sid: AllowBedrockListAndGet
           Effect: Allow
           Action:
@@ -182,7 +182,7 @@ Resources:
           - bedrock:InvokeModelWithResponseStream
           - bedrock:CallWithBearerToken
           Resource:
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*haiku*
         - Sid: BoundaryDenyDeniedModels
           Effect: Deny
           Action:
@@ -196,8 +196,8 @@ Resources:
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*sonnet*
-          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/*anthropic.*opus*
         - Sid: BoundaryAllowListAndMetrics
           Effect: Allow
           Action:

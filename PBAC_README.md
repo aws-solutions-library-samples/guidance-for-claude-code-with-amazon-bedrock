@@ -130,7 +130,7 @@ path suffixes are preserved exactly. The deployer derives this via
 | **Auth0** | `https://company.auth0.com/` | `company.auth0.com/` | ✅ **REQUIRED** — Auth0's STS condition key keeps it |
 | **Azure (Entra ID)** | `https://login.microsoftonline.com/<tenant>/v2.0` | `login.microsoftonline.com/<tenant>/v2.0` | ❌ no slash, but **keeps `/v2.0`** |
 | **Okta** | `https://company.okta.com` | `company.okta.com` | ❌ bare domain — the IAM OIDC provider is registered at `https://${OktaDomain}`, **not** the `/oauth2/default` token-validation issuer |
-| **Generic** (Keycloak, PingFederate, **Teleport**, …) | `https://${oidc_issuer_url}` | `oidc_issuer_url` scheme-stripped (e.g. `sso.company.com/realms/prod`) | ⚠️ derived from the **`oidc_issuer_url`** field (the registered provider URL), **not** `provider_domain` — and it keeps any path (e.g. a realm path). These are distinct config fields; they must agree with the registered provider URL |
+| **Generic** (Keycloak, PingFederate, **Teleport**, …) | `${oidc_issuer_url}` (you supply it with its own `https://`) | `oidc_issuer_url` scheme-stripped (e.g. `sso.company.com/realms/prod`) | ⚠️ derived from the **`oidc_issuer_url`** field (the registered provider URL), **not** `provider_domain` — and it keeps any path (e.g. a realm path). These are distinct config fields; they must agree with the registered provider URL |
 | **Cognito** | n/a in v1 | — | persona provisioning is skipped ([§12](#12-auth-type--cognito-limitations)) |
 
 This matches the issuer-URL rules in
@@ -276,8 +276,10 @@ PBAC reuses the existing quota pipeline end-to-end:
   enforcement (quota-check) and alerting (quota-monitor) therefore honor per-persona
   limits; a user the monitor has never seen a check for yet resolves to the default tier
   until their next credential issuance populates the record. This group-persistence write
-  happens **only in PBAC mode** (when `PERSONA_ORDER` is set); outside PBAC the monitor
-  uses the legacy path and never reads the record, so the write is skipped entirely.
+  happens **only when `PERSONA_ORDER` is set _and_ fine-grained quotas are enabled**
+  (`ENABLE_FINEGRAINED_QUOTAS=true`) — the only configuration in which the monitor actually
+  reads the record. Outside that (legacy mode, or fine-grained quotas off) the monitor never
+  reads it, so the write is skipped entirely and no DynamoDB traffic is wasted.
 
 **`PERSONA_ORDER` flips group resolution from most-restrictive to declared order.**
 
@@ -418,17 +420,29 @@ distinct). The topic policy grants `budgets.amazonaws.com` publish rights gated 
 
 When a user's `groups` claim matches **no** persona:
 
-| `fallback_persona` | Credential helper | Quota Lambdas (PBAC mode) |
+| `fallback_persona` | Credential helper (model access) | Quota Lambdas (token limit) |
 |---|---|---|
-| set to a persona name | assume that persona's role | resolve that persona's group policy |
+| set to a persona name | assume that persona's role | fall through to the **default** quota tier |
 | `null` (default) | **hard-deny** — exit non-zero, no role assumed | fall through to the **default** quota tier |
 
 Default is **hard-deny** at the credential helper (no persona ⇒ no Bedrock access),
 which is the secure default. Set `fallback_persona` to a low-privilege persona (e.g. a
-read-mostly tier) if you prefer graceful degradation over denial. The resolution
-algorithm (declared-order, then fallback, then none) is identical across the Go helper,
-both quota Lambdas, and otel-helper — see
-[spec §4.3](.claude/specs/persona-based-access/spec.md).
+read-mostly tier) if you prefer graceful degradation over denial.
+
+> **Fallback applies to model access, not the quota tier.** `fallback_persona` is honored
+> only by the credential helper and otel-helper (which assume/attribute the fallback
+> persona). The quota Lambdas do **not** apply `fallback_persona`: they match the user's
+> *actual* groups against the declared order and, on no match, use the **account default
+> quota** — never the fallback persona's token limit. So a fallback user gets the fallback
+> persona's *models* but the *default* monthly/daily limit. If you need the fallback tier's
+> limit enforced too, set a `default` quota policy (`ccwb quota set-default`) to the value
+> you want unmatched users held to.
+
+The **match step** (declared-order precedence, exact group equality) is identical across
+the Go helper, both quota Lambdas, and otel-helper. The **no-match step** differs by
+design: the helper/otel-helper apply `fallback_persona` then hard-deny/none, while the
+Lambdas apply the default quota tier (see
+[spec §4.3](.claude/specs/persona-based-access/spec.md), which records this as-shipped).
 
 ---
 

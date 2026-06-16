@@ -153,10 +153,21 @@ def _global_foundation_model_arns(globs: list[str]) -> list[dict]:
     path. Safety: this Allow is scoped to the persona's *allowed* globs only, and the
     Deny (which uses region ``*`` and so matches the empty/global region segment too)
     still wins for denied models.
+
+    A leading ``*`` is prepended to globs that don't already start with one — exactly
+    as the inference-profile shapes do in ``_model_resource_arns`` — because the global
+    model id carries a ``global.`` prefix *ahead* of the ``anthropic.`` vendor token
+    (``global.anthropic.claude-…``). Without the prepend, a persona glob like
+    ``anthropic.*haiku*`` is anchored at the start and never matches
+    ``foundation-model/global.anthropic.…-haiku-…`` — which would silently make the
+    whole statement inert (the Allow grants nothing on the global path; the Deny guards
+    a path it can never reach). For denied globs this only widens a subtractive Deny, so
+    it is safe; for allowed globs it stays scoped to the named tier.
     """
     arns: list[dict] = []
     for glob in globs:
-        arns.append({"Fn::Sub": f"arn:${{AWS::Partition}}:bedrock:::foundation-model/{glob}"})
+        suffix = glob if glob.startswith("*") else "*" + glob
+        arns.append({"Fn::Sub": f"arn:${{AWS::Partition}}:bedrock:::foundation-model/{suffix}"})
     return arns
 
 

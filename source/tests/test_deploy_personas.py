@@ -637,3 +637,63 @@ class TestPersonaInferenceProfiles:
             command._create_persona_inference_profiles(profile, MagicMock())
         client.create_inference_profile.assert_not_called()
         assert sales["inference_profile_arns"]["haiku"] == existing_arn
+
+
+# ---------------------------------------------------------------------------
+# _check_orphaned_stacks — the inline persona-dashboard must not be mis-flagged
+# as an orphan on a normal persona deploy (it is deployed inline by
+# _deploy_persona_stack, so it never appears in deploying_types).
+# ---------------------------------------------------------------------------
+class TestOrphanedStackCheck:
+    """Guards the persona-dashboard orphan false-positive.
+
+    The dashboard is deployed inline by the persona flow, not as a scheduled stack
+    type, so it is never in ``deploying_types``. Before the fix, every all-stacks
+    re-deploy with personas configured flagged the live dashboard as orphaned and
+    offered to delete it. It must only be flagged once the ``persona`` stack itself
+    is no longer being deployed (personas removed from config).
+    """
+
+    def _command(self):
+        return DeployCommand()
+
+    def _profile(self):
+        profile = Mock(spec=Profile)
+        profile.identity_pool_name = "test-pool"
+        profile.stack_names = {}
+        return profile
+
+    def test_inline_dashboard_not_flagged_when_persona_deploying(self):
+        """persona stack deploying → its inline dashboard is NOT an orphan."""
+        command = self._command()
+        profile = self._profile()
+        cf_manager = MagicMock()
+        # Only the persona-dashboard exists; everything else is absent.
+        cf_manager.get_stack_status.side_effect = (
+            lambda name: "CREATE_COMPLETE" if name == "test-pool-persona-dashboard" else None
+        )
+        # 'persona' IS being deployed (personas configured) — dashboard rides along.
+        stacks_to_deploy = [("auth", "Auth"), ("persona", "Persona-Based Access Control")]
+        orphaned = command._check_orphaned_stacks(stacks_to_deploy, profile, cf_manager, MagicMock())
+        flagged = {t for t, _n, _s in orphaned}
+        assert "persona-dashboard" not in flagged, (
+            "persona-dashboard rides along with the persona deploy and must not be "
+            "reported as orphaned when the persona stack is deploying"
+        )
+
+    def test_leftover_dashboard_flagged_when_persona_removed(self):
+        """personas removed (persona stack NOT deploying) → leftover dashboard IS an orphan."""
+        command = self._command()
+        profile = self._profile()
+        cf_manager = MagicMock()
+        cf_manager.get_stack_status.side_effect = (
+            lambda name: "CREATE_COMPLETE" if name == "test-pool-persona-dashboard" else None
+        )
+        # 'persona' is NOT in the deploy set (personas removed from config).
+        stacks_to_deploy = [("auth", "Auth")]
+        orphaned = command._check_orphaned_stacks(stacks_to_deploy, profile, cf_manager, MagicMock())
+        flagged = {t for t, _n, _s in orphaned}
+        assert "persona-dashboard" in flagged, (
+            "a leftover persona-dashboard must be detected as orphaned once personas "
+            "are removed and the persona stack is no longer deployed"
+        )

@@ -27,6 +27,11 @@ def _profile(**overrides):
     p.enable_distribution = False
     p.enable_codebuild = False
     p.aws_region = "us-east-1"
+    # Default to NO personas so the destroy `persona` branch is a clean no-op.
+    # Without this, a bare Mock returns a truthy Mock for `.personas`, which drives
+    # the real boto3 persona-teardown path (a live AWS-SDK call + ~7s/test). The
+    # persona teardown itself is covered with a recording mock in test_destroy_stacks.py.
+    p.personas = []
     for k, v in overrides.items():
         setattr(p, k, v)
     return p
@@ -41,6 +46,10 @@ def _run_destroy(profile, stack_arg=None):
         patch("claude_code_with_bedrock.cli.commands.destroy.Config") as MockConfig,
         patch.object(DestroyCommand, "_delete_stack", return_value=0) as mock_delete,
         patch.object(DestroyCommand, "_get_failed_resources", return_value=[]),
+        # _get_retained_resources makes a real boto3 call per deleted stack; mock it
+        # (mirrors the _get_failed_resources mock) so these stack-selection unit tests
+        # stay hermetic and fast instead of attempting ~8 live AWS connections.
+        patch.object(DestroyCommand, "_get_retained_resources", return_value=[]),
         patch.object(DestroyCommand, "_show_cleanup_summary"),
     ):
         MockConfig.load.return_value.get_profile.return_value = profile

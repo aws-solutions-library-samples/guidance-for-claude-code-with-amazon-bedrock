@@ -74,18 +74,69 @@ def _deny_statements(template: dict) -> list[dict]:
     return denies
 
 
+def _iam_glob_match(runtime_arn: str, policy_arns: list[str]) -> bool:
+    """True if any policy ARN glob MATCHES the concrete runtime ARN (IAM semantics).
+
+    The single matching engine for this suite. A policy ARN is a glob (``*`` = any run)
+    with ``${AWS::Partition}`` standing in for the partition; we substitute it and use
+    ``fnmatch`` (case-insensitive, anchored) — exactly how the live IAM Deny/Allow
+    evaluates a resource. ``.`` is a literal in ``fnmatch`` (only ``*``/``?``/``[]`` are
+    special), matching IAM's treatment of model-id dots.
+    """
+    import fnmatch
+
+    runtime_l = runtime_arn.lower()
+    for pattern in policy_arns:
+        pat = pattern.replace("${AWS::Partition}", "aws").lower()
+        if fnmatch.fnmatch(runtime_l, pat):
+            return True
+    return False
+
+
+def _real_model_id(keyword: str, *, prefixed: bool) -> str:
+    """A real denied/allowed model id for *keyword*, in the form a shape carries.
+
+    ``prefixed=False`` (foundation-model shape) → the BARE id
+    (``anthropic.claude-opus-4-7``); ``prefixed=True`` (inference-profile shapes) → the
+    region/CRIS-prefixed id (``us.anthropic.claude-opus-4-7``). Resolved from the same
+    catalog deploy uses, so the test tracks the real model ids rather than a synthetic
+    stand-in.
+    """
+    from claude_code_with_bedrock.models import resolve_model_for_tier
+
+    mid = resolve_model_for_tier(keyword, "us") or f"anthropic.claude-{keyword}-x"
+    if not prefixed and mid.split(".", 1)[0] in ("us", "eu", "apac", "global"):
+        mid = mid.split(".", 1)[1]  # strip region prefix → bare FM id
+    return mid
+
+
+def _shape_runtime_arn(prefix: str, model_id: str) -> str:
+    """A concrete runtime ARN for *model_id* on the given ARN *shape*."""
+    part, region, acct = "aws", "us-east-1", "111122223333"
+    if prefix == "foundation-model":
+        return f"arn:{part}:bedrock:{region}::foundation-model/{model_id}"
+    return f"arn:{part}:bedrock:{region}:{acct}:{prefix}/{model_id}"
+
+
 def _shapes_covered_for_keyword(arns: list[str], keyword: str) -> set[str]:
-    """Which ARN-shape prefixes have a Deny ARN matching the given model keyword."""
+    """ARN-shape prefixes whose Deny glob MATCHES a real denied-model id for *keyword*.
+
+    Strengthened from substring-presence to glob-MATCH (the audit fix): for each shape
+    we build a representative real model-id ARN — BARE id for ``foundation-model``,
+    region-prefixed id for the inference-profile shapes (the forms Bedrock actually
+    authorizes) — and report the shape covered only if a Deny resource of that shape
+    *matches* it under IAM anchored-wildcard semantics. A present-but-inert glob (the
+    original global-CRIS bug class) therefore no longer counts as covered. The shape
+    segment is matched with a leading colon (``:foundation-model/``) so
+    ``inference-profile`` does not also match ``application-inference-profile``.
+    """
     covered: set[str] = set()
-    for arn in arns:
-        if keyword not in arn:
-            continue
-        for prefix in ARN_SHAPE_PREFIXES:
-            # Match the resource segment, e.g. ":foundation-model/" — anchored by the
-            # leading colon so "inference-profile" does not also match
-            # "application-inference-profile".
-            if f":{prefix}/" in arn:
-                covered.add(prefix)
+    for prefix in ARN_SHAPE_PREFIXES:
+        model_id = _real_model_id(keyword, prefixed=(prefix != "foundation-model"))
+        runtime = _shape_runtime_arn(prefix, model_id)
+        shape_denies = [a for a in arns if f":{prefix}/" in a]
+        if shape_denies and _iam_glob_match(runtime, shape_denies):
+            covered.add(prefix)
     return covered
 
 
@@ -136,16 +187,26 @@ class TestSalesDenyCoversAllArnShapes:
         *Allow* (so personas can use global models), the Deny must explicitly cover the
         same region-less shape or a denied model becomes reachable via global routing.
         """
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
         template = _render([_sales_persona()])
         deny_arns: list[str] = []
         for stmt in _deny_statements(template):
             deny_arns.extend(_arn_strings(stmt["Resource"]))
+        # Match-based (not substring-present): the region-less global FM Deny glob must
+        # actually MATCH the real global-CRIS denied id. A present-but-anchored glob
+        # (the bug we fixed) is present yet non-matching, so this fails on it.
+        region_less_denies = [a for a in deny_arns if ":bedrock:::foundation-model/" in a]
         for keyword in DENIED_MODEL_KEYWORDS:
-            # A region-less FM ARN has an empty region segment: ":bedrock:::foundation-model/".
-            global_fm = [a for a in deny_arns if ":bedrock:::foundation-model/" in a and keyword in a]
-            assert global_fm, (
-                f"sales Deny for '{keyword}' is missing the region-less global-CRIS "
-                f"foundation-model ARN — global routing could bypass the restriction."
+            global_id = resolve_model_for_tier(keyword, "global")
+            assert global_id and global_id.startswith("global."), (
+                f"expected a real global {keyword} id, got {global_id!r}"
+            )
+            runtime = f"arn:aws:bedrock:::foundation-model/{global_id}"
+            assert _iam_glob_match(runtime, region_less_denies), (
+                f"sales Deny does not MATCH the real global-CRIS {keyword} id {global_id!r} on the "
+                f"region-less FM ARN — global routing could bypass the restriction. "
+                f"region-less Deny globs={region_less_denies}"
             )
 
     def test_global_allow_is_scoped_to_allowed_models_only(self):
@@ -162,6 +223,38 @@ class TestSalesDenyCoversAllArnShapes:
                         assert ":bedrock:::foundation-model/" in arn
                         for denied_kw in DENIED_MODEL_KEYWORDS:
                             assert denied_kw not in arn, f"global Allow leaks denied model '{denied_kw}': {arn}"
+
+    def test_global_allow_actually_matches_the_allowed_global_model_id(self):
+        """Positive companion to the scoping test: the global Allow must MATCH the real
+        allowed (haiku) global model id — not merely be present and free of denied tiers.
+
+        Without this, an inert global Allow glob (the bug we just fixed) would still pass
+        the negative scoping check above (no ``opus``/``sonnet`` substring) while granting
+        nothing. This asserts sales' global FM Allow matches the real
+        ``global.anthropic.…-haiku-…`` id on the region-less FM ARN.
+        """
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        template = _render([_sales_persona()])
+        global_allow_arns: list[str] = []
+        for resource in template["Resources"].values():
+            if resource.get("Type") != "AWS::IAM::ManagedPolicy":
+                continue
+            for stmt in resource["Properties"]["PolicyDocument"]["Statement"]:
+                if stmt.get("Effect") == "Allow" and "Global" in stmt.get("Sid", ""):
+                    global_allow_arns.extend(_arn_strings(stmt["Resource"]))
+        assert global_allow_arns, "sales must render a region-less global FM Allow for haiku"
+
+        allowed_global_haiku = resolve_model_for_tier("haiku", "global")
+        assert allowed_global_haiku and allowed_global_haiku.startswith("global."), (
+            f"expected a real global haiku id, got {allowed_global_haiku!r}"
+        )
+        runtime = f"arn:aws:bedrock:::foundation-model/{allowed_global_haiku}"
+        assert _iam_glob_match(runtime, global_allow_arns), (
+            f"the global FM Allow does not MATCH the allowed global haiku id "
+            f"{allowed_global_haiku!r} — the Allow is inert (anchored-glob bug); "
+            f"globs={global_allow_arns}"
+        )
 
     def test_foundation_model_only_deny_would_fail_the_guard(self):
         """Meta-test: prove the guard has teeth.
@@ -208,6 +301,98 @@ class TestSalesDenyCoversAllArnShapes:
                 "Mutating the renderer to foundation-model-only should make the guard detect "
                 f"missing shapes, but it reported covered={sorted(covered)}."
             )
+
+
+class TestSalesDenyMatchesRealModelIds:
+    """Semantic bypass guard: the rendered Deny must *match* the real denied model
+    ids an attacker could submit — not merely *contain* an ARN string.
+
+    The other tests in this file are **presence/substring** checks (`:foundation-model/`
+    segment exists, keyword is a substring of some ARN). That is the exact weakness that
+    let the inert global-CRIS glob (`anthropic.*opus*` vs `global.anthropic.…opus`) pass
+    three review passes: a Deny ARN was *present* but its glob did not *match* the real
+    id. This class closes that gap by reconstructing the runtime ARN for each real denied
+    model id (across every prefix shape Claude Code invokes through) and asserting the
+    rendered Deny glob actually matches it under IAM's anchored-wildcard semantics —
+    i.e. the model genuinely cannot be invoked, on any shape.
+    """
+
+    @staticmethod
+    def _runtime_arns() -> list[str]:
+        """Every realistic ARN Bedrock authorizes a denied (sonnet/opus) invocation
+        against — pairing each ARN *shape* with the model-id *form* that shape actually
+        carries. Getting the pairing right is the point: a region prefix (``us.``,
+        ``global.``) appears on the **inference-profile** shapes, while the
+        **foundation-model** shape carries the **bare** id. Each entry is a concrete ARN
+        the rendered Deny glob must match.
+        """
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        part, region, acct = "aws", "us-east-1", "111122223333"
+        arns: list[str] = []
+        for tier in ("sonnet", "opus"):  # sales denies both
+            # Foundation-model shape → BARE id (no region prefix), account-less.
+            bare = resolve_model_for_tier(tier, "us")
+            if bare:
+                bare = bare.split(".", 1)[1] if bare.split(".", 1)[0] in ("us", "eu", "apac", "global") else bare
+                arns.append(f"arn:{part}:bedrock:{region}::foundation-model/{bare}")
+            # Inference-profile + application-inference-profile shapes → region/global-PREFIXED id.
+            for prefix in ("us", "eu", "apac", "global"):
+                mid = resolve_model_for_tier(tier, prefix)
+                if not mid:
+                    continue
+                arns.append(f"arn:{part}:bedrock:{region}:{acct}:inference-profile/{mid}")
+                arns.append(f"arn:{part}:bedrock:{region}:{acct}:application-inference-profile/{mid}")
+                # global-CRIS also invokes the region-less FM ARN (RequestedRegion=unspecified).
+                if mid.startswith("global."):
+                    arns.append(f"arn:{part}:bedrock:::foundation-model/{mid}")
+        return sorted(set(arns))
+
+    @staticmethod
+    def _deny_matches(runtime_arn: str, deny_arns: list[str]) -> bool:
+        """True if any Deny resource glob matches the concrete runtime ARN.
+
+        Delegates to the module-level ``_iam_glob_match`` so this suite has a single
+        IAM-matching engine (the same one the strengthened ``_shapes_covered_for_keyword``
+        uses).
+        """
+        return _iam_glob_match(runtime_arn, deny_arns)
+
+    def test_every_real_denied_model_is_matched_on_every_shape(self):
+        template = _render([_sales_persona()])
+        deny_arns: list[str] = []
+        for stmt in _deny_statements(template):
+            deny_arns.extend(_arn_strings(stmt["Resource"]))
+        assert deny_arns, "sales persona must render Deny resources"
+
+        runtime_arns = self._runtime_arns()
+        assert runtime_arns, "expected at least one realistic denied-model ARN to test"
+        unmatched = [a for a in runtime_arns if not self._deny_matches(a, deny_arns)]
+
+        assert not unmatched, (
+            "the sales Deny does not MATCH these real denied-model invocation ARNs "
+            "(present-but-non-matching globs are the inert-policy bypass class):\n  "
+            + "\n  ".join(unmatched)
+        )
+
+    def test_guard_catches_a_prefix_anchored_glob_that_misses_global(self):
+        """Meta: a Deny built without the leading-`*` (anchored at `anthropic.`) must be
+        caught as NOT matching a `global.anthropic.…` id — proving this guard would have
+        flagged the original inert global-CRIS glob."""
+        anchored_deny = [
+            "arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*opus*",  # no leading *
+        ]
+        global_opus = "arn:aws:bedrock:::foundation-model/global.anthropic.claude-opus-4-7"
+        assert not self._deny_matches(global_opus, anchored_deny), (
+            "an anchored anthropic.* glob must NOT match a global.anthropic id — if this "
+            "passes, the match-based guard is toothless"
+        )
+        # And the real renderer's Deny DOES match it (regression for the global-CRIS fix).
+        template = _render([_sales_persona()])
+        deny_arns: list[str] = []
+        for stmt in _deny_statements(template):
+            deny_arns.extend(_arn_strings(stmt["Resource"]))
+        assert self._deny_matches(global_opus, deny_arns)
 
 
 class TestEngineeringHasNoDeny:

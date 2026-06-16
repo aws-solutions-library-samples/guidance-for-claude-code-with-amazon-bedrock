@@ -1679,7 +1679,10 @@ class DeployCommand(Command):
                 name = persona.get("name")
                 if not name:
                     continue
-                tiers = entitled_tiers(persona)
+                # Probe with the resolved CRIS prefix so a version-pinned deny on the
+                # tier's own model excludes that tier here too (keeps the AIP set in
+                # lockstep with the IAM Deny — no AIP sourced from a denied model).
+                tiers = entitled_tiers(persona, cris_prefix=cris_prefix)
                 if not tiers:
                     console.print(
                         f"[dim]Persona '{name}' is entitled to no model tier; skipping inference profiles.[/dim]"
@@ -1758,7 +1761,7 @@ class DeployCommand(Command):
                 aip_name(profile.identity_pool_name, p.get("name"), tier)
                 for p in profile.personas
                 if p.get("name")
-                for tier in entitled_tiers(p)
+                for tier in entitled_tiers(p, cris_prefix=cris_prefix)
             }
             prefix = f"{profile.identity_pool_name}-"
             orphans = sorted(n for n in existing if n and n.startswith(prefix) and n not in current_names)
@@ -1881,6 +1884,16 @@ class DeployCommand(Command):
 
         # Stack types that are being deployed
         deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
+
+        # The persona dashboard is deployed INLINE by _deploy_persona_stack (it is not
+        # a scheduled stack type), so it never appears in deploying_types even on a
+        # normal persona deploy. Treat it as managed-by-the-persona-flow: it is only a
+        # genuine orphan once the persona stack itself is no longer being deployed
+        # (i.e. personas were removed from config). Without this, every all-stacks
+        # re-deploy with personas configured would spuriously flag the live dashboard
+        # as "disabled in your configuration" and offer to delete it.
+        if "persona" in deploying_types:
+            deploying_types = deploying_types | {"persona-dashboard"}
 
         # Check for orphaned stacks
         orphaned = []

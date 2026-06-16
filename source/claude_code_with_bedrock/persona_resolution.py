@@ -50,8 +50,12 @@ def resolve_persona(
         The matching persona dict (the same object from ``personas_ordered``), or
         ``None`` when there is no match and no usable fallback.
     """
-    # Normalize to a set once for O(1) membership across the declared list.
-    groups = set(user_groups)
+    # Normalize to a set once for O(1) membership across the declared list. A bare
+    # string is wrapped (not iterated into characters) so a scalar `groups` claim
+    # ("eng-team") behaves identically to the Go resolver, whose jwt.GetStringSlice
+    # normalizes a scalar claim to a single-element slice — keeping the parity
+    # contract (spec §4.3 / credential-helper-parity.md) exact for that shape too.
+    groups = {user_groups} if isinstance(user_groups, str) else set(user_groups)
 
     for persona in personas_ordered:
         if persona.get("group") in groups:

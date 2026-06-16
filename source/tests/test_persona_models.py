@@ -45,6 +45,46 @@ class TestEntitledTiers:
         assert entitled_tiers({"allowed_models": ["anthropic.*sonnet*"]}) == ["sonnet"]
 
 
+class TestEntitledTiersVersionExactProbe:
+    """L2: ``cris_prefix`` probes a tier with its RESOLVED CRIS model id so a
+    version-pinned deny on that tier's own model excludes the tier — keeping the
+    AIP set deploy creates in lockstep with what the IAM Deny actually blocks (no
+    AIP sourced from a denied model → no runtime AccessDenied on that tier)."""
+
+    def test_version_pinned_deny_excludes_tier_with_cris_prefix(self):
+        # Deny the LATEST opus by version (no trailing wildcard) — the footgun shape.
+        # us.opus resolves to anthropic.claude-opus-4-7; the deny names exactly that.
+        p = {"allowed_models": ["anthropic.*"], "denied_models": ["anthropic.claude-opus-4-7"]}
+        tiers = entitled_tiers(p, cris_prefix="us")
+        assert "opus" not in tiers, (
+            "a version-pinned deny matching the tier's resolved model must exclude that "
+            f"tier when probed with cris_prefix; got {tiers}"
+        )
+        # haiku + sonnet remain entitled (their resolved ids are not denied).
+        assert tiers == ["haiku", "sonnet"]
+
+    def test_version_pinned_deny_is_MISSED_without_cris_prefix(self):
+        # Proves the gap the fix closes: the version-less probe (anthropic.claude-opus)
+        # is NOT matched by the version-pinned deny glob, so opus stays (wrongly)
+        # entitled — which is exactly why deploy passes cris_prefix.
+        p = {"allowed_models": ["anthropic.*"], "denied_models": ["anthropic.claude-opus-4-7"]}
+        assert "opus" in entitled_tiers(p)  # no cris_prefix → version-less probe
+
+    def test_family_glob_personas_resolve_identically_with_or_without_prefix(self):
+        # Backward-compat: the reference personas (tier-family globs like anthropic.*opus*)
+        # resolve to the same tiers regardless of cris_prefix — the fix only changes the
+        # version-pinned case, never the family-glob case the shipped personas use.
+        for persona in REFERENCE_PERSONAS:
+            assert entitled_tiers(persona) == entitled_tiers(persona, cris_prefix="us")
+
+    def test_data_residency_cross_tier_fallback_keeps_versionless_probe(self):
+        # opus/jp resolves to a SONNET id (jp has no opus); probing opus with a sonnet
+        # id would muddy entitlement, so _tier_probe keeps the version-less opus probe.
+        # An allow-all persona therefore still lists opus for a jp deployment.
+        p = {"allowed_models": ["anthropic.*"]}
+        assert "opus" in entitled_tiers(p, cris_prefix="jp")
+
+
 class TestAipNaming:
     def test_name_shape(self):
         assert aip_name("ClaudeCode", "sales", "haiku") == "ClaudeCode-sales-haiku"

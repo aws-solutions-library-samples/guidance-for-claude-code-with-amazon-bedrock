@@ -158,6 +158,57 @@ def test_sales_deny_spans_all_three_arn_shapes(rendered_doc):
     assert "application-inference-profile/*anthropic.*opus*" in joined
 
 
+def test_global_cris_allow_glob_actually_matches_real_global_model_ids():
+    """The region-less global-CRIS Allow/Deny globs must MATCH real ``global.anthropic.*``
+    model ids — not merely exist.
+
+    Regression for an inert-statement bug: the global FM ARN was emitted as
+    ``foundation-model/anthropic.*haiku*`` (no leading ``*``), but a real global model id
+    is ``global.anthropic.claude-haiku-…``. IAM resource matching is anchored, so the
+    glob never matched the id — the Allow granted nothing on the global path and the Deny
+    guarded a path it could never reach (both fail closed, so no bypass, but global models
+    were silently unusable for every persona). The prior tests only asserted the ARN
+    *string was present*, which is exactly why this slipped three hardening passes. This
+    test models IAM's anchored wildcard match with ``fnmatch`` against a concrete global id.
+    """
+    import fnmatch
+
+    doc = yaml.safe_load(render_personas_stack([SALES], GROUPS_CLAIM, ISSUER_HOST))
+
+    def _global_fm_globs(effect: str, keyword: str) -> list[str]:
+        out: list[str] = []
+        for policy_stem in ("Sales", "SalesBoundary"):
+            policy = _resources(doc).get(f"{policy_stem}")
+            if not policy:
+                continue
+            for stmt in _statements(policy):
+                if stmt["Effect"] != effect:
+                    continue
+                for arn in _arn_strs(stmt["Resource"]):
+                    marker = ":bedrock:::foundation-model/"
+                    if marker in arn and keyword in arn:
+                        out.append(arn.split(marker, 1)[1])
+        return out
+
+    # Sales: haiku allowed, sonnet/opus denied. Use the real shipped global ids.
+    real_global_haiku = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    real_global_opus = "global.anthropic.claude-opus-4-7"
+
+    allow_haiku_globs = _global_fm_globs("Allow", "haiku")
+    assert allow_haiku_globs, "sales must emit a region-less global FM Allow for its allowed (haiku) models"
+    assert any(fnmatch.fnmatchcase(real_global_haiku, g) for g in allow_haiku_globs), (
+        f"global FM Allow globs {allow_haiku_globs} do not match the real global haiku id "
+        f"{real_global_haiku!r} — the global Allow is inert (anchored-match bug)."
+    )
+
+    deny_opus_globs = _global_fm_globs("Deny", "opus")
+    assert deny_opus_globs, "sales must emit a region-less global FM Deny for its denied (opus) models"
+    assert any(fnmatch.fnmatchcase(real_global_opus, g) for g in deny_opus_globs), (
+        f"global FM Deny globs {deny_opus_globs} do not match the real global opus id "
+        f"{real_global_opus!r} — a denied model is reachable via global routing."
+    )
+
+
 def test_version_pinned_deny_glob_gets_trailing_wildcard():
     """L5: a denied glob WITHOUT a trailing wildcard must be normalized to cover
     versioned model ids (e.g. `anthropic.claude-opus-4-7` → matches
