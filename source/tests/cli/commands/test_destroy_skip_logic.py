@@ -153,6 +153,49 @@ class TestSkipGuards:
         assert {"distribution", "codebuild"} <= deleted
 
 
+def _run_destroy_with_delete(profile, delete_return, stack_arg=None):
+    """Run `destroy --force` with `_delete_stack` stubbed to a fixed return code.
+
+    `delete_return` is the int every `_delete_stack` call returns (0 = clean,
+    non-zero = the stack didn't delete cleanly). Returns the command exit code.
+    """
+    with (
+        patch("claude_code_with_bedrock.cli.commands.destroy.Config") as MockConfig,
+        patch.object(DestroyCommand, "_delete_stack", return_value=delete_return),
+        patch.object(DestroyCommand, "_get_failed_resources", return_value=[]),
+        patch.object(DestroyCommand, "_get_retained_resources", return_value=[]),
+        patch.object(DestroyCommand, "_show_cleanup_summary"),
+    ):
+        MockConfig.load.return_value.get_profile.return_value = profile
+        MockConfig.load.return_value.active_profile = "test"
+
+        tester = CommandTester(DestroyCommand())
+        args = f"{stack_arg} --force" if stack_arg else "--force"
+        return tester.execute(args)
+
+
+class TestExitCodeReflectsFailure:
+    """`ccwb destroy` must exit non-zero when a stack didn't delete cleanly, so
+    scripts/CI can fail fast on a broken teardown (parity with deploy/package)."""
+
+    def test_failed_delete_exits_nonzero(self):
+        # DELETE_FAILED (1): some resources need manual cleanup -> non-zero exit.
+        exit_code = _run_destroy_with_delete(
+            _profile(enable_distribution=True), delete_return=1, stack_arg="distribution"
+        )
+        assert exit_code != 0
+
+    def test_delete_error_exits_nonzero(self):
+        # A real delete error (2: permissions/network/timeout) -> non-zero exit.
+        exit_code = _run_destroy_with_delete(_profile(enable_codebuild=True), delete_return=2, stack_arg="codebuild")
+        assert exit_code != 0
+
+    def test_clean_run_exits_zero(self):
+        # The all-clean path must still exit 0.
+        exit_code = _run_destroy_with_delete(_profile(), delete_return=0)
+        assert exit_code == 0
+
+
 class TestSingleStackArg:
     def test_distribution_arg_accepted(self):
         exit_code, deleted = _run_destroy(_profile(enable_distribution=True), stack_arg="distribution")
