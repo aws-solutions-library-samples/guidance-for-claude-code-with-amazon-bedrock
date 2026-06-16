@@ -1321,6 +1321,34 @@ class InitCommand(Command):
                 else:
                     console.print("[dim]CoWork service token already configured[/dim]")
 
+        # Settings deployment target
+        console.print("\n[bold]Settings Deployment Target[/bold]")
+        console.print("Choose where Claude Code settings are installed on user machines:")
+        console.print("  • User scope: ~/.claude/settings.json (users can override)")
+        console.print("  • Managed (org enforcement): OS-level path (highest precedence, non-overridable)")
+
+        saved_target = config.get("settings_target", "user")
+        # --managed flag overrides the wizard default
+        if self._io and self.option("managed"):
+            saved_target = "managed"
+
+        settings_target_choices = [
+            questionary.Choice("User scope (~/.claude/settings.json)", value="user"),
+            questionary.Choice("Managed (organization-wide enforcement, requires sudo/admin)", value="managed"),
+        ]
+        settings_target = questionary.select(
+            "Settings deployment target:",
+            choices=settings_target_choices,
+            default=saved_target,
+        ).ask()
+        config["settings_target"] = settings_target or "user"
+
+        if config["settings_target"] == "managed":
+            console.print("[green]✓[/green] Settings will be deployed to OS-level managed path")
+            console.print("[dim]  Users will need sudo (Unix) or Administrator (Windows) to install[/dim]")
+        else:
+            console.print("[green]✓[/green] Settings will be deployed to user-scope path")
+
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
