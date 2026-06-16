@@ -15,6 +15,8 @@ emits the correct shape in the first place.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -292,3 +294,37 @@ def test_colliding_logical_ids_raise():
     ]
     with pytest.raises(ValueError, match="collides"):
         render_personas_stack(personas, GROUPS_CLAIM, ISSUER_HOST)
+
+
+# Parameters the committed example fixture was rendered with (see its header).
+_EXAMPLE_FIXTURE = (
+    Path(__file__).parent.parent.parent
+    / "deployment"
+    / "infrastructure"
+    / "bedrock-personas.example.yaml"
+)
+_EXAMPLE_ISSUER_HOST = "auth.example.com"
+_EXAMPLE_GROUPS_CLAIM = "groups"
+
+
+def test_committed_example_fixture_matches_renderer():
+    """The committed CI fixture must not drift from the renderer.
+
+    ``deployment/infrastructure/bedrock-personas.example.yaml`` is a generated
+    artifact (rendered from REFERENCE_PERSONAS) that CI cfn-lints as a stand-in
+    for real rendered output. If the renderer changes but the fixture isn't
+    regenerated, CI would lint a stale template and the drift would go unnoticed.
+    This guards that: regenerate the fixture (and keep its ``# DO NOT EDIT``
+    header) whenever the renderer output changes.
+    """
+    from claude_code_with_bedrock.persona_defaults import REFERENCE_PERSONAS
+
+    committed = _EXAMPLE_FIXTURE.read_text(encoding="utf-8")
+    committed_body = "\n".join(line for line in committed.splitlines() if not line.startswith("#"))
+    rendered = render_personas_stack(REFERENCE_PERSONAS, _EXAMPLE_GROUPS_CLAIM, _EXAMPLE_ISSUER_HOST)
+
+    # Compare parsed structures so comment/whitespace differences don't matter.
+    assert yaml.safe_load(committed_body) == yaml.safe_load(rendered), (
+        "bedrock-personas.example.yaml is out of sync with persona_template.render_personas_stack — "
+        "regenerate it from REFERENCE_PERSONAS (issuer host 'auth.example.com')."
+    )

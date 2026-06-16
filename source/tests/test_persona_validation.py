@@ -56,6 +56,27 @@ class TestValidatePersonasErrors:
         errors = validate_personas([_valid_persona(name="   ")], None)
         assert any("missing a non-empty 'name'" in e for e in errors)
 
+    def test_name_with_spaces_is_rejected(self):
+        # A name with a space sanitizes lossily into a logical id; reject it up front
+        # with a clear message rather than letting it surface as a CFN error later.
+        errors = validate_personas([_valid_persona(name="data science")], None)
+        assert any("not DNS/IAM-safe" in e for e in errors)
+
+    def test_name_with_non_ascii_is_rejected(self):
+        # Non-ASCII names yield CloudFormation logical ids that fail the
+        # ^[A-Za-z0-9]+$ rule (E3001) once title-cased — reject before render.
+        errors = validate_personas([_valid_persona(name="écran")], None)
+        assert any("not DNS/IAM-safe" in e for e in errors)
+
+    def test_name_with_dot_is_rejected(self):
+        errors = validate_personas([_valid_persona(name="eng.team")], None)
+        assert any("not DNS/IAM-safe" in e for e in errors)
+
+    def test_hyphenated_and_numeric_names_are_valid(self):
+        # The documented-safe shapes must keep validating cleanly.
+        assert validate_personas([_valid_persona(name="data-science")], None) == []
+        assert validate_personas([_valid_persona(name="tier1")], None) == []
+
     def test_missing_group(self):
         persona = _valid_persona()
         del persona["group"]

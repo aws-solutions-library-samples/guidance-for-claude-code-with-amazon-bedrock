@@ -22,6 +22,7 @@ venv/
 # IDE
 .vscode/
 .idea/
+.kiro
 
 # OS
 Thumbs.db

@@ -1610,82 +1610,151 @@ class DeployCommand(Command):
             console.print("[dim]Run 'ccwb quota set-group' manually to configure per-persona limits.[/dim]")
 
     def _create_persona_inference_profiles(self, profile, console: Console) -> None:
-        """Create one tagged Application Inference Profile per persona, idempotently.
+        """Create one tagged Application Inference Profile per persona TIER (FR-5.1).
 
-        Inference profiles carry the persona's cost-allocation tags so Bedrock
-        usage is attributable per persona (FR-4). Creation is check-then-create:
-        if a profile with the persona's name already exists, we skip it. Any
-        failure here is logged but does not fail the deploy (the IAM roles — the
-        access-control core — are already in place).
+        Each AIP carries the persona's cost-allocation tags so Bedrock usage is
+        attributable per persona, and its ARN is wired into the persona's
+        per-tier model routing (read back into ``persona["inference_profile_arns"]``
+        so ``ccwb package`` serializes it and the credential helper can emit
+        ANTHROPIC_*_MODEL exports). Key properties:
+
+        * **One AIP per ENTITLED tier** (haiku/sonnet/opus the persona may invoke),
+          not one AIP per persona — so each tier routes to its own cost-tagged
+          profile and a restricted persona only gets profiles it can actually use.
+        * **copyFrom a cross-Region (system-defined) inference profile**, NOT a
+          single-Region foundation model. AWS requires a CRIS modelSource to
+          produce a multi-Region AIP; a foundation-model source would pin the AIP
+          to one Region and break Claude Code's CRIS routing.
+        * **Partition-aware** source ARNs (aws / aws-us-gov) — fixes the prior
+          hardcoded ``arn:aws:`` (region-availability.md, NFR-8 GovCloud).
+
+        Idempotent check-then-create by name; ARNs are read back even when the AIP
+        already exists. Any failure here is logged but never fails the deploy (the
+        IAM roles — the access-control core — are already in place).
         """
         try:
             import boto3
 
-            client = boto3.client("bedrock", region_name=profile.aws_region)
+            from claude_code_with_bedrock.persona_models import (
+                aip_name,
+                cris_source_arn,
+                entitled_tiers,
+                partition_for_region,
+            )
 
-            # Build a set of existing profile names so creation is idempotent.
-            existing = set()
+            client = boto3.client("bedrock", region_name=profile.aws_region)
+            region = profile.aws_region
+            partition = partition_for_region(region)
+            cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
+
+            # Map existing APPLICATION profiles name -> ARN so creation is idempotent
+            # AND we can read back the ARN of a profile that already exists.
+            existing: dict[str, str] = {}
             try:
                 paginator = client.get_paginator("list_inference_profiles")
                 for page in paginator.paginate(typeEquals="APPLICATION"):
                     for summary in page.get("inferenceProfileSummaries", []):
-                        existing.add(summary.get("inferenceProfileName"))
+                        nm = summary.get("inferenceProfileName")
+                        if nm:
+                            existing[nm] = summary.get("inferenceProfileArn", "")
             except Exception:
                 # Listing is best-effort; if it fails we still attempt create and
                 # rely on the per-create try/except to absorb "already exists".
                 pass
 
+            resolved_any = False
             for persona in profile.personas:
                 name = persona.get("name")
                 if not name:
                     continue
-                profile_name = f"{profile.identity_pool_name}-{name}"
-                if profile_name in existing:
-                    console.print(f"[dim]Inference profile '{profile_name}' already exists (skipping)[/dim]")
+                tiers = entitled_tiers(persona)
+                if not tiers:
+                    console.print(
+                        f"[dim]Persona '{name}' is entitled to no model tier; skipping inference profiles.[/dim]"
+                    )
                     continue
 
                 cost_tags = persona.get("cost_tags") or {}
-                tags = [{"key": k, "value": v} for k, v in cost_tags.items()]
-                tags.append({"key": "Persona", "value": name})
+                base_tags = [{"key": k, "value": v} for k, v in cost_tags.items()]
+                base_tags.append({"key": "Persona", "value": name})
 
-                # The copy source is the account's base model access; we model the
-                # AIP over the region's foundation-model scope. Wrapped so an
-                # already-exists / access error never aborts the deploy.
+                tier_arns: dict[str, str] = {}
+                for tier in tiers:
+                    aip = aip_name(profile.identity_pool_name, name, tier)
+                    if aip in existing:
+                        if existing[aip]:
+                            tier_arns[tier] = existing[aip]
+                        console.print(f"[dim]Inference profile '{aip}' already exists (reusing)[/dim]")
+                        continue
+
+                    source = cris_source_arn(tier, cris_prefix, region, partition)
+                    if not source:
+                        console.print(
+                            f"[dim]No '{tier}' model available for region prefix '{cris_prefix}'; "
+                            f"skipping that tier for persona '{name}'.[/dim]"
+                        )
+                        continue
+
+                    tags = [*base_tags, {"key": "Tier", "value": tier}]
+                    # Wrapped so an already-exists / access error never aborts the deploy.
+                    try:
+                        resp = client.create_inference_profile(
+                            inferenceProfileName=aip,
+                            description=f"Cost-attribution inference profile for persona {name} ({tier})",
+                            modelSource={"copyFrom": source},
+                            tags=tags,
+                        )
+                        arn = resp.get("inferenceProfileArn", "")
+                        if arn:
+                            tier_arns[tier] = arn
+                        console.print(
+                            f"[green]Created tagged inference profile '{aip}' for persona '{name}' ({tier})[/green]"
+                        )
+                    except Exception as create_err:
+                        console.print(
+                            f"[dim]Inference profile '{aip}' not created "
+                            f"({str(create_err).splitlines()[0]}); continuing.[/dim]"
+                        )
+
+                # Wire the resolved tier ARNs into the persona dict so `ccwb package`
+                # serializes them and the credential helper can route per persona.
+                if tier_arns:
+                    persona["inference_profile_arns"] = tier_arns
+                    resolved_any = True
+
+            # Persist the resolved ARNs so the NEXT command (`ccwb package`) sees
+            # them — load_profile() returns a fresh Profile, so the in-memory
+            # mutation above would otherwise be lost. Best-effort (mirrors the
+            # role-ARN write-back).
+            if resolved_any:
                 try:
-                    client.create_inference_profile(
-                        inferenceProfileName=profile_name,
-                        description=f"Cost-attribution inference profile for persona {name}",
-                        modelSource={
-                            "copyFrom": (
-                                f"arn:aws:bedrock:{profile.aws_region}::"
-                                "foundation-model/anthropic.claude-3-haiku-20240307-v1:0"
-                            )
-                        },
-                        tags=tags,
-                    )
+                    from claude_code_with_bedrock.config import Config
+
+                    Config.load().save_profile(profile)
+                except Exception as save_err:
                     console.print(
-                        f"[green]Created tagged inference profile '{profile_name}' for persona '{name}'[/green]"
-                    )
-                except Exception as create_err:
-                    console.print(
-                        f"[dim]Inference profile for persona '{name}' not created "
-                        f"({str(create_err).splitlines()[0]}); continuing.[/dim]"
+                        f"[yellow]Warning: created persona inference profiles but could not persist their "
+                        f"ARNs to the profile ({str(save_err)}). Re-run 'ccwb deploy persona' if "
+                        "'ccwb package' shows no per-persona model routing.[/yellow]"
                     )
 
-            # Orphan detection: a persona removed from config.yaml leaves its tagged
-            # inference profile behind (creation/teardown only iterate CURRENT personas).
-            # We surface it rather than auto-delete — billing/cost resources should not
-            # be removed implicitly by a deploy — so the operator can clean up knowingly.
-            current_names = {f"{profile.identity_pool_name}-{p.get('name')}" for p in profile.personas if p.get("name")}
+            # Orphan detection: a persona removed from config.yaml (or a tier it lost)
+            # leaves its tagged inference profile behind (create/teardown only iterate
+            # CURRENT personas+tiers). Surface it rather than auto-delete — billing/cost
+            # resources should not be removed implicitly by a deploy.
+            current_names = {
+                aip_name(profile.identity_pool_name, p.get("name"), tier)
+                for p in profile.personas
+                if p.get("name")
+                for tier in entitled_tiers(p)
+            }
             prefix = f"{profile.identity_pool_name}-"
-            orphans = sorted(
-                n for n in existing
-                if n and n.startswith(prefix) and n not in current_names
-            )
+            orphans = sorted(n for n in existing if n and n.startswith(prefix) and n not in current_names)
             for orphan in orphans:
                 console.print(
-                    f"[yellow]⚠ Inference profile '{orphan}' has no matching persona in config "
-                    "(persona removed?). It is NOT auto-deleted — remove it manually if unused:[/yellow]"
+                    f"[yellow]⚠ Inference profile '{orphan}' has no matching persona/tier in config "
+                    "(persona removed or tier access changed?). It is NOT auto-deleted — "
+                    "remove it manually if unused:[/yellow]"
                 )
                 console.print(
                     f"[dim]    aws bedrock delete-inference-profile "

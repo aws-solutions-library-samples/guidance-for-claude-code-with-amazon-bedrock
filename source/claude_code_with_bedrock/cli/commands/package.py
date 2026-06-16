@@ -520,6 +520,11 @@ class PackageCommand(Command):
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
+        # Per-persona model-routing launch wrapper (FR-5.1). Only emitted when at
+        # least one persona has resolved inference-profile ARNs — otherwise there
+        # is nothing to route and the baked settings.json model is sufficient.
+        self._create_persona_model_wrapper(output_dir, profile, profile_name, console)
+
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
             console.print("\n[cyan]Generating CoWork 3P MDM configuration...[/cyan]")
@@ -2237,12 +2242,97 @@ RUN pyinstaller \
             "monthly_token_limit",
             "enforcement_mode",
             "cost_tags",
+            # Per-tier Application Inference Profile ARNs (tier -> ARN), resolved
+            # at deploy time. The Go --get-persona-model flow emits these as
+            # ANTHROPIC_*_MODEL exports for per-persona cost-attributed routing
+            # (FR-5.1). Omitted when the persona has no AIPs (no model override).
+            "inference_profile_arns",
         )
         for key in optional_keys:
             value = persona.get(key)
             if value:
                 serialized[key] = value
         return serialized
+
+    def _create_persona_model_wrapper(self, output_dir: Path, profile, profile_name: str, console: Console) -> None:
+        """Emit per-persona model-routing launch wrappers (FR-5.1).
+
+        Personas resolve per-user at credential-issuance, but ``ANTHROPIC_MODEL``
+        is baked statically into settings.json at package time. To route each
+        persona's traffic to its own cost-tagged inference profile, we ship a thin
+        launch wrapper that asks the credential helper for the resolved persona's
+        per-tier ARNs (``--get-persona-model``) and exports them before ``claude``
+        starts. On no-match / no-ARNs the helper exits non-zero and the wrapper
+        leaves the env untouched, so the baked settings.json model stays in effect
+        (backward compatible).
+
+        Emitted only when at least one persona carries ``inference_profile_arns``
+        (resolved by ``ccwb deploy``). Writes both a POSIX ``persona-model.sh`` and
+        a Windows ``persona-model.ps1`` (CRLF, per windows-platform-guards.md). The
+        wrapper is opt-in: the installer/docs tell users to source it from their
+        shell rc — settings.json is unchanged so nothing breaks if they don't.
+        """
+        personas = getattr(profile, "personas", None) or []
+        federation_type = getattr(profile, "federation_type", "")
+        # Personas are direct-IAM only, and routing needs resolved AIP ARNs.
+        if federation_type != "direct" or not any(p.get("inference_profile_arns") for p in personas):
+            return
+
+        # POSIX shell function: eval the helper's export lines, then exec claude.
+        # The helper is local-only and fast; a non-zero exit (no persona / expired
+        # token) leaves ANTHROPIC_* untouched so the baked default applies.
+        posix = (
+            "#!/usr/bin/env bash\n"
+            "# Per-persona model routing for Claude Code (PBAC FR-5.1).\n"
+            "# Source this from your shell rc (e.g. ~/.bashrc, ~/.zshrc):\n"
+            f"#     source \"$HOME/claude-code-with-bedrock/persona-model.sh\"\n"
+            "# It defines a `claude` wrapper that points ANTHROPIC_*_MODEL at the\n"
+            "# inference profile(s) for the persona your OIDC groups resolve to, so\n"
+            "# your Bedrock usage is attributed to that persona's cost-tagged profile.\n"
+            "# No persona match (or an expired token) leaves your model settings as-is.\n"
+            "claude() {\n"
+            f'  local _ccwb_cp="$HOME/claude-code-with-bedrock/credential-process"\n'
+            f'  if [ -x "$_ccwb_cp" ]; then\n'
+            f'    local _ccwb_exports\n'
+            f'    if _ccwb_exports="$("$_ccwb_cp" --profile {profile_name} --get-persona-model 2>/dev/null)"; then\n'
+            '      eval "$_ccwb_exports"\n'
+            "    fi\n"
+            "  fi\n"
+            "  command claude \"$@\"\n"
+            "}\n"
+        )
+        (output_dir / "persona-model.sh").write_text(posix, encoding="utf-8")
+
+        # PowerShell wrapper: Invoke-Expression the export-equivalent. The Go helper
+        # prints POSIX `export K=V` lines; on Windows we translate them to
+        # `$env:K = "V"` so the same binary output drives both shells.
+        ps1 = (
+            "# Per-persona model routing for Claude Code (PBAC FR-5.1).\n"
+            "# Dot-source this from your PowerShell profile:\n"
+            '#     . "$env:USERPROFILE\\claude-code-with-bedrock\\persona-model.ps1"\n'
+            "# It defines a `claude` function that points ANTHROPIC_*_MODEL at the\n"
+            "# inference profile(s) for the persona your OIDC groups resolve to.\n"
+            "function claude {\n"
+            '    $cp = Join-Path $env:USERPROFILE "claude-code-with-bedrock\\credential-process.exe"\n'
+            "    if (Test-Path $cp) {\n"
+            f'        $lines = & $cp --profile {profile_name} --get-persona-model 2>$null\n'
+            "        if ($LASTEXITCODE -eq 0 -and $lines) {\n"
+            "            foreach ($line in $lines) {\n"
+            "                if ($line -match '^export ([A-Z_]+)=(.*)$') {\n"
+            '                    Set-Item -Path \"Env:$($matches[1])\" -Value $matches[2]\n'
+            "                }\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            '    & claude.cmd @args\n'
+            "}\n"
+        )
+        # Windows scripts use CRLF (windows-platform-guards.md).
+        (output_dir / "persona-model.ps1").write_text(ps1.replace("\n", "\r\n"), encoding="utf-8")
+
+        console.print(
+            "  • persona-model.sh / persona-model.ps1 - per-persona model-routing launch wrappers (FR-5.1)"
+        )
 
     def _get_bedrock_region_for_profile(self, profile) -> str:
         """Get the correct AWS region for Bedrock API calls based on user-selected source region."""

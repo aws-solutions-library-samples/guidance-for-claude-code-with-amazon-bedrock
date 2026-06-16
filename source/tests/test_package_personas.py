@@ -98,6 +98,7 @@ class TestPersonaSerialization:
             "monthly_token_limit",
             "enforcement_mode",
             "cost_tags",
+            "inference_profile_arns",
         }
         assert set(eng).issubset(allowed)
         # Python-only fields must NOT leak into config.json (Go has no such tags).
@@ -173,3 +174,83 @@ class TestBackwardCompat:
         assert "personas" not in config
         assert "groups_claim_name" not in config
         assert "fallback_persona" not in config
+
+
+class TestInferenceProfileArnSerialization:
+    """FR-5.1: per-tier inference-profile ARNs round-trip into config.json."""
+
+    def test_inference_profile_arns_serialized_when_present(self, tmp_path):
+        personas = [
+            {
+                "name": "sales",
+                "group": "sales-team",
+                "role_arn": "arn:aws:iam::111122223333:role/persona-sales",
+                "inference_profile_arns": {
+                    "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                },
+            }
+        ]
+        profile = _profile(personas=personas)
+        sales = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+        assert sales["inference_profile_arns"] == {
+            "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+        }
+
+    def test_inference_profile_arns_omitted_when_absent(self, tmp_path):
+        """A persona without resolved AIP ARNs must not carry the key (omitempty parity)."""
+        personas = [{"name": "eng", "group": "eng-team", "role_arn": "arn:aws:iam::111122223333:role/eng"}]
+        profile = _profile(personas=personas)
+        eng = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+        assert "inference_profile_arns" not in eng
+
+
+class TestPersonaModelWrapper:
+    """FR-5.1: the per-persona model-routing launch wrappers."""
+
+    def _persona_with_arns(self):
+        return [
+            {
+                "name": "sales",
+                "group": "sales-team",
+                "inference_profile_arns": {
+                    "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                },
+            }
+        ]
+
+    def test_wrapper_emitted_when_persona_has_arns(self, tmp_path):
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        sh = tmp_path / "persona-model.sh"
+        ps1 = tmp_path / "persona-model.ps1"
+        assert sh.exists() and ps1.exists()
+        body = sh.read_text(encoding="utf-8")
+        assert "--get-persona-model" in body
+        assert "--profile ClaudeCode" in body
+        assert "command claude" in body  # avoids infinite recursion
+
+    def test_windows_wrapper_uses_crlf(self, tmp_path):
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        raw = (tmp_path / "persona-model.ps1").read_bytes()
+        assert b"\r\n" in raw
+        # No bare LF that isn't part of a CRLF (windows-platform-guards.md).
+        assert b"\n" not in raw.replace(b"\r\n", b"")
+
+    def test_no_wrapper_without_arns(self, tmp_path):
+        profile = _profile(personas=[{"name": "eng", "group": "eng-team"}])
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        assert not (tmp_path / "persona-model.sh").exists()
+        assert not (tmp_path / "persona-model.ps1").exists()
+
+    def test_no_wrapper_under_cognito(self, tmp_path):
+        profile = _profile(federation_type="cognito", personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        assert not (tmp_path / "persona-model.sh").exists()
+
+
+class _Console:
+    """Minimal console stub (the wrapper only calls .print)."""
+
+    def print(self, *args, **kwargs):
+        pass

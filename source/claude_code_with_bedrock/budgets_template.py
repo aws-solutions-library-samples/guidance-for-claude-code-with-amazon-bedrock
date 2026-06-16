@@ -27,6 +27,14 @@ from typing import Any
 
 import yaml
 
+# Reuse the persona stack's logical-id sanitizer so a persona's budget logical id
+# and its role logical id are derived identically (single source of truth). The
+# previous local implementation diverged on edge cases — it left a leading digit
+# in place and upper-cased non-ASCII letters — both of which yield logical ids
+# CloudFormation rejects (must match ^[A-Za-z0-9]+$). _logical_id always returns a
+# valid, letter-led, ASCII-only stem.
+from claude_code_with_bedrock.persona_template import _logical_id
+
 # Logical ID of the alert topic; the physical name is rendered via Fn::Sub so it
 # is unique per stack (cfn-naming.md) while staying human-recognizable.
 BUDGET_ALERTS_TOPIC_LOGICAL_ID = "BudgetAlertsTopic"
@@ -46,29 +54,13 @@ def _sub(template: str) -> dict[str, str]:
 def _sanitize_logical_id(name: str) -> str:
     """Turn a persona name into a CloudFormation-safe logical-id fragment.
 
-    Logical IDs must be alphanumeric. Persona names are DNS/IAM-safe (per the
-    §4.1 contract) but may contain hyphens; strip everything else and title-case
-    the remaining segments so ``eng-team`` -> ``EngTeam``.
+    Delegates to :func:`persona_template._logical_id` so a persona's budget
+    logical id matches the role logical id rendered in the persona stack, and so
+    the result is always a valid CloudFormation logical id (``^[A-Za-z0-9]+$``,
+    letter-led) regardless of the name's casing, leading digits, or non-ASCII
+    characters. ``eng-team`` -> ``EngTeam``; ``1team`` -> ``P1team``.
     """
-    parts = [segment for segment in _split_non_alnum(name) if segment]
-    if not parts:
-        raise ValueError(f"persona name {name!r} yields an empty logical id")
-    return "".join(part[:1].upper() + part[1:] for part in parts)
-
-
-def _split_non_alnum(value: str) -> list[str]:
-    """Split *value* on any run of non-alphanumeric characters."""
-    out: list[str] = []
-    current: list[str] = []
-    for ch in value:
-        if ch.isalnum():
-            current.append(ch)
-        elif current:
-            out.append("".join(current))
-            current = []
-    if current:
-        out.append("".join(current))
-    return out
+    return _logical_id(name)
 
 
 def _cost_filters_for_persona(persona: dict[str, Any]) -> dict[str, list[str]]:

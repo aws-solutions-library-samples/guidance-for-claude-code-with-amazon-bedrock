@@ -12,9 +12,17 @@ materializing personas so that misconfigurations surface early with a clear mess
 rather than as an opaque CloudFormation or STS failure later.
 """
 
+import re
 from typing import Any
 
 VALID_ENFORCEMENT_MODES = ("alert", "block")
+
+# A persona name must be DNS/IAM-safe (spec §4.1): it is interpolated into IAM
+# role/policy names and sanitized into CloudFormation logical ids. Restrict it to
+# an alphanumeric-and-hyphen identifier (letter/digit start) so the rendered stack
+# can never carry an invalid logical id or an illegal IAM resource name. This is
+# the same convention as Config._is_valid_profile_name.
+VALID_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 
 
 def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> list[str]:
@@ -30,6 +38,7 @@ def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> l
         A list of human-readable error messages. Empty means valid. Checks:
           * duplicate persona names
           * missing or empty ``name`` or ``group``
+          * ``name`` not DNS/IAM-safe (must match ``^[A-Za-z0-9][A-Za-z0-9-]*$``)
           * ``enforcement_mode`` not in {"alert", "block"} (when present)
           * ``allowed_models`` / ``denied_models`` entries that are not strings
           * ``fallback`` naming a persona that does not exist
@@ -46,13 +55,18 @@ def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> l
         raw_name = persona.get("name")
         label = raw_name if isinstance(raw_name, str) and raw_name else f"index {index}"
 
-        # name: present and non-empty
+        # name: present, non-empty, and DNS/IAM-safe
         if not isinstance(raw_name, str) or not raw_name.strip():
             errors.append(f"Persona at {label} is missing a non-empty 'name'.")
         else:
             if raw_name in seen_names:
                 errors.append(f"Duplicate persona name '{raw_name}'.")
             seen_names.add(raw_name)
+            if not VALID_NAME_RE.match(raw_name):
+                errors.append(
+                    f"Persona name '{raw_name}' is not DNS/IAM-safe; use only letters, digits, "
+                    "and hyphens, starting with a letter or digit (e.g. 'data-science')."
+                )
 
         # group: present and non-empty
         group = persona.get("group")

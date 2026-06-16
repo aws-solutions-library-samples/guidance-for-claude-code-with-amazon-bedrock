@@ -198,6 +198,18 @@ class TestDeployPersonaStack:
         assert result == 1
         deploy_with_cf.assert_not_called()
 
+    def test_non_dns_safe_persona_name_fails_before_render(self, command, console, deploy_with_cf):
+        # REGRESSION: a persona name that is not DNS/IAM-safe sanitizes into an
+        # invalid CloudFormation logical id (and an illegal IAM resource name). It
+        # must be rejected by validate_personas at the top of the deploy path —
+        # returning 1 and never rendering/deploying — rather than failing opaquely
+        # at CloudFormation create time.
+        bad = {**ENGINEERING, "name": "data science"}  # space → not DNS/IAM-safe
+        profile = _persona_profile(personas=[bad])
+        result = command._deploy_persona_stack(profile, console, Mock(), deploy_with_cf)
+        assert result == 1
+        deploy_with_cf.assert_not_called()
+
     def test_cognito_federation_skips_with_warning(self, command, console, deploy_with_cf):
         profile = _persona_profile()
         with patch(f"{DEPLOY_MOD}.get_stack_outputs", return_value={"FederationType": "cognito"}):
@@ -503,3 +515,113 @@ class TestWriteBackPersonaRoleArns:
             # Must not raise; role_arn simply stays unset.
             command._write_back_persona_role_arns(profile, "stack", MagicMock())
         assert "role_arn" not in personas[0]
+
+
+# ---------------------------------------------------------------------------
+# Per-tier Application Inference Profile creation (FR-5.1)
+# ---------------------------------------------------------------------------
+class TestPersonaInferenceProfiles:
+    """_create_persona_inference_profiles: per-tier AIPs from CRIS sources,
+    partition-aware (L-a fix), with ARN read-back into the persona dicts."""
+
+    @pytest.fixture
+    def command(self):
+        return DeployCommand()
+
+    def _fake_bedrock_client(self, created):
+        """A boto3-bedrock stand-in that records create calls and returns ARNs."""
+        client = MagicMock()
+
+        # No pre-existing profiles.
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"inferenceProfileSummaries": []}]
+        client.get_paginator.return_value = paginator
+
+        def _create(**kwargs):
+            name = kwargs["inferenceProfileName"]
+            created.append(kwargs)
+            arn = f"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/{name}"
+            return {"inferenceProfileArn": arn}
+
+        client.create_inference_profile.side_effect = _create
+        return client
+
+    def _profile(self, personas):
+        profile = Mock(spec=Profile)
+        profile.aws_region = "us-east-1"
+        profile.identity_pool_name = "pool"
+        profile.cross_region_profile = "us"
+        profile.personas = personas
+        return profile
+
+    def test_per_tier_aips_created_from_cris_source(self, command):
+        created = []
+        client = self._fake_bedrock_client(created)
+        sales = {"name": "sales", "group": "s", "allowed_models": ["anthropic.*haiku*"],
+                 "denied_models": ["anthropic.*sonnet*", "anthropic.*opus*"], "cost_tags": {"Team": "Sales"}}
+        profile = self._profile([sales])
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+
+        # Sales is haiku-only → exactly one AIP, named pool-sales-haiku.
+        assert [c["inferenceProfileName"] for c in created] == ["pool-sales-haiku"]
+        # copyFrom must be a cross-Region (system-defined) inference profile, not a
+        # bare foundation-model (else the AIP is single-Region and breaks CRIS).
+        src = created[0]["modelSource"]["copyFrom"]
+        assert ":inference-profile/us." in src
+        assert "foundation-model/" not in src
+        # ARN wired back into the persona dict for package serialization (FR-5.1).
+        assert sales["inference_profile_arns"]["haiku"].endswith("application-inference-profile/pool-sales-haiku")
+
+    def test_engineering_gets_all_three_tiers(self, command):
+        created = []
+        client = self._fake_bedrock_client(created)
+        eng = {"name": "eng", "group": "e", "allowed_models": ["anthropic.*"], "denied_models": [],
+               "cost_tags": {"Team": "Eng"}}
+        profile = self._profile([eng])
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+        names = sorted(c["inferenceProfileName"] for c in created)
+        assert names == ["pool-eng-haiku", "pool-eng-opus", "pool-eng-sonnet"]
+        assert set(eng["inference_profile_arns"]) == {"haiku", "sonnet", "opus"}
+
+    def test_govcloud_partition_in_source_arn(self, command):
+        created = []
+        client = self._fake_bedrock_client(created)
+        profile = self._profile([{"name": "sales", "group": "s", "allowed_models": ["anthropic.*haiku*"],
+                                  "cost_tags": {"T": "x"}}])
+        profile.aws_region = "us-gov-west-1"
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+        # L-a fix: source ARN is partition-aware (aws-us-gov), not hardcoded arn:aws:.
+        assert created[0]["modelSource"]["copyFrom"].startswith("arn:aws-us-gov:bedrock:us-gov-west-1::")
+
+    def test_cost_tags_and_persona_tier_tags_attached(self, command):
+        created = []
+        client = self._fake_bedrock_client(created)
+        profile = self._profile([{"name": "sales", "group": "s", "allowed_models": ["anthropic.*haiku*"],
+                                  "cost_tags": {"Team": "Sales"}}])
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+        tags = {t["key"]: t["value"] for t in created[0]["tags"]}
+        assert tags["Team"] == "Sales"
+        assert tags["Persona"] == "sales"
+        assert tags["Tier"] == "haiku"
+
+    def test_existing_profile_arn_read_back_without_recreate(self, command):
+        # An AIP that already exists must be reused (ARN read back), not recreated.
+        client = MagicMock()
+        existing_arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{
+            "inferenceProfileSummaries": [
+                {"inferenceProfileName": "pool-sales-haiku", "inferenceProfileArn": existing_arn}
+            ]
+        }]
+        client.get_paginator.return_value = paginator
+        sales = {"name": "sales", "group": "s", "allowed_models": ["anthropic.*haiku*"], "cost_tags": {"T": "x"}}
+        profile = self._profile([sales])
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+        client.create_inference_profile.assert_not_called()
+        assert sales["inference_profile_arns"]["haiku"] == existing_arn

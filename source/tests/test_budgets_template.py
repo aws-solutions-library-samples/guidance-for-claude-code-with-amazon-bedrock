@@ -13,6 +13,8 @@ plus a FORECASTED notification on every budget.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -190,3 +192,34 @@ class TestEdgeCases:
         personas = [{"name": "data-science", "group": "ds", "budget_amount_usd": 10, "cost_tags": {"T": "x"}}]
         _, parsed = _render_and_parse(personas, account_budget=None)
         assert "DataScienceBudget" in parsed["Resources"]
+
+    def test_digit_leading_name_produces_valid_logical_id(self):
+        # Regression: a digit-leading persona name must not emit an invalid
+        # CloudFormation logical id (must match ^[A-Za-z0-9]+$ AND start with a
+        # letter). The shared _logical_id prepends 'P' -> 'P1team'.
+        personas = [{"name": "1team", "group": "g", "budget_amount_usd": 10, "cost_tags": {"T": "x"}}]
+        _, parsed = _render_and_parse(personas, account_budget=None)
+        budget_ids = [k for k in parsed["Resources"] if k.endswith("Budget") and k != "AccountBudget"]
+        assert budget_ids == ["P1teamBudget"]
+        assert re.match(r"^[A-Za-z][A-Za-z0-9]*$", budget_ids[0])
+
+    def test_non_ascii_name_produces_valid_logical_id(self):
+        # Regression: a non-ASCII persona name previously rendered a logical id
+        # CloudFormation rejects (E3001). The shared _logical_id strips it to ASCII.
+        personas = [{"name": "écran", "group": "g", "budget_amount_usd": 10, "cost_tags": {"T": "x"}}]
+        _, parsed = _render_and_parse(personas, account_budget=None)
+        budget_ids = [k for k in parsed["Resources"] if k.endswith("Budget") and k != "AccountBudget"]
+        assert len(budget_ids) == 1
+        assert re.match(r"^[A-Za-z0-9]+$", budget_ids[0]), budget_ids[0]
+
+    def test_budget_logical_id_matches_persona_role_stem(self):
+        # The budget logical-id stem must match the persona stack's role stem so
+        # the two rendered stacks refer to the same persona by the same id (single
+        # source of truth — both derive from persona_template._logical_id).
+        from claude_code_with_bedrock.persona_template import _logical_id
+
+        for name in ("data-science", "eng.team", "1team", "écran", "Sales"):
+            personas = [{"name": name, "group": "g", "budget_amount_usd": 10, "cost_tags": {"T": "x"}}]
+            _, parsed = _render_and_parse(personas, account_budget=None)
+            budget_ids = [k for k in parsed["Resources"] if k.endswith("Budget") and k != "AccountBudget"]
+            assert budget_ids == [f"{_logical_id(name)}Budget"], name

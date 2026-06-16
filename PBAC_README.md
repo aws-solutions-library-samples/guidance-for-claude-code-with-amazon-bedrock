@@ -40,7 +40,7 @@ attached:
 |---|---|---|
 | **IAM role** | Federated role assumed at credential-issuance time; its Bedrock policy enforces model allow/deny | Rendered into a dedicated `…-persona` CloudFormation stack |
 | **GROUP quota policy** | Per-persona monthly/daily token limits | Seeded into the **existing** `QuotaPolicies` table — a persona's `group` *is* the policy identifier (no new policy type) |
-| **Tagged inference profiles** | Cost attribution per persona | Application Inference Profiles created with cost-allocation tags |
+| **Tagged inference profiles + model routing** | Per-persona cost attribution AND per-persona model routing | One cost-tagged Application Inference Profile per entitled tier; its ARN routes that persona's `ANTHROPIC_*_MODEL` via an opt-in launch wrapper ([§7](#7-cost-attribution--per-persona-model-routing)) |
 | **AWS Budget** | Spend cap + alerts per persona (and account total) | Rendered into a `…-budgets` stack |
 | **Telemetry dimension** | `persona` label on `claude_code.token.usage` for dashboards | otel-helper emits `x-persona`; the collector maps it to a metric dimension |
 
@@ -156,7 +156,8 @@ ccwb deploy    # 1. auth stack      (exports OIDCProviderArn, FederationType)
                # 2. quota stack     (QuotaPolicies / UserQuotaMetrics / quota-check API)
                # 3. persona stack    ← imports OIDCProviderArn; N× {Role + Policy [+ boundary]}
                #    └ seeds one GROUP quota policy per persona
-               #    └ creates tagged Application Inference Profiles (idempotent check-then-create)
+               #    └ creates tagged Application Inference Profiles, one per persona TIER,
+               #      copyFrom a cross-Region profile (idempotent); wires ARNs into config
                #    └ deploys the persona dashboard inline (at the tail of the persona step)
                # 4. budgets stack    (per-persona + account-total → budget-alerts SNS)
 ccwb package   # writes config.json with each persona's resolved role_arn (read from stack outputs)
@@ -255,16 +256,60 @@ security. PBAC does not change those defaults.
 
 ---
 
-## 7. Cost attribution
+## 7. Cost attribution & per-persona model routing
 
-Each persona gets **tagged Application Inference Profiles**. The `cost_tags` map on the
-persona (e.g. `{Team: Engineering, CostCenter: CC-1001}`) becomes cost-allocation tags
-on those profiles, so Bedrock spend rolls up per persona in Cost Explorer / CUR once
-the tags are activated as cost-allocation tags in the Billing console.
+Cost attribution has two complementary layers.
+
+### 7a. Tagged Application Inference Profiles + per-persona routing (FR-5.1)
+
+`ccwb deploy` creates one **tagged Application Inference Profile (AIP) per entitled
+tier** for each persona — `{pool}-{persona}-{tier}` (e.g. `pool-sales-haiku`). A
+persona's entitled tiers are derived from its `allowed_models` / `denied_models`
+(sales = haiku only; engineering = haiku+sonnet+opus). Each AIP carries the persona's
+`cost_tags` (plus `Persona` and `Tier` tags), so Bedrock spend rolls up per persona
+**and** per tier in Cost Explorer / CUR once you activate those tags as cost-allocation
+tags in the Billing console.
+
+> **⚠️ AIPs are created from a cross-Region (system-defined) inference profile**, not a
+> single-Region foundation model — AWS requires a CRIS `modelSource` to produce a
+> multi-Region AIP, and Claude Code routes cross-Region. The source ARN is
+> partition-aware (`aws` / `aws-us-gov`).
+
+**Routing.** Each AIP's ARN is wired back into the persona block of `config.json`
+(`inference_profile_arns: {tier: arn}`) at deploy time, then serialized by
+`ccwb package`. Because the persona a user belongs to is only known **at credential
+issuance** (from the `groups` claim) — while `settings.json`'s `ANTHROPIC_MODEL` is
+static per bundle — per-user routing is delivered by an **opt-in launch wrapper**:
+
+- `ccwb package` emits `persona-model.sh` (POSIX) and `persona-model.ps1` (Windows)
+  next to the binary **when at least one persona has resolved AIP ARNs**.
+- The wrapper calls `credential-process --get-persona-model`, which resolves the user's
+  persona from the cached token's `groups` claim and prints `export ANTHROPIC_*_MODEL=…`
+  lines pointing at that persona's per-tier AIP ARNs (bare `ANTHROPIC_MODEL` = the
+  persona's most-capable entitled tier). The wrapper applies them, then launches Claude.
+- **Opt-in:** add the wrapper to your shell startup. `settings.json`'s baked model is
+  unchanged, so a user who doesn't source the wrapper — or who matches no persona, or
+  whose token expired — simply keeps the default model (no breakage).
+
+```bash
+# POSIX — add to ~/.bashrc or ~/.zshrc:
+source "$HOME/claude-code-with-bedrock/persona-model.sh"
+```
+```powershell
+# Windows — add to your PowerShell $PROFILE:
+. "$env:USERPROFILE\claude-code-with-bedrock\persona-model.ps1"
+```
+
+`credential-process --get-persona-model` is local-only (no network) and exits non-zero
+when there's nothing to route, so it's safe to call on every launch. Use
+`--tier {haiku|sonnet|opus}` to emit a single tier.
+
+### 7b. IAM principal-based attribution (zero-infra complement)
 
 The STS `RoleSessionName` continues to carry user identity into
 `line_item_iam_principal` (unchanged — `buildSessionName` was not touched), so per-user
-attribution still works alongside per-persona attribution.
+attribution still works alongside per-persona attribution. The persona role ARN itself
+also appears in CUR, giving per-persona rollup even without the AIP tags.
 
 ---
 
@@ -310,7 +355,7 @@ distinct). The topic policy grants `budgets.amazonaws.com` publish rights gated 
 | **Change a persona's token limit** at runtime | `ccwb quota set-group <group> …` — updates the GROUP policy in DynamoDB; no redeploy needed (a persona's `group` *is* the policy id) |
 | **Change a persona's model access** | Edit `allowed_models`/`denied_models` in `config.yaml`, re-run `ccwb deploy`; the persona ManagedPolicy is versioned by IAM (rollback = restore the prior policy version) |
 | **Emergency disable a persona** | Disable its GROUP quota policy (block via quota) and/or detach/restrict the persona role's policy; for a hard cut, remove the group from the user in your IdP |
-| **Remove a persona** | Delete it from `config.yaml` and re-run `ccwb deploy`. The persona's **IAM role is pruned** by CloudFormation (it lives in the rendered stack). Its **inference profile** and **GROUP quota policy** are NOT auto-removed (deploy won't implicitly delete billing/quota resources) — `ccwb deploy` prints the orphaned inference-profile's manual `aws bedrock delete-inference-profile` command, and you remove the stale group limit with `ccwb quota delete group <group>`. |
+| **Remove a persona** | Delete it from `config.yaml` and re-run `ccwb deploy`. The persona's **IAM role is pruned** by CloudFormation (it lives in the rendered stack). Its **per-tier inference profiles** and **GROUP quota policy** are NOT auto-removed (deploy won't implicitly delete billing/quota resources) — `ccwb deploy` prints the orphaned inference-profiles' manual `aws bedrock delete-inference-profile` commands (one per `{pool}-{persona}-{tier}`), and you remove the stale group limit with `ccwb quota delete group <group>`. `ccwb destroy` cleans them up automatically. |
 | **Roll back a bad deploy** | CloudFormation stack rollback for the persona/budgets stacks; IAM ManagedPolicy versioning for policy-only changes |
 
 ---
@@ -362,6 +407,7 @@ both quota Lambdas, and otel-helper — see
 | **Persona dashboard / queries are empty** | Collector persona dimension missing | Verify `otel-collector.yaml` maps `x-persona`→`persona` and declares the `persona` dimension. See [§9](#9-dashboards--queries). |
 | **Quota limits ignore my declared persona order** | `PERSONA_ORDER` not set on the Lambdas (deploy didn't pass it, or personas not configured) | Confirm `ccwb deploy` ran with personas configured; check the `PersonaOrder`/`PERSONA_ORDER` value on both quota functions. See [§6](#6-token-tracking--enforcement). |
 | **A user in no persona group can't use Bedrock at all** | `fallback_persona` is `null` (hard-deny default) | Set `fallback_persona` to a low-privilege persona if graceful degradation is wanted. See [§11](#11-no-match--fallback-behavior). |
+| **Per-persona model routing isn't taking effect** | The launch wrapper isn't sourced, the persona has no resolved AIP ARNs, or no persona matched | Confirm `persona-model.sh`/`.ps1` is sourced from your shell rc; check `config.json`'s persona block has `inference_profile_arns`; run `credential-process --profile <p> --get-persona-model` directly (exit 0 = exports printed, 2 = no persona/ARNs, 4 = token expired). See [§7a](#7a-tagged-application-inference-profiles--per-persona-routing-fr-51). |
 | **Personas didn't deploy at all** | Auth type is Cognito/IDC/none, or no personas configured | Personas require OIDC direct-IAM + at least one persona. See [§12](#12-auth-type--cognito-limitations). |
 
 ---

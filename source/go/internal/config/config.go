@@ -109,6 +109,14 @@ type PersonaConfig struct {
 	MonthlyTokenLimit int64             `json:"monthly_token_limit,omitempty"`
 	EnforcementMode   string            `json:"enforcement_mode,omitempty"`
 	CostTags          map[string]string `json:"cost_tags,omitempty"`
+	// InferenceProfileArns maps a model tier ("haiku"/"sonnet"/"opus") to the
+	// persona's tagged Application Inference Profile ARN for that tier (resolved
+	// at deploy time, FR-5.1). The --get-persona-model flow emits these as
+	// ANTHROPIC_*_MODEL exports so a persona's traffic is attributed to its own
+	// cost-tagged profile. Empty/absent => no per-persona model routing (the
+	// baked settings.json model stays in effect). Mirrors the Python persona
+	// dict key inference_profile_arns (config-sync.md parity).
+	InferenceProfileArns map[string]string `json:"inference_profile_arns,omitempty"`
 }
 
 // configFile represents the on-disk config.json format.

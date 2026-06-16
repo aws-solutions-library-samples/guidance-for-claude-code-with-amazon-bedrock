@@ -237,13 +237,16 @@ class DestroyCommand(Command):
             console.print("[yellow]⚠ Persona-dashboard stack has resources requiring manual cleanup[/yellow]\n")
 
     def _delete_persona_inference_profiles(self, profile, console: Console) -> None:
-        """Best-effort deletion of the per-persona Application Inference Profiles.
+        """Best-effort deletion of the per-persona-tier Application Inference Profiles.
 
-        Deploy creates one AIP per persona named ``{identity_pool_name}-{name}``
-        (via boto3, outside any CFN stack), so they must be deleted explicitly on
-        teardown or they orphan. Mirrors the deploy-side naming. Failures are
-        logged but never abort the destroy — the persona CFN stack (the IAM
-        roles) is the primary resource and is handled separately.
+        Deploy creates one AIP per persona TIER named
+        ``{identity_pool_name}-{name}-{tier}`` (via boto3, outside any CFN stack),
+        so they must be deleted explicitly on teardown or they orphan. Naming +
+        tier-entitlement come from the shared ``persona_models`` helpers so deploy
+        and destroy can never drift. Failures are logged but never abort the
+        destroy — the persona CFN stack (the IAM roles) is the primary resource and
+        is handled separately. Also sweeps any legacy single-AIP-per-persona name
+        (``{pool}-{name}``) created by pre-FR-5.1 deploys.
         """
         personas = getattr(profile, "personas", None)
         if not personas:
@@ -251,21 +254,26 @@ class DestroyCommand(Command):
         try:
             import boto3
 
+            from claude_code_with_bedrock.persona_models import aip_name, entitled_tiers
+
             client = boto3.client("bedrock", region_name=profile.aws_region)
             for persona in personas:
                 name = persona.get("name")
                 if not name:
                     continue
-                profile_name = f"{profile.identity_pool_name}-{name}"
-                try:
-                    client.delete_inference_profile(inferenceProfileIdentifier=profile_name)
-                    console.print(f"[green]✓ Deleted inference profile '{profile_name}'[/green]")
-                except Exception as del_err:
-                    # Already gone / never created / in use — log first line and continue.
-                    console.print(
-                        f"[dim]Inference profile '{profile_name}' not deleted "
-                        f"({str(del_err).splitlines()[0]}); skipping.[/dim]"
-                    )
+                # Per-tier AIPs (FR-5.1) + the legacy single-name AIP for back-compat.
+                candidates = [aip_name(profile.identity_pool_name, name, tier) for tier in entitled_tiers(persona)]
+                candidates.append(f"{profile.identity_pool_name}-{name}")  # legacy pre-FR-5.1 name
+                for aip in candidates:
+                    try:
+                        client.delete_inference_profile(inferenceProfileIdentifier=aip)
+                        console.print(f"[green]✓ Deleted inference profile '{aip}'[/green]")
+                    except Exception as del_err:
+                        # Already gone / never created / in use — log first line and continue.
+                        console.print(
+                            f"[dim]Inference profile '{aip}' not deleted "
+                            f"({str(del_err).splitlines()[0]}); skipping.[/dim]"
+                        )
         except Exception as e:
             console.print(f"[yellow]Warning: Could not clean up persona inference profiles: {str(e)}[/yellow]")
 

@@ -153,3 +153,128 @@ func TestSelectRoleARNDefaultsGroupsClaim(t *testing.T) {
 		t.Errorf("expected eng role via default 'groups' claim, got %q", got)
 	}
 }
+
+// TestResolvePersonaModelExports exercises the pure core of --get-persona-model
+// (FR-5.1): persona resolution from the groups claim -> ANTHROPIC_*_MODEL export
+// lines pointing at the persona's per-tier inference-profile ARNs.
+func TestResolvePersonaModelExports(t *testing.T) {
+	const haikuARN = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/sales-haiku"
+	const sonnetARN = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/eng-sonnet"
+	const opusARN = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/eng-opus"
+
+	eng := config.PersonaConfig{
+		Name: "engineering", Group: "eng-team",
+		InferenceProfileArns: map[string]string{"sonnet": sonnetARN, "opus": opusARN},
+	}
+	sales := config.PersonaConfig{
+		Name: "sales", Group: "sales-team",
+		InferenceProfileArns: map[string]string{"haiku": haikuARN},
+	}
+	noArns := config.PersonaConfig{Name: "interns", Group: "intern-team"}
+	personas := []config.PersonaConfig{eng, sales, noArns}
+
+	tests := []struct {
+		name      string
+		cfg       *config.ProfileConfig
+		claims    jwt.Claims
+		tier      string
+		wantCode  int
+		wantLines []string
+	}{
+		{
+			name:     "no personas configured -> code 2",
+			cfg:      &config.ProfileConfig{},
+			claims:   jwt.Claims{"groups": []interface{}{"eng-team"}},
+			wantCode: 2,
+		},
+		{
+			name:     "no group match, no fallback -> code 2",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"nobody"}},
+			wantCode: 2,
+		},
+		{
+			name:     "matched persona has no ARNs -> code 2",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"intern-team"}},
+			wantCode: 2,
+		},
+		{
+			name:     "sales (haiku only) -> haiku + primary ANTHROPIC_MODEL=haiku",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"sales-team"}},
+			wantCode: 0,
+			wantLines: []string{
+				"export ANTHROPIC_DEFAULT_HAIKU_MODEL=" + haikuARN,
+				"export ANTHROPIC_MODEL=" + haikuARN,
+			},
+		},
+		{
+			name:     "engineering (sonnet+opus) -> both tiers + primary=opus (most capable)",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"eng-team"}},
+			wantCode: 0,
+			wantLines: []string{
+				"export ANTHROPIC_DEFAULT_SONNET_MODEL=" + sonnetARN,
+				"export ANTHROPIC_DEFAULT_OPUS_MODEL=" + opusARN,
+				"export ANTHROPIC_MODEL=" + opusARN,
+			},
+		},
+		{
+			name:      "single-tier request (sonnet) -> only that env var, no ANTHROPIC_MODEL",
+			cfg:       &config.ProfileConfig{Personas: personas},
+			claims:    jwt.Claims{"groups": []interface{}{"eng-team"}},
+			tier:      "sonnet",
+			wantCode:  0,
+			wantLines: []string{"export ANTHROPIC_DEFAULT_SONNET_MODEL=" + sonnetARN},
+		},
+		{
+			name:     "single-tier request for a tier the persona lacks -> code 2",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"sales-team"}},
+			tier:     "opus",
+			wantCode: 2,
+		},
+		{
+			name: "fallback persona used when no group matches",
+			cfg: &config.ProfileConfig{
+				Personas:        personas,
+				FallbackPersona: "sales",
+			},
+			claims:   jwt.Claims{"groups": []interface{}{"nobody"}},
+			wantCode: 0,
+			wantLines: []string{
+				"export ANTHROPIC_DEFAULT_HAIKU_MODEL=" + haikuARN,
+				"export ANTHROPIC_MODEL=" + haikuARN,
+			},
+		},
+		{
+			name:     "default groups claim fallback (GroupsClaimName empty)",
+			cfg:      &config.ProfileConfig{Personas: personas},
+			claims:   jwt.Claims{"groups": []interface{}{"sales-team"}},
+			wantCode: 0,
+			wantLines: []string{
+				"export ANTHROPIC_DEFAULT_HAIKU_MODEL=" + haikuARN,
+				"export ANTHROPIC_MODEL=" + haikuARN,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines, code := resolvePersonaModelExports(tt.cfg, tt.claims, tt.tier)
+			if code != tt.wantCode {
+				t.Errorf("code = %d, want %d (lines=%v)", code, tt.wantCode, lines)
+			}
+			if tt.wantLines == nil {
+				if len(lines) != 0 {
+					t.Errorf("expected no lines, got %v", lines)
+				}
+				return
+			}
+			if strings.Join(lines, "\n") != strings.Join(tt.wantLines, "\n") {
+				t.Errorf("lines mismatch:\n got: %v\nwant: %v", lines, tt.wantLines)
+			}
+		})
+	}
+}
