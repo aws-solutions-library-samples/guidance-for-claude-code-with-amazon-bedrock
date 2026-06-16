@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"ccwb-go/internal/browser"
 	"ccwb-go/internal/jwt"
 	"ccwb-go/internal/provider"
-	"github.com/pkg/browser"
 )
 
 // AuthResult holds the result of a successful OIDC authentication.
