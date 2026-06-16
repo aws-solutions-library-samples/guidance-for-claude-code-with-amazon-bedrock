@@ -1,7 +1,21 @@
 # Spec — Persona-Based Access Control & Cost Governance
 
-> Slug: `persona-based-access` · Target branch: `beta` · Status: Draft for approval
+> Slug: `persona-based-access` · Branch: `rubab-dev1` (uncommitted) · Status: **IMPLEMENTED + reviewed (4 scopes PASS) + Low-issue wave applied** as of 2026-06-16.
 > Input: `requirements.md` (FR-1…FR-10). Research: three `code-explorer` sweeps (Python CLI, Go helper, CFN/Lambda) — findings folded in below.
+>
+> **This document is the pre-build design of record.** The decisions/contracts below were authored before implementation and are largely accurate, but a few details changed during build/review/fix. The authoritative as-built reference is **`PBAC_README.md`** (operator guide) + **`decisions.md`** (full chronological decision + fix log). Where this spec and the shipped code disagree, the code + `PBAC_README.md` win. See **§0 Implementation amendments** for the deltas.
+
+## 0. Implementation amendments (what changed from the pre-build design)
+
+Recorded post-build so this spec isn't misread as the final state. Each links to fuller detail in `decisions.md`.
+
+- **A1 — `effective_auth_type` has NO `auth_type` passthrough (amends D2 / §4.1 / §4.3).** Shipped as `"oidc" if sso_enabled else "none"`, full stop. The "honors a future `auth_type`" branch was implemented then **removed** (L1, Low-wave): `auth_type` is not a `Profile` field and `from_dict` filters unknown keys, so the passthrough was dead code. If first-class IDC support is added later, make `auth_type` a real field then.
+- **A2 — Generic-OIDC issuer-host derives from `oidc_issuer_url`, not `provider_domain` (amends §5 issuer rule).** The persona trust-condition issuer-host must equal the **registered** OIDC-provider URL: Auth0 keeps its trailing slash, Azure keeps `/v2.0`, Okta is the bare domain, and **generic/Teleport/Keycloak uses `oidc_issuer_url`** (often with a realm path). A review HIGH (issuer-host fix) corrected `_resolve_issuer_host`; getting this wrong silently hard-denies all users of that IdP.
+- **A3 — Persona definitions are validated in the deploy path (new).** `validate_personas` now runs at the top of `_deploy_persona_stack` (not only in the wizard), so a hand-edited `config.yaml` with a bad `enforcement_mode`/`group` fails loudly instead of rendering silently-wrong infra (M1).
+- **A4 — Persona dashboard is deployed INLINE within the persona flow** (a `{pool}-persona-dashboard` CFN stack created by `_deploy_persona_dashboard`, torn down explicitly by `destroy`), NOT as a separate scheduled DESTROYABLE_STACKS entry. `ccwb test` does NOT assert the bypass Deny — that guard shipped as the pytest `tests/test_persona_policy_bypass.py` (amends §7 risk row + §4.3 lambda note language).
+- **A5 — Per-persona ALERTING is wired via a stored user→group record (amends §4.3 lambda behavior).** `quota_check` persists `USER#<email>/GROUPS` (TTL 90d) at issuance; `quota_monitor` (which has no JWT) reads it so its declared-order branch resolves persona alert thresholds — previously the monitor always fell to the default tier (L5). Enforcement (quota-check) and alerting (quota-monitor) now both honor per-persona limits.
+- **A6 — Persona serialization into `config.json` is gated on `federation_type == "direct"`** (L3) — no dead persona data under Cognito federation.
+- **A7 — Scope note:** built on `rubab-dev1` (not a `feat/persona-based-access` branch); §5/§6 branch language is aspirational. Personas serialize as `list[dict]` (D9 held).
 
 ## 1. Summary
 
@@ -47,7 +61,7 @@ groups_claim_name: str = "groups"        # cognito:groups, roles, etc. per IdP
 fallback_persona: str | None = None       # name of a persona, or None = hard-deny
 # property:
 @property
-def effective_auth_type(self) -> str: ...  # "oidc" if sso_enabled else "none" (honors future auth_type)
+def effective_auth_type(self) -> str: ...  # "oidc" if sso_enabled else "none"  (see §0 A1 — no auth_type passthrough as shipped)
 ```
 
 Each persona dict (canonical shape — **frozen contract**):
@@ -98,7 +112,7 @@ resolve_persona(user_groups: set, personas: ordered_list, fallback: str|None) ->
     return None                         # None => hard-deny (helper) / no-policy (lambda)
 ```
 - Helper: `None` → exit non-zero with clear stderr (no role assumed).
-- quota Lambda: `None` → existing user/default policy lookup still applies (persona is just the group tier).
+- quota Lambda: `None` → existing user/default policy lookup still applies (persona is just the group tier). As shipped, the Lambdas use **declared-order via `PERSONA_ORDER`** rather than passing a Python set into this exact function; the *semantics* (first declared group wins; PBAC mode is sole authority, falls through to default) match §0 A5. `quota_monitor` resolves groups from the stored `USER#<email>/GROUPS` record (A5), `quota_check` from the JWT.
 - This is the **parity contract** — a change in one implementation requires the same change in the others + parity tests.
 
 ### 4.4 Rendered persona stack — outputs (consumed by `package`)
@@ -128,7 +142,7 @@ otel-helper emits header `x-persona: <name>`; collector maps to metric label `pe
 ## 7. Risks
 | Risk | Mitigation |
 |------|-----------|
-| Inference-profile Deny bypass (R-highest) | D8 + an explicit `ccwb test` assertion that Sales is denied on a Sonnet **inference-profile** ARN, not just foundation-model |
+| Inference-profile Deny bypass (R-highest) | D8 + the pytest `tests/test_persona_policy_bypass.py` (as shipped, §0 A4): renders the Sales persona and asserts the Deny covers sonnet/opus across all 3 ARN shapes, with a meta-test that a foundation-model-only Deny FAILS the check |
 | Declared-order change regresses legacy quota | D3 PBAC-mode gating + regression test of legacy most-restrictive path |
 | Rendered YAML invalid / un-lintable | Render a representative fixture committed to the repo; CI `cfn-lint`s it; unit-test the renderer output |
 | Helper/Lambda/otel persona logic drift | §4.3 single algorithm + cross-impl parity tests (Group with shared fixtures) |

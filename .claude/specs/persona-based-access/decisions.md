@@ -26,6 +26,68 @@
 **Decision:** Out of scope for this feature (one-concern-per-PR, pr-standards.md). Do NOT let the review pool FAIL the group or attribute these to PBAC. A formatting-only pass on init.py can be a separate chore PR if desired.
 **Review note:** python-cli reviewer — init.py E501s are pre-existing; only assess PBAC-introduced lines.
 
+## 2026-06-16 — Low-issue wave (user-decided, single implementation pass)
+After the deep-dive, the user reviewed each Low with new-in-branch-vs-pre-existing provenance and decided:
+- **L1 (FIXED, minimal):** `effective_auth_type` is net-new in this branch; its `auth_type` passthrough was dead (from_dict filters the non-field key). Dropped the dead branch → derives purely from `sso_enabled`; docstring updated; test rewritten to document the filtered behavior. (Pre-existing `deploy.py:1014` idc-path on main left untouched — out of scope.)
+- **L2 (SKIPPED):** Cognito issuer-host pool-region logic is pre-existing on main AND unreachable via PBAC (direct-IAM only). Not ours, not activated by this branch.
+- **L3 (FIXED):** package.py `_create_config` now gates persona serialization on `federation_type == "direct"` — no dead persona data under Cognito. New regression test.
+- **L4 (FIXED):** `otel-helper.sh` sidecar shim now honors the cache `schema_version` gate (falls through to the binary when < CACHE_SCHEMA_VERSION=3). The shim is pre-existing, but THIS branch's 2→3 bump is what it was undermining. bash -n clean; gate logic traced.
+- **L5 (FIXED, substantive):** per-persona ALERTING now works. quota_check persists `USER#<email>/GROUPS` (TTL 90d, best-effort, scoped IAM PutItem added to QuotaCheckRole); quota_monitor reads it via `get_user_groups` and passes the groups into `resolve_user_quota` so its (previously dead) declared-order branch resolves persona alert thresholds. Distinct `sk` keeps the record out of the monitor's MONTH# usage scan. 5 new lambda tests + the cross-Lambda parity check still green.
+
+**Wave re-gate: Python 1136/0, Go 10/10, cfn-lint W3002 unchanged (3=3), config.py+deploy.py ruff-clean** (package.py's 23 E501 are pre-existing, 23@HEAD=23 now). PBAC_README §10 updated for the L5 alerting behavior.
+
+## 2026-06-16 — Independent post-build deep-dive review + fixes (user-requested)
+After team teardown, the user requested an independent deep-dive of the whole `rubab-dev1` PBAC diff. Ran 3 parallel skeptical reviewers (Go / Python-CLI / CFN-Lambda) over the actual code + a lead read of the highest-risk surfaces. Findings + fixes:
+
+**HIGH — H1 (FIXED):** `_resolve_issuer_host` derived the persona trust-condition issuer-host from `provider_domain` for **generic OIDC** providers, but the generic auth template registers the OIDC provider from `oidc_issuer_url` (a DISTINCT field, often with a realm path). Mismatch → silent hard-deny for ALL generic-provider persona users — including **Teleport**, the original motivating use case. Same bug class as the Auth0 CRITICAL. Fix: generic branch in `_resolve_issuer_host` now uses `oidc_issuer_url` (scheme-stripped, path preserved). Regression test `test_generic_uses_oidc_issuer_url_not_provider_domain` (would fail on old code). Fixed the misleading `test_generic_issuer_scheme_stripped` that masked it (it had set provider_domain to the issuer value).
+
+**MEDIUM — M1 (FIXED):** `validate_personas` was only called in the init wizard, never in the deploy path. A hand-edited config.yaml with a bad `enforcement_mode` (e.g. "deny" typo) silently downgraded block→alert in `_seed_persona_group_policies`. Fix: `_deploy_persona_stack` now calls `validate_personas` after the gate and fails (rc=1) with the collected errors before rendering. Regression test `test_invalid_persona_fails_before_render`.
+
+**MEDIUM — M2 (FIXED, proportionate):** persona removed from config.yaml orphaned its inference profile + left a stale GROUP quota policy (create/destroy iterate only CURRENT personas, no pruning). Chose NOT to auto-delete (billing/quota resources shouldn't be implicitly removed by a deploy). Fix: deploy now DETECTS orphaned `{pool}-*` inference profiles and prints the exact `aws bedrock delete-inference-profile` command; PBAC_README §10 documents persona-removal cleanup (incl. `ccwb quota delete group <g>` for the stale limit).
+
+**LOW (flagged to user, NOT fixed — await decision):**
+- L1: `effective_auth_type`'s `auth_type` passthrough is dead (from_dict filters the non-field key); harmless today (nothing sets idc via auth_type).
+- L2: Cognito-IdP cross-region issuer-host edge (pool-region vs stack-region); pre-existing, uncommon.
+- L3: personas serialized into config.json even under Cognito federation (dead data; Go ignores it).
+- L4: otel-helper sidecar `.raw` shim bypasses the cache schema-version gate → x-persona telemetry staleness window in collector/sidecar mode (pre-existing; access control unaffected).
+- L5: quota_monitor's persona/group branch is dead in production (called with groups=[]) → per-persona ALERTING not delivered, only per-persona ENFORCEMENT (quota_check). Pre-existing; the PBAC story is half-delivered on alerting. Candidate follow-up: persist a user→group map at check time so the monitor can resolve persona alert thresholds.
+
+**Doc alignment:** PBAC_README §3 gained a Generic/Teleport issuer-host row (the H1 fix) + §13 generic troubleshooting row; §10 gained a persona-removal/orphan-cleanup row.
+
+**Re-gate after fixes: Python 1130/0 (+2 regression tests), Go 10/10. deploy.py ruff-clean.**
+
+## 2026-06-16 — Two issuer forms are DIFFERENT (token-validation vs persona-trust)
+**Context:** Lead accuracy-checked PBAC_README.md §3 against code and caught a factual error: the Okta row listed issuer-host `company.okta.com/oauth2/default`. WRONG for the persona trust condition.
+**Ground truth (two distinct issuer forms — do not conflate):**
+- **Token-VALIDATION issuer** (`_resolve_oidc_config` → `oidc_issuer`): used for JWT validation at the ALB/quota-check. Okta = `https://company.okta.com/oauth2/default`, Auth0 = `https://company.auth0.com/`, Azure = `https://login.microsoftonline.com/<tid>/v2.0`.
+- **Persona TRUST-CONDITION issuer-host** (`_resolve_issuer_host` → STS `<host>:groups` key): MUST equal the IAM OIDC-provider `Url` the auth template registers, scheme-stripped. Okta registers `https://${OktaDomain}` → **bare `company.okta.com`** (NO /oauth2/default); Auth0 `https://${Auth0Domain}/` → `company.auth0.com/` (slash); Azure → `.../v2.0`.
+**Why it matters:** these differ for Okta specifically (validation has /oauth2/default; trust-condition is bare). Pinned by `test_okta_bare_domain_no_slash` (asserts `== "company.okta.com"`) and the deploy.py:1329 docstring. README §3 Okta row corrected to bare domain (#33).
+**Lesson:** accuracy-checking docs against code (not rubber-stamping) caught this — same high-stakes class as #30. The two issuer forms are a genuine footgun for anyone touching issuer logic.
+
+## 2026-06-16 — Fix cycle complete + authoritative re-gate GREEN
+All 3 fix tasks landed and lead-verified via full re-gate:
+- **#30 (CRITICAL)** issuer-host: DONE — scheme-strip-only, Auth0 slash + Azure /v2.0 preserved, teethed regression tests.
+- **#31 (WARNING)** account-budget: DONE — Profile field + wizard + wizard_fields + round-trip test.
+- **#32 (WARNING)** dashboard teardown: DONE (coding-2) — explicit `_delete_persona_dashboard_stack`, no DESTROYABLE_STACKS phantom, L158 dead-ref removed; review-3 second-confirmed "no regression, no FR-9.5 gap".
+**Authoritative re-gate (lead-run): Python 1128 passed / 0 failed; Go all 10 packages ok / 0 failed.** ruff clean on config.py/deploy.py/destroy.py; init.py 14 E501 pre-existing (allowlisted). review-4 confirmed coding-1's test-fidelity edit non-vacuous.
+**Review board:** go-helper ✅ PASS · infra-lambda ✅ PASS · tests-parity ✅ PASS · python-cli → Cycle-2 verdict pending (all 3 findings fixed). Awaiting review-1 Cycle-2 to clear the final scope.
+
+## 2026-06-16 — COMMIT MANIFEST (review-4 handoff hazard — git add ALL of these)
+review-4 flagged: the new files below are UNTRACKED but NOT gitignored. A commit using `git add -u` (tracked-only) would SILENTLY STRIP the cross-language parity oracle + bypass fixture from CI. When the user authorizes commit, `git add` MUST include every path:
+
+**Untracked (24) — new files:**
+- Python src: `persona_resolution.py`, `persona_template.py`, `budgets_template.py`, `persona_validation.py`, `persona_defaults.py`
+- Python tests: `tests/test_persona_resolution.py`, `test_persona_template.py`, `test_budgets_template.py`, `test_persona_validation.py`, `test_persona_parity.py`, `test_persona_policy_bypass.py`, `test_backward_compat_personas.py`, `test_lambda_persona_order.py`, `test_deploy_personas.py`, `test_init_personas.py`, `test_package_personas.py`
+- **Parity oracle (CRITICAL to include):** `tests/fixtures/persona_resolution_cases.json`
+- Go tests: `go/internal/persona/` (resolve.go + resolve_test.go), `go/internal/config/personas_test.go`, `go/internal/otel/persona_header_test.go`, `go/cmd/credential-process/main_test.go`
+- Infra: `deployment/infrastructure/bedrock-personas-dashboard.yaml`, `bedrock-personas.example.yaml`
+- Tooling: `source/poetry.toml`
+- (EXCLUDE: `__pycache__/`, `.poetry-bootstrap/` — gitignored/build noise)
+
+**Modified (24) — tracked:** `.gitignore`, `assets/docs/QUOTA_MONITORING.md`, `lambda-functions/quota_{check,monitor}/index.py`, `logs-insights-queries.yaml`, `otel-collector.yaml`, `quota-monitoring.yaml`, `cli/commands/{deploy,destroy,init,package}.py`, `config.py`, `go/cmd/credential-process/main.go`, `go/cmd/otel-helper/main{,_test}.go`, `go/go.sum`, `go/internal/config/config.go`, `go/internal/jwt/decode{,_test}.go`, `go/internal/otel/{cache,extract,headers}.go`, `tests/cli/commands/test_destroy_stacks.py`, `tests/test_config.py`
+
+Verified all 24 untracked are stageable (none gitignored). `git add source/ deployment/ assets/ .gitignore` covers it; `git status` should show 0 untracked persona files before commit.
+
 ## 2026-06-16 — Review Cycle 1 verdicts + fix cycle (#30 CRITICAL, #31 WARNING)
 **Consolidated verdict: FAIL (one scope).** Parallel 4-scope review:
 - **go-helper (review-2): PASS** — 0 crit / 0 warn / 1 cosmetic suggestion (hard-deny error wording). §4.2/§4.3 parity exact + CI-enforced, buildSessionName byte-unchanged, backward-compat + attribution chain intact.
