@@ -51,6 +51,7 @@ class Profile:
     oidc_token_endpoint: str | None = None  # Full URL or path appended to issuer
     oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
     oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
+    oidc_prompt: str | None = None  # OIDC prompt param for Azure auth (default "select_account", "" to skip)
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
     codebuild_region: str | None = None  # Region for CodeBuild stack/builds; falls back to aws_region when unset
     codebuild_prior_regions: list[str] = field(
