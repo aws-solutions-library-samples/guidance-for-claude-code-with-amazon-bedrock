@@ -29,6 +29,13 @@ DAILY_ENFORCEMENT_MODE = os.environ.get("DAILY_ENFORCEMENT_MODE", "alert")
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
 WARNING_THRESHOLD_90 = int(os.environ.get("WARNING_THRESHOLD_90", "270000000"))
 
+# Persona-based access control (PBAC) mode — spec decision D3.
+# PERSONA_ORDER is a comma-separated list of group values in DECLARED precedence
+# order. When set, group-policy resolution uses declared-order precedence (first
+# matching group wins) to mirror the credential-process persona resolver (§4.3).
+# When empty/unset, legacy "most-restrictive-wins" semantics are preserved exactly.
+PERSONA_ORDER = [g.strip() for g in os.environ.get("PERSONA_ORDER", "").split(",") if g.strip()]
+
 # DynamoDB tables
 quota_table = dynamodb.Table(QUOTA_TABLE)
 policies_table = dynamodb.Table(POLICIES_TABLE)
@@ -76,6 +83,14 @@ def lambda_handler(event, context):
                 "reason": "missing_email_claim",
                 "message": "JWT token does not contain email claim" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
             })
+
+        # Persist the user's groups so the (claim-less) quota_monitor can resolve
+        # this user's persona for per-persona ALERT thresholds. quota_check is the
+        # only place a user's group membership is observed (it has the JWT); the
+        # monitor runs on a schedule with no token. Best-effort: a write failure
+        # must never block credential issuance.
+        if groups:
+            store_user_groups(email, groups)
 
         # 1. Resolve the effective quota policy for this user
         policy = resolve_quota_for_user(email, groups)
@@ -261,7 +276,15 @@ def extract_groups_from_claims(claims: dict) -> list:
 def resolve_quota_for_user(email: str, groups: list) -> dict | None:
     """
     Resolve the effective quota policy for a user.
-    Precedence: user-specific > group (most restrictive) > default
+
+    Precedence: user-specific > group > default.
+
+    Group-tier resolution (spec D3):
+      - PBAC mode (PERSONA_ORDER set): declared-order precedence — among the
+        user's matching group policies, the group appearing first in
+        PERSONA_ORDER wins. Mirrors the credential-process persona resolver.
+      - Legacy mode (PERSONA_ORDER unset): most-restrictive-wins (lowest
+        monthly_token_limit). Unchanged from prior behavior.
 
     Returns:
         Policy dict or None if no policy applies (unlimited).
@@ -285,17 +308,31 @@ def resolve_quota_for_user(email: str, groups: list) -> dict | None:
     if user_policy and user_policy.get("enabled", True):
         return user_policy
 
-    # 2. Check for group policies (apply most restrictive)
+    # 2. Check for group policies
     if groups:
-        group_policies = []
+        # Map enabled group policies by the group value they resolved from, so
+        # PBAC mode can select by declared-order precedence.
+        policies_by_group = {}
         for group in groups:
             group_policy = get_policy("group", group)
             if group_policy and group_policy.get("enabled", True):
-                group_policies.append(group_policy)
+                policies_by_group[group] = group_policy
 
-        if group_policies:
-            # Most restrictive = lowest monthly_token_limit
-            return min(group_policies, key=lambda p: p.get("monthly_token_limit", float("inf")))
+        if policies_by_group:
+            if PERSONA_ORDER:
+                # PBAC mode (D3): first group in declared order that the user has
+                # an enabled policy for wins — mirrors the helper's resolver.
+                for group in PERSONA_ORDER:
+                    if group in policies_by_group:
+                        return policies_by_group[group]
+                # User has group policies but none are in PERSONA_ORDER: fall
+                # through to default (declared order is the sole group authority).
+            else:
+                # Legacy mode: most restrictive = lowest monthly_token_limit.
+                return min(
+                    policies_by_group.values(),
+                    key=lambda p: p.get("monthly_token_limit", float("inf")),
+                )
 
     # 3. Fall back to default policy
     default_policy = get_policy("default", "default")
@@ -363,6 +400,34 @@ def get_unblock_status(email: str) -> dict:
     except Exception as e:
         print(f"Error checking unblock status for {email}: {e}")
         return {"is_unblocked": False, "error": str(e)}
+
+
+def store_user_groups(email: str, groups: list) -> None:
+    """Persist a user's group membership so the quota_monitor can resolve persona.
+
+    Record shape: pk=``USER#<email>``, sk=``GROUPS`` with a ``groups`` list and a
+    90-day TTL (self-cleans if a user stops authenticating). The distinct ``sk``
+    keeps this row out of the monitor's ``MONTH#<month>`` usage scan. Best-effort:
+    any failure is logged and swallowed so a write error never blocks the
+    credential-issuance quota check (the table may also be read-only in older
+    deployments that haven't been updated with PutItem perms).
+    """
+    try:
+        ttl = int(datetime.now(timezone.utc).timestamp()) + (90 * 24 * 60 * 60)
+        quota_table.put_item(
+            Item={
+                "pk": f"USER#{email}",
+                "sk": "GROUPS",
+                "email": email,
+                "groups": list(groups),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "ttl": ttl,
+            }
+        )
+    except Exception as e:
+        # Non-fatal: per-persona alerting degrades to default tier; enforcement
+        # (this check) is unaffected.
+        print(f"store_user_groups: could not persist groups for {email}: {e}")
 
 
 def get_user_usage(email: str) -> dict:

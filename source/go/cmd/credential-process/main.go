@@ -13,6 +13,7 @@ import (
 	"ccwb-go/internal/jwt"
 	"ccwb-go/internal/oidc"
 	"ccwb-go/internal/otel"
+	"ccwb-go/internal/persona"
 	"ccwb-go/internal/portlock"
 	"ccwb-go/internal/provider"
 	"ccwb-go/internal/quota"
@@ -547,10 +548,60 @@ func (a *credentialApp) resolveConfidentialAuth() (*oidc.ConfidentialAuth, error
 	}
 }
 
+// selectRoleARN decides which IAM role the direct-STS path should assume.
+//
+// With no personas configured it returns the profile's FederatedRoleARN —
+// byte-for-byte today's behavior, so existing deployments are unaffected. When
+// personas are configured (persona-based access, direct-IAM only), it resolves
+// the user's persona from their groups claim using the shared §4.3 algorithm
+// (persona.Resolve) and returns that persona's role ARN. A user whose groups
+// match no persona and for whom no fallback is configured is hard-denied with a
+// clear, actionable error rather than silently falling back to a broad role.
+//
+// This is pure, in-memory resolution — no AWS SDK / boto3 calls (the credential
+// process is invoked BY the SDK; calling back into it would recurse, see
+// credential-recursion.md). The only AWS call remains the existing STS
+// AssumeRoleWithWebIdentity performed by the caller.
+func selectRoleARN(cfg *config.ProfileConfig, claims jwt.Claims) (string, error) {
+	if len(cfg.Personas) == 0 {
+		return cfg.FederatedRoleARN, nil
+	}
+
+	groupsClaim := cfg.GroupsClaimName
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	groups := claims.GetStringSlice(groupsClaim)
+
+	p, err := persona.Resolve(groups, cfg.Personas, cfg.FallbackPersona)
+	if err != nil {
+		return "", fmt.Errorf("resolving persona: %w", err)
+	}
+	if p == nil {
+		return "", fmt.Errorf(
+			"no persona matched your groups %v (claim %q) and no fallback persona is configured; "+
+				"contact your administrator to be added to a persona group",
+			groups, groupsClaim,
+		)
+	}
+	if p.RoleARN == "" {
+		return "", fmt.Errorf(
+			"persona %q matched but has no role ARN in config.json; "+
+				"re-run `ccwb package` after deploying the persona stack",
+			p.Name,
+		)
+	}
+	return p.RoleARN, nil
+}
+
 func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AWSCredentials, error) {
 	if a.cfg.FederationType == "direct" {
+		roleARN, err := selectRoleARN(a.cfg, auth.TokenClaims)
+		if err != nil {
+			return nil, err
+		}
 		return federation.AssumeRoleWithWebIdentity(
-			a.cfg.AWSRegion, a.cfg.FederatedRoleARN, auth.IDToken,
+			a.cfg.AWSRegion, roleARN, auth.IDToken,
 			auth.TokenClaims, a.cfg.MaxSessionDuration,
 		)
 	}

@@ -1,0 +1,127 @@
+[
+  {
+    "name": "single_match",
+    "description": "One persona, user's groups contain its group -> that persona.",
+    "groups": ["eng-team"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"}
+    ],
+    "fallback": null,
+    "expected": "engineering"
+  },
+  {
+    "name": "no_match_no_fallback",
+    "description": "User belongs to no declared persona group and no fallback -> null (hard-deny).",
+    "groups": ["contractors"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"},
+      {"name": "sales", "group": "sales-team"}
+    ],
+    "fallback": null,
+    "expected": null
+  },
+  {
+    "name": "no_match_with_fallback",
+    "description": "No group matches but a fallback persona name is set -> the fallback persona.",
+    "groups": ["contractors"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"},
+      {"name": "sales", "group": "sales-team"}
+    ],
+    "fallback": "sales",
+    "expected": "sales"
+  },
+  {
+    "name": "multi_match_first_declared_wins",
+    "description": "User is in two persona groups; declared order is precedence -> FIRST declared.",
+    "groups": ["sales-team", "eng-team"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"},
+      {"name": "sales", "group": "sales-team"}
+    ],
+    "fallback": null,
+    "expected": "engineering"
+  },
+  {
+    "name": "multi_match_order_reversed",
+    "description": "Same membership as above but declared order reversed -> first declared still wins (sales).",
+    "groups": ["sales-team", "eng-team"],
+    "personas": [
+      {"name": "sales", "group": "sales-team"},
+      {"name": "engineering", "group": "eng-team"}
+    ],
+    "fallback": null,
+    "expected": "sales"
+  },
+  {
+    "name": "empty_personas",
+    "description": "No personas declared -> null regardless of groups.",
+    "groups": ["eng-team"],
+    "personas": [],
+    "fallback": null,
+    "expected": null
+  },
+  {
+    "name": "empty_groups_no_fallback",
+    "description": "User carries no groups and no fallback -> null.",
+    "groups": [],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"}
+    ],
+    "fallback": null,
+    "expected": null
+  },
+  {
+    "name": "empty_groups_with_fallback",
+    "description": "User carries no groups but a fallback is set -> the fallback persona.",
+    "groups": [],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"},
+      {"name": "sales", "group": "sales-team"}
+    ],
+    "fallback": "engineering",
+    "expected": "engineering"
+  },
+  {
+    "name": "fallback_names_unknown_persona",
+    "description": "Fallback set to a name that is not a declared persona -> null (match wins over a bad fallback only when there is a match; here there is none).",
+    "groups": ["contractors"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"}
+    ],
+    "fallback": "nonexistent",
+    "expected": null
+  },
+  {
+    "name": "match_takes_precedence_over_fallback",
+    "description": "A real group match is returned even when a (different) fallback is configured.",
+    "groups": ["sales-team"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"},
+      {"name": "sales", "group": "sales-team"}
+    ],
+    "fallback": "engineering",
+    "expected": "sales"
+  },
+  {
+    "name": "group_match_is_case_sensitive",
+    "description": "Group comparison is exact string equality; a case-mismatch does not match -> null.",
+    "groups": ["Eng-Team"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team"}
+    ],
+    "fallback": null,
+    "expected": null
+  },
+  {
+    "name": "tolerates_extra_persona_keys",
+    "description": "Persona dicts may carry extra keys (display_name, etc.); resolution keys only on group/name.",
+    "groups": ["data-team"],
+    "personas": [
+      {"name": "engineering", "group": "eng-team", "display_name": "Engineering"},
+      {"name": "data-science", "group": "data-team", "display_name": "Data Science", "enforcement_mode": "alert"}
+    ],
+    "fallback": null,
+    "expected": "data-science"
+  }
+]

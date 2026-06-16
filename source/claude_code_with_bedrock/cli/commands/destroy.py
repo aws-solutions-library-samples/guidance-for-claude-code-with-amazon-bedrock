@@ -14,11 +14,20 @@ from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationMana
 from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials
 from claude_code_with_bedrock.config import Config
 
-
 # All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
 # Keep in sync with deploy.py's stack types when adding new stacks.
+# Ordered REVERSE-dependency teardown list: leaf-most dependents first, the
+# root `auth` stack last. Persona-based access adds two leaf stacks — `budgets`
+# depends on `persona` (per-persona cost tags / inference profiles), and
+# `persona` depends on `auth` (it imports the OIDC provider ARN) — so they are
+# torn down early, before `quota`. The per-persona dashboard is deployed inline
+# by the persona flow (not a scheduled stack type), so it is not listed here.
+# Keep this list in sync with the deployable stack types in deploy.py
+# (enforced by tests/cli/commands/test_destroy_stacks.py).
 DESTROYABLE_STACKS = [
     "codebuild",
+    "budgets",
+    "persona",
     "analytics",
     "quota",
     "cowork-dashboard",
@@ -144,6 +153,13 @@ class DestroyCommand(Command):
                 continue
             if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
                 continue
+            # Persona / budgets stacks only exist when personas were configured
+            # (deploy gates them on OIDC + non-empty personas) — skip otherwise.
+            # The persona-dashboard stack is NOT a DESTROYABLE_STACKS entry (it is
+            # deployed inline, not as a scheduled stack type), so it is torn down
+            # explicitly in the persona branch below via _delete_persona_dashboard_stack.
+            if stack in ("persona", "budgets") and not getattr(profile, "personas", []):
+                continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
             console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")
@@ -175,6 +191,17 @@ class DestroyCommand(Command):
                 else:
                     console.print(f"[green]✓ {stack.capitalize()} stack destroyed[/green]\n")
 
+            # The persona-dashboard CFN stack and the tagged Application Inference
+            # Profiles are both created by `ccwb deploy` OUTSIDE the scheduled
+            # DESTROYABLE_STACKS list (the dashboard is deployed inline; AIPs via
+            # boto3), so the main loop never tears them down. Clean both up
+            # best-effort in the persona branch so a teardown doesn't leave them
+            # orphaned (FR-9.5). Dashboard first (independent CloudWatch stack),
+            # then the inference profiles.
+            if stack == "persona":
+                self._delete_persona_dashboard_stack(profile, console)
+                self._delete_persona_inference_profiles(profile, console)
+
         # Clean up cached credentials for this profile
         if clear_cached_credentials(profile_name):
             console.print(f"[green]✓ Cleared cached credentials for profile '{profile_name}'[/green]")
@@ -183,6 +210,64 @@ class DestroyCommand(Command):
         self._show_cleanup_summary(all_failed_resources, all_retained_resources, stacks_with_failures, profile, console)
 
         return 0
+
+    def _delete_persona_dashboard_stack(self, profile, console: Console) -> None:
+        """Best-effort deletion of the inline persona-dashboard CFN stack.
+
+        ``ccwb deploy`` provisions a standalone CloudFormation stack named
+        ``{identity_pool_name}-persona-dashboard`` *inline* within the persona
+        flow (not as a scheduled DESTROYABLE_STACKS entry), so the main teardown
+        loop never removes it. Delete it explicitly here — mirroring the
+        deploy-side stack name exactly — or ``ccwb destroy`` would orphan it
+        (FR-9.5). Skips cleanly when no personas were configured (the dashboard
+        only exists in that case). Failures are logged but never abort the
+        destroy; the persona IAM stack is the primary resource and is handled by
+        the main loop.
+        """
+        if not getattr(profile, "personas", []):
+            return
+        stack_name = profile.stack_names.get("persona-dashboard", f"{profile.identity_pool_name}-persona-dashboard")
+        console.print(f"Destroying persona-dashboard stack: [cyan]{stack_name}[/cyan]")
+        # _delete_stack returns 0 when the stack is absent/already deleted, so a
+        # profile that never deployed the dashboard is a clean no-op here.
+        result = self._delete_stack(stack_name, profile.aws_region, console)
+        if result == 0:
+            console.print("[green]✓ Persona-dashboard stack destroyed[/green]\n")
+        else:
+            console.print("[yellow]⚠ Persona-dashboard stack has resources requiring manual cleanup[/yellow]\n")
+
+    def _delete_persona_inference_profiles(self, profile, console: Console) -> None:
+        """Best-effort deletion of the per-persona Application Inference Profiles.
+
+        Deploy creates one AIP per persona named ``{identity_pool_name}-{name}``
+        (via boto3, outside any CFN stack), so they must be deleted explicitly on
+        teardown or they orphan. Mirrors the deploy-side naming. Failures are
+        logged but never abort the destroy — the persona CFN stack (the IAM
+        roles) is the primary resource and is handled separately.
+        """
+        personas = getattr(profile, "personas", None)
+        if not personas:
+            return
+        try:
+            import boto3
+
+            client = boto3.client("bedrock", region_name=profile.aws_region)
+            for persona in personas:
+                name = persona.get("name")
+                if not name:
+                    continue
+                profile_name = f"{profile.identity_pool_name}-{name}"
+                try:
+                    client.delete_inference_profile(inferenceProfileIdentifier=profile_name)
+                    console.print(f"[green]✓ Deleted inference profile '{profile_name}'[/green]")
+                except Exception as del_err:
+                    # Already gone / never created / in use — log first line and continue.
+                    console.print(
+                        f"[dim]Inference profile '{profile_name}' not deleted "
+                        f"({str(del_err).splitlines()[0]}); skipping.[/dim]"
+                    )
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not clean up persona inference profiles: {str(e)}[/yellow]")
 
     def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
         """Delete a CloudFormation stack using boto3.

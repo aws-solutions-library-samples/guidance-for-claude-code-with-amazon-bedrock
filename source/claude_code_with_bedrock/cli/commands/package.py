@@ -2183,10 +2183,66 @@ RUN pyinstaller \
             config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
 
+        # Add persona-based access control settings if configured (PBAC).
+        # _create_config is an explicit allowlist, so personas must be added by hand here
+        # or the Go credential-process / otel-helper never see them. We project each persona
+        # dict down to exactly the fields the Go PersonaConfig consumes (spec §4.2), carrying
+        # the role_arn that deploy resolved from the persona stack outputs. Omitting personas
+        # entirely when none are configured preserves the legacy FederatedRoleARN path.
+        #
+        # Gate on direct federation: personas are direct-IAM only (Cognito federation
+        # skips persona provisioning, FR-2.7), and the Go helper ignores personas unless
+        # FederationType == "direct". Serializing them under Cognito would write dead data
+        # (persona blocks with empty role_arn that nothing reads).
+        personas = getattr(profile, "personas", None)
+        if personas and federation_type == "direct":
+            config[profile_name]["personas"] = [self._serialize_persona(p) for p in personas]
+            config[profile_name]["groups_claim_name"] = getattr(profile, "groups_claim_name", "groups")
+            fallback_persona = getattr(profile, "fallback_persona", None)
+            if fallback_persona:
+                config[profile_name]["fallback_persona"] = fallback_persona
+
         config_path = output_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         return config_path
+
+    @staticmethod
+    def _serialize_persona(persona: dict) -> dict:
+        """Project a persona dict down to the fields the Go PersonaConfig consumes.
+
+        Mirrors the frozen contract in spec.md#4.2: the credential-process and otel-helper
+        read exactly these keys. Optional fields are emitted only when present (matching the
+        Go struct's ``omitempty`` tags) so config.json stays compact and round-trips cleanly.
+        ``role_arn`` is the per-persona role resolved from the persona stack outputs at deploy
+        time; it is emitted as an empty string if not yet resolved so the field is always
+        present for the helper.
+
+        Args:
+            persona: A persona dict in the canonical config shape (spec.md#4.1).
+
+        Returns:
+            A new dict containing only the §4.2 fields that are set.
+        """
+        serialized: dict = {
+            "name": persona.get("name", ""),
+            "group": persona.get("group", ""),
+            "role_arn": persona.get("role_arn", ""),
+        }
+        # Optional fields — included only when present (Go side uses omitempty).
+        optional_keys = (
+            "display_name",
+            "allowed_models",
+            "denied_models",
+            "monthly_token_limit",
+            "enforcement_mode",
+            "cost_tags",
+        )
+        for key in optional_keys:
+            value = persona.get(key)
+            if value:
+                serialized[key] = value
+        return serialized
 
     def _get_bedrock_region_for_profile(self, profile) -> str:
         """Get the correct AWS region for Bedrock API calls based on user-selected source region."""

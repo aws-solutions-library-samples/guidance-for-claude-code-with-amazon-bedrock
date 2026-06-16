@@ -97,3 +97,87 @@ func TestGetFloat_WrongType(t *testing.T) {
 		t.Error("expected 0 for non-float value")
 	}
 }
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestGetStringSlice_Array(t *testing.T) {
+	// JSON arrays decode to []interface{}, which is what DecodePayload produces.
+	claims := Claims{"groups": []interface{}{"eng-team", "sales-team"}}
+	got := claims.GetStringSlice("groups")
+	if !equalStringSlice(got, []string{"eng-team", "sales-team"}) {
+		t.Errorf("expected [eng-team sales-team], got %v", got)
+	}
+}
+
+func TestGetStringSlice_ArrayPreservesOrder(t *testing.T) {
+	claims := Claims{"groups": []interface{}{"c", "a", "b"}}
+	got := claims.GetStringSlice("groups")
+	if !equalStringSlice(got, []string{"c", "a", "b"}) {
+		t.Errorf("expected order preserved [c a b], got %v", got)
+	}
+}
+
+func TestGetStringSlice_ScalarString(t *testing.T) {
+	claims := Claims{"groups": "eng-team"}
+	got := claims.GetStringSlice("groups")
+	if !equalStringSlice(got, []string{"eng-team"}) {
+		t.Errorf("expected single-element [eng-team], got %v", got)
+	}
+}
+
+func TestGetStringSlice_Missing(t *testing.T) {
+	claims := Claims{}
+	if got := claims.GetStringSlice("groups"); got != nil {
+		t.Errorf("expected nil for missing key, got %v", got)
+	}
+}
+
+func TestGetStringSlice_NonStringElementsSkipped(t *testing.T) {
+	// A mixed array keeps the strings and skips numbers/objects/nulls.
+	claims := Claims{"groups": []interface{}{"eng-team", 42.0, "sales-team", nil, map[string]interface{}{}}}
+	got := claims.GetStringSlice("groups")
+	if !equalStringSlice(got, []string{"eng-team", "sales-team"}) {
+		t.Errorf("expected non-strings skipped -> [eng-team sales-team], got %v", got)
+	}
+}
+
+func TestGetStringSlice_EmptyArray(t *testing.T) {
+	claims := Claims{"groups": []interface{}{}}
+	got := claims.GetStringSlice("groups")
+	if got == nil {
+		t.Error("expected non-nil empty slice for an empty array (present but no groups)")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected zero-length slice, got %v", got)
+	}
+}
+
+func TestGetStringSlice_WrongScalarType(t *testing.T) {
+	// A scalar of the wrong type (number) is not a group list -> nil.
+	claims := Claims{"groups": 42.0}
+	if got := claims.GetStringSlice("groups"); got != nil {
+		t.Errorf("expected nil for non-string scalar, got %v", got)
+	}
+}
+
+func TestGetStringSlice_EndToEndFromJWT(t *testing.T) {
+	// Confirm it works against a real decoded payload, not just hand-built Claims.
+	token := makeTestJWT(map[string]interface{}{"groups": []interface{}{"eng-team"}})
+	claims, err := DecodePayload(token)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := claims.GetStringSlice("groups"); !equalStringSlice(got, []string{"eng-team"}) {
+		t.Errorf("expected [eng-team] from decoded JWT, got %v", got)
+	}
+}

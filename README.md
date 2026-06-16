@@ -424,6 +424,7 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 
 - [Architecture Guide](assets/docs/ARCHITECTURE.md) - System architecture and design decisions
 - [Deployment Guide](assets/docs/DEPLOYMENT.md) - Advanced deployment options
+- [Persona-Based Access Control & Cost Governance](PBAC_README.md) - Optional layer mapping OIDC groups to model-access tiers, with per-persona token quotas, cost-allocation tags, and budgets
 - [Distribution Comparison](assets/docs/distribution/comparison.md) - Presigned URLs vs Landing Page
 - [Local Testing Guide](assets/docs/LOCAL_TESTING.md) - Testing before deployment
 

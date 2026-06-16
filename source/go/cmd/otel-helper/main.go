@@ -118,17 +118,28 @@ func run(testMode bool) int {
 		return emitEmptyHeaders(profile, testMode)
 	}
 
-	// Resolve the cost-attribution tag key from config.json. Absent / empty
-	// means "Project" (the historical default) — ExtractUserInfoWithTagKey
-	// handles the fallback, but we also gracefully tolerate a missing config
-	// file here so this binary keeps working in dev/test where config.json
-	// isn't always wired up.
+	// Resolve the cost-attribution tag key and persona config from config.json.
+	// Absent / empty tag key means "Project" (the historical default); absent
+	// personas means no x-persona header. We gracefully tolerate a missing
+	// config file so this binary keeps working in dev/test where config.json
+	// isn't always wired up (in that case: default tag key, no personas).
 	costTagKey := "Project"
-	if cfg, cfgErr := config.LoadProfile(profile); cfgErr == nil && cfg.CostAttributionTagKey != "" {
-		costTagKey = cfg.CostAttributionTagKey
+	var personas []config.PersonaConfig
+	groupsClaimName := ""
+	fallbackPersona := ""
+	if cfg, cfgErr := config.LoadProfile(profile); cfgErr == nil {
+		if cfg.CostAttributionTagKey != "" {
+			costTagKey = cfg.CostAttributionTagKey
+		}
+		personas = cfg.Personas
+		groupsClaimName = cfg.GroupsClaimName
+		fallbackPersona = cfg.FallbackPersona
 	}
 
-	userInfo := otel.ExtractUserInfoWithTagKey(claims, costTagKey)
+	// Resolve the persona independently from the same groups claim + config the
+	// credential-process uses (spec D4) — no cross-binary handshake. Empty
+	// personas leaves info.Persona empty, so FormatHeaders omits x-persona.
+	userInfo := otel.ExtractUserInfoWithPersona(claims, costTagKey, personas, groupsClaimName, fallbackPersona)
 	headers := otel.FormatHeaders(userInfo)
 
 	if testMode {

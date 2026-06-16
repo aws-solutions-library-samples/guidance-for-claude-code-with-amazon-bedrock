@@ -1,0 +1,231 @@
+# DO NOT EDIT BY HAND — generated fixture for CI cfn-lint (design §2.8 / DD-3).
+# Rendered by source/claude_code_with_bedrock/persona_template.py::render_personas_stack
+# from REFERENCE_PERSONAS (persona_defaults.py): engineering (broad) + sales (restricted).
+# Sample issuer host: auth.example.com. The real stack is rendered at `ccwb deploy` time
+# from the configured personas; this committed copy exists only so CI can lint a real
+# rendered artifact. The sales persona's Deny spans all 3 Bedrock ARN shapes
+# (foundation-model, inference-profile, application-inference-profile) — the bypass guard.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Claude Code with Bedrock - Persona-Based Access Control Stack
+Parameters:
+  AuthStackName:
+    Type: String
+    Description: Name of the authentication stack that exports <AuthStackName>-OIDCProviderArn
+      (imported for the trust policy).
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Description: AWS regions in which persona roles may invoke Bedrock.
+Resources:
+  EngineeringPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Bedrock access policy for persona engineering
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowBedrockInvokeAllowedModels
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*
+          Condition:
+            StringEquals:
+              aws:RequestedRegion:
+                Ref: AllowedBedrockRegions
+        - Sid: AllowBedrockListAndGet
+          Effect: Allow
+          Action:
+          - bedrock:ListFoundationModels
+          - bedrock:GetFoundationModel
+          - bedrock:ListInferenceProfiles
+          - bedrock:GetInferenceProfile
+          Resource: '*'
+        - Sid: AllowNamespacedPutMetricData
+          Effect: Allow
+          Action:
+          - cloudwatch:PutMetricData
+          Resource: '*'
+          Condition:
+            StringEquals:
+              cloudwatch:namespace:
+              - ClaudeCode/Bedrock/Usage
+              - AWS/Bedrock
+  EngineeringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Persona role for engineering (group eng-team)
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated:
+              Fn::ImportValue:
+                Fn::Sub: ${AuthStackName}-OIDCProviderArn
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          - sts:TagSession
+          Condition:
+            ForAnyValue:StringEquals:
+              auth.example.com:groups:
+              - eng-team
+      ManagedPolicyArns:
+      - Ref: EngineeringPolicy
+      Tags:
+      - Key: Purpose
+        Value: Claude Code Persona Access
+      - Key: Persona
+        Value: engineering
+      - Key: PersonaGroup
+        Value: eng-team
+  SalesPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Bedrock access policy for persona sales
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowBedrockInvokeAllowedModels
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*haiku*
+          Condition:
+            StringEquals:
+              aws:RequestedRegion:
+                Ref: AllowedBedrockRegions
+        - Sid: DenyBedrockInvokeDeniedModels
+          Effect: Deny
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
+        - Sid: AllowBedrockListAndGet
+          Effect: Allow
+          Action:
+          - bedrock:ListFoundationModels
+          - bedrock:GetFoundationModel
+          - bedrock:ListInferenceProfiles
+          - bedrock:GetInferenceProfile
+          Resource: '*'
+        - Sid: AllowNamespacedPutMetricData
+          Effect: Allow
+          Action:
+          - cloudwatch:PutMetricData
+          Resource: '*'
+          Condition:
+            StringEquals:
+              cloudwatch:namespace:
+              - ClaudeCode/Bedrock/Usage
+              - AWS/Bedrock
+  SalesBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Permission boundary for restricted persona sales
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: BoundaryAllowBedrockInvoke
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*haiku*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*haiku*
+          Condition:
+            StringEquals:
+              aws:RequestedRegion:
+                Ref: AllowedBedrockRegions
+        - Sid: BoundaryDenyDeniedModels
+          Effect: Deny
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
+        - Sid: BoundaryAllowListAndMetrics
+          Effect: Allow
+          Action:
+          - bedrock:ListFoundationModels
+          - bedrock:GetFoundationModel
+          - bedrock:ListInferenceProfiles
+          - bedrock:GetInferenceProfile
+          - cloudwatch:PutMetricData
+          Resource: '*'
+  SalesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Persona role for sales (group sales-team)
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated:
+              Fn::ImportValue:
+                Fn::Sub: ${AuthStackName}-OIDCProviderArn
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          - sts:TagSession
+          Condition:
+            ForAnyValue:StringEquals:
+              auth.example.com:groups:
+              - sales-team
+      ManagedPolicyArns:
+      - Ref: SalesPolicy
+      Tags:
+      - Key: Purpose
+        Value: Claude Code Persona Access
+      - Key: Persona
+        Value: sales
+      - Key: PersonaGroup
+        Value: sales-team
+      PermissionsBoundary:
+        Ref: SalesBoundary
+Outputs:
+  EngineeringRoleArn:
+    Description: Role ARN for persona engineering
+    Value:
+      Fn::GetAtt:
+      - EngineeringRole
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-Engineering-RoleArn
+  SalesRoleArn:
+    Description: Role ARN for persona sales
+    Value:
+      Fn::GetAtt:
+      - SalesRole
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-Sales-RoleArn

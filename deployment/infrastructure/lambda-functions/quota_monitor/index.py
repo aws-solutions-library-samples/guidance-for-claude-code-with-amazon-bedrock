@@ -28,6 +28,13 @@ MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", "300000000"))
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
 WARNING_THRESHOLD_90 = int(os.environ.get("WARNING_THRESHOLD_90", "270000000"))
 
+# Persona-based access control (PBAC) mode — spec decision D3.
+# PERSONA_ORDER is a comma-separated list of group values in DECLARED precedence
+# order. When set, group-policy resolution uses declared-order precedence (first
+# matching group wins) to mirror the credential-process persona resolver (§4.3).
+# When empty/unset, legacy "most-restrictive-wins" semantics are preserved exactly.
+PERSONA_ORDER = [g.strip() for g in os.environ.get("PERSONA_ORDER", "").split(",") if g.strip()]
+
 # DynamoDB tables
 quota_table = dynamodb.Table(QUOTA_TABLE)
 policies_table = dynamodb.Table(POLICIES_TABLE) if POLICIES_TABLE else None
@@ -213,7 +220,12 @@ def lambda_handler(event, context):
 
         for email, usage in usage_data.items():
             stats["total_users"] += 1
-            policy = resolve_user_quota(email, [], policies_cache)
+            # The monitor has no JWT, so it reads the user's groups from the record
+            # quota_check persisted at credential-issuance time. This lets per-persona
+            # ALERT thresholds resolve (declared-order, PERSONA_ORDER) — without it the
+            # monitor always falls to the default tier and persona alerts never fire.
+            user_groups = get_user_groups(email)
+            policy = resolve_user_quota(email, user_groups, policies_cache)
             if policy is None:
                 continue
 
@@ -294,8 +306,34 @@ def load_all_policies():
     return policies
 
 
+def get_user_groups(email):
+    """Read the user's groups from the record quota_check persisted at issuance.
+
+    quota_check writes ``USER#<email>`` / ``GROUPS`` (with the JWT groups + a TTL);
+    the monitor has no token of its own, so this is how it learns group membership
+    for per-persona alert-threshold resolution. Returns [] on any miss/error so the
+    caller cleanly falls back to the default tier (best-effort, never raises).
+    """
+    try:
+        response = quota_table.get_item(Key={"pk": f"USER#{email}", "sk": "GROUPS"})
+        item = response.get("Item") or {}
+        groups = item.get("groups") or []
+        return [g for g in groups if isinstance(g, str)]
+    except Exception as e:
+        print(f"get_user_groups: could not read groups for {email}: {e}")
+        return []
+
+
 def resolve_user_quota(email, groups, policies_cache):
-    """Resolve effective quota policy: user > group > default > env defaults."""
+    """Resolve effective quota policy: user > group > default > env defaults.
+
+    Group-tier resolution (spec D3):
+      - PBAC mode (PERSONA_ORDER set): declared-order precedence — first group in
+        PERSONA_ORDER with an enabled cached policy wins. Mirrors quota_check and
+        the credential-process persona resolver.
+      - Legacy mode (PERSONA_ORDER unset): most-restrictive-wins (lowest
+        monthly_token_limit). Unchanged from prior behavior.
+    """
     if not ENABLE_FINEGRAINED_QUOTAS:
         return {
             "policy_type": "default", "identifier": "environment",
@@ -306,10 +344,19 @@ def resolve_user_quota(email, groups, policies_cache):
     user_key = f"user:{email}"
     if user_key in policies_cache and policies_cache[user_key].get("enabled"):
         return policies_cache[user_key]
-    group_policies = [policies_cache[f"group:{g}"] for g in (groups or [])
-                      if f"group:{g}" in policies_cache and policies_cache[f"group:{g}"].get("enabled")]
-    if group_policies:
-        return min(group_policies, key=lambda p: p["monthly_token_limit"])
+    # Map enabled group policies by group value for declared-order selection.
+    policies_by_group = {g: policies_cache[f"group:{g}"] for g in (groups or [])
+                         if f"group:{g}" in policies_cache and policies_cache[f"group:{g}"].get("enabled")}
+    if policies_by_group:
+        if PERSONA_ORDER:
+            # PBAC mode (D3): first declared group with a policy wins.
+            for g in PERSONA_ORDER:
+                if g in policies_by_group:
+                    return policies_by_group[g]
+            # No declared group matched: fall through to default policy.
+        else:
+            # Legacy mode: most restrictive = lowest monthly_token_limit.
+            return min(policies_by_group.values(), key=lambda p: p["monthly_token_limit"])
     default_key = "default:default"
     if default_key in policies_cache and policies_cache[default_key].get("enabled"):
         return policies_cache[default_key]

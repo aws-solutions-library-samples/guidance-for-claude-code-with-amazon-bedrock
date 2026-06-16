@@ -51,6 +51,7 @@ Deploy using `poetry run ccwb deploy` (deploys all enabled stacks) or `poetry ru
 | Check Frequency         | 15 minutes  | Lambda execution interval                      |
 | Alert Retention         | 60 days     | DynamoDB TTL for deduplication                 |
 | EnableFinegrainedQuotas | false       | Enable fine-grained policy support             |
+| PersonaOrder            | "" (empty)  | Persona group values in declared order (PBAC); empty = legacy most-restrictive |
 
 To update limits: Re-run `ccwb init` and redeploy with `ccwb deploy quota`.
 
@@ -128,6 +129,8 @@ When determining the effective quota for a user:
 2. **Group policy** (most restrictive): If user belongs to multiple groups with policies, use the **lowest limit** (most restrictive)
 3. **Default policy**: If no user or group policy applies, use the default
 4. **No policy**: If no policies are defined, usage is **unlimited** (quota monitoring disabled for that user)
+
+> **Persona-based access (PBAC) override:** When the `PersonaOrder` parameter is set (deployed by `ccwb deploy` from configured personas), multi-group resolution at step 2 switches from most-restrictive to **declared-order precedence** — the first persona group listed in `PersonaOrder` that the user belongs to wins, matching the credential helper's persona resolution. With `PersonaOrder` empty (the default), most-restrictive behavior is preserved. See the PBAC documentation for details.
 
 ### Limit Types
 
