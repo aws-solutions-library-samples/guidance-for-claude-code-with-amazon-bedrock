@@ -82,6 +82,13 @@ def _iam_glob_match(runtime_arn: str, policy_arns: list[str]) -> bool:
     ``fnmatch`` (case-insensitive, anchored) — exactly how the live IAM Deny/Allow
     evaluates a resource. ``.`` is a literal in ``fnmatch`` (only ``*``/``?``/``[]`` are
     special), matching IAM's treatment of model-id dots.
+
+    Fidelity caveat: this is a faithful model of IAM resource matching ONLY while ARNs
+    and globs stay free of ``[``/``]`` (fnmatch treats those as a character class; IAM
+    treats them as literals) and case-insensitivity is acceptable (IAM resource matching
+    is case-sensitive, but every shipped Anthropic id/glob is already lowercase). Both
+    hold for the current model catalog; a future bracketed or mixed-case id would need a
+    real glob-to-regex translation here.
     """
     import fnmatch
 
@@ -319,12 +326,18 @@ class TestSalesDenyMatchesRealModelIds:
 
     @staticmethod
     def _runtime_arns() -> list[str]:
-        """Every realistic ARN Bedrock authorizes a denied (sonnet/opus) invocation
-        against — pairing each ARN *shape* with the model-id *form* that shape actually
-        carries. Getting the pairing right is the point: a region prefix (``us.``,
-        ``global.``) appears on the **inference-profile** shapes, while the
-        **foundation-model** shape carries the **bare** id. Each entry is a concrete ARN
-        the rendered Deny glob must match.
+        """Every realistic **model-id-bearing** ARN Bedrock authorizes a denied
+        (sonnet/opus) invocation against — pairing each ARN *shape* with the model-id
+        *form* that shape actually carries. Getting the pairing right is the point: a
+        region prefix (``us.``, ``global.``) appears on the **inference-profile** shapes,
+        while the **foundation-model** shape carries the **bare** id. Each entry is a
+        concrete ARN the rendered Deny glob must match.
+
+        Note: an AWS-created *application*-inference-profile gets an OPAQUE id (no
+        ``anthropic.`` token), so it is intentionally NOT enumerated here — the persona's
+        Allow (``*anthropic.*haiku*``) also can't match an opaque id, so such a call fails
+        closed by implicit-deny, and the persona has no ``CreateInferenceProfile`` anyway.
+        This set therefore covers the model-id-bearing forms, not literally every ARN.
         """
         from claude_code_with_bedrock.models import resolve_model_for_tier
 
@@ -393,6 +406,85 @@ class TestSalesDenyMatchesRealModelIds:
         for stmt in _deny_statements(template):
             deny_arns.extend(_arn_strings(stmt["Resource"]))
         assert self._deny_matches(global_opus, deny_arns)
+
+
+class TestCustomPersonaDenyMatchesRealModelIds:
+    """Match-based bypass guard for a NON-reference, version-pinned custom persona.
+
+    The rest of this suite renders only the reference ``sales`` persona (tier-family
+    globs ``anthropic.*opus*``). A renderer regression that broke only *version-pinned*
+    custom denies (a different glob shape an operator may hand-author) would not be
+    caught here and would fall back to the older presence-based
+    ``test_version_pinned_deny_glob_gets_trailing_wildcard`` in ``test_persona_template``.
+    This closes that asymmetry: render a custom persona that denies opus *by version*
+    (``anthropic.claude-opus-4-7``, no trailing ``*`` — the footgun shape) and assert the
+    rendered Deny actually MATCHES every real opus invocation ARN under IAM semantics.
+    """
+
+    CUSTOM = {
+        "name": "research",
+        "display_name": "Research",
+        "group": "research-team",
+        "allowed_models": ["anthropic.*"],
+        # Version-pinned, no trailing wildcard — relies on _normalize_denied + the
+        # inference-profile leading-* to still match the versioned/prefixed invoked id.
+        "denied_models": ["anthropic.claude-opus-4-7"],
+        "enforcement_mode": "block",
+        "cost_tags": {"Team": "Research"},
+    }
+
+    @staticmethod
+    def _real_opus_arns() -> list[str]:
+        """Realistic opus-4-7 invocation ARNs per shape — including a VERSION-SUFFIXED
+        runtime form.
+
+        Bedrock invokes a model by its full versioned id (``…-opus-4-7-v1:0``) even when
+        the catalog's resolved id is the unsuffixed ``…-opus-4-7``. The operator pinned
+        the deny WITHOUT a trailing ``*`` (``anthropic.claude-opus-4-7``); only
+        ``_normalize_denied``'s trailing-``*`` lets that glob still match the suffixed
+        runtime id on the inference-profile shapes. We therefore include both the catalog
+        id and an explicit ``-v1:0`` form so the test exercises (and has teeth against)
+        the normalization, not just the unsuffixed match.
+        """
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        part, region, acct = "aws", "us-east-1", "111122223333"
+        arns: list[str] = []
+        bare = resolve_model_for_tier("opus", "us")
+        if bare:
+            bare = bare.split(".", 1)[1] if bare.split(".", 1)[0] in ("us", "eu", "apac", "global") else bare
+            arns.append(f"arn:{part}:bedrock:{region}::foundation-model/{bare}")
+        for prefix in ("us", "eu", "apac", "global"):
+            mid = resolve_model_for_tier("opus", prefix)
+            if not mid:
+                continue
+            for runtime_id in (mid, f"{mid}-v1:0"):  # catalog id + the versioned runtime form
+                arns.append(f"arn:{part}:bedrock:{region}:{acct}:inference-profile/{runtime_id}")
+                arns.append(f"arn:{part}:bedrock:{region}:{acct}:application-inference-profile/{runtime_id}")
+                if mid.startswith("global."):
+                    arns.append(f"arn:{part}:bedrock:::foundation-model/{runtime_id}")
+        return sorted(set(arns))
+
+    def test_version_pinned_custom_deny_matches_every_real_opus_arn(self):
+        template = _render([self.CUSTOM])
+        deny_arns: list[str] = []
+        for stmt in _deny_statements(template):
+            deny_arns.extend(_arn_strings(stmt["Resource"]))
+        assert deny_arns, "custom persona with a denied model must render Deny resources"
+
+        # Only assert against opus ids the pinned glob actually targets (the 4-7 family).
+        # eu opus resolves to 4-6 (a DIFFERENT model the persona did NOT pin) — correctly
+        # NOT denied — so we filter to ids the operator's glob is meant to cover.
+        targeted = [a for a in self._real_opus_arns() if "opus-4-7" in a]
+        assert targeted, "expected at least one real opus-4-7 invocation ARN"
+        # Sanity: the suffixed runtime form must be present so the trailing-* normalization
+        # is genuinely exercised (this is what gives the test teeth vs _normalize_denied).
+        assert any(a.endswith("-v1:0") for a in targeted), "expected a versioned runtime ARN in the set"
+        unmatched = [a for a in targeted if not _iam_glob_match(a, deny_arns)]
+        assert not unmatched, (
+            "the version-pinned custom Deny does not MATCH these real opus-4-7 ARNs "
+            "(version-pinned custom-persona bypass class):\n  " + "\n  ".join(unmatched)
+        )
 
 
 class TestEngineeringHasNoDeny:

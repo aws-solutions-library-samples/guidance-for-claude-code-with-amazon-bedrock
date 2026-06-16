@@ -122,6 +122,29 @@ def _tier_probe(tier: str, cris_prefix: str | None) -> str:
     return version_less
 
 
+def model_id_is_denied(model_id: str, persona: dict) -> bool:
+    """True if a concrete CRIS model id is matched by the persona's ``denied_models``.
+
+    Uses the SAME matching the rendered IAM Deny applies on the inference-profile ARN
+    shape: each deny glob is normalized to a trailing wildcard (``_normalize_denied``
+    semantics) and matched with a leading-``*`` prepend (``infer_profile_shape=True``),
+    because the model id carries a region/``global.`` prefix ahead of the ``anthropic.``
+    token.
+
+    Guards the data-residency cross-tier-fallback footgun: for a prefix where a tier has
+    no model (e.g. ``opus``/``jp``), ``resolve_model_for_tier`` falls back to another
+    tier's id (``jp.anthropic.claude-sonnet-…``). If the persona denies *sonnet*, an opus
+    AIP ``copyFrom`` that sonnet id would be created but every invoke through it
+    ``AccessDenied``s (the IAM Deny matches the sonnet source) — a cosmetic, never-usable,
+    cost-mislabeled profile. The deploy AIP loop calls this to skip such a tier.
+    """
+    denied = persona.get("denied_models") or []
+    if not denied:
+        return False
+    normalized = [g if isinstance(g, str) and g.endswith("*") else f"{g}*" for g in denied if isinstance(g, str)]
+    return _matches_any(normalized, model_id, infer_profile_shape=True)
+
+
 def primary_tier(persona: dict) -> str | None:
     """The persona's default tier for bare ANTHROPIC_MODEL (highest entitled).
 

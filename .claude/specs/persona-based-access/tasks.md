@@ -164,6 +164,21 @@ User directed fixing L2 + L4 (NOT L1/L3) and auditing the bypass suite's IAM-glo
 
 **LOW-wave + audit re-gate: Python 1227/0 (+7), Go 10 pkgs ok, go vet clean, cfn-lint clean, zero new ruff. Suite wall-clock 84s→42s.**
 
+### 5th deep-dive — reviewed "Hardening pass 4" (2026-06-16) — COMPLETE ✅
+3 adversarial reviewers aimed at the least-reviewed code (the pass-4 edits themselves), author-distrust + independent teeth-checks. Core verified solid (0 bypasses). Detail in `decisions.md` (5th deep-dive) + `spec.md §0 A12`.
+
+- [x] [coding] **MED** — fix the tautological `test_data_residency_cross_tier_fallback_keeps_versionless_probe` (allow-all persona entitled opus via shortcut, not via `_tier_probe`). Add a sonnet deny so the probe is load-bearing + inverse assert. | `tests/test_persona_models.py` | teethed: dropping `_tier_probe` token guard now fails it. Run: `cd source && .venv/bin/python -m pytest tests/test_persona_models.py -q`
+- [x] [docs] **LOW** — doc/comment accuracy: `_global_foundation_model_arns` "stays scoped" overclaim, `_iam_glob_match` IAM-fidelity caveat (`[]`/case), `_runtime_arns` "every realistic ARN"→"model-id-bearing", decisions.md count 1226→1227. | `persona_template.py`, `test_persona_policy_bypass.py`, `decisions.md` | no behavior change; suite green.
+
+**5th-pass re-gate: Python 1227/0 (unchanged — MED was in-place rewrite), Go 10 pkgs ok, go vet clean, cfn-lint clean, zero new ruff.** Reported LOWs (user decision): bypass suite sales-only; hardcoded global ids in one template test; carried-open L1/L3 + data-residency cosmetic AIP.
+
+### 5th-pass LOW-wave (user-directed: fix LOW 1/2/3) — COMPLETE ✅
+- [x] [coding] **LOW 1** — bypass suite was sales-only; added `TestCustomPersonaDenyMatchesRealModelIds` (version-pinned NON-reference persona, asserts Deny matches every real opus-4-7 ARN incl. `-v1:0` runtime form). | `tests/test_persona_policy_bypass.py` | teethed vs `_normalize_denied`. Run: `cd source && .venv/bin/python -m pytest tests/test_persona_policy_bypass.py -q`
+- [x] [coding] **LOW 2** — catalog-resolve global ids instead of hardcoded literals. | `tests/test_persona_template.py` | `resolve_model_for_tier(...,"global")` + startswith guard. Run: `cd source && .venv/bin/python -m pytest tests/test_persona_template.py -q`
+- [x] [coding] **LOW 3** — skip a tier whose resolved CRIS source is a denied model (data-residency cross-tier fallback). New `persona_models.model_id_is_denied` + deploy skip-guard. | `persona_models.py`, `cli/commands/deploy.py`, `test_persona_models.py`, `test_deploy_personas.py` | `TestModelIdIsDenied` (4) + `test_data_residency_denied_fallback_tier_is_skipped` (teethed). Run: `cd source && .venv/bin/python -m pytest tests/test_persona_models.py tests/test_deploy_personas.py -q`
+
+**5th-pass LOW-wave re-gate: Python 1233/0 (+6), Go 10 pkgs ok, go vet clean, cfn-lint clean, zero new ruff.** Carried-open per prior direction: L1 `CallWithBearerToken`, L3 `install.bat` LF.
+
 ## Commit manifest (review-4 handoff hazard)
 **~58 files** (untracked incl. parity oracle + bypass fixture; modified incl. the deep-dive + Low-wave files above) — regenerate the exact list with `git status` before commit; full original 48-file core list in `decisions.md`. `git add source/ deployment/ assets/ .gitignore PBAC_README.md` (NOT `git add -u` — that drops the untracked parity oracle / Go persona tests / bypass fixture and silently strips the CI safety nets). Lead handles git per user direction (stay on `rubab-dev1`).
 

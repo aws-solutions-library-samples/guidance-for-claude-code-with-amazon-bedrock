@@ -10,6 +10,7 @@ from claude_code_with_bedrock.persona_models import (
     aip_name,
     cris_source_arn,
     entitled_tiers,
+    model_id_is_denied,
     partition_for_region,
     primary_tier,
 )
@@ -78,11 +79,49 @@ class TestEntitledTiersVersionExactProbe:
             assert entitled_tiers(persona) == entitled_tiers(persona, cris_prefix="us")
 
     def test_data_residency_cross_tier_fallback_keeps_versionless_probe(self):
-        # opus/jp resolves to a SONNET id (jp has no opus); probing opus with a sonnet
-        # id would muddy entitlement, so _tier_probe keeps the version-less opus probe.
-        # An allow-all persona therefore still lists opus for a jp deployment.
-        p = {"allowed_models": ["anthropic.*"]}
-        assert "opus" in entitled_tiers(p, cris_prefix="jp")
+        # opus/jp resolves to a SONNET id (jp has no opus model). If _tier_probe probed
+        # the opus tier with that resolved sonnet id, a persona that denies SONNET would
+        # then ALSO (wrongly) exclude opus. The guard (use the resolved id only when it
+        # contains the tier's own token) keeps the version-less `anthropic.claude-opus`
+        # probe in this cross-tier-fallback case, so the sonnet deny does not touch opus.
+        #
+        # A `denied_models` is REQUIRED here for the probe to be load-bearing: with an
+        # allow-all/no-deny persona, every tier is entitled via the allow_all shortcut
+        # regardless of the probe, so the test would pass even if the guard were removed
+        # (a tautology). Denying sonnet makes the probe content decide opus's fate.
+        p = {"allowed_models": ["anthropic.*"], "denied_models": ["anthropic.*sonnet*"]}
+        tiers = entitled_tiers(p, cris_prefix="jp")
+        assert "opus" in tiers, (
+            "opus must stay entitled under jp despite opus/jp resolving to a sonnet id — "
+            f"the _tier_probe tier-token guard keeps the version-less opus probe; got {tiers}"
+        )
+        # And the deny is genuinely active (sonnet excluded) — proving the persona isn't
+        # vacuously allow-all and the guard is what spares opus, not an absent deny.
+        assert "sonnet" not in tiers, f"sonnet must be denied (deny is active); got {tiers}"
+
+
+class TestModelIdIsDenied:
+    """Guards the data-residency cross-tier-fallback AIP skip (LOW 3)."""
+
+    def test_denied_glob_matches_prefixed_id(self):
+        # The IAM Deny shape: a *sonnet* deny must match a region/global-prefixed sonnet id.
+        p = {"denied_models": ["anthropic.*sonnet*"]}
+        assert model_id_is_denied("jp.anthropic.claude-sonnet-4-6", p) is True
+        assert model_id_is_denied("global.anthropic.claude-sonnet-4-6", p) is True
+
+    def test_allowed_tier_id_not_denied(self):
+        p = {"denied_models": ["anthropic.*sonnet*"]}
+        assert model_id_is_denied("us.anthropic.claude-haiku-4-5", p) is False
+        assert model_id_is_denied("us.anthropic.claude-opus-4-7", p) is False
+
+    def test_version_pinned_deny_matches_versioned_id(self):
+        # Trailing-* normalization: a version-pinned deny still matches the versioned id.
+        p = {"denied_models": ["anthropic.claude-opus-4-7"]}
+        assert model_id_is_denied("us.anthropic.claude-opus-4-7-v1:0", p) is True
+
+    def test_no_denied_models_is_never_denied(self):
+        assert model_id_is_denied("global.anthropic.claude-opus-4-7", {}) is False
+        assert model_id_is_denied("global.anthropic.claude-opus-4-7", {"denied_models": []}) is False
 
 
 class TestAipNaming:

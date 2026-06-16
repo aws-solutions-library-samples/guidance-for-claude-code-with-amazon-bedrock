@@ -162,7 +162,16 @@ def _global_foundation_model_arns(globs: list[str]) -> list[dict]:
     ``foundation-model/global.anthropic.…-haiku-…`` — which would silently make the
     whole statement inert (the Allow grants nothing on the global path; the Deny guards
     a path it can never reach). For denied globs this only widens a subtractive Deny, so
-    it is safe; for allowed globs it stays scoped to the named tier.
+    it is safe.
+
+    For allowed globs the leading ``*`` technically lets the pattern match any prefix
+    before the ``anthropic.`` token (e.g. ``*anthropic.*haiku*`` would also match a
+    hypothetical ``foo-anthropic.…-haiku`` id), so it stays scoped to the named tier only
+    among *real* Bedrock model ids — every shipped FM id is ``<vendor>.<model>`` or
+    ``<geo>.<vendor>.<model>``, so no non-Anthropic or arbitrary-prefixed id exists to be
+    matched. The globs are operator-authored config (never derived from an end-user
+    claim), so the broadened match is neither attacker-injectable nor reachable; the Deny
+    still strictly dominates for denied models on this path.
     """
     arns: list[dict] = []
     for glob in globs:

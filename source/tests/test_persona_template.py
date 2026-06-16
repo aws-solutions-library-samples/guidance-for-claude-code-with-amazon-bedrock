@@ -190,9 +190,20 @@ def test_global_cris_allow_glob_actually_matches_real_global_model_ids():
                         out.append(arn.split(marker, 1)[1])
         return out
 
-    # Sales: haiku allowed, sonnet/opus denied. Use the real shipped global ids.
-    real_global_haiku = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    real_global_opus = "global.anthropic.claude-opus-4-7"
+    # Sales: haiku allowed, sonnet/opus denied. Resolve the real global ids from the
+    # model catalog (the same resolver deploy uses) rather than hardcoding literals, so
+    # the test keeps tracking the actual shipped id if the catalog changes instead of
+    # silently passing against a stale literal that the broad glob still matches.
+    from claude_code_with_bedrock.models import resolve_model_for_tier
+
+    real_global_haiku = resolve_model_for_tier("haiku", "global")
+    real_global_opus = resolve_model_for_tier("opus", "global")
+    assert real_global_haiku and real_global_haiku.startswith("global."), (
+        f"expected a real global haiku id from the catalog, got {real_global_haiku!r}"
+    )
+    assert real_global_opus and real_global_opus.startswith("global."), (
+        f"expected a real global opus id from the catalog, got {real_global_opus!r}"
+    )
 
     allow_haiku_globs = _global_fm_globs("Allow", "haiku")
     assert allow_haiku_globs, "sales must emit a region-less global FM Allow for its allowed (haiku) models"

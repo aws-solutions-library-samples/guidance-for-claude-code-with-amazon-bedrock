@@ -1651,6 +1651,7 @@ class DeployCommand(Command):
                 aip_name,
                 cris_source_arn,
                 entitled_tiers,
+                model_id_is_denied,
                 partition_for_region,
             )
 
@@ -1707,6 +1708,22 @@ class DeployCommand(Command):
                         console.print(
                             f"[dim]No '{tier}' model available for region prefix '{cris_prefix}'; "
                             f"skipping that tier for persona '{name}'.[/dim]"
+                        )
+                        continue
+
+                    # Data-residency cross-tier fallback guard: where this tier has no
+                    # model for the prefix, cris_source_arn falls back to another tier's
+                    # model id. If that fallback id is one the persona DENIES, an AIP
+                    # built from it would only ever AccessDenied at runtime (the IAM Deny
+                    # matches the source) — a cosmetic, cost-mislabeled, never-usable
+                    # profile. Skip it rather than create it. The source ARN's model id is
+                    # the segment after "inference-profile/".
+                    source_model_id = source.rsplit("/", 1)[-1]
+                    if model_id_is_denied(source_model_id, persona):
+                        console.print(
+                            f"[dim]Resolved '{tier}' source model '{source_model_id}' for prefix "
+                            f"'{cris_prefix}' is denied by persona '{name}'; skipping that tier "
+                            f"(an AIP from it would be unusable at runtime).[/dim]"
                         )
                         continue
 

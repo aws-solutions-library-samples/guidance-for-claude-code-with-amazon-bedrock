@@ -585,6 +585,26 @@ class TestPersonaInferenceProfiles:
         # ARN wired back into the persona dict for package serialization (FR-5.1).
         assert sales["inference_profile_arns"]["haiku"].endswith("application-inference-profile/pool-sales-haiku")
 
+    def test_data_residency_denied_fallback_tier_is_skipped(self, command):
+        # LOW 3: under a data-residency prefix where a tier has no model, cris_source_arn
+        # falls back to another tier's model id. If that fallback id is DENIED by the
+        # persona, an AIP built from it would only AccessDenied at runtime — so it must be
+        # skipped. Persona allows all but denies sonnet, deployed jp: opus/jp resolves to
+        # jp.anthropic.claude-sonnet-4-6 (denied) → opus AIP skipped; haiku still created.
+        created = []
+        client = self._fake_bedrock_client(created)
+        res = {"name": "res", "group": "r", "allowed_models": ["anthropic.*"],
+               "denied_models": ["anthropic.*sonnet*"], "cost_tags": {"Team": "Res"}}
+        profile = self._profile([res])
+        profile.cross_region_profile = "jp"
+        profile.aws_region = "ap-northeast-1"
+        with patch("boto3.client", return_value=client), patch("claude_code_with_bedrock.config.Config"):
+            command._create_persona_inference_profiles(profile, MagicMock())
+        names = sorted(c["inferenceProfileName"] for c in created)
+        # opus is entitled but its jp source is a denied sonnet model → skipped.
+        assert names == ["pool-res-haiku"], f"opus (denied sonnet fallback) must be skipped; got {names}"
+        assert "opus" not in res.get("inference_profile_arns", {})
+
     def test_engineering_gets_all_three_tiers(self, command):
         created = []
         client = self._fake_bedrock_client(created)
