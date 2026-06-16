@@ -26,6 +26,31 @@
 **Decision:** Out of scope for this feature (one-concern-per-PR, pr-standards.md). Do NOT let the review pool FAIL the group or attribute these to PBAC. A formatting-only pass on init.py can be a separate chore PR if desired.
 **Review note:** python-cli reviewer — init.py E501s are pre-existing; only assess PBAC-introduced lines.
 
+## 2026-06-16 — Review Cycle 1 verdicts + fix cycle (#30 CRITICAL, #31 WARNING)
+**Consolidated verdict: FAIL (one scope).** Parallel 4-scope review:
+- **go-helper (review-2): PASS** — 0 crit / 0 warn / 1 cosmetic suggestion (hard-deny error wording). §4.2/§4.3 parity exact + CI-enforced, buildSessionName byte-unchanged, backward-compat + attribution chain intact.
+- **infra-lambda (review-3): PASS** — 0 crit / 0 warn / 2 non-blocking suggestions (both pre-existing, per allowlist). D3 legacy path byte-equivalent; R-highest 6-combo Deny confirmed in fixture; otel-collector closes the dashboard gap.
+- **python-cli (review-1): FAIL** — 3 blocking WARNINGs (W1 elevated to CRITICAL by lead). R-highest (3-ARN Deny + teethed bypass test), Cognito skip, stack-ordering, PERSONA_ORDER compute, role_arn write-back, §4.2 serialization all confirmed correct. review-1 also correctly DISMISSED a plugin-reviewer false-positive ("StringEquals on aws:RequestedRegion CommaDelimitedList = always-deny" — wrong; CFN expands the list to a JSON array that StringEquals OR-matches, identical to shipped auth templates).
+- **tests-parity (review-4): pending** at time of writing.
+
+**Three fix tasks (Phase 3), all file-disjoint, concurrent:**
+- **#30 (CRITICAL, W1)** issuer-host Auth0/Azure trust-condition → coding-3 (deploy.py).
+- **#31 (WARNING, W2)** account_budget_amount_usd not wired through Profile/wizard → coding-3 (config.py/init.py).
+- **#32 (WARNING, W3)** inline persona-dashboard CFN stack `{pool}-persona-dashboard` orphaned by destroy (FR-9.5) → coding-2 (destroy.py). Cleanest fix = explicit `_delete_persona_dashboard_stack` mirroring `_delete_persona_inference_profiles` (avoids the phantom-test trap of adding it to DESTROYABLE_STACKS). NOTE: distinct from review-3's L158 cosmetic dead-code SUGGESTION — the L158 skip-guard string becomes live once #32 wires the actual teardown.
+On completion: full-suite re-gate + review-1 Cycle-2 re-review of ONLY the changed surface. go-helper/infra-lambda stay PASS (their files unchanged); tests-parity verdict pending.
+
+**CRITICAL (#30):** `_resolve_issuer_host` (deploy.py) does `rstrip("/")`, stripping the trailing slash Auth0's STS web-identity condition key requires (provider registered `https://${Auth0Domain}/`). → persona trust emits `company.auth0.com:groups` but STS keys on `company.auth0.com/` → ALL Auth0 persona users silently hard-deny. Azure `/v2.0` same risk, no test. Auth0+Azure are FR-2.7 v1-supported. Authority: issuer-url-format.md. Lead verified + confirmed CRITICAL. Fix: derive condition-key from exact provider URL form (preserve Auth0 slash / Azure /v2.0), scheme-stripped only; Auth0+Azure regression tests.
+
+**WARNING (#31):** `account_budget_amount_usd` read by deploy.py:1642 but not a Profile field / not wizard-collected / not in wizard_fields → FR-6.1 account-total budget unreachable. Fix: add field + wizard + wizard_fields + round-trip test.
+
+**Routing:** both → coding-3 (deploy.py + config/wizard owner), file-disjoint (#30 deploy.py, #31 config.py+init.py). On completion: full-suite re-gate + review-1 re-reviews ONLY the changed surface. Other 3 scopes do not need re-review unless their files change.
+
+## 2026-06-16 — #29 two-writer collision → resolved on INLINE design (lead verified green)
+**Context:** My earlier mis-attribution (I told coding-2 "your #15" — #15 is coding-3's) seeded a routing storm; the idle-check then pushed coding-1 onto #29 while coding-3 was editing the same files (deploy.py + test_deploy_personas.py) → two writers thrashing between an INLINE design (`_deploy_persona_dashboard` called inside `_deploy_persona_stack`) and a STANDALONE stack-type design (`_deploy_persona_dashboard_stack`).
+**Resolution:** coding-1 released #29 (did not clobber). coding-3 owned it through to completion on the **inline design**. Lead verified the settled tree from outside (not mid-edit): full Python suite **1120 passed / 0 failed**, `test_deploy_personas.py` + `test_destroy_stacks.py` = 34 passed together, ruff clean on deploy.py + destroy.py, Go 10 pkgs ok. The `persona-dashboard` refs that remain are legitimate (orphan-stack detection helper), not dead standalone scaffolding.
+**Lead errors to own:** (1) mis-attributed #15 ownership → routing storm; (2) briefly offered to hand-fix deploy.py before realizing a second writer was live (withdrew before editing). Lesson: verify task ownership against the task store before routing contracts; never offer to edit an owned file that's `in_progress` without confirming the owner is clear.
+**Design chosen:** INLINE persona-dashboard deploy (within `_deploy_persona_stack`, after budgets). No new top-level stack type. Reviewer (python-cli) to confirm the inline design is coherent and the `_check_orphaned_stacks` persona-dashboard refs are intentional.
+
 ## 2026-06-16 — #29 multi-line append broke a coverage test (regex blind spot)
 **Context:** #29 added the persona stack as a distinct `persona-dashboard` stack type (in DESTROYABLE_STACKS, consistent) but also reformatted the `persona` append in deploy.py to a MULTI-LINE `stacks_to_deploy.append(\n  ("persona", ...)\n)`. `test_destroy_stacks._deployable_stack_types()` detects deployable types via a single-line regex `append\(\(\s*"name"`, so it missed the multi-line `persona` → `test_no_phantom_destroyable_stacks` FAILED ('persona' looked like a phantom in destroy). The CODE is correct (persona is deployed and destroyed); only the test's static detection was blind.
 **Decision:** Fix = collapse the `persona` append to single-line (matches every other append; zero behavior change; no test weakening). Routed to coding-3 (deploy.py owner) as part of closing #29.
