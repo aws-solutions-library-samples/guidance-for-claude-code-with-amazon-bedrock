@@ -22,3 +22,12 @@ Extract tenant GUID from domain URL before passing to CloudFormation.
 # ❌ Bad PR description
 Fixed Azure domain issue
 ```
+## Exit Code Contract
+
+All CLI commands (`deploy`, `package`, `destroy`, `init`, `test`) must:
+- Exit 0 on success
+- Exit non-zero (1) on any failure
+- Never silently return 0 when an operation failed
+
+Test every failure path returns non-zero. PRs #559 and #565 both fixed
+`destroy` silently exiting 0 on stack deletion failures.

@@ -25,3 +25,12 @@ Any change to either variant requires a parity test:
 - Verify sanitization produces identical output across variants
 
 *Issues: #204 (session name truncation), #58 (recursion)*
+
+## Provider Detection Parity
+
+When adding a new OIDC provider:
+1. Add to Python `PROVIDER_CONFIGS` dict
+2. Add to Go's provider detection in `main.go` (`_determine_provider_type` equivalent)
+3. Same hostname patterns and domain matching in both
+
+Example: PR #563 added Google to Go after it was already in Python — this gap should never happen.
