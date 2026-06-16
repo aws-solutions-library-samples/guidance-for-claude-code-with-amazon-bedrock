@@ -2101,6 +2101,12 @@ RUN pyinstaller \
         console.print("[cyan]Generating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
+        # Regenerate the per-persona model-routing wrapper (PBAC FR-5.1). Self-gates
+        # on resolved AIP ARNs, so it is a no-op for non-routing profiles — but
+        # without this a `--regenerate-installers` bundle would ship config.json
+        # advertising inference_profile_arns yet no wrapper to apply them.
+        self._create_persona_model_wrapper(output_dir, profile, profile_name, console)
+
         # Summary
         console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
@@ -2374,7 +2380,14 @@ RUN pyinstaller \
             "            }\n"
             "        }\n"
             "    }\n"
-            '    & claude.cmd @args\n'
+            # Resolve the real `claude` executable on PATH rather than hardcoding
+            # claude.cmd — an install may expose claude.exe or a differently-named shim.
+            # `-CommandType Application` also skips THIS function (the PowerShell analogue
+            # of POSIX `command claude`), preventing infinite recursion. Fall back to
+            # claude.cmd only if nothing resolves on PATH.
+            "    $claudeExe = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue |\n"
+            "        Select-Object -First 1\n"
+            "    if ($claudeExe) { & $claudeExe.Source @args } else { & claude.cmd @args }\n"
             "}\n"
         )
         # Windows scripts use CRLF (windows-platform-guards.md).
@@ -2630,6 +2643,19 @@ if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "  ~/claude-code-with-bedrock/otel-helper --test"
 fi
 
+# Copy the per-persona model-routing launch wrapper if present (PBAC FR-5.1).
+# Installed to the same dir the credential-process lives in so the path the
+# wrapper docs tell users to source ($HOME/claude-code-with-bedrock/persona-model.sh)
+# actually exists after a standard install. Opt-in: it only takes effect once the
+# user sources it from their shell rc.
+if [ -f "persona-model.sh" ]; then
+    cp persona-model.sh ~/claude-code-with-bedrock/persona-model.sh
+    echo
+    echo "✓ Per-persona model routing wrapper installed (PBAC FR-5.1)"
+    echo "  To enable per-persona model routing, add to your shell rc (~/.bashrc, ~/.zshrc):"
+    echo "    source \\"$HOME/claude-code-with-bedrock/persona-model.sh\\""
+fi
+
 # Update AWS config
 echo
 echo "Configuring AWS profiles..."
@@ -2773,6 +2799,17 @@ REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+)
+
+REM Copy the per-persona model-routing launch wrapper if present (PBAC FR-5.1).
+REM Installed next to credential-process.exe so the path the wrapper docs tell
+REM users to dot-source ($env:USERPROFILE\\claude-code-with-bedrock\\persona-model.ps1)
+REM exists after a standard install. Opt-in: takes effect once dot-sourced from $PROFILE.
+if exist "persona-model.ps1" (
+    echo Copying per-persona model routing wrapper [PBAC FR-5.1]...
+    copy /Y "persona-model.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1" >nul
+    echo   To enable per-persona model routing, add to your PowerShell $PROFILE:
+    echo     . "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1"
 )
 
 REM Copy configuration

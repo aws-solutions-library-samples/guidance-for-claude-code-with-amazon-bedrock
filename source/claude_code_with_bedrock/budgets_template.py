@@ -216,10 +216,20 @@ def render_budgets_stack(
         f"{topic_id}Policy": _budget_alerts_topic_policy(topic_id),
     }
 
+    # A persona's budget is scoped by its cost-allocation tag, which is only ever
+    # attached to the Application Inference Profiles deploy creates per ENTITLED
+    # tier. A persona entitled to no tier (everything denied) gets no AIP, so no
+    # spend ever carries its tag and the budget could never trigger — skip it
+    # rather than render an inert budget. Mirrors deploy's "entitled to no model
+    # tier; skipping inference profiles" behavior (single source: entitled_tiers).
+    from claude_code_with_bedrock.persona_models import entitled_tiers
+
     seen_logical_ids: set[str] = set()
     for persona in personas:
         amount = persona.get("budget_amount_usd")
         if amount is None:
+            continue
+        if not entitled_tiers(persona):
             continue
         logical_fragment = _sanitize_logical_id(persona["name"])
         budget_logical_id = f"{logical_fragment}Budget"

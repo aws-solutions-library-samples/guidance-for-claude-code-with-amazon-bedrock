@@ -144,6 +144,27 @@ class TestValidatePersonasErrors:
         errors = validate_personas([_valid_persona(allowed_models="anthropic.*")], None)
         assert any("allowed_models' must be a list" in e for e in errors)
 
+    def test_budget_without_cost_tags_is_rejected(self):
+        """A budgeted persona needs cost_tags to scope its AWS Budget.
+
+        The budgets renderer (_cost_filters_for_persona) raises on a budgeted
+        persona with no cost_tags; without this upfront check that surfaced one
+        command later as a `ccwb deploy` failure. validate_personas must catch it
+        so the wizard and a hand-edited config.yaml both fail at save/validate time.
+        """
+        errors = validate_personas([_valid_persona(budget_amount_usd=100.0, cost_tags={})], None)
+        assert any("budget_amount_usd but no cost_tags" in e for e in errors)
+
+    def test_budget_with_cost_tags_is_valid(self):
+        persona = _valid_persona(budget_amount_usd=100.0, cost_tags={"Team": "Engineering"})
+        assert validate_personas([persona], None) == []
+
+    def test_no_budget_no_cost_tags_is_valid(self):
+        """A persona without a budget needs no cost_tags."""
+        persona = _valid_persona()
+        persona.pop("cost_tags", None)
+        assert validate_personas([persona], None) == []
+
     def test_non_dict_persona(self):
         errors = validate_personas(["not-a-dict"], None)
         assert any("must be a mapping" in e for e in errors)

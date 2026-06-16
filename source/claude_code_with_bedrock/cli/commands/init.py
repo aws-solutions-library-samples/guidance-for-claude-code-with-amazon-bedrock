@@ -2089,8 +2089,14 @@ class InitCommand(Command):
             "cost_tags": _parse_tags(answers.get("cost_tags")),
         }
 
-    def _gather_personas(self, config: dict[str, Any]) -> None:
+    def _gather_personas(self, config: dict[str, Any], _retry: bool = False) -> None:
         """Interactively collect persona definitions into ``config`` (PBAC).
+
+        ``_retry`` is set only by the validation-error re-prompt below: it skips
+        the "Configure personas now?" opt-in (the operator already chose to
+        re-enter) so a reflexive Enter doesn't silently abandon the attempt — the
+        opt-in's default would otherwise be False, since the retry clears
+        ``config["personas"]`` first.
 
         Gated by the caller on SSO + quota enabled. Lets the operator opt in,
         optionally seed from :data:`REFERENCE_PERSONAS`, then add custom personas
@@ -2108,13 +2114,17 @@ class InitCommand(Command):
         console.print("per-group token quotas, and cost-allocation tags.")
         console.print("[dim]Requires your IdP to emit a groups claim (see PBAC_README).[/dim]")
 
-        enable_personas = questionary.confirm(
-            "Configure personas now?",
-            default=bool(config.get("personas")),
-        ).ask()
-        if not enable_personas:
-            # Leave any previously-saved persona config untouched; do not clear.
-            return
+        # On a validation re-prompt the operator already opted in — skip the
+        # confirm so a reflexive Enter (whose default is now False, because the
+        # retry cleared config["personas"]) doesn't silently abandon the attempt.
+        if not _retry:
+            enable_personas = questionary.confirm(
+                "Configure personas now?",
+                default=bool(config.get("personas")),
+            ).ask()
+            if not enable_personas:
+                # Leave any previously-saved persona config untouched; do not clear.
+                return
 
         groups_claim_name = questionary.text(
             "OIDC claim name carrying group membership:",
@@ -2214,7 +2224,7 @@ class InitCommand(Command):
                 # bad) values as the re-prompt defaults.
                 for key in ("personas", "groups_claim_name", "fallback_persona", "account_budget_amount_usd"):
                     config.pop(key, None)
-                return self._gather_personas(config)
+                return self._gather_personas(config, _retry=True)
             console.print("[yellow]Skipping persona configuration.[/yellow]")
             return
 

@@ -122,6 +122,29 @@ After team teardown, the user requested an independent deep-dive of the whole `r
 
 **Wave re-gate (lead-run): Python 1136/0, Go 10/10, cfn-lint W3002 unchanged (3=3), config.py+deploy.py ruff-clean** (package.py 23 E501 pre-existing). Docs aligned: `PBAC_README.md` (§3 generic/Okta rows, §6 alerting, §10 orphan cleanup, §13 generic troubleshooting), `spec.md §0` amendments, `design.md` status banner.
 
+## Post-build: THIRD independent deep-dive (2026-06-15) — COMPLETE ✅
+User requested a further deep-dive after the FR-5.1 routing work (A8). 4 parallel skeptical agents (Lambda / Python wizard-destroy-package / docs-vs-code / test-gaps) + lead verification of every Tier-1 surface, each agent finding re-verified against code (caught 2 false positives). Findings all in the FR-5.1 wrapper install/teardown surface. Full detail in `decisions.md` ("Third independent deep-dive") + `spec.md §0 A10`.
+
+- [x] [coding] **HIGH** — FR-5.1 launch wrapper generated but never installed: neither `install.sh` nor `install.bat` copied `persona-model.{sh,ps1}` to `$HOME/claude-code-with-bedrock/` (the path PBAC_README §7 tells users to source) → routing silently inert via the documented flow. Both installers now copy it + echo the source line. | `package.py`, `test_package_personas.py` | install.sh/bat contain the wrapper-copy; bash -n clean. Run: `cd source && .venv/bin/python -m pytest tests/test_package_personas.py -q`
+- [x] [coding] **MED** — `--regenerate-installers` never re-emitted the wrapper. Now calls `_create_persona_model_wrapper`. | `package.py`, `test_package_personas.py` | `test_regenerate_installers_emits_wrapper` passes.
+- [x] [coding] **MED** — wizard could save a budgeted persona with empty `cost_tags` that crashes `ccwb deploy`. `validate_personas` now rejects it (wizard + hand-edit). | `persona_validation.py`, `test_persona_validation.py` | teethed test passes.
+- [x] [coding] **MED** — destroy derived AIP names from CURRENT `entitled_tiers`, orphaning AIPs for tiers a persona lost post-deploy. Teardown now sweeps ALL tiers + legacy; first REAL-method test (was only ever patched no-op). | `destroy.py`, `test_destroy_stacks.py` | `TestPersonaInferenceProfileTeardown` passes (teethed).
+- [x] [coding] **TEST** — committed `bedrock-budgets.example.yaml` so CI cfn-lints the rendered Budgets stack (persona stack had this; budgets didn't) + drift guard; rewrote tautological `test_unresolvable_tier_returns_none`. | `deployment/infrastructure/bedrock-budgets.example.yaml`, `test_budgets_template.py`, `test_persona_models.py` | cfn-lint clean; drift guard passes.
+
+**Third-pass re-gate (lead-run): Python 1207/0, Go 10 pkgs ok, cfn-lint clean (incl. new budgets fixture), zero new ruff** (package.py 20 E501 == HEAD). False positives (verified, no action): otel `ExtractUserInfoWithPersona` Go tests + `jwt.GetStringSlice` scalar/non-string cases already exist. Docs realigned: PBAC_README §2/§5/§7a + TOC/§13 anchors; spec.md §0 A10 + status; this file.
+
+## Post-build: 3rd-pass LOW-wave + FR-5.1 integration coverage (2026-06-16) — COMPLETE ✅
+User directed fixing ALL 5 reported LOWs and adding install→use→teardown integration coverage. File-disjoint, each teethed. Full detail in `decisions.md` (2026-06-16 LOW-wave entry) + `spec.md §0 A10` follow-on.
+
+- [x] [coding] **L1** — extract `tokenExpired` Go helper; exit-code-4 path now tested. | `go/cmd/credential-process/main.go`, `main_test.go` | `TestTokenExpired` passes. Run: `cd source/go && go test ./cmd/credential-process/`
+- [x] [coding] **L2** — PS1 wrapper PATH-resolves `claude` (`-CommandType Application`, anti-recursion) instead of hardcoding `claude.cmd`. | `package.py`, `test_package_personas.py` | `test_ps1_resolves_claude_on_path_not_hardcoded_cmd` passes.
+- [x] [coding] **L3** — init validation-retry skips the opt-in confirm (`_retry` param). | `init.py`, `test_init_personas.py` | `test_retry_skips_optin_prompt` passes (opt-in asked once).
+- [x] [coding] **L4** — `store_user_groups` write gated on `ENABLE_FINEGRAINED_QUOTAS` (monitor only reads it then). | `quota_check/index.py`, `test_lambda_persona_order.py` | `test_groups_not_written_when_finegrained_disabled` passes (teethed).
+- [x] [coding] **L5** — no budget for a zero-entitled-tier persona. | `budgets_template.py`, `test_budgets_template.py` | `test_zero_entitled_tier_persona_gets_no_budget` passes (teethed).
+- [x] [coding] **INTEGRATION** — FR-5.1 install→use→teardown: package → real Go helper on the packaged config.json → destroy, locking AIP-name/ARN consistency across both languages. | `tests/integration/test_persona_model_lifecycle.py`, `go/cmd/credential-process/main_test.go` (`TestPersonaModelExportsFromConfigJSON`) | 4 Python + 1 Go bridge pass; use-leg fails-not-skips without Go, teeth-verified.
+
+**LOW-wave + integration re-gate: Python 1215/0, Go 10 pkgs ok, go vet clean, zero new ruff/E501.**
+
 ## Commit manifest (review-4 handoff hazard)
 **~58 files** (untracked incl. parity oracle + bypass fixture; modified incl. the deep-dive + Low-wave files above) — regenerate the exact list with `git status` before commit; full original 48-file core list in `decisions.md`. `git add source/ deployment/ assets/ .gitignore PBAC_README.md` (NOT `git add -u` — that drops the untracked parity oracle / Go persona tests / bypass fixture and silently strips the CI safety nets). Lead handles git per user direction (stay on `rubab-dev1`).
 

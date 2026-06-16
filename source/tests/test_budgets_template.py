@@ -179,6 +179,37 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="cost_tags"):
             render_budgets_stack(bad)
 
+    def test_zero_entitled_tier_persona_gets_no_budget(self):
+        """L5: a persona entitled to NO model tier (everything denied) gets no AIP,
+        so nothing ever carries its cost tag — rendering a budget for it would be
+        inert. The renderer must skip it (mirrors deploy skipping AIP creation),
+        while still rendering budgets for entitled personas in the same list.
+        """
+        personas = [
+            # Everything denied -> entitled_tiers == [] -> no budget.
+            {
+                "name": "locked-out",
+                "group": "lo",
+                "allowed_models": ["anthropic.*"],
+                "denied_models": ["anthropic.*"],
+                "budget_amount_usd": 100,
+                "cost_tags": {"Team": "LockedOut"},
+            },
+            # Normal persona -> still budgeted.
+            {
+                "name": "eng",
+                "group": "eng",
+                "allowed_models": ["anthropic.*"],
+                "budget_amount_usd": 500,
+                "cost_tags": {"Team": "Eng"},
+            },
+        ]
+        _, parsed = _render_and_parse(personas, account_budget=None)
+        budget_ids = {k for k in parsed["Resources"] if k.endswith("Budget") and k != "AccountBudget"}
+        assert budget_ids == {"EngBudget"}, (
+            f"only the entitled persona should get a budget; got {budget_ids}"
+        )
+
     def test_colliding_logical_ids_raise(self):
         # "eng-team" and "eng.team" both sanitize to "EngTeam".
         colliding = [
@@ -223,3 +254,71 @@ class TestEdgeCases:
             _, parsed = _render_and_parse(personas, account_budget=None)
             budget_ids = [k for k in parsed["Resources"] if k.endswith("Budget") and k != "AccountBudget"]
             assert budget_ids == [f"{_logical_id(name)}Budget"], name
+
+
+# Canonical recipe for the committed CI fixture (bedrock-budgets.example.yaml).
+# Kept here as the single source of truth: the drift test below and the fixture
+# file must agree. Regenerate the file from this recipe if the renderer changes.
+_BUDGETS_FIXTURE_ACCOUNT_BUDGET = 10000.0
+
+
+def _budgets_example_personas():
+    """REFERENCE_PERSONAS (engineering + sales) with budgets added for the fixture."""
+    import copy
+
+    from claude_code_with_bedrock.persona_defaults import REFERENCE_PERSONAS as _REF
+
+    personas = copy.deepcopy(_REF)
+    for p in personas:
+        if p["name"] == "engineering":
+            p["budget_amount_usd"] = 5000.0
+        elif p["name"] == "sales":
+            p["budget_amount_usd"] = 500.0
+    return personas
+
+
+class TestCommittedExampleFixture:
+    """The rendered AWS Budgets stack must be CI-cfn-linted, like the persona stack.
+
+    ``deployment/infrastructure/bedrock-budgets.example.yaml`` is a generated
+    artifact that CI's ``cfn-lint deployment/infrastructure/*.yaml`` step lints as
+    a stand-in for real rendered Budgets output. Without it, a renderer change that
+    emitted schema-invalid CloudFormation (bad ``CostFilters`` shape, wrong
+    ``Threshold`` type, malformed TopicPolicy) would pass every YAML-only unit test
+    and only fail at a customer's ``ccwb deploy`` — the exact failure mode the
+    persona stack's committed fixture already guards against. This is the budgets
+    sibling of ``test_persona_template.test_committed_example_fixture_matches_renderer``.
+    """
+
+    def _fixture_path(self):
+        from pathlib import Path
+
+        return (
+            Path(__file__).parent.parent.parent
+            / "deployment"
+            / "infrastructure"
+            / "bedrock-budgets.example.yaml"
+        )
+
+    def test_committed_budgets_example_exists(self):
+        assert self._fixture_path().exists(), (
+            "bedrock-budgets.example.yaml is missing — CI cannot cfn-lint the rendered "
+            "Budgets stack without it. Generate it from _budgets_example_personas()."
+        )
+
+    def test_committed_budgets_example_matches_renderer(self):
+        """Drift guard: the committed fixture body must equal the renderer output.
+
+        If the renderer changes but the fixture isn't regenerated, CI would lint a
+        stale template. Compare parsed structures so comment/whitespace don't matter.
+        """
+        committed = self._fixture_path().read_text(encoding="utf-8")
+        committed_body = "\n".join(line for line in committed.splitlines() if not line.startswith("#"))
+        rendered = render_budgets_stack(
+            _budgets_example_personas(), account_budget_amount_usd=_BUDGETS_FIXTURE_ACCOUNT_BUDGET
+        )
+        assert yaml.safe_load(committed_body) == yaml.safe_load(rendered), (
+            "bedrock-budgets.example.yaml is out of sync with budgets_template.render_budgets_stack — "
+            "regenerate it from _budgets_example_personas() (account budget "
+            f"{_BUDGETS_FIXTURE_ACCOUNT_BUDGET})."
+        )

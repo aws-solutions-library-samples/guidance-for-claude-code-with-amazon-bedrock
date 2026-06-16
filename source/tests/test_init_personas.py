@@ -225,6 +225,63 @@ class TestGatherPersonas:
         # Skipped: no persona config persisted.
         assert "personas" not in config
 
+    def test_retry_skips_optin_prompt(self):
+        """L3: the validation re-prompt must NOT re-ask "Configure personas now?".
+
+        After a validation error the operator chose to re-enter; re-showing the
+        opt-in (whose default is now False, since the retry cleared
+        config["personas"]) means a reflexive Enter would silently abandon the
+        attempt. We prove the opt-in is asked EXACTLY ONCE across a retry: the
+        first pass asks it (operator opts in), a bad fallback triggers a re-enter,
+        and the second pass must NOT ask it again (the _retry=True bypass).
+        """
+        # The opt-in is asked on pass 1 only. The fallback select returns a bad name
+        # first (validation error -> re-enter), a good one on the retry, so pass 2
+        # validates and persists.
+        optin_asked = []
+        fallback_seq = iter(["nonexistent", "engineering"])
+
+        def fake_confirm(message, *a, **k):
+            m = MagicMock()
+            if "Configure personas now?" in message:
+                optin_asked.append(message)
+                m.ask.return_value = True  # opt in on pass 1
+            elif "Re-enter persona configuration?" in message:
+                m.ask.return_value = True  # choose to re-enter after the error
+            else:  # "Add a custom persona?" etc.
+                m.ask.return_value = False
+            return m
+
+        def fake_select(message, *a, **k):
+            m = MagicMock()
+            if "Start from" in message:
+                m.ask.return_value = "reference"
+            elif "Fallback persona" in message:
+                m.ask.return_value = next(fallback_seq)  # bad first, good on retry
+            else:
+                m.ask.return_value = None
+            return m
+
+        def fake_text(message, *a, **k):
+            m = MagicMock()
+            m.ask.return_value = "groups" if "OIDC claim name" in message else ""
+            return m
+
+        config = {}
+        cmd = InitCommand()
+        with (
+            patch.object(init_module.questionary, "confirm", fake_confirm),
+            patch.object(init_module.questionary, "select", fake_select),
+            patch.object(init_module.questionary, "text", fake_text),
+        ):
+            cmd._gather_personas(config)
+
+        # The opt-in was asked exactly once (pass 1) — the retry skipped it (L3 fix);
+        # otherwise it would have been asked twice. The retry then persisted personas.
+        assert len(optin_asked) == 1, f"opt-in re-asked on retry: {len(optin_asked)} times"
+        assert config.get("fallback_persona") == "engineering"
+        assert [p["name"] for p in config["personas"]] == ["engineering", "sales"]
+
 
 class TestSaveConfigurationPersonaMapping:
     """_save_configuration must route persona fields onto the Profile."""

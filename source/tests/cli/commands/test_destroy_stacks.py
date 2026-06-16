@@ -99,6 +99,75 @@ class TestDestroyReverseDependencyOrder:
         assert "persona-dashboard" not in DESTROYABLE_STACKS
 
 
+class TestPersonaInferenceProfileTeardown:
+    """FR-9.5 regression: ccwb destroy must remove EVERY per-tier Application
+    Inference Profile a persona could have been issued, plus the legacy name —
+    driving the REAL _delete_persona_inference_profiles (not a patched no-op).
+
+    The key invariant (M3): teardown iterates ALL tiers, not just the persona's
+    *currently* entitled tiers. If an operator narrowed a persona's models after
+    deploy (e.g. sales loses opus), the opus AIP still exists and must be swept or
+    it orphans as a tagged, billable resource. A naive `entitled_tiers(persona)`
+    loop would skip it.
+    """
+
+    def _run_real_teardown(self, persona):
+        """Call the real _delete_persona_inference_profiles with a recording
+        boto3 client; return the set of inferenceProfileIdentifiers it deleted."""
+        deleted = []
+        client = Mock()
+        client.delete_inference_profile.side_effect = (
+            lambda inferenceProfileIdentifier: deleted.append(inferenceProfileIdentifier)
+        )
+        profile = _persona_profile([persona])
+        console = Mock()
+        with patch("boto3.client", return_value=client):
+            DestroyCommand()._delete_persona_inference_profiles(profile, console)
+        return set(deleted)
+
+    def test_sweeps_all_tiers_even_when_entitlement_shrank(self):
+        # Sales is currently haiku-only (sonnet+opus denied), so entitled_tiers == {haiku}.
+        # But the sonnet/opus AIPs may exist from a prior broader deploy — destroy must
+        # still attempt to delete them. Assert ALL three tier names + legacy are swept.
+        sales = {
+            "name": "sales",
+            "group": "sales-team",
+            "allowed_models": ["anthropic.*haiku*"],
+            "denied_models": ["anthropic.*sonnet*", "anthropic.*opus*"],
+        }
+        deleted = self._run_real_teardown(sales)
+        assert deleted == {
+            "test-pool-sales-haiku",
+            "test-pool-sales-sonnet",
+            "test-pool-sales-opus",
+            "test-pool-sales",  # legacy pre-FR-5.1 single-name AIP
+        }, f"teardown must sweep all tiers + legacy regardless of current entitlement; got {deleted}"
+
+    def test_best_effort_on_delete_error(self):
+        """A delete failure (already-gone / in-use) must not abort the sweep —
+        every candidate is still attempted."""
+        attempted = []
+
+        def _boom(inferenceProfileIdentifier):
+            attempted.append(inferenceProfileIdentifier)
+            raise RuntimeError("ResourceNotFound")
+
+        client = Mock()
+        client.delete_inference_profile.side_effect = _boom
+        profile = _persona_profile([{"name": "eng", "group": "eng-team", "allowed_models": ["anthropic.*"]}])
+        with patch("boto3.client", return_value=client):
+            # Must not raise.
+            DestroyCommand()._delete_persona_inference_profiles(profile, Mock())
+        # All four candidates (3 tiers + legacy) were attempted despite each raising.
+        assert len(attempted) == 4
+
+    def test_no_personas_is_a_clean_noop(self):
+        client = Mock()
+        with patch("boto3.client", return_value=client):
+            DestroyCommand()._delete_persona_inference_profiles(_persona_profile([]), Mock())
+        client.delete_inference_profile.assert_not_called()
+
+
 def _persona_profile(personas):
     """Mock profile for behavioral destroy tests. `personas` is set explicitly
     (a bare Mock attribute is truthy, which would defeat the no-persona guard)."""

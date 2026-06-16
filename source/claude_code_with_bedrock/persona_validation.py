@@ -123,6 +123,17 @@ def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> l
                         f"Persona '{label}' field '{field_name}' contains a non-string entry: {entry!r}."
                     )
 
+        # budget needs at least one cost tag to scope it. The budgets renderer
+        # (budgets_template._cost_filters_for_persona) raises on a budgeted persona
+        # with no cost_tags, which would otherwise surface as a `ccwb deploy` failure
+        # one command after the config was saved. Catch it here so the wizard and a
+        # hand-edited config.yaml both fail upfront with a clear message.
+        if persona.get("budget_amount_usd") is not None and not persona.get("cost_tags"):
+            errors.append(
+                f"Persona '{label}' has a budget_amount_usd but no cost_tags to scope it; "
+                "add at least one cost-allocation tag (e.g. Team=Engineering) or remove the budget."
+            )
+
     # fallback must name a persona that exists
     if fallback is not None and fallback not in seen_names:
         errors.append(f"fallback_persona '{fallback}' does not name any declared persona.")

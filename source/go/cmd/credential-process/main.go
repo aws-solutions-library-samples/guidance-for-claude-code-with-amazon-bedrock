@@ -355,7 +355,7 @@ func (a *credentialApp) getTag(key string) int {
 	if err != nil {
 		return 2
 	}
-	if exp := claims.GetFloat("exp"); exp > 0 && int64(exp) < time.Now().Unix() {
+	if tokenExpired(claims, time.Now().Unix()) {
 		return 4
 	}
 	value := otel.ExtractPrincipalTag(claims, key)
@@ -400,7 +400,7 @@ func (a *credentialApp) getPersonaModel(tier string) int {
 	if err != nil {
 		return 2
 	}
-	if exp := claims.GetFloat("exp"); exp > 0 && int64(exp) < time.Now().Unix() {
+	if tokenExpired(claims, time.Now().Unix()) {
 		return 4
 	}
 
@@ -421,6 +421,17 @@ var _tierEnvVar = map[string]string{
 // _tierOrder is ascending model capability; the last entry a persona has an ARN
 // for is its "primary" tier (used for bare ANTHROPIC_MODEL).
 var _tierOrder = []string{"haiku", "sonnet", "opus"}
+
+// tokenExpired reports whether the cached token's `exp` claim is in the past
+// relative to `now` (unix seconds). A missing or non-positive `exp` is treated
+// as NOT expired (some tokens omit it; the upstream OIDC flow still validates).
+// Factored out (like selectRoleARN / resolvePersonaModelExports) so the exit-code-4
+// path of getTag/getPersonaModel is unit-testable without the credential cache —
+// pass a fixed `now` rather than reading the clock.
+func tokenExpired(claims jwt.Claims, now int64) bool {
+	exp := claims.GetFloat("exp")
+	return exp > 0 && int64(exp) < now
+}
 
 // resolvePersonaModelExports is the pure core of getPersonaModel: given the
 // profile config, decoded token claims, and an optional single tier, it returns

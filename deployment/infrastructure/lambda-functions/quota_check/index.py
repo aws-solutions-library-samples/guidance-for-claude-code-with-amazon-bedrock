@@ -90,11 +90,14 @@ def lambda_handler(event, context):
         # monitor runs on a schedule with no token. Best-effort: a write failure
         # must never block credential issuance.
         #
-        # Gated on PERSONA_ORDER: only PBAC mode consumes this record, so outside
-        # PBAC the write would be pure overhead (DynamoDB writes + storage that the
-        # monitor's legacy most-restrictive path never reads). When PERSONA_ORDER is
-        # unset the monitor stays in legacy mode, so skip the write entirely.
-        if groups and PERSONA_ORDER:
+        # Gated on PERSONA_ORDER *and* ENABLE_FINEGRAINED_QUOTAS: the monitor only
+        # reads this record (via get_user_groups) inside its
+        # `if ENABLE_FINEGRAINED_QUOTAS and policies_table:` branch — when
+        # fine-grained quotas are off it short-circuits to env defaults and never
+        # reads it, and outside PBAC mode (PERSONA_ORDER unset) it stays
+        # most-restrictive. In either case the write is pure overhead (DynamoDB
+        # writes + storage the monitor never consumes), so skip it entirely.
+        if groups and PERSONA_ORDER and ENABLE_FINEGRAINED_QUOTAS:
             store_user_groups(email, groups)
 
         # 1. Resolve the effective quota policy for this user

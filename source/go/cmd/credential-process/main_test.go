@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -287,5 +289,96 @@ func TestResolvePersonaModelExports(t *testing.T) {
 				t.Errorf("lines mismatch:\n got: %v\nwant: %v", lines, tt.wantLines)
 			}
 		})
+	}
+}
+
+// TestTokenExpired pins the exit-code-4 condition shared by getTag and
+// getPersonaModel. The expiry check was previously inline in those (impure,
+// clock-reading) callers and untested; tokenExpired makes it a pure function so
+// the "token expired -> code 4" contract has direct coverage. A future inversion
+// of the comparison, a dropped check, or a boundary flip (< vs <=) breaks here.
+func TestTokenExpired(t *testing.T) {
+	const now int64 = 1_000_000
+
+	tests := []struct {
+		name   string
+		claims jwt.Claims
+		want   bool
+	}{
+		{"exp in the past -> expired", jwt.Claims{"exp": float64(now - 1)}, true},
+		{"exp in the future -> not expired", jwt.Claims{"exp": float64(now + 1)}, false},
+		{"exp exactly now -> not expired (strict <)", jwt.Claims{"exp": float64(now)}, false},
+		{"missing exp -> not expired", jwt.Claims{"sub": "u"}, false},
+		{"zero exp -> not expired (treated as absent)", jwt.Claims{"exp": float64(0)}, false},
+		{"negative exp -> not expired (treated as absent)", jwt.Claims{"exp": float64(-5)}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tokenExpired(tt.claims, now); got != tt.want {
+				t.Errorf("tokenExpired = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPersonaModelExportsFromConfigJSON is the "use" leg of the FR-5.1
+// install->use->teardown integration test (see
+// source/tests/integration/test_persona_model_lifecycle.py). It reads a
+// config.json written by the REAL `ccwb package` code path through the REAL
+// config.LoadProfileFromPath loader, then drives resolvePersonaModelExports —
+// proving the Go helper consumes exactly what package.py serialized (the
+// cross-language config contract), with no hand-built fixture in between.
+//
+// The Python orchestrator passes, via env:
+//
+//	CCWB_IT_CONFIG    -- path to the packaged config.json
+//	CCWB_IT_PROFILE   -- profile name within it
+//	CCWB_IT_GROUP     -- a group whose persona has resolved AIP ARNs
+//	CCWB_IT_EXPECT    -- newline-joined `export K=V` lines the helper must emit
+//
+// When the env vars are absent the test skips (so a plain `go test ./...` is a
+// no-op); the Python side is the sole driver.
+func TestPersonaModelExportsFromConfigJSON(t *testing.T) {
+	cfgPath := os.Getenv("CCWB_IT_CONFIG")
+	profileName := os.Getenv("CCWB_IT_PROFILE")
+	group := os.Getenv("CCWB_IT_GROUP")
+	expect := os.Getenv("CCWB_IT_EXPECT")
+	if cfgPath == "" || profileName == "" || group == "" {
+		t.Skip("integration env (CCWB_IT_*) not set; driven by test_persona_model_lifecycle.py")
+	}
+
+	cfg, err := config.LoadProfileFromPath(cfgPath, profileName)
+	if err != nil {
+		t.Fatalf("LoadProfileFromPath(%q, %q): %v", cfgPath, profileName, err)
+	}
+	if len(cfg.Personas) == 0 {
+		t.Fatalf("packaged config.json has no personas — package.py did not serialize them")
+	}
+
+	// Synthesize the claims the cached token would carry for a user in `group`.
+	claims := jwt.Claims{"groups": []interface{}{group}}
+	lines, code := resolvePersonaModelExports(cfg, claims, "")
+	if code != 0 {
+		t.Fatalf("expected exit 0 (exports emitted) for group %q, got %d", group, code)
+	}
+	got := strings.Join(lines, "\n")
+	if got != expect {
+		t.Errorf("persona model exports mismatch for group %q:\n got:\n%s\nwant:\n%s", group, got, expect)
+	}
+
+	// Belt-and-suspenders: the emitted ARNs must be exactly the ones serialized
+	// into config.json for the matched persona (no drift in the round-trip).
+	for _, p := range cfg.Personas {
+		if p.Group == group {
+			raw, _ := json.Marshal(p.InferenceProfileArns)
+			if len(p.InferenceProfileArns) == 0 {
+				t.Errorf("persona %q (group %q) has no inference_profile_arns in config.json: %s", p.Name, group, raw)
+			}
+			for _, arn := range p.InferenceProfileArns {
+				if !strings.Contains(got, arn) {
+					t.Errorf("ARN %q from config.json not present in emitted exports:\n%s", arn, got)
+				}
+			}
+		}
 	}
 }

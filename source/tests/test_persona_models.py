@@ -64,10 +64,19 @@ class TestCrisSourceArn:
         assert arn.startswith("arn:aws-us-gov:bedrock:us-gov-west-1::inference-profile/")
 
     def test_unresolvable_tier_returns_none(self):
-        # A data-residency prefix without the tier resolves to None (skip, don't fabricate).
-        assert cris_source_arn("opus", "jp", "ap-northeast-1", "aws") is None or isinstance(
-            cris_source_arn("opus", "jp", "ap-northeast-1", "aws"), str
-        )
+        # An unknown tier has no candidate models, so no CRIS source resolves and
+        # the helper returns None (the caller then SKIPS that tier rather than
+        # fabricating a bogus ARN). Hard `is None` assertion — the prior
+        # `is None or isinstance(str)` form was always true and tested nothing.
+        assert cris_source_arn("bogus-tier", "us", "us-east-1", "aws") is None
+
+    def test_data_residency_prefix_falls_back_within_prefix(self):
+        # A data-residency prefix (jp/eu/au) that lacks the exact tier resolves to
+        # ANOTHER model WITH THE SAME PREFIX (never global/us) — proving residency
+        # is preserved. opus has no jp profile, so jp.opus falls back to a jp.* model.
+        arn = cris_source_arn("opus", "jp", "ap-northeast-1", "aws")
+        assert arn is not None
+        assert "inference-profile/jp." in arn, f"data-residency must stay in-prefix, got {arn}"
 
 
 class TestPartitionForRegion:

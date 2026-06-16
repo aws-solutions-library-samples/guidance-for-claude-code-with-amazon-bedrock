@@ -390,15 +390,15 @@ class TestUserGroupPersistence:
             }
         }
 
-    def _drive_handler_capture_store(self, persona_order: str):
-        """Run quota_check.lambda_handler with PERSONA_ORDER set as given; return whether
-        store_user_groups was invoked. Quota resolution is stubbed so the handler reaches
-        (and passes) the store gate without real DynamoDB."""
+    def _drive_handler_capture_store(self, persona_order: str, finegrained: str = "true"):
+        """Run quota_check.lambda_handler with PERSONA_ORDER / ENABLE_FINEGRAINED_QUOTAS
+        set as given; return whether store_user_groups was invoked. Quota resolution is
+        stubbed so the handler reaches (and passes) the store gate without real DynamoDB."""
         from unittest.mock import patch
 
         mod = _load_module(
             QUOTA_CHECK_PATH,
-            {"QUOTA_TABLE": "T", "POLICIES_TABLE": "P", "ENABLE_FINEGRAINED_QUOTAS": "true",
+            {"QUOTA_TABLE": "T", "POLICIES_TABLE": "P", "ENABLE_FINEGRAINED_QUOTAS": finegrained,
              "PERSONA_ORDER": persona_order},
         )
         # Stub the heavy downstream so the handler returns cleanly after the gate.
@@ -408,7 +408,7 @@ class TestUserGroupPersistence:
         return store.called
 
     def test_groups_written_in_pbac_mode(self):
-        """L6: PERSONA_ORDER set -> the handler persists the user's groups."""
+        """L6: PERSONA_ORDER set (+ fine-grained on) -> the handler persists the user's groups."""
         assert self._drive_handler_capture_store("eng,sales") is True
 
     def test_groups_not_written_in_legacy_mode(self):
@@ -416,6 +416,14 @@ class TestUserGroupPersistence:
         (no unused DynamoDB writes/storage outside PBAC). This FAILS if someone drops
         the PERSONA_ORDER guard from the call site."""
         assert self._drive_handler_capture_store("") is False
+
+    def test_groups_not_written_when_finegrained_disabled(self):
+        """L4: even with PERSONA_ORDER set, if ENABLE_FINEGRAINED_QUOTAS is false the
+        monitor short-circuits to env defaults and NEVER reads the GROUPS record (its
+        get_user_groups read is inside `if ENABLE_FINEGRAINED_QUOTAS and policies_table`).
+        So the write would be pure overhead — the call site must also gate on it. FAILS
+        if someone drops the ENABLE_FINEGRAINED_QUOTAS guard from the store gate."""
+        assert self._drive_handler_capture_store("eng,sales", finegrained="false") is False
 
     def test_get_user_groups_reads_back_record(self):
         mod = self._monitor_mod()

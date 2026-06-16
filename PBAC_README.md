@@ -21,7 +21,7 @@ machinery rather than rebuilding it.
 4. [Deploy flow & stack ordering](#4-deploy-flow--stack-ordering)
 5. [⚠️ The inference-profile Deny invariant](#5-️-the-inference-profile-deny-invariant)
 6. [Token tracking & enforcement](#6-token-tracking--enforcement)
-7. [Cost attribution](#7-cost-attribution)
+7. [Cost attribution & per-persona model routing](#7-cost-attribution--per-persona-model-routing)
 8. [Budgets & alerts](#8-budgets--alerts)
 9. [Dashboards & queries](#9-dashboards--queries)
 10. [Dynamic administration & rollback](#10-dynamic-administration--rollback)
@@ -84,14 +84,20 @@ account_budget_amount_usd: null  # null = no account-total budget
 
 | Field | Meaning | Notes |
 |---|---|---|
-| `name` | Persona identifier | DNS/IAM-safe; becomes the role-name stem + quota policy id |
+| `name` | Persona identifier | DNS/IAM-safe (`^[A-Za-z0-9][A-Za-z0-9-]*$`); becomes the role-name stem + quota policy id. Two distinct names that sanitize to the same CloudFormation logical id (e.g. `eng-team` vs `eng_team` → `EngTeam`) are rejected by `validate_personas` |
 | `group` | Group value the JWT `groups` claim must contain | This is the GROUP quota policy identifier |
 | `allowed_models` | Allow globs | `[]` or `["*"]` ⇒ all `anthropic.*` |
 | `denied_models` | Explicit-deny globs | Enforced across **all three** Bedrock ARN shapes — see [§5](#5-️-the-inference-profile-deny-invariant) |
 | `monthly_token_limit` / `daily_token_limit` | Quota limits | Seeded as a GROUP policy |
 | `enforcement_mode` | `alert` (log only) or `block` (deny at quota-check) | |
-| `budget_amount_usd` | Per-persona AWS Budget | `null` ⇒ no budget for this persona |
-| `cost_tags` | Cost-allocation tags | Applied to the persona's inference profiles |
+| `budget_amount_usd` | Per-persona AWS Budget | `null` ⇒ no budget for this persona. **If set, `cost_tags` must be non-empty** — the budget is scoped by the persona's cost-allocation tag, so `validate_personas` rejects a budget without tags |
+| `cost_tags` | Cost-allocation tags | Applied to the persona's inference profiles; also scopes the per-persona budget |
+
+> **Validation.** `ccwb init` and `ccwb deploy` both run `validate_personas` over the
+> persona list, so a hand-edited `config.yaml` is checked before any infra is rendered:
+> unique + DNS/IAM-safe names (no logical-id collisions), non-empty `group`,
+> `enforcement_mode ∈ {alert, block}`, string model globs, a `fallback_persona` that
+> names a real persona, and `cost_tags` present whenever `budget_amount_usd` is set.
 
 **Reference personas** (seeded by the wizard — `persona_defaults.py`):
 
@@ -240,6 +246,17 @@ a foundation-model one) — a foundation-model-only Deny fails that test by desi
 All Bedrock IAM actions use the `bedrock:` namespace (never `bedrock-runtime:`) — see
 [`.claude/rules/iam-actions.md`](.claude/rules/iam-actions.md).
 
+> **Other grants on a persona role.** Beyond invoke/deny, each persona role also gets
+> read-only Bedrock **discovery** (`ListFoundationModels`, `GetFoundationModel`,
+> `ListInferenceProfiles`, `GetInferenceProfile`) so the client can enumerate models, and
+> a **namespaced `cloudwatch:PutMetricData`** scoped by a `cloudwatch:namespace`
+> condition to `ClaudeCode/Bedrock/Usage` + `AWS/Bedrock` (for usage telemetry). A
+> restricted persona additionally carries a **permission boundary** that caps the role to
+> the same allowed-model set (so the Deny can't be widened by a later policy edit) — roll
+> back BOTH the access policy and the boundary if you revert a restricted persona's model
+> access. Persona roles use a fixed **`MaxSessionDuration` of 12h** (43200s), independent
+> of the profile's `max_session_duration`.
+
 ---
 
 ## 6. Token tracking & enforcement
@@ -312,14 +329,21 @@ issuance** (from the `groups` claim) — while `settings.json`'s `ANTHROPIC_MODE
 static per bundle — per-user routing is delivered by an **opt-in launch wrapper**:
 
 - `ccwb package` emits `persona-model.sh` (POSIX) and `persona-model.ps1` (Windows)
-  next to the binary **when at least one persona has resolved AIP ARNs**.
+  into the bundle **when at least one persona has resolved AIP ARNs**, and the
+  generated installer (`install.sh` / `install.bat`) copies it to
+  `~/claude-code-with-bedrock/` alongside the credential-process binary — so the
+  `source`/dot-source path below exists after a standard install. (`ccwb package
+  --regenerate-installers` re-emits it too.)
 - The wrapper calls `credential-process --get-persona-model`, which resolves the user's
   persona from the cached token's `groups` claim and prints `export ANTHROPIC_*_MODEL=…`
-  lines pointing at that persona's per-tier AIP ARNs (bare `ANTHROPIC_MODEL` = the
-  persona's most-capable entitled tier). The wrapper applies them, then launches Claude.
-- **Opt-in:** add the wrapper to your shell startup. `settings.json`'s baked model is
-  unchanged, so a user who doesn't source the wrapper — or who matches no persona, or
-  whose token expired — simply keeps the default model (no breakage).
+  lines pointing at that persona's per-tier AIP ARNs — concretely
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` /
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`, plus bare `ANTHROPIC_MODEL` = the persona's
+  most-capable entitled tier. The wrapper applies them, then launches Claude.
+- **Opt-in:** add the wrapper to your shell startup (the installer prints the exact
+  line). `settings.json`'s baked model is unchanged, so a user who doesn't source the
+  wrapper — or who matches no persona, or whose token expired — simply keeps the
+  default model (no breakage).
 
 ```bash
 # POSIX — add to ~/.bashrc or ~/.zshrc:
@@ -439,7 +463,7 @@ both quota Lambdas, and otel-helper — see
 | **A user in no persona group can't use Bedrock at all** | `fallback_persona` is `null` (hard-deny default) | Set `fallback_persona` to a low-privilege persona if graceful degradation is wanted. See [§11](#11-no-match--fallback-behavior). |
 | **Per-persona model routing isn't taking effect** | The launch wrapper isn't sourced, the persona has no resolved AIP ARNs, or no persona matched | Confirm `persona-model.sh`/`.ps1` is sourced from your shell rc; check `config.json`'s persona block has `inference_profile_arns`; run `credential-process --profile <p> --get-persona-model` directly (exit 0 = exports printed, 2 = no persona/ARNs, 4 = token expired). See [§7a](#7a-tagged-application-inference-profiles--per-persona-routing-fr-51). |
 | **Personas didn't deploy at all** | Auth type is Cognito/IDC/none, or no personas configured | Personas require OIDC direct-IAM + at least one persona. See [§12](#12-auth-type--cognito-limitations). |
-| **`ccwb package` refuses with "Persona-based access control requires the Go credential-process"** | You packaged a persona profile without `--go`; the legacy binary can't enforce personas | Re-run `ccwb package --go`. This guard is intentional — a legacy binary would silently grant every user the base role. See [§4](#4-deploy-walkthrough). |
+| **`ccwb package` refuses with "Persona-based access control requires the Go credential-process"** | You packaged a persona profile without `--go`; the legacy binary can't enforce personas | Re-run `ccwb package --go`. This guard is intentional — a legacy binary would silently grant every user the base role. See [§4](#4-deploy-flow--stack-ordering). |
 | **A restricted persona can't use a `global.*` model** | (Pre-fix symptom.) The renderer now emits a region-less global-CRIS Allow scoped to allowed models. | Confirm the deployed persona policy has an `AllowBedrockInvokeAllowedModelsGlobal` statement; redeploy if it's an older stack. Denied models stay denied on the global path. See [§5](#5-️-the-inference-profile-deny-invariant). |
 
 ---

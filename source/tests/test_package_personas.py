@@ -283,6 +283,125 @@ class TestPersonaModelWrapper:
         # A leading digit is NOT a valid env-var name and must not match.
         assert not pattern.match("export 2BAD=z")
 
+    def test_ps1_resolves_claude_on_path_not_hardcoded_cmd(self, tmp_path):
+        """L2: the PowerShell wrapper must launch the real `claude` executable
+        resolved on PATH, not a hardcoded `claude.cmd`.
+
+        An install may expose `claude.exe` or a differently-named shim. The wrapper
+        uses `Get-Command claude -CommandType Application` — which also skips THIS
+        function (the PowerShell analogue of POSIX `command claude`), preventing the
+        function from recursively invoking itself. `claude.cmd` may remain only as a
+        last-resort fallback, never as the sole/primary launch path.
+        """
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        ps1 = (tmp_path / "persona-model.ps1").read_text(encoding="utf-8")
+        assert "Get-Command claude -CommandType Application" in ps1, (
+            "PS1 wrapper must PATH-resolve the claude executable (not hardcode claude.cmd)"
+        )
+        # -CommandType Application is what prevents the function recursing into itself
+        # (it excludes Function command types), the analogue of POSIX `command claude`.
+        assert "-CommandType Application" in ps1
+        # claude.cmd may only appear as the else-branch fallback, never as the sole path.
+        assert "& $claudeExe.Source @args" in ps1
+
+
+class TestInstallerCopiesWrapper:
+    """FR-5.1: the generated installers MUST copy persona-model.{sh,ps1} to the
+    install dir the wrapper docs tell users to source from.
+
+    Regression for the gap where ``_create_persona_model_wrapper`` wrote the
+    wrappers into the dist folder but neither install.sh nor install.bat copied
+    them to ``$HOME/claude-code-with-bedrock/`` — so PBAC_README §7's
+    ``source "$HOME/claude-code-with-bedrock/persona-model.sh"`` pointed at a path
+    a standard install never populated, and per-persona model routing was silently
+    inert. These tests fail on the pre-fix installer bodies.
+    """
+
+    def test_install_sh_copies_persona_model_wrapper(self, tmp_path):
+        cmd = PackageCommand()
+        cmd.line = lambda *a, **k: None
+        be = [("macos-arm64", tmp_path / "credential-process-macos-arm64")]
+        (tmp_path / "credential-process-macos-arm64").write_text("x")
+        installer = cmd._create_installer(tmp_path, _profile(personas=PERSONAS), be, None)
+        body = Path(installer).read_text(encoding="utf-8")
+        # Copies the wrapper to the documented install dir, guarded on its presence.
+        assert 'if [ -f "persona-model.sh" ]; then' in body
+        assert "cp persona-model.sh ~/claude-code-with-bedrock/persona-model.sh" in body
+
+    def test_install_sh_is_valid_bash(self, tmp_path):
+        """The rendered installer must pass `bash -n` (the wrapper block uses
+        nested quoting in an echo, an easy place to break syntax)."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("bash"):
+            import pytest
+
+            pytest.skip("bash not available")
+        cmd = PackageCommand()
+        cmd.line = lambda *a, **k: None
+        be = [("macos-arm64", tmp_path / "credential-process-macos-arm64")]
+        (tmp_path / "credential-process-macos-arm64").write_text("x")
+        installer = cmd._create_installer(tmp_path, _profile(personas=PERSONAS), be, None)
+        result = subprocess.run(["bash", "-n", str(installer)], capture_output=True, text=True)
+        assert result.returncode == 0, f"install.sh has a syntax error:\n{result.stderr}"
+
+    def test_install_bat_copies_persona_model_wrapper(self, tmp_path):
+        body = PackageCommand()._create_windows_installer(tmp_path, _profile(personas=PERSONAS))
+        text = Path(body).read_text(encoding="utf-8")
+        assert 'if exist "persona-model.ps1" (' in text
+        assert (
+            'copy /Y "persona-model.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1"'
+            in text
+        )
+
+    def test_regenerate_installers_emits_wrapper(self, tmp_path, monkeypatch):
+        """M1: --regenerate-installers must (re)emit the wrapper, or a regenerated
+        bundle advertises inference_profile_arns in config.json but ships no wrapper.
+
+        We drive the real _regenerate_installers and assert it calls
+        _create_persona_model_wrapper (the method that writes the files, already
+        unit-tested above for content)."""
+        import json as _json
+
+        profile = _profile(
+            personas=[
+                {
+                    "name": "sales",
+                    "group": "sales-team",
+                    "inference_profile_arns": {
+                        "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                    },
+                }
+            ]
+        )
+
+        # Lay down a dist folder with a prebuilt binary so _regenerate_installers proceeds.
+        dist = tmp_path / "dist" / "ClaudeCode" / "2026-01-01-000000"
+        dist.mkdir(parents=True)
+        (dist / "credential-process-macos-arm64").write_text("x")
+        monkeypatch.chdir(tmp_path)
+
+        cmd = PackageCommand()
+        # Stub the interactive prompt and the sibling generators so the test is
+        # hermetic; the assertion is purely that the wrapper generator is invoked.
+        import questionary
+
+        monkeypatch.setattr(questionary, "confirm", lambda *a, **k: type("Q", (), {"ask": lambda self: False})())
+        calls = []
+        monkeypatch.setattr(cmd, "_create_config", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_installer", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_documentation", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_claude_settings", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cmd, "_create_persona_model_wrapper", lambda *a, **k: calls.append(a)
+        )
+
+        rc = cmd._regenerate_installers(profile, "ClaudeCode", _Console())
+        assert rc == 0
+        assert calls, "_regenerate_installers did not call _create_persona_model_wrapper"
+
 
 class TestPersonasRequireGo:
     """A persona profile must not be packaged with the persona-blind legacy binary.

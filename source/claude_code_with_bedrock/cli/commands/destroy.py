@@ -239,14 +239,20 @@ class DestroyCommand(Command):
     def _delete_persona_inference_profiles(self, profile, console: Console) -> None:
         """Best-effort deletion of the per-persona-tier Application Inference Profiles.
 
-        Deploy creates one AIP per persona TIER named
+        Deploy creates one AIP per ENTITLED persona TIER named
         ``{identity_pool_name}-{name}-{tier}`` (via boto3, outside any CFN stack),
-        so they must be deleted explicitly on teardown or they orphan. Naming +
-        tier-entitlement come from the shared ``persona_models`` helpers so deploy
-        and destroy can never drift. Failures are logged but never abort the
-        destroy — the persona CFN stack (the IAM roles) is the primary resource and
-        is handled separately. Also sweeps any legacy single-AIP-per-persona name
-        (``{pool}-{name}``) created by pre-FR-5.1 deploys.
+        so they must be deleted explicitly on teardown or they orphan. Naming comes
+        from the shared ``persona_models`` helpers so deploy and destroy can never
+        drift. Failures are logged but never abort the destroy — the persona CFN
+        stack (the IAM roles) is the primary resource and is handled separately.
+        Also sweeps any legacy single-AIP-per-persona name (``{pool}-{name}``)
+        created by pre-FR-5.1 deploys.
+
+        Teardown iterates ALL tiers (not just the persona's *currently* entitled
+        tiers): if a persona's ``allowed_models``/``denied_models`` were narrowed
+        after deploy, the AIP created for the no-longer-entitled tier still exists
+        and must be swept, or it orphans (FR-9.5). Attempting a delete for a tier
+        whose AIP was never created is a harmless no-op (logged and skipped).
         """
         personas = getattr(profile, "personas", None)
         if not personas:
@@ -254,15 +260,17 @@ class DestroyCommand(Command):
         try:
             import boto3
 
-            from claude_code_with_bedrock.persona_models import aip_name, entitled_tiers
+            from claude_code_with_bedrock.persona_models import TIERS, aip_name
 
             client = boto3.client("bedrock", region_name=profile.aws_region)
             for persona in personas:
                 name = persona.get("name")
                 if not name:
                     continue
-                # Per-tier AIPs (FR-5.1) + the legacy single-name AIP for back-compat.
-                candidates = [aip_name(profile.identity_pool_name, name, tier) for tier in entitled_tiers(persona)]
+                # Every possible per-tier AIP (FR-5.1) — not just currently-entitled
+                # tiers, so an AIP left by a since-narrowed persona is still removed —
+                # plus the legacy single-name AIP for back-compat.
+                candidates = [aip_name(profile.identity_pool_name, name, tier) for tier in TIERS]
                 candidates.append(f"{profile.identity_pool_name}-{name}")  # legacy pre-FR-5.1 name
                 for aip in candidates:
                     try:
