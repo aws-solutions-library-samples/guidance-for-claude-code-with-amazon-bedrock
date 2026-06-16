@@ -2633,6 +2633,14 @@ if exist "otel-helper-windows.exe" (
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
 )
 
+REM Copy PowerShell OTEL helper (AV-safe alternative to the Go binary)
+if exist "otel-helper.ps1" (
+    copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
+)
+if exist "otel-helper.cmd" (
+    copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
+)
+
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
@@ -2656,7 +2664,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
