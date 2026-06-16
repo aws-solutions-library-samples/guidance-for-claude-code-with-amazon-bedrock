@@ -104,8 +104,8 @@ def _real_model_id(keyword: str, *, prefixed: bool) -> str:
     """A real denied/allowed model id for *keyword*, in the form a shape carries.
 
     ``prefixed=False`` (foundation-model shape) → the BARE id
-    (``anthropic.claude-opus-4-7``); ``prefixed=True`` (inference-profile shapes) → the
-    region/CRIS-prefixed id (``us.anthropic.claude-opus-4-7``). Resolved from the same
+    (``anthropic.claude-opus-4-8``); ``prefixed=True`` (inference-profile shapes) → the
+    region/CRIS-prefixed id (``us.anthropic.claude-opus-4-8``). Resolved from the same
     catalog deploy uses, so the test tracks the real model ids rather than a synthetic
     stand-in.
     """
@@ -417,34 +417,48 @@ class TestCustomPersonaDenyMatchesRealModelIds:
     caught here and would fall back to the older presence-based
     ``test_version_pinned_deny_glob_gets_trailing_wildcard`` in ``test_persona_template``.
     This closes that asymmetry: render a custom persona that denies opus *by version*
-    (``anthropic.claude-opus-4-7``, no trailing ``*`` — the footgun shape) and assert the
+    (the bare latest opus id, no trailing ``*`` — the footgun shape) and assert the
     rendered Deny actually MATCHES every real opus invocation ARN under IAM semantics.
+
+    The pinned version is derived from the model catalog (the bare latest us-opus id)
+    rather than hardcoded, so a model bump (e.g. opus 4-7 → 4-8) doesn't strand the test.
     """
 
-    CUSTOM = {
-        "name": "research",
-        "display_name": "Research",
-        "group": "research-team",
-        "allowed_models": ["anthropic.*"],
-        # Version-pinned, no trailing wildcard — relies on _normalize_denied + the
-        # inference-profile leading-* to still match the versioned/prefixed invoked id.
-        "denied_models": ["anthropic.claude-opus-4-7"],
-        "enforcement_mode": "block",
-        "cost_tags": {"Team": "Research"},
-    }
-
     @staticmethod
-    def _real_opus_arns() -> list[str]:
-        """Realistic opus-4-7 invocation ARNs per shape — including a VERSION-SUFFIXED
-        runtime form.
+    def _bare_latest_opus() -> str:
+        """The version-pinned deny target: the bare latest opus id (no region prefix).
 
-        Bedrock invokes a model by its full versioned id (``…-opus-4-7-v1:0``) even when
-        the catalog's resolved id is the unsuffixed ``…-opus-4-7``. The operator pinned
-        the deny WITHOUT a trailing ``*`` (``anthropic.claude-opus-4-7``); only
-        ``_normalize_denied``'s trailing-``*`` lets that glob still match the suffixed
-        runtime id on the inference-profile shapes. We therefore include both the catalog
-        id and an explicit ``-v1:0`` form so the test exercises (and has teeth against)
-        the normalization, not just the unsuffixed match.
+        e.g. ``anthropic.claude-opus-4-8``. Resolved from the catalog so the test pins
+        whatever the current latest opus is.
+        """
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        latest = resolve_model_for_tier("opus", "us")  # e.g. us.anthropic.claude-opus-4-8
+        return latest.split(".", 1)[1] if latest.split(".", 1)[0] in ("us", "eu", "apac", "global") else latest
+
+    def _custom_persona(self) -> dict:
+        return {
+            "name": "research",
+            "display_name": "Research",
+            "group": "research-team",
+            "allowed_models": ["anthropic.*"],
+            # Version-pinned, no trailing wildcard — relies on _normalize_denied + the
+            # inference-profile leading-* to still match the versioned/prefixed invoked id.
+            "denied_models": [self._bare_latest_opus()],
+            "enforcement_mode": "block",
+            "cost_tags": {"Team": "Research"},
+        }
+
+    def _real_opus_arns(self) -> list[str]:
+        """Realistic invocation ARNs for the pinned opus version, per shape — including a
+        VERSION-SUFFIXED runtime form.
+
+        Bedrock invokes a model by its full versioned id (``…-v1:0``) even when the
+        catalog's resolved id is unsuffixed. The operator pinned the deny WITHOUT a
+        trailing ``*``; only ``_normalize_denied``'s trailing-``*`` lets that glob still
+        match the suffixed runtime id on the inference-profile shapes. We include both the
+        catalog id and an explicit ``-v1:0`` form so the test exercises (and has teeth
+        against) the normalization, not just the unsuffixed match.
         """
         from claude_code_with_bedrock.models import resolve_model_for_tier
 
@@ -466,23 +480,25 @@ class TestCustomPersonaDenyMatchesRealModelIds:
         return sorted(set(arns))
 
     def test_version_pinned_custom_deny_matches_every_real_opus_arn(self):
-        template = _render([self.CUSTOM])
+        template = _render([self._custom_persona()])
         deny_arns: list[str] = []
         for stmt in _deny_statements(template):
             deny_arns.extend(_arn_strings(stmt["Resource"]))
         assert deny_arns, "custom persona with a denied model must render Deny resources"
 
-        # Only assert against opus ids the pinned glob actually targets (the 4-7 family).
-        # eu opus resolves to 4-6 (a DIFFERENT model the persona did NOT pin) — correctly
-        # NOT denied — so we filter to ids the operator's glob is meant to cover.
-        targeted = [a for a in self._real_opus_arns() if "opus-4-7" in a]
-        assert targeted, "expected at least one real opus-4-7 invocation ARN"
+        # Only assert against opus ids the pinned glob actually targets (the latest-version
+        # family). A data-residency prefix that resolves to a DIFFERENT opus version the
+        # persona did NOT pin is correctly NOT denied, so filter to the pinned family.
+        # _bare_latest_opus() is e.g. "anthropic.claude-opus-4-8" → family token "opus-4-8".
+        family = self._bare_latest_opus().split("claude-", 1)[-1]
+        targeted = [a for a in self._real_opus_arns() if family in a]
+        assert targeted, f"expected at least one real {family} invocation ARN"
         # Sanity: the suffixed runtime form must be present so the trailing-* normalization
         # is genuinely exercised (this is what gives the test teeth vs _normalize_denied).
         assert any(a.endswith("-v1:0") for a in targeted), "expected a versioned runtime ARN in the set"
         unmatched = [a for a in targeted if not _iam_glob_match(a, deny_arns)]
         assert not unmatched, (
-            "the version-pinned custom Deny does not MATCH these real opus-4-7 ARNs "
+            f"the version-pinned custom Deny does not MATCH these real {family} ARNs "
             "(version-pinned custom-persona bypass class):\n  " + "\n  ".join(unmatched)
         )
 

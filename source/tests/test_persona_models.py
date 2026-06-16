@@ -53,13 +53,19 @@ class TestEntitledTiersVersionExactProbe:
     AIP sourced from a denied model → no runtime AccessDenied on that tier)."""
 
     def test_version_pinned_deny_excludes_tier_with_cris_prefix(self):
-        # Deny the LATEST opus by version (no trailing wildcard) — the footgun shape.
-        # us.opus resolves to anthropic.claude-opus-4-7; the deny names exactly that.
-        p = {"allowed_models": ["anthropic.*"], "denied_models": ["anthropic.claude-opus-4-7"]}
+        # Deny the LATEST opus by its exact version (no trailing wildcard) — the footgun
+        # shape. Derive the denied id from the catalog (the bare latest us-opus id) rather
+        # than hardcoding a version, so this tracks whatever the current latest opus is and
+        # never goes stale on a model bump.
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        latest_us_opus = resolve_model_for_tier("opus", "us")  # e.g. us.anthropic.claude-opus-4-8
+        bare_latest_opus = latest_us_opus.split(".", 1)[1]  # -> anthropic.claude-opus-4-8
+        p = {"allowed_models": ["anthropic.*"], "denied_models": [bare_latest_opus]}
         tiers = entitled_tiers(p, cris_prefix="us")
         assert "opus" not in tiers, (
             "a version-pinned deny matching the tier's resolved model must exclude that "
-            f"tier when probed with cris_prefix; got {tiers}"
+            f"tier when probed with cris_prefix; denied {bare_latest_opus!r}, got {tiers}"
         )
         # haiku + sonnet remain entitled (their resolved ids are not denied).
         assert tiers == ["haiku", "sonnet"]

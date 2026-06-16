@@ -185,8 +185,8 @@ def _normalize_denied(denied: list[str]) -> list[str]:
 
     Bedrock model ids carry a version/date suffix (``…-v1:0``,
     ``…-20251101-v1:0``). A version-pinned deny glob *without* a trailing wildcard —
-    e.g. ``anthropic.claude-opus-4-7`` — would NOT match the real invoked id
-    ``us.anthropic.claude-opus-4-7-v1:0`` on the inference-profile shapes, silently
+    e.g. ``anthropic.claude-opus-4-8`` — would NOT match the real invoked id
+    ``us.anthropic.claude-opus-4-8-v1:0`` on the inference-profile shapes, silently
     under-denying. We append ``*`` to any deny glob that doesn't already end in one so
     the Deny covers every version of the targeted model.
 

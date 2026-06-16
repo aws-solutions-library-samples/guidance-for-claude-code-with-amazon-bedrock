@@ -222,27 +222,27 @@ def test_global_cris_allow_glob_actually_matches_real_global_model_ids():
 
 def test_version_pinned_deny_glob_gets_trailing_wildcard():
     """L5: a denied glob WITHOUT a trailing wildcard must be normalized to cover
-    versioned model ids (e.g. `anthropic.claude-opus-4-7` → matches
-    `us.anthropic.claude-opus-4-7-v1:0`). Without the trailing `*`, the inference-profile
+    versioned model ids (e.g. `anthropic.claude-opus-4-8` → matches
+    `us.anthropic.claude-opus-4-8-v1:0`). Without the trailing `*`, the inference-profile
     Deny would silently under-match the real invoked id."""
     persona = {
         "name": "pinned",
         "group": "pinned-team",
         "allowed_models": ["anthropic.*haiku*"],
         # Operator pins a version with NO trailing wildcard — the footgun case.
-        "denied_models": ["anthropic.claude-opus-4-7"],
+        "denied_models": ["anthropic.claude-opus-4-8"],
     }
     doc = yaml.safe_load(render_personas_stack([persona], GROUPS_CLAIM, ISSUER_HOST))
     deny = [s for s in _statements(_find_policy(doc, "Pinned")) if s["Effect"] == "Deny"]
     assert deny, "restricted persona must have a Deny"
     joined = "\n".join(_arn_strs(deny[0]["Resource"]))
     # The normalized glob ends in '*', so the foundation-model Deny is
-    # 'anthropic.claude-opus-4-7*' and the inference-profile Deny is
-    # '*anthropic.claude-opus-4-7*' — both match the versioned '…-v1:0' id.
-    assert "foundation-model/anthropic.claude-opus-4-7*" in joined
-    assert "inference-profile/*anthropic.claude-opus-4-7*" in joined
+    # 'anthropic.claude-opus-4-8*' and the inference-profile Deny is
+    # '*anthropic.claude-opus-4-8*' — both match the versioned '…-v1:0' id.
+    assert "foundation-model/anthropic.claude-opus-4-8*" in joined
+    assert "inference-profile/*anthropic.claude-opus-4-8*" in joined
     # No bare (wildcard-less) form should remain that would miss the version suffix.
-    assert "foundation-model/anthropic.claude-opus-4-7\n" not in joined + "\n"
+    assert "foundation-model/anthropic.claude-opus-4-8\n" not in joined + "\n"
 
 
 def test_trailing_wildcard_deny_glob_is_not_double_starred():

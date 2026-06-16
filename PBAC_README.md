@@ -220,8 +220,8 @@ a foundation-model one) — a foundation-model-only Deny fails that test by desi
 
 > **Deny globs are version-normalized.** Bedrock model ids carry a version suffix
 > (`…-v1:0`). The renderer appends a trailing `*` to any `denied_models` glob that lacks
-> one, so a version-pinned entry like `anthropic.claude-opus-4-7` still denies the real
-> `…claude-opus-4-7-v1:0` id (it would otherwise under-match on the inference-profile
+> one, so a version-pinned entry like `anthropic.claude-opus-4-8` still denies the real
+> `…claude-opus-4-8-v1:0` id (it would otherwise under-match on the inference-profile
 > shapes). This applies to **denied** globs only — a Deny is subtractive, so widening its
 > match is always safe; `allowed_models` globs are never widened. The reference personas
 > already use `anthropic.*opus*`-style globs and are unaffected.

@@ -39,7 +39,7 @@ def _matches_any(globs: list[str], probe: str, *, infer_profile_shape: bool = Fa
     When ``infer_profile_shape`` is set, each glob is matched the SAME way the IAM
     policy matches it on the inference-profile ARN shape: a leading ``*`` is
     prepended (the CRIS id carries a region/``global.`` prefix ahead of the
-    ``anthropic.`` token) so a probe like ``us.anthropic.claude-opus-4-7-v1:0``
+    ``anthropic.`` token) so a probe like ``us.anthropic.claude-opus-4-8-v1:0``
     matches a glob like ``anthropic.*opus*``. This keeps entitlement resolution in
     lockstep with the rendered Deny when probing with a concrete resolved model id.
     """
@@ -68,9 +68,9 @@ def entitled_tiers(persona: dict, cris_prefix: str | None = None) -> list[str]:
 
     ``cris_prefix`` (e.g. ``"us"``, ``"eu"``) makes the probe **version-exact**: the
     tier is probed with the *resolved* CRIS model id that its AIP would actually
-    ``copyFrom`` (e.g. ``us.anthropic.claude-opus-4-7-v1:0``), matched with the
+    ``copyFrom`` (e.g. ``us.anthropic.claude-opus-4-8-v1:0``), matched with the
     inference-profile ARN shape. This closes a footgun: a *version-pinned* deny like
-    ``anthropic.claude-opus-4-7`` does NOT match the version-less probe
+    ``anthropic.claude-opus-4-8`` does NOT match the version-less probe
     ``anthropic.claude-opus``, so without ``cris_prefix`` the tier would be reported
     entitled and deploy would create an opus AIP whose source is the very model the
     IAM Deny blocks — yielding a runtime ``AccessDenied`` for that tier. Probing the
