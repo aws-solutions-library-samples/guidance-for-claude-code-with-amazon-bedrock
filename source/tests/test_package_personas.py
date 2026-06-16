@@ -248,6 +248,70 @@ class TestPersonaModelWrapper:
         PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
         assert not (tmp_path / "persona-model.sh").exists()
 
+    def test_ps1_regex_matches_all_valid_env_var_names(self, tmp_path):
+        """L3: the PowerShell export parser must accept any POSIX-valid env-var name.
+
+        The old regex `^export ([A-Z_]+)=` silently dropped lowercase/digit-bearing
+        names. Extract the regex the generated .ps1 uses and verify it captures the
+        var names the Go helper emits today AND forward-compatible shapes (digits,
+        underscores), while still capturing ARN values containing ':' '/' '.'.
+        """
+        import re
+
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        ps1 = (tmp_path / "persona-model.ps1").read_text(encoding="utf-8")
+
+        m = re.search(r"\$line -match '(\^export[^']+)'", ps1)
+        assert m, "could not find the export-matching regex in persona-model.ps1"
+        # PowerShell and Python share PCRE-ish syntax for this simple pattern.
+        pattern = re.compile(m.group(1))
+
+        arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+        cases = {
+            f"export ANTHROPIC_MODEL={arn}": ("ANTHROPIC_MODEL", arn),
+            f"export ANTHROPIC_DEFAULT_HAIKU_MODEL={arn}": ("ANTHROPIC_DEFAULT_HAIKU_MODEL", arn),
+            # forward-compat shapes the old [A-Z_]+ regex would have dropped:
+            "export ANTHROPIC_MODEL_2=x": ("ANTHROPIC_MODEL_2", "x"),
+            "export _private=y": ("_private", "y"),
+        }
+        for line, (want_key, want_val) in cases.items():
+            got = pattern.match(line)
+            assert got, f"regex failed to match {line!r}"
+            assert got.group(1) == want_key
+            assert got.group(2) == want_val
+        # A leading digit is NOT a valid env-var name and must not match.
+        assert not pattern.match("export 2BAD=z")
+
+
+class TestPersonasRequireGo:
+    """A persona profile must not be packaged with the persona-blind legacy binary.
+
+    The Go credential-process is the ONLY binary that resolves personas and assumes
+    the per-persona role; the legacy (PyInstaller/Nuitka) binary always assumes the
+    base federated_role_arn. Packaging personas without --go would silently ship a
+    bundle where every restricted persona receives the broad base role. ``handle()``
+    gates on ``_personas_require_go`` and aborts; these tests pin that gate so the
+    silent-bypass regression cannot reappear.
+    """
+
+    def test_blocks_direct_personas_without_go(self):
+        profile = _profile(personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=False) is True
+
+    def test_allows_direct_personas_with_go(self):
+        profile = _profile(personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=True) is False
+
+    def test_no_personas_never_blocks(self):
+        profile = _profile()  # personas defaults to []
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=False) is False
+
+    def test_cognito_personas_never_block(self):
+        """Cognito never serializes personas (FR-2.7), so a legacy Cognito build is fine."""
+        profile = _profile(federation_type="cognito", personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "cognito", use_go=False) is False
+
 
 class _Console:
     """Minimal console stub (the wrapper only calls .print)."""

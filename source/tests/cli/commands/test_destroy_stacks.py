@@ -8,7 +8,7 @@ Regression coverage for the gap where `distribution`, `codebuild`, and
 orphaned S3/IAM, CodeBuild projects, and dashboards behind.
 """
 
-import re
+import ast
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,9 +20,36 @@ DEPLOY_SOURCE = Path(__file__).resolve().parents[3] / "claude_code_with_bedrock"
 
 
 def _deployable_stack_types() -> set[str]:
-    """Extract every stack type deploy.py can append to its deploy list."""
-    source = DEPLOY_SOURCE.read_text(encoding="utf-8")
-    return set(re.findall(r'stacks_to_deploy\.append\(\(\s*"([a-z0-9-]+)"', source))
+    """Extract every stack type deploy.py can append to its deploy list.
+
+    Uses an AST walk (not a line regex) so the detection is independent of source
+    formatting: a `stacks_to_deploy.append(("name", ...))` is found whether it is on
+    one line or wrapped across several. The previous single-line regex silently
+    missed multi-line `.append((` forms — which already caused a false phantom once
+    (see persona-based-access decisions.md). We match any call of the form
+    `<x>.append((<str-literal>, ...))` where the receiver attribute is `append`, the
+    sole arg is a tuple, and its first element is a string constant — then collect that
+    string. This covers `stacks_to_deploy.append(...)` regardless of how the receiver
+    is named/spelled, and ignores non-tuple appends (e.g. list.append(scalar)).
+    """
+    tree = ast.parse(DEPLOY_SOURCE.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "append"):
+            continue
+        # Only consider appends onto the deploy list, to avoid sweeping up unrelated
+        # .append() calls elsewhere in the file.
+        if not (isinstance(func.value, ast.Name) and func.value.id == "stacks_to_deploy"):
+            continue
+        if len(node.args) != 1 or not isinstance(node.args[0], ast.Tuple):
+            continue
+        elts = node.args[0].elts
+        if elts and isinstance(elts[0], ast.Constant) and isinstance(elts[0].value, str):
+            found.add(elts[0].value)
+    return found
 
 
 class TestDestroyStackCoverage:

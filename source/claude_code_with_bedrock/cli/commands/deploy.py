@@ -278,7 +278,7 @@ class DeployCommand(Command):
             # quota policies into the quota table (stack-ordering.md). The Cognito
             # FederationType skip (no OIDC provider export) happens at deploy time.
             if getattr(profile, "personas", []):
-                if profile.effective_auth_type == "oidc":
+                if self._should_schedule_personas(profile):
                     # Single-line append (matches every other append): the destroy-coverage
                     # test detects deployable types via a single-line regex, so keep this on
                     # one line or `persona` becomes invisible to it.
@@ -1314,6 +1314,18 @@ class DeployCommand(Command):
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create default quota policy: {str(e)}[/yellow]")
             console.print("[dim]Run 'ccwb quota set-default' manually to configure quota limits[/dim]")
+
+    @staticmethod
+    def _should_schedule_personas(profile) -> bool:
+        """Whether the persona + budgets stacks should be scheduled for deploy.
+
+        Persona-based access is gated on OIDC: group claims drive role selection, so a
+        non-OIDC profile (idc/none) has no group claim to match and the persona stacks
+        would be inert or fail (quota-requires-oidc.md). The caller checks ``personas``
+        is non-empty first; this isolates the auth-type gate so it is unit-testable
+        WITHOUT replaying handle()'s body (the gate is the regression-prone part).
+        """
+        return profile.effective_auth_type == "oidc"
 
     def _resolve_issuer_host(self, profile) -> str:
         """Return the OIDC issuer host for the persona trust condition key.

@@ -89,7 +89,12 @@ def lambda_handler(event, context):
         # only place a user's group membership is observed (it has the JWT); the
         # monitor runs on a schedule with no token. Best-effort: a write failure
         # must never block credential issuance.
-        if groups:
+        #
+        # Gated on PERSONA_ORDER: only PBAC mode consumes this record, so outside
+        # PBAC the write would be pure overhead (DynamoDB writes + storage that the
+        # monitor's legacy most-restrictive path never reads). When PERSONA_ORDER is
+        # unset the monitor stays in legacy mode, so skip the write entirely.
+        if groups and PERSONA_ORDER:
             store_user_groups(email, groups)
 
         # 1. Resolve the effective quota policy for this user

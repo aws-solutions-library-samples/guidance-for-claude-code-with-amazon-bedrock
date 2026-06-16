@@ -127,6 +127,42 @@ class TestSalesDenyCoversAllArnShapes:
         for keyword in DENIED_MODEL_KEYWORDS:
             assert _shapes_covered_for_keyword(arns, keyword) == set(ARN_SHAPE_PREFIXES)
 
+    def test_deny_covers_global_cris_foundation_model_arn(self):
+        """Global cross-Region inference path is also denied (region-less FM ARN).
+
+        Global-CRIS models (``global.anthropic.…``) invoke against the region-less
+        ARN ``arn:<part>:bedrock:::foundation-model/<id>`` with
+        ``aws:RequestedRegion="unspecified"``. After the renderer gained a global FM
+        *Allow* (so personas can use global models), the Deny must explicitly cover the
+        same region-less shape or a denied model becomes reachable via global routing.
+        """
+        template = _render([_sales_persona()])
+        deny_arns: list[str] = []
+        for stmt in _deny_statements(template):
+            deny_arns.extend(_arn_strings(stmt["Resource"]))
+        for keyword in DENIED_MODEL_KEYWORDS:
+            # A region-less FM ARN has an empty region segment: ":bedrock:::foundation-model/".
+            global_fm = [a for a in deny_arns if ":bedrock:::foundation-model/" in a and keyword in a]
+            assert global_fm, (
+                f"sales Deny for '{keyword}' is missing the region-less global-CRIS "
+                f"foundation-model ARN — global routing could bypass the restriction."
+            )
+
+    def test_global_allow_is_scoped_to_allowed_models_only(self):
+        """The new global FM Allow must NOT grant denied models (haiku only for sales)."""
+        template = _render([_sales_persona()])
+        for resource in template["Resources"].values():
+            if resource.get("Type") != "AWS::IAM::ManagedPolicy":
+                continue
+            for stmt in resource["Properties"]["PolicyDocument"]["Statement"]:
+                if stmt.get("Effect") == "Allow" and "Global" in stmt.get("Sid", ""):
+                    arns = _arn_strings(stmt["Resource"])
+                    # Every global Allow ARN must be region-less FM and must NOT name a denied tier.
+                    for arn in arns:
+                        assert ":bedrock:::foundation-model/" in arn
+                        for denied_kw in DENIED_MODEL_KEYWORDS:
+                            assert denied_kw not in arn, f"global Allow leaks denied model '{denied_kw}': {arn}"
+
     def test_foundation_model_only_deny_would_fail_the_guard(self):
         """Meta-test: prove the guard has teeth.
 
@@ -145,6 +181,33 @@ class TestSalesDenyCoversAllArnShapes:
                 "inference-profile",
                 "application-inference-profile",
             }
+
+    def test_guard_has_teeth_against_renderer_mutation(self, monkeypatch):
+        """Stronger meta-test: mutate the RENDERER to foundation-model-only and prove the
+        real coverage check fails.
+
+        ``test_foundation_model_only_deny_would_fail_the_guard`` proves the *checker* isn't
+        degenerate, but it feeds hardcoded ARNs and never exercises the renderer. This test
+        closes that gap: it patches the renderer's ``_ARN_SHAPES`` down to foundation-model
+        only, re-renders the real sales persona, and asserts the same all-three-shapes
+        assertion the production guard uses now reports the inference-profile shapes missing.
+        If a regression dropped the inference-profile ARNs from the renderer, the guard above
+        catches it — this proves that.
+        """
+        import claude_code_with_bedrock.persona_template as pt
+
+        monkeypatch.setattr(pt, "_ARN_SHAPES", [("*", "", "foundation-model")])
+        template = _render([_sales_persona()])
+        deny_arns: list[str] = []
+        for stmt in _deny_statements(template):
+            deny_arns.extend(_arn_strings(stmt["Resource"]))
+        for keyword in DENIED_MODEL_KEYWORDS:
+            covered = _shapes_covered_for_keyword(deny_arns, keyword)
+            missing = set(ARN_SHAPE_PREFIXES) - covered
+            assert missing == {"inference-profile", "application-inference-profile"}, (
+                "Mutating the renderer to foundation-model-only should make the guard detect "
+                f"missing shapes, but it reported covered={sorted(covered)}."
+            )
 
 
 class TestEngineeringHasNoDeny:

@@ -160,9 +160,19 @@ ccwb deploy    # 1. auth stack      (exports OIDCProviderArn, FederationType)
                #      copyFrom a cross-Region profile (idempotent); wires ARNs into config
                #    └ deploys the persona dashboard inline (at the tail of the persona step)
                # 4. budgets stack    (per-persona + account-total → budget-alerts SNS)
-ccwb package   # writes config.json with each persona's resolved role_arn (read from stack outputs)
+ccwb package --go  # writes config.json with each persona's resolved role_arn (read from
+               #     stack outputs) and builds the Go credential-process (REQUIRED — see below)
 ccwb test      # validates the live deployment (Bedrock access, quota API, etc.)
 ```
+
+> **⚠️ Personas require the Go credential-process — package with `--go`.** Persona access
+> control is enforced *entirely* by the Go credential-process: it resolves the persona
+> from the OIDC `groups` claim and assumes that persona's restricted role. The legacy
+> (PyInstaller/Nuitka) binary has **no persona logic** — it always assumes the base
+> `FederatedRoleARN`. Packaging a persona profile without `--go` would silently ship a
+> bundle where every restricted persona receives the broad base role, bypassing the
+> per-persona model restrictions. `ccwb package` therefore **refuses to build** a persona
+> profile without `--go` (and warns on `--regenerate-installers`).
 
 The whole persona block is gated on **OIDC auth + at least one persona configured**.
 With no personas, deploy behaves exactly as before (the credential helper uses the
@@ -202,6 +212,24 @@ never match. The persona policy renderer therefore emits each denied-model glob 
 a Sonnet ARN across all three shapes (including an **inference-profile** ARN, not merely
 a foundation-model one) — a foundation-model-only Deny fails that test by design.
 
+> **Deny globs are version-normalized.** Bedrock model ids carry a version suffix
+> (`…-v1:0`). The renderer appends a trailing `*` to any `denied_models` glob that lacks
+> one, so a version-pinned entry like `anthropic.claude-opus-4-7` still denies the real
+> `…claude-opus-4-7-v1:0` id (it would otherwise under-match on the inference-profile
+> shapes). This applies to **denied** globs only — a Deny is subtractive, so widening its
+> match is always safe; `allowed_models` globs are never widened. The reference personas
+> already use `anthropic.*opus*`-style globs and are unaffected.
+
+> **Global cross-Region inference (CRIS).** `global.anthropic.*` models are invoked
+> against a *region-less* foundation-model ARN (`arn:<part>:bedrock:::foundation-model/…`)
+> with `aws:RequestedRegion = "unspecified"`, which the regional Allow's region condition
+> never matches. The renderer therefore emits a second region-less Allow
+> (`AllowBedrockInvokeAllowedModelsGlobal`, scoped to the persona's *allowed* models) —
+> mirroring the `AllowBedrockInvokeGlobal` statement in the shipped `bedrock-auth-*.yaml`
+> templates — so personas are not strictly more restrictive than the base role on the
+> global path. The restricted Deny is **also** emitted against the region-less shape, so a
+> denied model stays denied whether invoked regionally or globally.
+
 > **Note on actions:** persona policies Allow/Deny `bedrock:InvokeModel`,
 > `bedrock:InvokeModelWithResponseStream`, and `bedrock:CallWithBearerToken` — the same
 > action set the shipped `bedrock-auth-*.yaml` templates use. The Bedrock **Converse**
@@ -230,7 +258,9 @@ PBAC reuses the existing quota pipeline end-to-end:
   issuance time, and the monitor reads that record to resolve the user's persona. Both
   enforcement (quota-check) and alerting (quota-monitor) therefore honor per-persona
   limits; a user the monitor has never seen a check for yet resolves to the default tier
-  until their next credential issuance populates the record.
+  until their next credential issuance populates the record. This group-persistence write
+  happens **only in PBAC mode** (when `PERSONA_ORDER` is set); outside PBAC the monitor
+  uses the legacy path and never reads the record, so the write is skipped entirely.
 
 **`PERSONA_ORDER` flips group resolution from most-restrictive to declared order.**
 
@@ -409,6 +439,8 @@ both quota Lambdas, and otel-helper — see
 | **A user in no persona group can't use Bedrock at all** | `fallback_persona` is `null` (hard-deny default) | Set `fallback_persona` to a low-privilege persona if graceful degradation is wanted. See [§11](#11-no-match--fallback-behavior). |
 | **Per-persona model routing isn't taking effect** | The launch wrapper isn't sourced, the persona has no resolved AIP ARNs, or no persona matched | Confirm `persona-model.sh`/`.ps1` is sourced from your shell rc; check `config.json`'s persona block has `inference_profile_arns`; run `credential-process --profile <p> --get-persona-model` directly (exit 0 = exports printed, 2 = no persona/ARNs, 4 = token expired). See [§7a](#7a-tagged-application-inference-profiles--per-persona-routing-fr-51). |
 | **Personas didn't deploy at all** | Auth type is Cognito/IDC/none, or no personas configured | Personas require OIDC direct-IAM + at least one persona. See [§12](#12-auth-type--cognito-limitations). |
+| **`ccwb package` refuses with "Persona-based access control requires the Go credential-process"** | You packaged a persona profile without `--go`; the legacy binary can't enforce personas | Re-run `ccwb package --go`. This guard is intentional — a legacy binary would silently grant every user the base role. See [§4](#4-deploy-walkthrough). |
+| **A restricted persona can't use a `global.*` model** | (Pre-fix symptom.) The renderer now emits a region-less global-CRIS Allow scoped to allowed models. | Confirm the deployed persona policy has an `AllowBedrockInvokeAllowedModelsGlobal` statement; redeploy if it's an older stack. Denied models stay denied on the global path. See [§5](#5-️-the-inference-profile-deny-invariant). |
 
 ---
 

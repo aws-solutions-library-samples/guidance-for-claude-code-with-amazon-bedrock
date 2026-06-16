@@ -690,6 +690,17 @@ func selectRoleARN(cfg *config.ProfileConfig, claims jwt.Claims) (string, error)
 		return "", fmt.Errorf("resolving persona: %w", err)
 	}
 	if p == nil {
+		// Distinguish the two no-result cases so the admin sees the right cause:
+		// a fallback that names a non-existent persona is a config error to fix,
+		// whereas no fallback at all means the user needs a persona group. Both
+		// are correctly hard-denied (no role assumed); only the message differs.
+		if cfg.FallbackPersona != "" {
+			return "", fmt.Errorf(
+				"no persona matched your groups %v (claim %q) and the configured fallback_persona %q "+
+					"does not name any declared persona; fix fallback_persona in config.yaml and re-run `ccwb package`",
+				groups, groupsClaim, cfg.FallbackPersona,
+			)
+		}
 		return "", fmt.Errorf(
 			"no persona matched your groups %v (claim %q) and no fallback persona is configured; "+
 				"contact your administrator to be added to a persona group",

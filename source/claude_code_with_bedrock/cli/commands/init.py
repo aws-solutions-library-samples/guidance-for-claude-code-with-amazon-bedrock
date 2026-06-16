@@ -2209,8 +2209,11 @@ class InitCommand(Command):
             for err in errors:
                 console.print(f"  • {err}")
             if questionary.confirm("Re-enter persona configuration?", default=True).ask():
-                # Clear partial state so the retry starts clean.
-                config.pop("personas", None)
+                # Clear ALL partial persona state so the retry starts clean — not just
+                # `personas`. Otherwise the top-level fields keep their prior (possibly
+                # bad) values as the re-prompt defaults.
+                for key in ("personas", "groups_claim_name", "fallback_persona", "account_budget_amount_usd"):
+                    config.pop(key, None)
                 return self._gather_personas(config)
             console.print("[yellow]Skipping persona configuration.[/yellow]")
             return

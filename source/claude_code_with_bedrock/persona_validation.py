@@ -37,14 +37,27 @@ def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> l
     Returns:
         A list of human-readable error messages. Empty means valid. Checks:
           * duplicate persona names
+          * distinct names that sanitize to the SAME CloudFormation logical id
+            (e.g. ``eng-team`` and ``eng_team`` -> ``EngTeam``) — these would
+            silently collide and overwrite resources in the rendered stack
           * missing or empty ``name`` or ``group``
           * ``name`` not DNS/IAM-safe (must match ``^[A-Za-z0-9][A-Za-z0-9-]*$``)
           * ``enforcement_mode`` not in {"alert", "block"} (when present)
           * ``allowed_models`` / ``denied_models`` entries that are not strings
           * ``fallback`` naming a persona that does not exist
     """
+    # Imported here (not at module top) to keep this module import-light and to make
+    # the dependency direction explicit: validation reuses the renderer's sanitizer so
+    # the collision check uses the SAME logical-id mapping the stack will actually emit
+    # (single source of truth). persona_template imports only stdlib + yaml, so there
+    # is no import cycle.
+    from claude_code_with_bedrock.persona_template import _logical_id
+
     errors: list[str] = []
     seen_names: set[str] = set()
+    # Map each sanitized logical-id stem -> the first valid name that produced it, so a
+    # later distinct name colliding on the same stem can be reported with both names.
+    logical_id_owner: dict[str, str] = {}
 
     for index, persona in enumerate(personas):
         if not isinstance(persona, dict):
@@ -67,6 +80,21 @@ def validate_personas(personas: list[dict[str, Any]], fallback: str | None) -> l
                     f"Persona name '{raw_name}' is not DNS/IAM-safe; use only letters, digits, "
                     "and hyphens, starting with a letter or digit (e.g. 'data-science')."
                 )
+            else:
+                # Two DNS/IAM-safe but distinct names can still sanitize to the same
+                # CloudFormation logical-id stem (e.g. a hyphen vs underscore variant, or
+                # ASCII/non-ASCII), which would silently overwrite one persona's resources
+                # in the rendered stack. Catch it here, upfront, alongside the other config
+                # errors — the renderer also raises on collision, but as a late ValueError.
+                stem = _logical_id(raw_name)
+                if stem in logical_id_owner and logical_id_owner[stem] != raw_name:
+                    errors.append(
+                        f"Persona names '{logical_id_owner[stem]}' and '{raw_name}' both map to the "
+                        f"same CloudFormation logical id '{stem}' and would collide; rename one so "
+                        "their sanitized identifiers differ."
+                    )
+                else:
+                    logical_id_owner.setdefault(stem, raw_name)
 
         # group: present and non-empty
         group = persona.get("group")

@@ -54,11 +54,22 @@ func TestSelectRoleARN(t *testing.T) {
 			wantARN: engRole, // engineering declared first
 		},
 		{
-			name:        "no match + no fallback -> hard-deny error",
+			name:        "no match + no fallback -> hard-deny error (says none configured)",
 			cfg:         &config.ProfileConfig{FederatedRoleARN: baseRole, Personas: personas},
 			claims:      jwt.Claims{"groups": []interface{}{"contractors"}},
 			wantErr:     true,
-			errContains: "no persona matched",
+			errContains: "no fallback persona is configured",
+		},
+		{
+			name: "no match + fallback names unknown persona -> distinct hard-deny error",
+			cfg: &config.ProfileConfig{
+				FederatedRoleARN: baseRole,
+				Personas:         personas,
+				FallbackPersona:  "does-not-exist",
+			},
+			claims:      jwt.Claims{"groups": []interface{}{"contractors"}},
+			wantErr:     true,
+			errContains: "does not name any declared persona",
 		},
 		{
 			name: "no match + fallback -> fallback RoleARN",

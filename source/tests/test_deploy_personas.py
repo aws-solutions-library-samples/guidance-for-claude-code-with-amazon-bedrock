@@ -70,27 +70,39 @@ def _persona_profile(*, auth_type="oidc", personas=None, provider_type="okta"):
 # Scheduling gates (replay handle()'s all-stacks persona block)
 # ---------------------------------------------------------------------------
 class TestPersonaScheduling:
-    """Mirrors the persona scheduling block in DeployCommand.handle()."""
+    """Drives the REAL scheduling gate (DeployCommand._should_schedule_personas).
 
-    @staticmethod
-    def _schedule(profile) -> list[str]:
-        stacks: list[str] = []
-        if getattr(profile, "personas", []):
-            if profile.effective_auth_type == "oidc":
-                stacks.append("persona")
-                stacks.append("budgets")
-        return stacks
+    Previously this test re-implemented the gate logic in a private ``_schedule`` copy,
+    so a regression in handle()'s actual gate (e.g. flipping the OIDC check) would not
+    be caught. We now call the production predicate directly; ``handle()`` uses the same
+    method, so these assertions track the shipped behavior. The ``personas`` non-empty
+    precondition that guards the gate in handle() is asserted explicitly here.
+    """
+
+    def _scheduled(self, profile) -> list[str]:
+        """Replicate handle()'s outer guard (personas non-empty) + the REAL gate."""
+        if not getattr(profile, "personas", []):
+            return []
+        if DeployCommand._should_schedule_personas(profile):
+            return ["persona", "budgets"]
+        return []
 
     def test_persona_and_budgets_scheduled_for_oidc_with_personas(self):
-        stacks = self._schedule(_persona_profile())
-        assert stacks == ["persona", "budgets"]
+        assert self._scheduled(_persona_profile()) == ["persona", "budgets"]
+
+    def test_gate_true_for_oidc(self):
+        assert DeployCommand._should_schedule_personas(_persona_profile()) is True
 
     def test_skipped_when_no_personas(self):
-        assert self._schedule(_persona_profile(personas=[])) == []
+        assert self._scheduled(_persona_profile(personas=[])) == []
 
     def test_skipped_when_auth_type_not_oidc(self):
-        assert self._schedule(_persona_profile(auth_type="idc")) == []
-        assert self._schedule(_persona_profile(auth_type="none")) == []
+        assert self._scheduled(_persona_profile(auth_type="idc")) == []
+        assert self._scheduled(_persona_profile(auth_type="none")) == []
+
+    def test_gate_false_when_not_oidc(self):
+        assert DeployCommand._should_schedule_personas(_persona_profile(auth_type="idc")) is False
+        assert DeployCommand._should_schedule_personas(_persona_profile(auth_type="none")) is False
 
 
 # ---------------------------------------------------------------------------

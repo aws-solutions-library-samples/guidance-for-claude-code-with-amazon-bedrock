@@ -158,6 +158,46 @@ def test_sales_deny_spans_all_three_arn_shapes(rendered_doc):
     assert "application-inference-profile/*anthropic.*opus*" in joined
 
 
+def test_version_pinned_deny_glob_gets_trailing_wildcard():
+    """L5: a denied glob WITHOUT a trailing wildcard must be normalized to cover
+    versioned model ids (e.g. `anthropic.claude-opus-4-7` → matches
+    `us.anthropic.claude-opus-4-7-v1:0`). Without the trailing `*`, the inference-profile
+    Deny would silently under-match the real invoked id."""
+    persona = {
+        "name": "pinned",
+        "group": "pinned-team",
+        "allowed_models": ["anthropic.*haiku*"],
+        # Operator pins a version with NO trailing wildcard — the footgun case.
+        "denied_models": ["anthropic.claude-opus-4-7"],
+    }
+    doc = yaml.safe_load(render_personas_stack([persona], GROUPS_CLAIM, ISSUER_HOST))
+    deny = [s for s in _statements(_find_policy(doc, "Pinned")) if s["Effect"] == "Deny"]
+    assert deny, "restricted persona must have a Deny"
+    joined = "\n".join(_arn_strs(deny[0]["Resource"]))
+    # The normalized glob ends in '*', so the foundation-model Deny is
+    # 'anthropic.claude-opus-4-7*' and the inference-profile Deny is
+    # '*anthropic.claude-opus-4-7*' — both match the versioned '…-v1:0' id.
+    assert "foundation-model/anthropic.claude-opus-4-7*" in joined
+    assert "inference-profile/*anthropic.claude-opus-4-7*" in joined
+    # No bare (wildcard-less) form should remain that would miss the version suffix.
+    assert "foundation-model/anthropic.claude-opus-4-7\n" not in joined + "\n"
+
+
+def test_trailing_wildcard_deny_glob_is_not_double_starred():
+    """A glob that already ends in '*' must not gain a second one."""
+    persona = {
+        "name": "already",
+        "group": "g",
+        "allowed_models": ["anthropic.*haiku*"],
+        "denied_models": ["anthropic.*opus*"],
+    }
+    doc = yaml.safe_load(render_personas_stack([persona], GROUPS_CLAIM, ISSUER_HOST))
+    deny = [s for s in _statements(_find_policy(doc, "Already")) if s["Effect"] == "Deny"]
+    joined = "\n".join(_arn_strs(deny[0]["Resource"]))
+    assert "opus**" not in joined  # no double wildcard
+    assert "foundation-model/anthropic.*opus*" in joined
+
+
 def test_engineering_has_no_deny_and_no_boundary(rendered_doc):
     """An unrestricted persona (empty denied_models) gets no Deny and no boundary."""
     policy = _find_policy(rendered_doc, "Engineering")

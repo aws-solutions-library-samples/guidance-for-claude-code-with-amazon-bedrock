@@ -77,6 +77,43 @@ class TestValidatePersonasErrors:
         assert validate_personas([_valid_persona(name="data-science")], None) == []
         assert validate_personas([_valid_persona(name="tier1")], None) == []
 
+    def test_distinct_names_colliding_on_logical_id_are_rejected(self):
+        # L4: two DNS/IAM-safe but DISTINCT names that sanitize to the same CFN logical
+        # id (`data-science` and `data--science` both -> `DataScience`) would silently
+        # overwrite resources in the rendered stack. validate_personas must flag it
+        # upfront (the renderer also raises, but later).
+        personas = [
+            _valid_persona(name="data-science", group="ds-team"),
+            _valid_persona(name="data--science", group="ds2-team"),
+        ]
+        errors = validate_personas(personas, None)
+        assert any("same CloudFormation logical id" in e and "DataScience" in e for e in errors), errors
+
+    def test_logical_id_collision_message_names_both_personas(self):
+        personas = [
+            _valid_persona(name="data-science", group="a"),
+            _valid_persona(name="data--science", group="b"),
+        ]
+        errors = validate_personas(personas, None)
+        collision = [e for e in errors if "same CloudFormation logical id" in e]
+        assert collision and "'data-science'" in collision[0] and "'data--science'" in collision[0]
+
+    def test_distinct_non_colliding_names_pass(self):
+        # Guard against a false-positive: distinct names with distinct logical ids
+        # must NOT be flagged as a collision.
+        personas = [
+            _valid_persona(name="data-science", group="a"),
+            _valid_persona(name="data-engineering", group="b"),
+        ]
+        assert validate_personas(personas, None) == []
+
+    def test_logical_id_collision_consistent_with_renderer(self):
+        # The validator's collision detection must use the SAME mapping the renderer
+        # emits — assert the colliding pair actually collides in persona_template.
+        from claude_code_with_bedrock.persona_template import _logical_id
+
+        assert _logical_id("data-science") == _logical_id("data--science")
+
     def test_missing_group(self):
         persona = _valid_persona()
         del persona["group"]

@@ -382,6 +382,41 @@ class TestUserGroupPersistence:
         mod.quota_table.put_item.side_effect = Exception("AccessDenied")
         mod.store_user_groups("alice@example.com", ["eng"])  # must not raise
 
+    def _event(self, email="alice@example.com", groups=("eng",)):
+        """Minimal API-Gateway-JWT-authorizer event the quota_check handler expects."""
+        return {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {"email": email, "groups": ",".join(groups)}}}
+            }
+        }
+
+    def _drive_handler_capture_store(self, persona_order: str):
+        """Run quota_check.lambda_handler with PERSONA_ORDER set as given; return whether
+        store_user_groups was invoked. Quota resolution is stubbed so the handler reaches
+        (and passes) the store gate without real DynamoDB."""
+        from unittest.mock import patch
+
+        mod = _load_module(
+            QUOTA_CHECK_PATH,
+            {"QUOTA_TABLE": "T", "POLICIES_TABLE": "P", "ENABLE_FINEGRAINED_QUOTAS": "true",
+             "PERSONA_ORDER": persona_order},
+        )
+        # Stub the heavy downstream so the handler returns cleanly after the gate.
+        mod.resolve_quota_for_user = lambda *a, **k: None  # no policy -> unlimited/allow
+        with patch.object(mod, "store_user_groups") as store:
+            mod.lambda_handler(self._event(), None)
+        return store.called
+
+    def test_groups_written_in_pbac_mode(self):
+        """L6: PERSONA_ORDER set -> the handler persists the user's groups."""
+        assert self._drive_handler_capture_store("eng,sales") is True
+
+    def test_groups_not_written_in_legacy_mode(self):
+        """L6: PERSONA_ORDER unset -> the `and PERSONA_ORDER` gate skips the write
+        (no unused DynamoDB writes/storage outside PBAC). This FAILS if someone drops
+        the PERSONA_ORDER guard from the call site."""
+        assert self._drive_handler_capture_store("") is False
+
     def test_get_user_groups_reads_back_record(self):
         mod = self._monitor_mod()
         mod.quota_table = MagicMock()
@@ -408,3 +443,66 @@ class TestUserGroupPersistence:
         assert callable(groups)
         policy = mod.resolve_user_quota("u@example.com", ["sales", "eng"], monitor._cache())
         assert policy["identifier"] == "eng"  # first DECLARED (eng), not most-restrictive (sales)
+
+    def test_usage_scan_filter_excludes_groups_record(self):
+        """M2 regression: the monitor's usage scan must filter sk == MONTH#<month>, so the
+        USER#<email>/GROUPS bookkeeping record (sk="GROUPS") never pollutes usage totals.
+
+        If someone "simplified" the scan to only ``pk begins_with USER#`` (dropping the sk
+        equality), every user's GROUPS row would be counted as a zero-token user and corrupt
+        alerting. We capture the actual FilterExpression the monitor builds and prove it
+        evaluates FALSE for a GROUPS-sk item and TRUE for a MONTH#-sk item.
+        """
+        from datetime import datetime, timezone
+
+        mod = self._monitor_mod()
+        # Stub the PromQL fetch so the handler reaches the scan step with no delta work.
+        mod.fetch_usage_from_promql = lambda: {}
+
+        captured = {}
+
+        def fake_scan(**kwargs):
+            # Capture the FilterExpression the production code passes to DynamoDB.
+            captured["filter"] = kwargs.get("FilterExpression")
+            return {"Items": []}
+
+        mod.quota_table = MagicMock()
+        mod.quota_table.scan.side_effect = fake_scan
+        mod.lambda_handler({}, None)
+
+        expr = captured.get("filter")
+        assert expr is not None, "monitor usage scan must pass a FilterExpression"
+
+        # Walk the captured boto3 ConditionBase tree and collect (attr_name, operator,
+        # value) leaves so we can assert the sk constraint is an equality on
+        # MONTH#<current_month> — NOT a begins_with that would also admit the GROUPS row.
+        from boto3.dynamodb.conditions import ConditionBase
+
+        leaves: list[tuple] = []
+
+        def _walk(node) -> None:
+            built = node.get_expression()
+            op = built["operator"]
+            values = built["values"]
+            if any(isinstance(v, ConditionBase) for v in values):
+                for v in values:
+                    if isinstance(v, ConditionBase):
+                        _walk(v)
+                return
+            # Leaf: values are (Attr/Key, literal). The attr's name is on .name.
+            attr = values[0]
+            literal = values[1] if len(values) > 1 else None
+            leaves.append((getattr(attr, "name", None), op, literal))
+
+        _walk(expr)
+
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        # The sk leaf must be an equality on MONTH#<current_month> (excludes sk="GROUPS").
+        sk_leaves = [lf for lf in leaves if lf[0] == "sk"]
+        assert sk_leaves, f"usage scan filter has no sk constraint; leaves={leaves}"
+        assert any(op == "=" and val == f"MONTH#{current_month}" for _name, op, val in sk_leaves), (
+            "usage scan filter lost its sk == MONTH#<month> equality — a GROUPS record "
+            f"(sk='GROUPS') could be counted as usage. sk leaves: {sk_leaves}"
+        )
+        # And no leaf should ever match the GROUPS bookkeeping record.
+        assert not any(val == "GROUPS" for _name, _op, val in leaves)

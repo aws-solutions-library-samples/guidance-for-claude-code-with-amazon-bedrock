@@ -313,6 +313,24 @@ class PackageCommand(Command):
                     console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
                     return 1
 
+        # PBAC safety gate: persona access control is enforced ONLY by the Go
+        # credential-process (it resolves the persona from the OIDC groups claim and
+        # assumes that persona's restricted role). The legacy (PyInstaller/Nuitka) Python
+        # credential-process has no persona logic — it always assumes the base
+        # federated_role_arn. Packaging a persona profile without --go would ship a bundle
+        # where every restricted persona silently receives the BROAD base role, bypassing
+        # the per-persona model restrictions. Refuse loudly rather than ship that.
+        if self._personas_require_go(profile, federation_type, use_go):
+            console.print(
+                "\n[red]✗ Persona-based access control requires the Go credential-process.[/red]\n"
+                "[red]  The legacy (non-Go) binary has no persona logic and would assume the\n"
+                "  base role for every user — silently bypassing persona model restrictions.[/red]\n\n"
+                "  Re-run with the [cyan]--go[/cyan] flag:\n"
+                "      [cyan]poetry run ccwb package --go[/cyan]\n\n"
+                "  (Personas are declared in this profile; see PBAC_README.md.)"
+            )
+            return 1
+
         # Welcome
         console.print(
             Panel.fit(
@@ -2035,6 +2053,18 @@ RUN pyinstaller \
             console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
             return 1
 
+        # PBAC: regeneration reuses whatever binaries are already in dist/, and Go vs
+        # legacy binaries share the same filenames, so we cannot detect provenance here.
+        # Personas are only enforced by the Go binary; warn so an operator who reuses a
+        # legacy (non-Go) build with a persona profile doesn't ship a non-enforcing bundle.
+        if federation_type == "direct" and getattr(profile, "personas", None):
+            console.print(
+                "[yellow]⚠ This profile declares personas. Persona model restrictions are enforced\n"
+                "  ONLY by the Go credential-process. Ensure the binaries in dist/ were built with\n"
+                "  [cyan]ccwb package --go[/cyan] — a legacy binary ignores personas and assumes the\n"
+                "  base role.[/yellow]"
+            )
+
         # Prompt for co-authorship and OTEL attributes
         include_coauthored_by = questionary.confirm(
             "Include 'Co-Authored-By: Claude' in git commits?", default=False
@@ -2086,6 +2116,22 @@ RUN pyinstaller \
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
         console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
         return 0
+
+    @staticmethod
+    def _personas_require_go(profile, federation_type: str, use_go: bool) -> bool:
+        """True when a persona profile is being packaged WITHOUT the Go credential-process.
+
+        Personas are enforced only by the Go binary; the legacy Python binary ignores
+        them and assumes the base role. We block only the case that actually ships a
+        non-enforcing bundle: direct federation (the only mode that serializes personas)
+        + at least one persona + not building with Go. Cognito personas are never
+        serialized (FR-2.7), so they don't trip this gate.
+        """
+        return (
+            not use_go
+            and federation_type == "direct"
+            and bool(getattr(profile, "personas", None))
+        )
 
     def _create_config(
         self,
@@ -2318,7 +2364,11 @@ RUN pyinstaller \
             f'        $lines = & $cp --profile {profile_name} --get-persona-model 2>$null\n'
             "        if ($LASTEXITCODE -eq 0 -and $lines) {\n"
             "            foreach ($line in $lines) {\n"
-            "                if ($line -match '^export ([A-Z_]+)=(.*)$') {\n"
+            # Match any POSIX-valid env-var name (letter/underscore start, then
+            # letters/digits/underscores) so the wrapper keeps working if the helper
+            # ever emits a lowercase- or digit-bearing var name. Value is (.*) so ARNs
+            # with ':' '/' '.' are captured intact.
+            "                if ($line -match '^export ([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {\n"
             '                    Set-Item -Path \"Env:$($matches[1])\" -Value $matches[2]\n'
             "                }\n"
             "            }\n"

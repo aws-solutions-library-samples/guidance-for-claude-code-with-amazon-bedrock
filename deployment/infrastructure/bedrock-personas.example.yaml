@@ -37,6 +37,14 @@ Resources:
             StringEquals:
               aws:RequestedRegion:
                 Ref: AllowedBedrockRegions
+        - Sid: AllowBedrockInvokeAllowedModelsGlobal
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*
         - Sid: AllowBedrockListAndGet
           Effect: Allow
           Action:
@@ -105,6 +113,14 @@ Resources:
             StringEquals:
               aws:RequestedRegion:
                 Ref: AllowedBedrockRegions
+        - Sid: AllowBedrockInvokeAllowedModelsGlobal
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*haiku*
         - Sid: DenyBedrockInvokeDeniedModels
           Effect: Deny
           Action:
@@ -118,6 +134,8 @@ Resources:
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*opus*
         - Sid: AllowBedrockListAndGet
           Effect: Allow
           Action:
@@ -157,6 +175,14 @@ Resources:
             StringEquals:
               aws:RequestedRegion:
                 Ref: AllowedBedrockRegions
+        - Sid: BoundaryAllowBedrockInvokeGlobal
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          - bedrock:CallWithBearerToken
+          Resource:
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*haiku*
         - Sid: BoundaryDenyDeniedModels
           Effect: Deny
           Action:
@@ -170,6 +196,8 @@ Resources:
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*opus*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*sonnet*
           - Fn::Sub: arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*anthropic.*opus*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*sonnet*
+          - Fn::Sub: arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*opus*
         - Sid: BoundaryAllowListAndMetrics
           Effect: Allow
           Action:

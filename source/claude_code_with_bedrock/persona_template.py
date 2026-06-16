@@ -140,6 +140,49 @@ def _all_shape_arns(globs: list[str]) -> list[dict]:
     return out
 
 
+def _global_foundation_model_arns(globs: list[str]) -> list[dict]:
+    """Region-less foundation-model ARNs for global cross-Region inference (CRIS).
+
+    Global-CRIS models (e.g. ``global.anthropic.…``) are invoked with
+    ``aws:RequestedRegion = "unspecified"`` against the *region-less* foundation-model
+    ARN ``arn:<partition>:bedrock:::foundation-model/<id>``. The regional Allow's
+    ``aws:RequestedRegion`` condition never matches ``unspecified``, so without this a
+    persona could not use any global model. The shipped auth templates carry the same
+    second Allow (``AllowBedrockInvokeGlobal`` in ``bedrock-auth-*.yaml``); we mirror it
+    so persona roles are not strictly more restrictive than the base role on the global
+    path. Safety: this Allow is scoped to the persona's *allowed* globs only, and the
+    Deny (which uses region ``*`` and so matches the empty/global region segment too)
+    still wins for denied models.
+    """
+    arns: list[dict] = []
+    for glob in globs:
+        arns.append({"Fn::Sub": f"arn:${{AWS::Partition}}:bedrock:::foundation-model/{glob}"})
+    return arns
+
+
+def _normalize_denied(denied: list[str]) -> list[str]:
+    """Ensure each denied-model glob has a trailing wildcard for version coverage.
+
+    Bedrock model ids carry a version/date suffix (``…-v1:0``,
+    ``…-20251101-v1:0``). A version-pinned deny glob *without* a trailing wildcard —
+    e.g. ``anthropic.claude-opus-4-7`` — would NOT match the real invoked id
+    ``us.anthropic.claude-opus-4-7-v1:0`` on the inference-profile shapes, silently
+    under-denying. We append ``*`` to any deny glob that doesn't already end in one so
+    the Deny covers every version of the targeted model.
+
+    This is applied to **denied** globs ONLY. A Deny is strictly subtractive, so
+    broadening its match can never grant access — worst case it denies a same-prefixed
+    model the operator didn't name, which fails safe. Allowed globs are deliberately
+    NOT widened (that could over-grant), so ``_normalize_allowed`` is unchanged.
+    Globs that already contain a trailing ``*`` (the reference personas use
+    ``anthropic.*opus*``) are left untouched.
+    """
+    out: list[str] = []
+    for glob in denied:
+        out.append(glob if glob.endswith("*") else glob + "*")
+    return out
+
+
 def _normalize_allowed(allowed: list[str] | None) -> list[str]:
     """Resolve the allowed-models list to concrete globs.
 
@@ -157,7 +200,9 @@ def _persona_resources(persona: dict, groups_claim_name: str, issuer_host: str) 
     name = persona["name"]
     group = persona["group"]
     allowed = _normalize_allowed(persona.get("allowed_models"))
-    denied = list(persona.get("denied_models") or [])
+    # Normalize denied globs so a version-pinned entry still matches the versioned
+    # invoked id (trailing-wildcard coverage). Safe because a Deny is subtractive.
+    denied = _normalize_denied(list(persona.get("denied_models") or []))
     restricted = bool(denied)
 
     stem = _logical_id(name)
@@ -177,7 +222,16 @@ def _persona_resources(persona: dict, groups_claim_name: str, issuer_host: str) 
             "Action": list(_INVOKE_ACTIONS),
             "Resource": _all_shape_arns(allowed),
             "Condition": {"StringEquals": {"aws:RequestedRegion": {"Ref": "AllowedBedrockRegions"}}},
-        }
+        },
+        {
+            # Global cross-Region inference: region-less FM ARN, no region condition
+            # (global-CRIS sends aws:RequestedRegion="unspecified"). Mirrors the
+            # AllowBedrockInvokeGlobal statement in the shipped auth templates.
+            "Sid": "AllowBedrockInvokeAllowedModelsGlobal",
+            "Effect": "Allow",
+            "Action": list(_INVOKE_ACTIONS),
+            "Resource": _global_foundation_model_arns(allowed),
+        },
     ]
     if restricted:
         # Explicit Deny wins over any Allow and must cover every ARN shape so a
@@ -187,7 +241,13 @@ def _persona_resources(persona: dict, groups_claim_name: str, issuer_host: str) 
                 "Sid": "DenyBedrockInvokeDeniedModels",
                 "Effect": "Deny",
                 "Action": list(_INVOKE_ACTIONS),
-                "Resource": _all_shape_arns(denied),
+                # All 3 regional ARN shapes PLUS the region-less global-CRIS FM ARN.
+                # The regional foundation-model entry uses region "*" (which already
+                # matches the empty/global region segment), but we add the explicit
+                # region-less form so the bypass protection does not rely on that
+                # wildcard subtlety — it now closes the global path we just opened in
+                # the Allow above. A Deny is strictly subtractive; this cannot widen access.
+                "Resource": _all_shape_arns(denied) + _global_foundation_model_arns(denied),
             }
         )
     statements.append(
@@ -269,10 +329,24 @@ def _persona_resources(persona: dict, groups_claim_name: str, issuer_host: str) 
                 "Condition": {"StringEquals": {"aws:RequestedRegion": {"Ref": "AllowedBedrockRegions"}}},
             },
             {
+                # Global CRIS: the boundary must also permit the region-less FM path or
+                # it would cap the role below the access policy (the access policy's
+                # global Allow would be inert). Scoped to allowed globs; the Deny below
+                # still wins for denied models on the global path (region "*" matches the
+                # empty/global region segment).
+                "Sid": "BoundaryAllowBedrockInvokeGlobal",
+                "Effect": "Allow",
+                "Action": list(_INVOKE_ACTIONS),
+                "Resource": _global_foundation_model_arns(allowed),
+            },
+            {
                 "Sid": "BoundaryDenyDeniedModels",
                 "Effect": "Deny",
                 "Action": list(_INVOKE_ACTIONS),
-                "Resource": _all_shape_arns(denied),
+                # Region-less global-CRIS FM ARN included alongside the 3 regional
+                # shapes (mirrors the access-policy Deny) so the boundary denies the
+                # global path too.
+                "Resource": _all_shape_arns(denied) + _global_foundation_model_arns(denied),
             },
             {
                 "Sid": "BoundaryAllowListAndMetrics",

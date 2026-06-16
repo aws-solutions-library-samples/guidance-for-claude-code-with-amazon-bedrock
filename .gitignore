@@ -68,6 +68,9 @@ guidance-submission/
 tests/
 !source/tests/
 !source/tests/**
+# ...but the broad re-include above must not drag compiled caches back in.
+source/tests/**/__pycache__/
+source/tests/**/*.pyc
 assets/docs/planning
 
 .pytest_cache/
