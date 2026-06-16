@@ -757,6 +757,11 @@ class DeployCommand(Command):
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
                             params.append(f"OidcClientId={profile.client_id}")
 
+                # Pass CoWork service token for ALB auth bypass (if configured)
+                cowork_token = getattr(profile, "cowork_service_token", "") or ""
+                if cowork_token:
+                    params.append(f"CoWorkServiceToken={cowork_token}")
+
                 # Pass analytics flag to control dual-export (OTLP + EMF)
                 analytics_enabled = "true" if getattr(profile, "analytics_enabled", True) else "false"
                 params.append(f"EnableAnalytics={analytics_enabled}")
