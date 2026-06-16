@@ -771,6 +771,28 @@ class DeployCommand(Command):
                     template, stack_name, params, task_description="Deploying monitoring collector..."
                 )
 
+                # Force ECS service redeploy so the collector picks up the new config.
+                # The collector config is stored in SSM and resolved at container start;
+                # a CFN update alone won't restart the running task.
+                if result == 0:
+                    try:
+                        import boto3
+
+                        ecs_client = boto3.client("ecs", region_name=profile.aws_region)
+                        ecs_client.update_service(
+                            cluster="claude-code-otel-cluster",
+                            service="otel-collector-service",
+                            forceNewDeployment=True,
+                        )
+                        console.print("[dim]Forced ECS service redeploy to load new collector config[/dim]")
+                    except Exception as e:
+                        # Non-fatal: stack deployed fine, just couldn't force redeploy
+                        console.print(
+                            f"[yellow]⚠ Stack deployed but could not force ECS redeploy: {e}[/yellow]\n"
+                            "[dim]  Run: aws ecs update-service --cluster claude-code-otel-cluster "
+                            "--service otel-collector-service --force-new-deployment[/dim]"
+                        )
+
                 # Save OTel collector endpoint to profile immediately after deploy
                 if result == 0:
                     monitoring_outputs = get_stack_outputs(stack_name, profile.aws_region)
