@@ -2246,6 +2246,7 @@ class InitCommand(Command):
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
+            "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2604,6 +2605,8 @@ class InitCommand(Command):
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
             if profile.cowork_3p_extra_keys:
                 cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
+            if profile.cowork_service_token:
+                cowork_3p_config["service_token"] = profile.cowork_service_token
             existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present

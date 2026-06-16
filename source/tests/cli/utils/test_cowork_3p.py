@@ -106,3 +106,43 @@ class TestAddMonitoringConfig:
         add_monitoring_config(mdm, profile, self._make_console())
         mock_get_outputs.assert_called_once_with("my-custom-monitoring-stack", "us-east-1")
         assert mdm["otlpEndpoint"] == "https://custom-stack.example.com"
+
+    @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
+    def test_cowork_service_token_adds_otlp_headers(self, mock_get_outputs):
+        """When cowork_service_token is set, otlpHeaders includes X-Cowork-Token."""
+        import json
+
+        mock_get_outputs.return_value = {
+            "CollectorEndpoint": "https://collector.example.com"
+        }
+        profile = FakeProfile()
+        profile.cowork_service_token = "test-token-abc123"
+        mdm = {}
+        add_monitoring_config(mdm, profile, self._make_console())
+        assert "otlpHeaders" in mdm
+        headers = json.loads(mdm["otlpHeaders"])
+        assert headers == {"X-Cowork-Token": "test-token-abc123"}
+
+    @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
+    def test_no_cowork_service_token_omits_otlp_headers(self, mock_get_outputs):
+        """When cowork_service_token is not set, otlpHeaders is not added."""
+        mock_get_outputs.return_value = {
+            "CollectorEndpoint": "https://collector.example.com"
+        }
+        profile = FakeProfile()
+        # No cowork_service_token attribute
+        mdm = {}
+        add_monitoring_config(mdm, profile, self._make_console())
+        assert "otlpHeaders" not in mdm
+
+    @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
+    def test_empty_cowork_service_token_omits_otlp_headers(self, mock_get_outputs):
+        """When cowork_service_token is empty string, otlpHeaders is not added."""
+        mock_get_outputs.return_value = {
+            "CollectorEndpoint": "https://collector.example.com"
+        }
+        profile = FakeProfile()
+        profile.cowork_service_token = ""
+        mdm = {}
+        add_monitoring_config(mdm, profile, self._make_console())
+        assert "otlpHeaders" not in mdm
