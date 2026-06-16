@@ -62,6 +62,12 @@ type ProfileConfig struct {
 	// Custom OAuth callback port (default 8400). REDIRECT_PORT env var takes precedence.
 	RedirectPort int `json:"redirect_port,omitempty"`
 
+	// OIDC prompt parameter sent during the authorization request.
+	// Default "select_account" for Azure (shows account picker).
+	// Set to "" to let the IdP reuse the existing browser session silently —
+	// useful for single-tenant enterprise deployments with one account.
+	OIDCPrompt *string `json:"oidc_prompt,omitempty"`
+
 	// Azure AD confidential-client auth. "" or "public" -> PKCE-only public client.
 	// "secret" -> look up client_secret from OS keyring at token-exchange time.
 	// "certificate" -> sign a JWT client assertion with a PEM cert + private key.

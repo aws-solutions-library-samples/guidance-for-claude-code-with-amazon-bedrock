@@ -37,7 +37,7 @@ type GenericEndpoints struct {
 //
 // generic carries absolute endpoint URLs for Generic OIDC providers (CyberArk,
 // PingFederate, Keycloak, ForgeRock, etc.). Pass nil for named providers.
-func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth, generic *GenericEndpoints) (*AuthResult, error) {
+func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth, generic *GenericEndpoints, oidcPrompt *string) (*AuthResult, error) {
 	provCfg := provider.ConfigFor(providerType, oktaAuthServerID)
 	if provCfg.Name == "" {
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
@@ -72,7 +72,13 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 	}
 	if providerType == "azure" {
 		params.Set("response_mode", "query")
-		params.Set("prompt", "select_account")
+		prompt := "select_account"
+		if oidcPrompt != nil {
+			prompt = *oidcPrompt
+		}
+		if prompt != "" {
+			params.Set("prompt", prompt)
+		}
 	}
 
 	var authURL, tokenURL string
