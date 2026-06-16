@@ -24,15 +24,18 @@ from claude_code_with_bedrock.cli.utils.cf_exceptions import (
     StackRollbackError,
 )
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
+from claude_code_with_bedrock.cli.utils.helpers import (
+    CODEBUILD_WINDOWS_REGIONS,
+    find_nearest_codebuild_region,
+    get_codebuild_region,
+)
 from claude_code_with_bedrock.config import Config
 
 # Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
 #   login.microsoftonline.com/{tenant-id}/v2.0
 #   https://login.microsoftonline.com/{tenant-id}
 #   {tenant-id} (bare GUID)
-_AZURE_GUID_PATTERN = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+_AZURE_GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _extract_azure_tenant_id(domain: str) -> str:
@@ -141,7 +144,9 @@ class DeployCommand(Command):
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
                 if getattr(profile, "monitoring_mode", "central") == "sidecar":
-                    console.print("[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]")
+                    console.print(
+                        "[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]"
+                    )
                     return 1
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
             elif stack_arg == "analytics":
@@ -245,6 +250,7 @@ class DeployCommand(Command):
                         )
                         console.print(
                             "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy quota monitoring.[/dim]"
+                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. See issue #454.[/dim]"
                         )
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
@@ -262,7 +268,13 @@ class DeployCommand(Command):
 
         for stack_type, description in stacks_to_deploy:
             stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-            status = cf_manager.get_stack_status(stack_name)
+            # CodeBuild may live in a different region than the main infrastructure.
+            status_manager = cf_manager
+            if stack_type == "codebuild":
+                cb_region = get_codebuild_region(profile)
+                if cb_region != profile.aws_region:
+                    status_manager = CloudFormationManager(region=cb_region)
+            status = status_manager.get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
             else:
@@ -292,7 +304,13 @@ class DeployCommand(Command):
                 for stack_type, stack_name, _status in reversed(orphaned_stacks):
                     try:
                         console.print(f"[yellow]Deleting {stack_type} stack: {stack_name}...[/yellow]")
-                        cf_manager.delete_stack(stack_name)
+                        # CodeBuild may be cross-region; delete it where it lives.
+                        del_mgr = cf_manager
+                        if stack_type == "codebuild":
+                            cb_region = get_codebuild_region(profile)
+                            if cb_region != profile.aws_region:
+                                del_mgr = CloudFormationManager(region=cb_region)
+                        del_mgr.delete_stack(stack_name)
                         console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
                     except Exception as e:
                         console.print(f"[red]✗ Failed to delete {stack_type} stack: {e}[/red]")
@@ -355,9 +373,14 @@ class DeployCommand(Command):
         ) as progress:
             # Common deployment function
             def deploy_with_cf(
-                template_path, stack_name, params, capabilities=None, task_description="Deploying stack..."
+                template_path, stack_name, params, capabilities=None, task_description="Deploying stack...", cf=None
             ):
-                """Helper function to deploy a stack with CloudFormation manager."""
+                """Helper function to deploy a stack with CloudFormation manager.
+
+                ``cf`` overrides the shared region-bound manager (used for the
+                CodeBuild stack when it deploys to a different region).
+                """
+                manager = cf or cf_manager
                 task = progress.add_task(task_description, total=None)
 
                 try:
@@ -365,7 +388,7 @@ class DeployCommand(Command):
                     boto3_params = self._convert_params_to_boto3(params) if params else None
 
                     # Deploy stack
-                    result = cf_manager.deploy_stack(
+                    result = manager.deploy_stack(
                         stack_name=stack_name,
                         template_path=template_path,
                         parameters=boto3_params,
@@ -503,6 +526,7 @@ class DeployCommand(Command):
                 bedrock_regions = profile.allowed_bedrock_regions
                 if not bedrock_regions:
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
@@ -738,6 +762,11 @@ class DeployCommand(Command):
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
                             params.append(f"OidcClientId={profile.client_id}")
 
+                # Pass CoWork service token for ALB auth bypass (if configured)
+                cowork_token = getattr(profile, "cowork_service_token", "") or ""
+                if cowork_token:
+                    params.append(f"CoWorkServiceToken={cowork_token}")
+
                 # Pass analytics flag to control dual-export (OTLP + EMF)
                 analytics_enabled = "true" if getattr(profile, "analytics_enabled", True) else "false"
                 params.append(f"EnableAnalytics={analytics_enabled}")
@@ -746,6 +775,28 @@ class DeployCommand(Command):
                 result = deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."
                 )
+
+                # Force ECS service redeploy so the collector picks up the new config.
+                # The collector config is stored in SSM and resolved at container start;
+                # a CFN update alone won't restart the running task.
+                if result == 0:
+                    try:
+                        import boto3
+
+                        ecs_client = boto3.client("ecs", region_name=profile.aws_region)
+                        ecs_client.update_service(
+                            cluster="claude-code-otel-cluster",
+                            service="otel-collector-service",
+                            forceNewDeployment=True,
+                        )
+                        console.print("[dim]Forced ECS service redeploy to load new collector config[/dim]")
+                    except Exception as e:
+                        # Non-fatal: stack deployed fine, just couldn't force redeploy
+                        console.print(
+                            f"[yellow]⚠ Stack deployed but could not force ECS redeploy: {e}[/yellow]\n"
+                            "[dim]  Run: aws ecs update-service --cluster claude-code-otel-cluster "
+                            "--service otel-collector-service --force-new-deployment[/dim]"
+                        )
 
                 # Save OTel collector endpoint to profile immediately after deploy
                 if result == 0:
@@ -778,9 +829,7 @@ class DeployCommand(Command):
                 params = [
                     f"MetricsRegion={profile.aws_region}",
                 ]
-                return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CoWork dashboard..."
-                )
+                return deploy_with_cf(template, stack_name, params, task_description="Deploying CoWork dashboard...")
 
             elif stack_type == "analytics":
                 template = project_root / "deployment" / "infrastructure" / "analytics-pipeline.yaml"
@@ -895,24 +944,40 @@ class DeployCommand(Command):
                             pass
 
             elif stack_type == "codebuild":
-                # WINDOWS_SERVER_2022_CONTAINER is only available in select regions
-                codebuild_supported_regions = [
-                    "us-east-1", "us-east-2", "us-west-2",
-                    "eu-central-1", "eu-west-1",
-                    "ap-northeast-1", "ap-southeast-2",
-                    "sa-east-1",
-                ]
-                if profile.aws_region not in codebuild_supported_regions:
+                # CodeBuild region is chosen in `ccwb init` (the Windows container
+                # fleet only exists in some regions). Deploy just executes that
+                # choice. If a legacy profile still resolves to an unsupported
+                # region — e.g. it predates the init region picker — skip with a
+                # pointer to init rather than failing the whole deploy.
+                codebuild_region = get_codebuild_region(profile)
+                if codebuild_region not in CODEBUILD_WINDOWS_REGIONS:
+                    nearest = find_nearest_codebuild_region(profile.aws_region)
                     console.print(
-                        f"[red]Windows CodeBuild is not available in {profile.aws_region}.[/red]\n"
-                        f"Supported regions: {', '.join(codebuild_supported_regions)}"
+                        f"[yellow]⚠ Skipping CodeBuild: Windows containers aren't available in "
+                        f"{codebuild_region}.[/yellow]"
                     )
-                    return 1
+                    console.print(
+                        f"[dim]Re-run [cyan]ccwb init[/cyan] to pick a supported CodeBuild region "
+                        f"(nearest: {nearest}), then deploy again.[/dim]"
+                    )
+                    return 0
+
+                # Deploy to the (possibly cross-region) CodeBuild region. Build a
+                # dedicated manager when it differs from the main region.
+                cf = (
+                    cf_manager
+                    if codebuild_region == profile.aws_region
+                    else CloudFormationManager(region=codebuild_region)
+                )
                 template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
                 stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
                 return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CodeBuild for Windows builds..."
+                    template,
+                    stack_name,
+                    params,
+                    task_description=f"Deploying CodeBuild for Windows builds in {codebuild_region}...",
+                    cf=cf,
                 )
 
             else:
@@ -929,7 +994,9 @@ class DeployCommand(Command):
     def _show_deployment_commands(self, stack_type: str, profile, console: Console) -> None:
         """Show AWS CLI commands for manual deployment."""
         project_root = Path(__file__).parents[4]
-        region = profile.aws_region
+        # CodeBuild may deploy to a different region than the main infrastructure;
+        # print the command for the region it actually deploys to.
+        region = get_codebuild_region(profile) if stack_type == "codebuild" else profile.aws_region
 
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
@@ -949,6 +1016,7 @@ class DeployCommand(Command):
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
                 from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
@@ -990,16 +1058,20 @@ class DeployCommand(Command):
                         if "." in profile.provider_domain
                         else profile.provider_domain
                     )
-                    params.extend([
-                        f"CognitoUserPoolId={profile.cognito_user_pool_id}",
-                        f"CognitoUserPoolClientId={profile.client_id}",
-                        f"CognitoUserPoolDomain={cognito_domain}",
-                    ])
-                params.extend([
-                    f"IdentityPoolName={profile.identity_pool_name}",
-                    f"AllowedBedrockRegions={','.join(bedrock_regions)}",
-                    f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
-                ])
+                    params.extend(
+                        [
+                            f"CognitoUserPoolId={profile.cognito_user_pool_id}",
+                            f"CognitoUserPoolClientId={profile.client_id}",
+                            f"CognitoUserPoolDomain={cognito_domain}",
+                        ]
+                    )
+                params.extend(
+                    [
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+                )
                 print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         elif stack_type == "networking":
@@ -1283,9 +1355,16 @@ class DeployCommand(Command):
         orphaned = []
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
-                # This stack type is not being deployed - check if it exists
+                # This stack type is not being deployed - check if it exists.
+                # CodeBuild may live in a different region (cross-region builds), so
+                # check it there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-                status = cf_manager.get_stack_status(stack_name)
+                mgr = cf_manager
+                if stack_type == "codebuild":
+                    cb_region = get_codebuild_region(profile)
+                    if cb_region != profile.aws_region:
+                        mgr = CloudFormationManager(region=cb_region)
+                status = mgr.get_stack_status(stack_name)
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
                     orphaned.append((stack_type, stack_name, status))
@@ -1311,6 +1390,7 @@ class DeployCommand(Command):
                     console.print("[green]✓ ECS service linked role created[/green]")
                     # Wait for IAM propagation before proceeding with ECS cluster creation
                     import time
+
                     console.print("[dim]Waiting for IAM role propagation...[/dim]")
                     time.sleep(10)
                 except iam_client.exceptions.InvalidInputException as e:
@@ -1357,11 +1437,7 @@ class DeployCommand(Command):
         # tokens carry iss=https://<domain>/oauth2/default. The quota JWT authorizer
         # must match that exact issuer or every /check request 401s (and, with
         # fail-open, silently disables enforcement).
-        if (
-            profile.provider_type == "okta"
-            and issuer_url
-            and not issuer_url.rstrip("/").endswith("/oauth2/default")
-        ):
+        if profile.provider_type == "okta" and issuer_url and not issuer_url.rstrip("/").endswith("/oauth2/default"):
             issuer_url = f"{issuer_url.rstrip('/')}/oauth2/default"
 
         # Auth0 tokens include trailing slash in iss claim, so authorizer must match

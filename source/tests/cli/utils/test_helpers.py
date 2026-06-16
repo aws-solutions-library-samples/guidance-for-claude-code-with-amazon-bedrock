@@ -10,7 +10,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from claude_code_with_bedrock.cli.utils.helpers import (
+    CODEBUILD_WINDOWS_REGIONS,
     clear_cached_credentials,
+    find_nearest_codebuild_region,
     get_codebuild_region,
 )
 
@@ -85,3 +87,75 @@ class TestGetCodebuildRegion:
         profile = MagicMock(spec=[])
         profile.aws_region = "eu-west-1"
         assert get_codebuild_region(profile) == "eu-west-1"
+
+    def test_real_profile_override(self):
+        """A real Profile with codebuild_region set resolves to the override.
+
+        Uses the actual dataclass (not a mock) so the test fails if the
+        codebuild_region field is ever removed from Profile or dropped by
+        from_dict's field-filter.
+        """
+        from claude_code_with_bedrock.config import Profile
+
+        profile = Profile.from_dict(
+            {
+                "name": "t",
+                "provider_domain": "none",
+                "client_id": "x",
+                "identity_pool_name": "tp",
+                "aws_region": "ap-southeast-1",
+                "codebuild_region": "ap-southeast-2",
+                "enable_codebuild": True,
+            }
+        )
+        assert get_codebuild_region(profile) == "ap-southeast-2"
+
+    def test_real_profile_fallback(self):
+        """A real Profile without codebuild_region falls back to aws_region."""
+        from claude_code_with_bedrock.config import Profile
+
+        profile = Profile.from_dict(
+            {
+                "name": "t",
+                "provider_domain": "none",
+                "client_id": "x",
+                "identity_pool_name": "tp",
+                "aws_region": "us-west-2",
+            }
+        )
+        assert get_codebuild_region(profile) == "us-west-2"
+
+
+class TestFindNearestCodebuildRegion:
+    """Tests for find_nearest_codebuild_region (cross-region CodeBuild fallback)."""
+
+    def test_supported_region_returns_itself(self):
+        """A supported region is returned unchanged."""
+        for region in CODEBUILD_WINDOWS_REGIONS:
+            assert find_nearest_codebuild_region(region) == region
+
+    def test_ap_southeast_1_maps_to_ap_southeast_2(self):
+        """Singapore (unsupported) maps to Sydney (supported, same sub-geo)."""
+        assert find_nearest_codebuild_region("ap-southeast-1") == "ap-southeast-2"
+
+    def test_eu_unsupported_stays_in_eu(self):
+        """An unsupported EU region maps to a supported EU region."""
+        assert find_nearest_codebuild_region("eu-south-1").startswith("eu-")
+        assert find_nearest_codebuild_region("eu-west-3").startswith("eu-")
+
+    def test_ap_unsupported_stays_in_ap(self):
+        """An unsupported AP region maps to a supported AP region (not a false 'a*' match)."""
+        assert find_nearest_codebuild_region("ap-south-1").startswith("ap-")
+
+    def test_no_continent_match_falls_back_to_us_east_1(self):
+        """Regions with no supported same-continent peer fall back to us-east-1."""
+        # af-* and me-* have no supported region sharing their continent token.
+        assert find_nearest_codebuild_region("af-south-1") == "us-east-1"
+        assert find_nearest_codebuild_region("me-central-1") == "us-east-1"
+        # "af" must NOT false-match "ap-*" on the shared leading 'a'.
+        assert not find_nearest_codebuild_region("af-south-1").startswith("ap-")
+
+    def test_result_is_always_supported(self):
+        """Whatever region is returned must itself be deployable."""
+        for region in ["ap-southeast-1", "eu-south-1", "ca-central-1", "af-south-1", "me-central-1"]:
+            assert find_nearest_codebuild_region(region) in CODEBUILD_WINDOWS_REGIONS

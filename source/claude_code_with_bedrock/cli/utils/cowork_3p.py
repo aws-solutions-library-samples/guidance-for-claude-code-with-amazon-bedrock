@@ -76,7 +76,6 @@ def build_mdm_config(
     return config
 
 
-
 def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     """Add OTLP endpoint to MDM config if monitoring stack is deployed."""
     if not profile.monitoring_enabled:
@@ -88,22 +87,36 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         console.print("[dim]Sidecar mode — Cowork telemetry not supported, skipping OTLP config[/dim]")
         return
 
-    monitoring_stack = profile.stack_names.get(
-        "monitoring", f"{profile.identity_pool_name}-otel-collector"
-    )
+    # Try to resolve collector endpoint from stack outputs first,
+    # fall back to profile.otel_collector_endpoint if stack query fails.
+    endpoint = None
+    monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
     try:
         outputs = get_stack_outputs(monitoring_stack, profile.aws_region)
         endpoint = outputs.get("CollectorEndpoint")
     except Exception:
-        console.print("[dim]Could not query monitoring stack — skipping OTLP config[/dim]")
-        return
+        pass
+
+    if not endpoint:
+        # Fallback: use profile-level endpoint if configured
+        endpoint = getattr(profile, "otel_collector_endpoint", None)
 
     if endpoint:
         mdm_config["otlpEndpoint"] = endpoint
         mdm_config["otlpProtocol"] = "http/protobuf"
         console.print(f"[dim]OTLP endpoint: {endpoint}[/dim]")
+
+        # Add CoWork service token for ALB auth bypass (if configured).
+        # CoWork cannot do OIDC — this static token header bypasses JWT validation.
+        cowork_token = getattr(profile, "cowork_service_token", None)
+        if cowork_token:
+            mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})
+            console.print("[dim]CoWork auth token configured for ALB bypass[/dim]")
     else:
-        console.print("[dim]Monitoring endpoint not found — skipping OTLP config[/dim]")
+        console.print(
+            "[yellow]⚠ Could not resolve monitoring endpoint for CoWork telemetry.[/yellow]\n"
+            "[dim]  Set otel_collector_endpoint in your profile, or deploy the monitoring stack first.[/dim]"
+        )
 
 
 def _mdm_keys(config: dict) -> dict:

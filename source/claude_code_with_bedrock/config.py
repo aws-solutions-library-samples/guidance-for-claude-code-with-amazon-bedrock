@@ -39,7 +39,9 @@ class Profile:
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
-    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    okta_auth_server: str = (
+        ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    )
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
@@ -50,6 +52,10 @@ class Profile:
     oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
     oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
+    codebuild_region: str | None = None  # Region for CodeBuild stack/builds; falls back to aws_region when unset
+    codebuild_prior_regions: list[str] = field(
+        default_factory=list
+    )  # Regions a CodeBuild stack was previously deployed to (so destroy can clean orphans after a region change)
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
@@ -125,6 +131,7 @@ class Profile:
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
+    cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
 
     # Legacy field support
     @property
@@ -202,7 +209,11 @@ class Profile:
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
                         okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                        if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                            "okta.com",
+                            "oktapreview.com",
+                            "okta-emea.com",
+                        ):
                             data["provider_type"] = "okta"
                         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                             data["provider_type"] = "auth0"
@@ -348,8 +359,7 @@ class Config:
         # Validate profile name
         if not self._is_valid_profile_name(profile.name):
             raise ValueError(
-                f"Invalid profile name: {profile.name}. "
-                "Name must be alphanumeric with hyphens only, max 64 characters."
+                f"Invalid profile name: {profile.name}. Name must be alphanumeric with hyphens only, max 64 characters."
             )
 
         # Update timestamp

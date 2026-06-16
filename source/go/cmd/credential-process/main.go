@@ -642,8 +642,12 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 		tokenURL = a.cfg.OIDCTokenEndpoint
 	} else {
 		provCfg := provider.ConfigFor(a.providerType, a.cfg.OktaAuthServerID)
-		domain := a.cfg.ProviderDomain
-		tokenURL = "https://" + domain + provCfg.TokenEndpoint
+		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
+			tokenURL = provCfg.TokenEndpoint
+		} else {
+			domain := a.cfg.ProviderDomain
+			tokenURL = "https://" + domain + provCfg.TokenEndpoint
+		}
 	}
 
 	// Resolve confidential client auth (Azure secret/cert)

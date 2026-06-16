@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import get_source_region_for_profile
 
@@ -75,7 +76,11 @@ class PackageCbCommand(Command):
             default=None,
         ),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
-        option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
+        option(
+            "regenerate-installers",
+            description="Regenerate installer scripts using existing binaries from latest dist",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -153,14 +158,13 @@ class PackageCbCommand(Command):
                 cost_center = questionary.text("Cost center:", default="default").ask()
                 organization = questionary.text("Organization:", default="default").ask()
                 otel_resource_attributes = (
-                    f"department={department},team.id={team_id},"
-                    f"cost_center={cost_center},organization={organization}"
+                    f"department={department},team.id={team_id},cost_center={cost_center},organization={organization}"
                 )
 
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -177,7 +181,7 @@ class PackageCbCommand(Command):
             console.print("[yellow]No CodeBuild platforms selected.[/yellow]")
 
         # Check for in-progress builds
-        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
         for plat in list(selected_platforms):
             project_name = stack_outputs.get(CODEBUILD_PLATFORMS[plat]["output_key"])
             if not project_name:
@@ -272,9 +276,7 @@ class PackageCbCommand(Command):
                 pkg._create_documentation(output_dir, profile, timestamp)
 
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(
-            output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes
-        )
+        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Show configuration
         console.print()
@@ -301,7 +303,7 @@ class PackageCbCommand(Command):
                 progress.update(task, completed=True)
 
                 task = progress.add_task("Uploading source to S3...", total=None)
-                s3 = boto3.client("s3", region_name=profile.aws_region)
+                s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
                 try:
                     s3.upload_file(str(source_zip), bucket_name, "source.zip")
                 except ClientError as e:
@@ -318,8 +320,8 @@ class PackageCbCommand(Command):
                     project_name = stack_outputs.get(plat_config["output_key"])
                     if not project_name:
                         console.print(
-                        f"[yellow]Project not found for {plat} — deploy codebuild stack to add it[/yellow]"
-                    )
+                            f"[yellow]Project not found for {plat} — deploy codebuild stack to add it[/yellow]"
+                        )
                         continue
 
                     task = progress.add_task(f"Starting {plat} build...", total=None)
@@ -424,22 +426,24 @@ class PackageCbCommand(Command):
                 settings["env"]["ANTHROPIC_MODEL"] = profile.selected_model
                 if "opus" in profile.selected_model:
                     prefix = profile.selected_model.split(".anthropic")[0]
-                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = (
-                        f"{prefix}.anthropic.claude-3-5-haiku-20241022-v1:0"
-                    )
+                    settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = f"{prefix}.anthropic.claude-3-5-haiku-20241022-v1:0"
                 else:
                     settings["env"]["ANTHROPIC_SMALL_FAST_MODEL"] = profile.selected_model
 
             if profile.monitoring_enabled:
-                monitoring_stack = profile.stack_names.get(
-                    "monitoring", f"{profile.identity_pool_name}-otel-collector"
-                )
+                monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
                 cmd = [
-                    "aws", "cloudformation", "describe-stacks",
-                    "--stack-name", monitoring_stack,
-                    "--region", profile.aws_region,
-                    "--query", "Stacks[0].Outputs",
-                    "--output", "json",
+                    "aws",
+                    "cloudformation",
+                    "describe-stacks",
+                    "--stack-name",
+                    monitoring_stack,
+                    "--region",
+                    profile.aws_region,
+                    "--query",
+                    "Stacks[0].Outputs",
+                    "--output",
+                    "json",
                 ]
 
                 result = subprocess.run(cmd, capture_output=True, text=True)
@@ -473,9 +477,7 @@ class PackageCbCommand(Command):
                         settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
                         is_https = endpoint.startswith("https://")
-                        console.print(
-                            f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]"
-                        )
+                        console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
                     else:
                         console.print("[yellow]Warning: No monitoring endpoint found in stack outputs[/yellow]")
                 else:
@@ -521,11 +523,13 @@ class PackageCbCommand(Command):
                 if stack_outputs.get(config["output_key"]):
                     choices.append(questionary.Choice(f"{plat} — {config['description']}", value=plat, checked=True))
                 else:
-                    choices.append(questionary.Choice(
-                        f"{plat} — {config['description']} (not deployed)",
-                        value=plat,
-                        disabled="deploy codebuild stack first",
-                    ))
+                    choices.append(
+                        questionary.Choice(
+                            f"{plat} — {config['description']} (not deployed)",
+                            value=plat,
+                            disabled="deploy codebuild stack first",
+                        )
+                    )
 
             selected = questionary.checkbox(
                 "Select platform(s) to build (space to select, enter to confirm):",

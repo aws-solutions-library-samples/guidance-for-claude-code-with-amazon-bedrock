@@ -65,6 +65,21 @@ def validate_cognito_user_pool_id(value: str) -> bool | str:
     return "Invalid User Pool ID format"
 
 
+def _remember_prior_codebuild_region(config: dict, prior_region: str) -> None:
+    """Record a CodeBuild region being abandoned, so destroy can clean its orphan.
+
+    When the user changes the CodeBuild region during re-init, a stack may still
+    exist in the old region. ``ccwb destroy`` reads the *current* region, so it
+    can't reach the old one — we persist abandoned regions in
+    ``config["codebuild"]["prior_regions"]`` and have destroy iterate them.
+    Deduped, and never includes the region that is now current.
+    """
+    cb = config.setdefault("codebuild", {})
+    priors = cb.setdefault("prior_regions", [])
+    if prior_region and prior_region not in priors:
+        priors.append(prior_region)
+
+
 class InitCommand(Command):
     name = "init"
     description = "Interactive setup wizard for first-time deployment"
@@ -293,7 +308,9 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None) -> dict[str, Any]:
+    def _gather_configuration(
+        self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None
+    ) -> dict[str, Any]:
         """Gather configuration from user."""
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
@@ -347,8 +364,9 @@ class InitCommand(Command):
 
             provider_domain = questionary.text(
                 "Enter your OIDC provider domain:",
-                validate=lambda x: validate_oidc_provider_domain(x)
-                or "Invalid provider domain format (e.g., company.okta.com)",
+                validate=lambda x: (
+                    validate_oidc_provider_domain(x) or "Invalid provider domain format (e.g., company.okta.com)"
+                ),
                 instruction=(
                     "(e.g., company.okta.com, company.auth0.com, "
                     "login.microsoftonline.com/{tenant-id}/v2.0, "
@@ -408,9 +426,7 @@ class InitCommand(Command):
             # If auto-detection failed (custom domain, Keycloak, PingFederate, etc.)
             # ask the user to select the provider type manually so deploy never gets None
             if provider_type is None:
-                console.print(
-                    "\n[yellow]Could not auto-detect provider type from domain.[/yellow]"
-                )
+                console.print("\n[yellow]Could not auto-detect provider type from domain.[/yellow]")
                 provider_type = questionary.select(
                     "Select your identity provider type:",
                     choices=[
@@ -483,7 +499,8 @@ class InitCommand(Command):
 
                 # Construct issuer URL from the domain entered earlier; let the user override.
                 default_issuer = (
-                    provider_domain if provider_domain.startswith(("http://", "https://"))
+                    provider_domain
+                    if provider_domain.startswith(("http://", "https://"))
                     else f"https://{provider_domain}"
                 ).rstrip("/")
 
@@ -542,11 +559,7 @@ class InitCommand(Command):
                 oidc_jwks_uri = questionary.text(
                     "JWKS URI:",
                     validate=lambda x: bool(x) or "JWKS URI cannot be empty",
-                    default=(
-                        discovered.get("jwks_uri")
-                        or config.get("oidc_jwks_uri")
-                        or f"{oidc_issuer_url}/pf/JWKS"
-                    ),
+                    default=(discovered.get("jwks_uri") or config.get("oidc_jwks_uri") or f"{oidc_issuer_url}/pf/JWKS"),
                     instruction="(full URL)",
                 ).ask()
                 if not oidc_jwks_uri:
@@ -569,7 +582,11 @@ class InitCommand(Command):
                 oidc_thumbprint = questionary.text(
                     "JWKS TLS cert SHA-1 thumbprint:",
                     validate=lambda x: (
-                        bool(x and len(x.replace(":", "")) == 40 and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", "")))
+                        bool(
+                            x
+                            and len(x.replace(":", "")) == 40
+                            and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", ""))
+                        )
                         or "Thumbprint must be 40 hex characters (colons optional)"
                     ),
                     default=computed_thumbprint or config.get("oidc_thumbprint", ""),
@@ -606,7 +623,9 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice("Public client (default, no secret required)", value="public"),
                         questionary.Choice("Confidential client — client secret", value="secret"),
-                        questionary.Choice("Confidential client — certificate (recommended for enterprise)", value="certificate"),
+                        questionary.Choice(
+                            "Confidential client — certificate (recommended for enterprise)", value="certificate"
+                        ),
                     ],
                     default=config.get("azure_auth_mode", "public"),
                 ).ask()
@@ -624,6 +643,7 @@ class InitCommand(Command):
                     if not profile_name:
                         raise ValueError("profile_name is required to store client secret in keyring")
                     import keyring as _keyring
+
                     _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
                     console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
                     console.print(
@@ -701,7 +721,9 @@ class InitCommand(Command):
             if use_custom_port:
                 redirect_port_str = questionary.text(
                     "Enter OAuth callback port:",
-                    validate=lambda x: (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535",
+                    validate=lambda x: (
+                        (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535"
+                    ),
                     default=str(config.get("redirect_port", 8400)),
                     instruction="(must match the port in your IdP's registered redirect URI)",
                 ).ask()
@@ -920,8 +942,7 @@ class InitCommand(Command):
                         hosted_zones, zones_error = self._get_hosted_zones()
                         if hosted_zones:
                             zone_choices = [
-                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})"
-                                for zone in hosted_zones
+                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
                             ]
 
                             default_zone = None
@@ -939,9 +960,7 @@ class InitCommand(Command):
 
                             zone_id = selected_zone.split("(")[-1].rstrip(")")
                             config["monitoring"]["hosted_zone_id"] = zone_id
-                            console.print(
-                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
-                            )
+                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                         else:
                             if zones_error:
                                 console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
@@ -954,9 +973,13 @@ class InitCommand(Command):
                             ).ask()
                             if manual_zone_id and manual_zone_id.strip():
                                 config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                                console.print(
+                                    f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})"
+                                )
                             else:
-                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                                console.print(
+                                    "[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying."
+                                )
                     else:
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
@@ -974,15 +997,11 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = enable_analytics
 
                     if enable_analytics:
-                        console.print(
-                            "[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack"
-                        )
+                        console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
 
                 else:
                     # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
-                    console.print(
-                        "[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar"
-                    )
+                    console.print("[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar")
                     config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
@@ -1008,9 +1027,7 @@ class InitCommand(Command):
                     console.print("Track per-user token consumption, set limits, and receive alerts")
                     console.print("when users approach or exceed their quotas.")
                     console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
-                    console.print(
-                        "[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]"
-                    )
+                    console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
                     enable_quota_monitoring = questionary.confirm(
                         "Enable quota monitoring?",
                         default=config.get("quota", {}).get("enabled", True),
@@ -1171,6 +1188,88 @@ class InitCommand(Command):
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
 
+            # The Windows Server 2022 container fleet only exists in some regions.
+            # CodeBuild is build-only tooling (not user-facing), so when the main
+            # region is unsupported we let the user pick a nearby supported region
+            # here in the wizard — deploy then just executes that choice.
+            from claude_code_with_bedrock.cli.utils.helpers import (
+                CODEBUILD_WINDOWS_REGIONS,
+                find_nearest_codebuild_region,
+            )
+
+            selected_region = config.get("aws", {}).get("region")
+            if selected_region and selected_region not in CODEBUILD_WINDOWS_REGIONS:
+                nearest = find_nearest_codebuild_region(selected_region)
+                # "nearest" can cross continents when no supported region shares the
+                # main region's continent (e.g. af-*/me-* -> us-east-1). Surface that
+                # explicitly so a data-residency-sensitive user doesn't accept a
+                # cross-continent deployment by reflexively pressing Enter.
+                cross_continent = nearest.split("-", 1)[0] != selected_region.split("-", 1)[0]
+                console.print(
+                    f"\n[yellow]⚠ Windows CodeBuild containers are not available in {selected_region}.[/yellow]"
+                )
+                console.print(
+                    "[dim]CodeBuild is build-only tooling (not user-facing), so deploying it to a "
+                    "nearby region is fine — your main infrastructure stays put.[/dim]"
+                )
+                if cross_continent:
+                    console.print(
+                        f"[yellow]Note: no supported region shares your continent, so the nearest is "
+                        f"{nearest} (different geography). Your source code is uploaded to an S3 bucket "
+                        f"there during builds — confirm this is acceptable for data-residency.[/yellow]"
+                    )
+                nearest_label = (
+                    f"{nearest} (nearest supported — DIFFERENT continent)"
+                    if cross_continent
+                    else f"{nearest} (nearest supported)"
+                )
+                cb_choice = questionary.select(
+                    "Which region should CodeBuild deploy to?",
+                    choices=[
+                        questionary.Choice(nearest_label, value=nearest),
+                        *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                    ],
+                ).ask()
+
+                prior_region = config["codebuild"].get("region")
+                config["codebuild"]["region"] = cb_choice
+                if cb_choice:
+                    console.print(
+                        f"[green]✓[/green] CodeBuild will deploy to {cb_choice} "
+                        f"(main infrastructure stays in {selected_region})"
+                    )
+                    if prior_region and prior_region != cb_choice:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                else:
+                    # Skipping/disabling CodeBuild. If a stack was already deployed
+                    # cross-region, record it so destroy still cleans it up — otherwise
+                    # disabling here orphans it (destroy can't reach a region the config
+                    # no longer names).
+                    if prior_region:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                    config["codebuild"]["enabled"] = False
+                    console.print("[yellow]CodeBuild disabled — build Windows binaries manually.[/yellow]")
+            else:
+                # Supported region: CodeBuild deploys alongside the main stacks.
+                prior_region = config["codebuild"].get("region")
+                if prior_region and prior_region != selected_region:
+                    _remember_prior_codebuild_region(config, prior_region)
+                    console.print(
+                        f"[yellow]⚠ CodeBuild now deploys to the main region {selected_region}. "
+                        f"A CodeBuild stack may still exist in {prior_region}; it will be cleaned up "
+                        f"on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                    )
+                config["codebuild"]["region"] = None
+
         # Claude Cowork 3P MDM configuration
         console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
         console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
@@ -1192,9 +1291,30 @@ class InitCommand(Command):
             if existing_extra:
                 console.print(f"[dim]Custom MDM keys configured: {len(existing_extra)} key(s)[/dim]")
             else:
-                console.print("[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]")
+                console.print(
+                    "[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]"
+                )
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
+
+            # Generate CoWork service token for ALB auth bypass (central mode only).
+            # CoWork can't do OIDC, so this static token in X-Cowork-Token header
+            # bypasses JWT validation on the ALB listener.
+            monitoring_mode = config.get("monitoring", {}).get("mode", "central")
+            if monitoring_mode == "central":
+                existing_token = config.get("cowork_3p", {}).get("service_token", "")
+                if not existing_token:
+                    import uuid
+
+                    token = str(uuid.uuid4())
+                    config["cowork_3p"]["service_token"] = token
+                    console.print("[green]✓[/green] Generated CoWork service token for ALB auth bypass")
+                    console.print(
+                        "[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]"
+                    )
+                else:
+                    console.print("[dim]CoWork service token already configured[/dim]")
+
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
@@ -1368,7 +1488,7 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -1380,8 +1500,9 @@ class InitCommand(Command):
             custom_domain = questionary.text(
                 "Custom domain (e.g., downloads.company.com):",
                 default=config.get("distribution", {}).get("custom_domain", ""),
-                validate=lambda text: len(text.strip()) > 0
-                or "Custom domain is required for authenticated landing page",
+                validate=lambda text: (
+                    len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
+                ),
             ).ask()
 
             # Check for Route53 hosted zones
@@ -1775,11 +1896,7 @@ class InitCommand(Command):
             table.add_row("OIDC Provider", okta_domain or "—")
             table.add_row(
                 "OIDC Client ID",
-                (
-                    okta_client_id[:20] + "..."
-                    if len(okta_client_id) > 20
-                    else (okta_client_id or "—")
-                ),
+                (okta_client_id[:20] + "..." if len(okta_client_id) > 20 else (okta_client_id or "—")),
             )
         else:
             table.add_row("Authentication", "AWS SSO / IAM Identity Center (no OIDC)")
@@ -1823,7 +1940,10 @@ class InitCommand(Command):
                 table.add_row("Athena SQL Pipeline", "N/A (sidecar mode — PromQL dashboards included)")
 
         # Show VPC config if monitoring is enabled in central mode
-        if config.get("monitoring", {}).get("enabled") and config.get("monitoring", {}).get("mode", "sidecar") == "central":
+        if (
+            config.get("monitoring", {}).get("enabled")
+            and config.get("monitoring", {}).get("mode", "sidecar") == "central"
+        ):
             vpc_config = config.get("monitoring", {}).get("vpc_config", {})
             if vpc_config.get("create_vpc"):
                 table.add_row("Monitoring VPC", "New VPC will be created")
@@ -1836,12 +1956,17 @@ class InitCommand(Command):
         # Show selected model
         selected_model = config["aws"].get("selected_model", "")
         from claude_code_with_bedrock.models import get_all_model_display_names
+
         model_display = get_all_model_display_names()
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
 
         # Show application inference profiles if configured
-        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+        for tier, key in [
+            ("Opus", "inference_profile_opus_arn"),
+            ("Sonnet", "inference_profile_sonnet_arn"),
+            ("Haiku", "inference_profile_haiku_arn"),
+        ]:
             arn = config["aws"].get(key)
             if arn:
                 table.add_row(f"{tier} Inference Profile", arn)
@@ -2095,6 +2220,8 @@ class InitCommand(Command):
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
+            "codebuild_region": config_data.get("codebuild", {}).get("region"),
+            "codebuild_prior_regions": config_data.get("codebuild", {}).get("prior_regions", []),
             "enable_distribution": config_data.get("distribution", {}).get("enabled", False),
             "distribution_type": config_data.get("distribution", {}).get("type"),
             "distribution_idp_provider": config_data.get("distribution", {}).get("idp_provider"),
@@ -2119,6 +2246,7 @@ class InitCommand(Command):
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
+            "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2457,18 +2585,28 @@ class InitCommand(Command):
                 existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
 
             # Add application inference profile ARNs if present
-            for arn_key in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]:
+            for arn_key in [
+                "inference_profile_opus_arn",
+                "inference_profile_sonnet_arn",
+                "inference_profile_haiku_arn",
+            ]:
                 if getattr(profile, arn_key, None):
                     existing_config["aws"][arn_key] = getattr(profile, arn_key)
 
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
+                if getattr(profile, "codebuild_region", None):
+                    existing_config["codebuild"]["region"] = profile.codebuild_region
+                if getattr(profile, "codebuild_prior_regions", None):
+                    existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
             # Add CoWork 3P configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
             if profile.cowork_3p_extra_keys:
                 cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
+            if profile.cowork_service_token:
+                cowork_3p_config["service_token"] = profile.cowork_service_token
             existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present
@@ -2542,11 +2680,16 @@ class InitCommand(Command):
         selected_model = config["aws"].get("selected_model")
         if selected_model:
             from claude_code_with_bedrock.models import get_all_model_display_names
+
             model_names = get_all_model_display_names()
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
 
         # Show application inference profiles if configured
-        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+        for tier, key in [
+            ("Opus", "inference_profile_opus_arn"),
+            ("Sonnet", "inference_profile_sonnet_arn"),
+            ("Haiku", "inference_profile_haiku_arn"),
+        ]:
             arn = config["aws"].get(key)
             if arn:
                 console.print(f"• {tier} Inference Profile: [cyan]{arn}[/cyan]")
@@ -2812,7 +2955,7 @@ class InitCommand(Command):
             # Validate profile name
             if not Config._is_valid_profile_name(profile_name):
                 console.print(
-                    "[red]Invalid profile name.[/red] " "Must be alphanumeric with hyphens only, max 64 characters.\n"
+                    "[red]Invalid profile name.[/red] Must be alphanumeric with hyphens only, max 64 characters.\n"
                 )
                 continue
 

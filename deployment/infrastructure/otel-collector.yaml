@@ -51,6 +51,17 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable dual-export (OTLP + EMF) for analytics pipeline. When false, only OTLP export is used.
 
+  CoWorkServiceToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Optional static token for CoWork (Claude Desktop) telemetry.
+      When set, a listener rule allows requests with header
+      X-Cowork-Token matching this value to bypass JWT validation.
+      CoWork cannot perform OIDC auth (no browser/helper), so this
+      provides an alternative auth path for its OTLP events.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
@@ -70,6 +81,11 @@ Conditions:
       - !Condition HasExternalCertificate
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
+  HasCoWorkToken: !Not [!Equals [!Ref CoWorkServiceToken, '']]
+  HasCoWorkAuthBypass: !And
+    - !Condition HasCustomDomain
+    - !Condition HasJwtAuth
+    - !Condition HasCoWorkToken
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
 
 # Rules section removed - validation handled by deployment script
@@ -106,6 +122,24 @@ Resources:
       Tags:
         - Key: Purpose
           Value: Claude Code Usage Metrics
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
+  # CoWork telemetry log group. The collector's awscloudwatchlogs/cowork exporter
+  # writes here, and the cowork-dashboard stack attaches MetricFilters to it. A
+  # MetricFilter requires its target log group to already exist at deploy time,
+  # so this group must be a managed resource (not left to runtime auto-creation by
+  # the exporter) — otherwise the cowork-dashboard deploy fails on a fresh stack
+  # with "The specified log group does not exist". RetentionInDays matches the
+  # exporter's log_retention (30).
+  CoWorkEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      RetentionInDays: 30
+      Tags:
+        - Key: Purpose
+          Value: Claude CoWork Telemetry
         - Key: Stack
           Value: !Ref AWS::StackName
 
@@ -273,6 +307,25 @@ Resources:
             TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
 
+  # CoWork auth bypass: allows CoWork traffic (which cannot do OIDC) to reach
+  # the collector by presenting a static service token in a custom header.
+  # Only created when CoWorkServiceToken parameter is set AND JWT auth is enabled.
+  CoWorkListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasCoWorkAuthBypass
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Cowork-Token
+            Values:
+              - !Ref CoWorkServiceToken
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
+
   # IAM Roles
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -336,9 +389,12 @@ Resources:
                     - logs:CreateLogStream
                     - logs:PutLogEvents
                     - logs:CreateLogGroup
+                    - logs:PutRetentionPolicy
                   Resource:
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events:*'
                 - !Ref 'AWS::NoValue'
         # We keep the CloudWatch permissions but remove the AssumeRole permission
         # that was related to the overly permissive trust policy
@@ -494,6 +550,12 @@ Resources:
                   - dimensions: [[decision, OTelLib]]
                     metric_name_selectors: ["claude_code.code_edit_tool.decision"]
 
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
+
             service:
               extensions: [health_check, sigv4auth]
               telemetry:
@@ -507,6 +569,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp, awsemf]
+                logs:
+                  receivers: [otlp]
+                  processors: [resource]
+                  exporters: [awscloudwatchlogs/cowork]
         - !Sub |
             extensions:
               health_check:
@@ -602,6 +668,12 @@ Resources:
                 auth:
                   authenticator: sigv4auth
 
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
+
             service:
               extensions: [health_check, sigv4auth]
               telemetry:
@@ -615,6 +687,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp]
+                logs:
+                  receivers: [otlp]
+                  processors: [resource]
+                  exporters: [awscloudwatchlogs/cowork]
 
   # ECS Task Definition
   TaskDefinition:

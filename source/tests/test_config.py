@@ -118,6 +118,112 @@ class TestProfileModel:
         assert result["allowed_bedrock_regions"] == ["us-east-1", "us-east-2", "us-west-2"]
 
 
+class TestCodebuildRegionField:
+    """Tests for the codebuild_region field (cross-region CodeBuild override)."""
+
+    def test_codebuild_region_defaults_to_none(self):
+        """codebuild_region is optional and defaults to None."""
+        profile = Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+        )
+
+        assert profile.codebuild_region is None
+
+    def test_from_dict_keeps_codebuild_region(self):
+        """from_dict must NOT drop codebuild_region.
+
+        Regression: before this field existed on the dataclass, from_dict's
+        field-filter silently discarded the key, so the cross-region override
+        could never be loaded. This test fails against that prior behavior.
+        """
+        data = {
+            "name": "test",
+            "provider_domain": "test.okta.com",
+            "client_id": "test-client",
+            "credential_storage": "session",
+            "aws_region": "ap-southeast-1",
+            "identity_pool_name": "test-pool",
+            "enable_codebuild": True,
+            "codebuild_region": "ap-southeast-2",
+        }
+
+        profile = Profile.from_dict(data)
+
+        assert profile.codebuild_region == "ap-southeast-2"
+
+    def test_codebuild_region_round_trips(self):
+        """codebuild_region survives a to_dict -> from_dict round-trip."""
+        profile = Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client",
+            credential_storage="session",
+            aws_region="ap-southeast-1",
+            identity_pool_name="test-pool",
+            enable_codebuild=True,
+            codebuild_region="ap-southeast-2",
+        )
+
+        restored = Profile.from_dict(profile.to_dict())
+
+        assert "codebuild_region" in profile.to_dict()
+        assert restored.codebuild_region == "ap-southeast-2"
+
+    def test_legacy_config_without_codebuild_region_loads(self):
+        """Old configs without codebuild_region load and default to None (backward compat)."""
+        data = {
+            "name": "legacy",
+            "provider_domain": "test.okta.com",
+            "client_id": "test-client",
+            "credential_storage": "session",
+            "aws_region": "us-west-2",
+            "identity_pool_name": "test-pool",
+            "enable_codebuild": True,
+        }
+
+        profile = Profile.from_dict(data)
+
+        assert profile.codebuild_region is None
+
+    def test_codebuild_prior_regions_default_empty(self):
+        """codebuild_prior_regions defaults to an empty list (backward compat)."""
+        profile = Profile.from_dict(
+            {
+                "name": "t",
+                "provider_domain": "test.okta.com",
+                "client_id": "x",
+                "credential_storage": "session",
+                "aws_region": "us-west-2",
+                "identity_pool_name": "tp",
+            }
+        )
+        assert profile.codebuild_prior_regions == []
+
+    def test_codebuild_prior_regions_round_trip(self):
+        """codebuild_prior_regions survives from_dict -> to_dict (so destroy can read it)."""
+        profile = Profile.from_dict(
+            {
+                "name": "t",
+                "provider_domain": "test.okta.com",
+                "client_id": "x",
+                "credential_storage": "session",
+                "aws_region": "ap-southeast-1",
+                "identity_pool_name": "tp",
+                "enable_codebuild": True,
+                "codebuild_region": "us-east-1",
+                "codebuild_prior_regions": ["ap-southeast-2", "eu-west-1"],
+            }
+        )
+        assert profile.codebuild_prior_regions == ["ap-southeast-2", "eu-west-1"]
+        restored = Profile.from_dict(profile.to_dict())
+        assert restored.codebuild_prior_regions == ["ap-southeast-2", "eu-west-1"]
+
+
 class TestConfigManager:
     """Tests for the Config manager."""
 
