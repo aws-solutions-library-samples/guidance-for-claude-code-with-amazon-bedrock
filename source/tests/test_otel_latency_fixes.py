@@ -448,6 +448,8 @@ class TestMainErrorPathEmitsValidJson:
         monkeypatch.setattr(mod, "parse_args", lambda: _ns(proxy=None, proxy_port=4318))
         monkeypatch.setattr(mod, "ensure_collector_running", lambda: None)
         monkeypatch.setattr(mod, "read_cached_headers", lambda: None)
+        # Bypass expiry check so the dummy token reaches decode_jwt_payload
+        monkeypatch.setattr(mod, "is_token_expired", lambda *a, **kw: False)
         # Raise after the token is obtained, before any stdout is printed.
         monkeypatch.setattr(
             mod, "decode_jwt_payload", lambda _t: (_ for _ in ()).throw(ValueError("boom"))
