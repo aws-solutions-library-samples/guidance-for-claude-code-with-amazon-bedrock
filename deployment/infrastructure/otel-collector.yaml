@@ -503,6 +503,48 @@ Resources:
                   - key: manager
                     from_context: metadata.x-manager
                     action: upsert
+              # Logs-specific processor: extracts the same attribution from HTTP
+              # headers as the metrics 'attributes' processor, PLUS creates
+              # underscore-renamed copies of dotted keys (user.id → user_id,
+              # session.id → session_id) so CloudWatch MetricFilter Dimensions
+              # can reference them (MetricFilter JSON patterns cannot handle dots
+              # in key names).
+              attributes/logs:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  # Underscore-renamed copies for CloudWatch MetricFilter compat
+                  - key: user_id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user_email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: team_id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: session_id
+                    from_context: metadata.x-session-id
+                    action: upsert
               resource:
                 attributes:
                   - key: aws.account_id
@@ -571,7 +613,7 @@ Resources:
                   exporters: [otlphttp, awsemf]
                 logs:
                   receivers: [otlp]
-                  processors: [resource]
+                  processors: [attributes/logs, resource]
                   exporters: [awscloudwatchlogs/cowork]
         - !Sub |
             extensions:
@@ -651,6 +693,41 @@ Resources:
                   - key: manager
                     from_context: metadata.x-manager
                     action: upsert
+              attributes/logs:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: user_id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user_email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: team_id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: session_id
+                    from_context: metadata.x-session-id
+                    action: upsert
               resource:
                 attributes:
                   - key: aws.account_id
@@ -689,7 +766,7 @@ Resources:
                   exporters: [otlphttp]
                 logs:
                   receivers: [otlp]
-                  processors: [resource]
+                  processors: [attributes/logs, resource]
                   exporters: [awscloudwatchlogs/cowork]
 
   # ECS Task Definition
