@@ -491,6 +491,8 @@ Resources:
                     metric_name_selectors: [".*"]
                   - dimensions: [[model, OTelLib]]
                     metric_name_selectors: [".*"]
+                  - dimensions: [[user.email, OTelLib]]
+                    metric_name_selectors: ["claude_code.token.usage", "claude_code.cost.usage"]
                   - dimensions: [[cost_center, OTelLib]]
                     metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
                   - dimensions: [[type, OTelLib]]
