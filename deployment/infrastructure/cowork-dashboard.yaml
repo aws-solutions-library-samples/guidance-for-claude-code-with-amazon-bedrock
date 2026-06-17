@@ -183,7 +183,7 @@ Resources:
             {
               "type": "text",
               "x": 0, "y": 0, "width": 24, "height": 2,
-              "properties": { "markdown": "## CoWork (Claude Desktop) — Telemetry Dashboard\n\nMetrics extracted from CoWork events via CloudWatch Metric Filters on `/aws/claude-cowork/events`.\n\n**Note:** CoWork does not emit per-user identity. All metrics are aggregate across the deployment." }
+              "properties": { "markdown": "## CoWork (Claude Desktop) — Telemetry Dashboard\n\nMetrics extracted from CoWork events via CloudWatch Metric Filters on `/aws/claude-cowork/events`.\n\n**Note:** CoWork 3P events include a `user.id` attribute (device/installation UUID). Per-device metric dimensions are planned ([#585](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/585)). Current metrics are aggregate across the deployment." }
             },
             {
               "type": "metric",
@@ -287,7 +287,7 @@ Resources:
               "properties": {
                 "title": "Recent CoWork Events (Raw)",
                 "region": "${MetricsRegion}",
-                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, coalesce(body.name, body) as event_name, coalesce(body.attributes.model, attributes.model) as model, coalesce(body.attributes.input_tokens, attributes.input_tokens) as input_tokens, coalesce(body.attributes.output_tokens, attributes.output_tokens) as output_tokens, coalesce(body.attributes.total_cost_usd, attributes.cost_usd) as cost_usd | sort @timestamp desc | limit 20",
+                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, coalesce(body.name, body) as event_name, coalesce(attributes.user_id, body.attributes.user_id) as device_id, coalesce(body.attributes.model, attributes.model) as model, coalesce(body.attributes.input_tokens, attributes.input_tokens) as input_tokens, coalesce(body.attributes.output_tokens, attributes.output_tokens) as output_tokens, coalesce(body.attributes.total_cost_usd, attributes.cost_usd) as cost_usd | sort @timestamp desc | limit 20",
                 "view": "table"
               }
             }
