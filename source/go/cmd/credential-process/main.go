@@ -515,6 +515,7 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 		a.redirectPort,
 		confidential,
 		generic,
+		a.cfg.OIDCPrompt,
 	)
 }
 
