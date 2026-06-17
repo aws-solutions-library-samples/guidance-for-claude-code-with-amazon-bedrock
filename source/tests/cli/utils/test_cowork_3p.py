@@ -42,12 +42,21 @@ class TestAddMonitoringConfig:
         add_monitoring_config(mdm, profile, self._make_console())
         assert "otlpEndpoint" not in mdm
 
-    def test_sidecar_mode_skips(self):
-        """Sidecar mode returns early — CoWork telemetry not supported."""
+    def test_sidecar_mode_uses_local_proxy(self):
+        """Sidecar mode configures CoWork to send to localhost otel-helper proxy."""
         profile = FakeProfile(monitoring_mode="sidecar")
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
-        assert "otlpEndpoint" not in mdm
+        assert mdm["otlpEndpoint"] == "http://localhost:4318"
+        assert mdm["otlpProtocol"] == "http/protobuf"
+
+    def test_sidecar_mode_without_cowork_token(self):
+        """Sidecar mode without cowork_service_token omits otlpHeaders."""
+        profile = FakeProfile(monitoring_mode="sidecar")
+        profile.cowork_service_token = None
+        mdm = {}
+        add_monitoring_config(mdm, profile, self._make_console())
+        assert "otlpHeaders" not in mdm
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_stack_output_success(self, mock_get_outputs):

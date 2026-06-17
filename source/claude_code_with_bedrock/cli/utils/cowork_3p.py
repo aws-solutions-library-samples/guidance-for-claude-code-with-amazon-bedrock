@@ -84,7 +84,16 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
     if monitoring_mode == "sidecar":
-        console.print("[dim]Sidecar mode — Cowork telemetry not supported, skipping OTLP config[/dim]")
+        # Sidecar mode: CoWork sends OTLP logs to the local otel-helper proxy,
+        # which SigV4-signs and forwards to CloudWatch OTLP.
+        mdm_config["otlpEndpoint"] = "http://localhost:4318"
+        mdm_config["otlpProtocol"] = "http/protobuf"
+        console.print("[dim]Sidecar mode — CoWork telemetry via local otel-helper proxy (localhost:4318)[/dim]")
+
+        # Add attribution headers if available (static, per-MDM-group)
+        cowork_token = getattr(profile, "cowork_service_token", None)
+        if cowork_token:
+            mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})
         return
 
     # Try to resolve collector endpoint from stack outputs first,
