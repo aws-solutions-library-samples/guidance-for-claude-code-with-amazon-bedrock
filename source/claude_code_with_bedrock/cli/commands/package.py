@@ -471,6 +471,17 @@ class PackageCommand(Command):
                 go_results = self._build_go_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
                 built_executables = go_results["executables"]
                 built_otel_helpers = go_results["otel_helpers"]
+
+                # Include PowerShell otel-helper fallback for Windows (AV-safe alternative to .exe)
+                if any(plat == "windows" for plat, _ in built_otel_helpers):
+                    import shutil
+
+                    source_dir = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+                    for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                        script_src = source_dir / script_name
+                        if script_src.exists():
+                            shutil.copy2(script_src, output_dir / script_name)
+                            console.print(f"[dim]  Included {script_name} (AV-safe fallback)[/dim]")
             except Exception as e:
                 console.print(f"[red]Go build failed: {e}[/red]")
                 return 1
@@ -2053,6 +2064,14 @@ RUN pyinstaller \
             shutil.copy2(binary_path, output_dir / binary_path.name)
         for plat, helper_path in built_otel_helpers:
             shutil.copy2(helper_path, output_dir / helper_path.name)
+
+        # Include PowerShell otel-helper fallback for Windows
+        if any(plat == "windows" for plat, _ in built_otel_helpers):
+            otel_src = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+            for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                script_src = otel_src / script_name
+                if script_src.exists():
+                    shutil.copy2(script_src, output_dir / script_name)
 
         # Get federation info — try profile first, fall back to CloudFormation
         federation_type = profile.federation_type
