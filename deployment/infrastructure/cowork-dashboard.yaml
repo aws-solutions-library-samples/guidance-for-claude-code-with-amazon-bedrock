@@ -16,21 +16,25 @@ Parameters:
 
 Resources:
   # CloudWatch Metric Filters — extract metrics from CoWork log events.
-  # CoWork emits lam_session_turn_completed events with token counts and cost.
-  # These filters create CloudWatch metrics in the ClaudeCoWork namespace.
+  # CoWork emits events in two schemas depending on mode:
+  #   1. Local Agent Mode: body.name="lam_session_turn_completed", body.attributes.*
+  #   2. Claude-Code-for-Desktop: body="claude_code.api_request", attributes.*
+  # We create filters for both schemas so the dashboard works regardless of mode.
   # Note: AWS limits MetricTransformations to 1 per filter, so each metric
   # requires its own filter resource.
+
+  # --- Claude-Code-for-Desktop schema (body="claude_code.api_request") ---
 
   InputTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-input-tokens
-      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.input
-          MetricValue: $.body.attributes.input_tokens
+          MetricValue: $.attributes.input_tokens
           DefaultValue: 0
 
   OutputTokenMetricFilter:
@@ -38,11 +42,11 @@ Resources:
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-output-tokens
-      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.output
-          MetricValue: $.body.attributes.output_tokens
+          MetricValue: $.attributes.output_tokens
           DefaultValue: 0
 
   CacheReadTokenMetricFilter:
@@ -50,11 +54,11 @@ Resources:
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-cache-read-tokens
-      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_read
-          MetricValue: $.body.attributes.cache_read_input_tokens
+          MetricValue: $.attributes.cache_read_tokens
           DefaultValue: 0
 
   CacheCreationTokenMetricFilter:
@@ -62,11 +66,11 @@ Resources:
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-cache-creation-tokens
-      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_creation
-          MetricValue: $.body.attributes.cache_creation_input_tokens
+          MetricValue: $.attributes.cache_creation_tokens
           DefaultValue: 0
 
   CostMetricFilter:
@@ -74,11 +78,11 @@ Resources:
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-cost
-      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
           MetricName: cost.usage
-          MetricValue: $.body.attributes.total_cost_usd
+          MetricValue: $.attributes.cost_usd
           DefaultValue: 0
 
   SessionCountMetricFilter:
@@ -86,6 +90,81 @@ Resources:
     Properties:
       LogGroupName: /aws/claude-cowork/events
       FilterName: cowork-sessions
+      FilterPattern: '{ $.body = "claude_code.api_request" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: session.turns
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # --- Local Agent Mode schema (body.name="lam_session_turn_completed") ---
+  # These emit to the SAME metric names so both modes contribute to the dashboard.
+
+  LamInputTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-input-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.input
+          MetricValue: $.body.attributes.input_tokens
+          DefaultValue: 0
+
+  LamOutputTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-output-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.output
+          MetricValue: $.body.attributes.output_tokens
+          DefaultValue: 0
+
+  LamCacheReadTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-cache-read-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.cache_read
+          MetricValue: $.body.attributes.cache_read_input_tokens
+          DefaultValue: 0
+
+  LamCacheCreationTokenMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-cache-creation-tokens
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: token.usage.cache_creation
+          MetricValue: $.body.attributes.cache_creation_input_tokens
+          DefaultValue: 0
+
+  LamCostMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-cost
+      FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
+      MetricTransformations:
+        - MetricNamespace: ClaudeCoWork
+          MetricName: cost.usage
+          MetricValue: $.body.attributes.total_cost_usd
+          DefaultValue: 0
+
+  LamSessionCountMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      FilterName: cowork-lam-sessions
       FilterPattern: '{ $.body.name = "lam_session_turn_completed" }'
       MetricTransformations:
         - MetricNamespace: ClaudeCoWork
@@ -208,7 +287,7 @@ Resources:
               "properties": {
                 "title": "Recent CoWork Events (Raw)",
                 "region": "${MetricsRegion}",
-                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, body.name, body.attributes.model, body.attributes.input_tokens, body.attributes.output_tokens, body.attributes.total_cost_usd | sort @timestamp desc | limit 20",
+                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, coalesce(body.name, body) as event_name, coalesce(body.attributes.model, attributes.model) as model, coalesce(body.attributes.input_tokens, attributes.input_tokens) as input_tokens, coalesce(body.attributes.output_tokens, attributes.output_tokens) as output_tokens, coalesce(body.attributes.total_cost_usd, attributes.cost_usd) as cost_usd | sort @timestamp desc | limit 20",
                 "view": "table"
               }
             }
