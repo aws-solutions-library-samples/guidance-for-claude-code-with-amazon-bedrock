@@ -515,3 +515,67 @@ class TestInputValidationContract:
 
         body = _parse(mod.lambda_handler(event, None))
         assert body["allowed"] is False
+
+
+class TestIdcUsernameIdentity:
+    """Tests for IAM Identity Center username-based identity resolution (#592 feedback)."""
+
+    @pytest.fixture
+    def base_env(self):
+        return {
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "QUOTA_TABLE_NAME": "test-table",
+            "ENABLE_FINEGRAINED_QUOTAS": "false",
+            "MONTHLY_TOKEN_LIMIT": "1000000",
+            "DAILY_TOKEN_LIMIT": "100000",
+            "MONTHLY_ENFORCEMENT_MODE": "warn",
+            "DAILY_ENFORCEMENT_MODE": "warn",
+            "MISSING_EMAIL_ENFORCEMENT": "allow",
+        }
+
+    def test_email_session_name_resolves(self, base_env):
+        """Standard case: IDC username is an email address."""
+        mod = _load_quota_check(base_env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {
+                    "caller": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockDeveloper_abc123/user@company.com"
+                }
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Should resolve identity and not return missing_identity
+        assert body.get("reason") != "missing_identity"
+
+    def test_non_email_idc_username_resolves(self, base_env):
+        """IDC username without @ (e.g. 'akshaya.claude') should still resolve."""
+        mod = _load_quota_check(base_env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {
+                    "caller": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockDeveloper_abc123/akshaya.claude"
+                }
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Should resolve identity (not missing_identity)
+        assert body.get("reason") != "missing_identity"
+
+    def test_non_sso_role_without_email_does_not_resolve(self, base_env):
+        """Non-SSO role without @ should NOT be treated as identity."""
+        env = {**base_env, "MISSING_EMAIL_ENFORCEMENT": "block"}
+        mod = _load_quota_check(env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {
+                    "caller": "arn:aws:sts::123456789012:assumed-role/CustomRole/session123"
+                }
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Non-SSO role without email should be blocked
+        assert body.get("reason") == "missing_identity"
+        assert body["allowed"] is False
