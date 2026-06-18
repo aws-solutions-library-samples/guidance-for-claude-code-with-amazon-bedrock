@@ -458,7 +458,7 @@ Resources:
               # Logs-specific processor: extracts the same attribution from HTTP
               # headers as the metrics 'attributes' processor, PLUS creates
               # underscore-renamed copies of dotted keys (user.id → user_id,
-              # session.id → session_id) so CloudWatch MetricFilter Dimensions
+              # team.id → team_id) so CloudWatch MetricFilter Dimensions
               # can reference them (MetricFilter JSON patterns cannot handle dots
               # in key names).
               attributes/logs:
@@ -494,9 +494,8 @@ Resources:
                   - key: team_id
                     from_context: metadata.x-team-id
                     action: upsert
-                  - key: session_id
-                    from_context: metadata.x-session-id
-                    action: upsert
+                  # Note: session.id is native in CoWork events (not from headers).
+                  # Use Logs Insights backtick escaping for session queries.
               resource:
                 attributes:
                   - key: aws.account_id
@@ -653,9 +652,8 @@ Resources:
                   - key: team_id
                     from_context: metadata.x-team-id
                     action: upsert
-                  - key: session_id
-                    from_context: metadata.x-session-id
-                    action: upsert
+                  # Note: session.id is native in CoWork events (not from headers).
+                  # Use Logs Insights backtick escaping for session queries.
               resource:
                 attributes:
                   - key: aws.account_id
