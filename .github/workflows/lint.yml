@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+    branches: ["main", "beta"]
+    paths:
+      - 'source/**'
+      - '.github/workflows/lint.yml'
+  pull_request:
+    branches: ["main", "beta"]
+    paths:
+      - 'source/**'
+      - '.github/workflows/lint.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: Ruff (lint + format)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check (lint)
+        working-directory: source
+        run: ruff check .
+
+      - name: Ruff format (formatting)
+        working-directory: source
+        run: ruff format --check .
