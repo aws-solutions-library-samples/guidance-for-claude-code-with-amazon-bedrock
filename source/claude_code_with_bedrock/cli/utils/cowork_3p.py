@@ -86,9 +86,17 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     if monitoring_mode == "sidecar":
         # Sidecar mode: CoWork sends OTLP logs to the local otel-helper proxy,
         # which SigV4-signs and forwards to CloudWatch OTLP.
+        # IMPORTANT: otel-helper must be running in proxy mode (otel-helper --proxy)
+        # for CoWork telemetry to work. Without it, events are silently dropped
+        # (connection refused on localhost:4318).
         mdm_config["otlpEndpoint"] = "http://localhost:4318"
         mdm_config["otlpProtocol"] = "http/protobuf"
-        console.print("[dim]Sidecar mode — CoWork telemetry via local otel-helper proxy (localhost:4318)[/dim]")
+        console.print(
+            "[dim]Sidecar mode \u2014 CoWork telemetry via local otel-helper proxy (localhost:4318)[/dim]"
+        )
+        console.print(
+            "[dim]  \u2514\u2500 Requires: otel-helper --proxy running on this device[/dim]"
+        )
 
         # Add attribution headers if available (static, per-MDM-group)
         cowork_token = getattr(profile, "cowork_service_token", None)
