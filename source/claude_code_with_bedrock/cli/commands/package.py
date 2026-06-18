@@ -2186,7 +2186,18 @@ RUN pyinstaller \
 
         # Add the appropriate federation field based on type
         if not sso_enabled:
-            pass  # No OIDC/Cognito fields needed — credential-process uses ambient chain
+            # IDC path: include IDC fields so credential-process can drive SSO auth.
+            auth_type = getattr(profile, "auth_type", None)
+            if auth_type == "idc":
+                config[profile_name]["auth_type"] = "idc"
+                if getattr(profile, "idc_start_url", None):
+                    config[profile_name]["idc_start_url"] = profile.idc_start_url
+                if getattr(profile, "idc_account_id", None):
+                    config[profile_name]["idc_account_id"] = profile.idc_account_id
+                if getattr(profile, "idc_permission_set_name", None):
+                    config[profile_name]["idc_permission_set_name"] = profile.idc_permission_set_name
+                idc_region = getattr(profile, "idc_region", None) or profile.aws_region
+                config[profile_name]["idc_region"] = idc_region
         elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
             config[profile_name]["federation_type"] = "direct"

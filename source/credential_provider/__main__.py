@@ -1782,12 +1782,21 @@ class MultiProviderAuth:
 
         return list(set(groups))  # Remove duplicates
 
-    def _check_quota(self, token_claims: dict, id_token: str) -> dict:
+    def _check_quota(self, token_claims: dict, id_token: str = None, frozen_credentials=None) -> dict:
         """Check user quota via the quota check API.
 
+        Supports two auth modes:
+        - OIDC: sends JWT in Authorization header (API Gateway JWT Authorizer)
+        - IDC/IAM: sends SigV4-signed request (API Gateway IAM auth)
+
         Args:
-            token_claims: JWT token claims containing user info (for logging/fallback)
-            id_token: Raw JWT token to send in Authorization header for API Gateway validation
+            token_claims: JWT token claims containing user info (for logging/fallback).
+                          For IDC, may be empty — email is resolved from IAM ARN server-side.
+            id_token: Raw JWT token for OIDC path. None for IDC path.
+            frozen_credentials: Pre-resolved boto credentials for SigV4 signing.
+                               When provided, used directly instead of resolving from
+                               ambient chain. Fixes 403 when ambient creds differ from
+                               the profile's SSO credentials.
 
         Returns:
             Quota check result dict with 'allowed' key
@@ -1796,20 +1805,56 @@ class MultiProviderAuth:
         fail_mode = self.config.get("quota_fail_mode", "open")
         timeout = self.config.get("quota_check_timeout", 5)
 
-        email = token_claims.get("email")
-        if not email:
+        email = token_claims.get("email") if token_claims else None
+        if not email and not id_token:
+            # IDC path: email will be resolved server-side from IAM ARN
+            self._debug_print("IDC mode: email will be resolved from IAM ARN by quota Lambda")
+        elif not email:
             self._debug_print("No email in token claims, skipping quota check")
             return {"allowed": True, "reason": "no_email"}
 
-        groups = self._extract_groups(token_claims)
-        self._debug_print(f"Checking quota for {email} (groups: {groups})")
+        if email:
+            groups = self._extract_groups(token_claims)
+            self._debug_print(f"Checking quota for {email} (groups: {groups})")
+        else:
+            self._debug_print("Checking quota via IAM identity")
 
         try:
-            # Send JWT token in Authorization header for API Gateway JWT Authorizer validation
-            # The API extracts email/groups from validated JWT claims, not query params
-            response = requests.get(
-                f"{quota_api_endpoint}/check", headers={"Authorization": f"Bearer {id_token}"}, timeout=timeout
-            )
+            if id_token:
+                # OIDC path: JWT in Authorization header
+                response = requests.get(
+                    f"{quota_api_endpoint}/check",
+                    headers={"Authorization": f"Bearer {id_token}"},
+                    timeout=timeout
+                )
+            else:
+                # IDC/IAM path: SigV4-signed request using resolved credentials
+                import botocore.session
+                from botocore.auth import SigV4Auth
+                from botocore.awsrequest import AWSRequest
+                from botocore.credentials import Credentials
+
+                if frozen_credentials:
+                    # Use pre-resolved credentials (from passthrough/IDC path).
+                    # frozen_credentials is a ReadOnlyCredentials namedtuple;
+                    # wrap into botocore Credentials for SigV4Auth.
+                    credentials = Credentials(
+                        access_key=frozen_credentials.access_key,
+                        secret_key=frozen_credentials.secret_key,
+                        token=frozen_credentials.token,
+                    )
+                else:
+                    # Fallback: resolve from ambient chain (may differ from profile)
+                    session = botocore.session.get_session()
+                    credentials = session.get_credentials().get_frozen_credentials()
+                url = f"{quota_api_endpoint}/check"
+                request = AWSRequest(method="GET", url=url)
+                SigV4Auth(credentials, "execute-api", self.config.get("aws_region", "us-east-1")).add_auth(request)
+                response = requests.get(
+                    url,
+                    headers=dict(request.headers),
+                    timeout=timeout
+                )
 
             if response.status_code == 200:
                 result = response.json()
@@ -2234,6 +2279,18 @@ class MultiProviderAuth:
             )
             return 1
 
+        # Quota enforcement (SigV4-signed — email resolved from IAM ARN server-side).
+        if self._should_check_quota():
+            self._debug_print("IDC/passthrough: performing SigV4 quota check")
+            quota_result = self._check_quota(token_claims={}, id_token=None, frozen_credentials=frozen)
+            if not quota_result.get("allowed", True):
+                reason = quota_result.get("reason", "quota exceeded")
+                message = quota_result.get("message", "Usage quota exceeded. Contact your administrator.")
+                print(f"Error: {message}", file=sys.stderr)
+                print(f"Reason: {reason}", file=sys.stderr)
+                return 1
+            self._save_quota_check_timestamp()
+
         output = {
             "Version": 1,
             "AccessKeyId": frozen.access_key,
@@ -2260,6 +2317,7 @@ class MultiProviderAuth:
                     id_token = self.get_monitoring_token()
                     token_claims = self._get_cached_token_claims()
                     if id_token and token_claims:
+                        # OIDC path: check with JWT
                         quota_result = self._check_quota(token_claims, id_token)
                         self._save_quota_check_timestamp()
                         if not quota_result.get("allowed", True):
@@ -2267,7 +2325,14 @@ class MultiProviderAuth:
                         else:
                             self._handle_quota_warning(quota_result)
                     else:
-                        self._debug_print("No cached token for quota re-check, skipping")
+                        # IDC/IAM path: check with SigV4 (no JWT needed)
+                        self._debug_print("No JWT token — using IAM identity for quota check")
+                        quota_result = self._check_quota({}, None)
+                        self._save_quota_check_timestamp()
+                        if not quota_result.get("allowed", True):
+                            return self._handle_quota_blocked(quota_result)
+                        else:
+                            self._handle_quota_warning(quota_result)
 
                 # Output cached credentials (intended behavior for AWS CLI)
                 print(json.dumps(cached))  # noqa: S105

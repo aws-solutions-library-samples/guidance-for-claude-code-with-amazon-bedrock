@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: '(SO9610) AWS IAM Identity Center authentication for Claude Code with Bedrock'
+
+Parameters:
+  FederatedRoleName:
+    Type: String
+    Default: 'BedrockIDCFederatedRole'
+    Description: Name of the IAM role for IAM Identity Center federation
+    
+  IdentityPoolName:
+    Type: String
+    Description: Name for the identity pool (used for resource naming)
+    
+  AllowedBedrockRegions:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-west-2'
+    Description: Comma-delimited list of AWS regions allowed for Bedrock access
+    
+  EnableMonitoring:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable monitoring and logging capabilities
+
+Conditions:
+  MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+
+Resources:
+  # Customer-managed IAM policy for Bedrock access
+  BedrockAccessPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${IdentityPoolName}-BedrockAccessPolicy'
+      Description: 'Bedrock access policy for Claude Code with region restrictions'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBedrockInvokeRegional
+            Effect: Allow
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+              - 'bedrock:CallWithBearerToken'
+              - 'bedrock:ListFoundationModels'
+              - 'bedrock:ListInferenceProfiles'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref AllowedBedrockRegions
+          - Sid: AllowBedrockModelInfo
+            Effect: Allow
+            Action:
+              - 'bedrock:GetFoundationModel'
+              - 'bedrock:ListFoundationModels'
+            Resource: '*'
+          # CloudWatch Logs (if monitoring enabled)
+          - !If
+            - MonitoringEnabled
+            - Sid: AllowCloudWatchLogs
+              Effect: Allow
+              Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                - 'logs:DescribeLogGroups'
+                - 'logs:DescribeLogStreams'
+              Resource: !Sub 'arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/claude-code/*'
+            - !Ref 'AWS::NoValue'
+  
+  # IAM role for IAM Identity Center federation
+  BedrockIDCRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref FederatedRoleName
+      Description: 'IAM role for AWS IAM Identity Center federation to access Bedrock'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Trust policy for IAM Identity Center service
+          - Effect: Allow
+            Principal:
+              Service: 'sso.amazonaws.com'
+            Action: 'sts:AssumeRole'
+          # Trust policy for SSO-assumed roles (role chaining from Permission Set)
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'sts:AssumeRole'
+            Condition:
+              ArnLike:
+                'aws:PrincipalArn': !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-reserved/sso.amazonaws.com/*'
+      ManagedPolicyArns:
+        - !Ref BedrockAccessPolicy
+      # Optional CloudWatch access for monitoring
+      Policies: !If
+        - MonitoringEnabled
+        - - PolicyName: 'CloudWatchAccess'
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'cloudwatch:PutMetricData'
+                    - 'cloudwatch:GetMetricStatistics'
+                    - 'cloudwatch:ListMetrics'
+                  Resource: '*'
+        - []
+      Tags:
+        - Key: 'Project'
+          Value: 'ClaudeCodeWithBedrock'
+        - Key: 'Component'
+          Value: 'Authentication'
+        - Key: 'AuthType'
+          Value: 'IDC'
+
+Outputs:
+  RoleArn:
+    Description: 'ARN of the IAM role for Identity Center federation'
+    Value: !GetAtt BedrockIDCRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+      
+  PolicyArn:
+    Description: 'ARN of the Bedrock access policy'
+    Value: !Ref BedrockAccessPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-PolicyArn'
+      
+  RoleName:
+    Description: 'Name of the federated role'
+    Value: !Ref BedrockIDCRole
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleName'

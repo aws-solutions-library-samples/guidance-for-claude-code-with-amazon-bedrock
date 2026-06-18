@@ -116,9 +116,9 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
-                if not getattr(profile, "sso_enabled", True):
-                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
-                    console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
+                if profile.effective_auth_type == "none":
+                    console.print("[yellow]Authentication stack is disabled for 'none' auth type.[/yellow]")
+                    console.print("Enable authentication by running: [cyan]poetry run ccwb init[/cyan]")
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
             elif stack_arg == "networking":
@@ -156,13 +156,13 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
-                if not getattr(profile, "sso_enabled", True):
+                if profile.effective_auth_type not in ("oidc", "idc"):
                     console.print(
-                        "[yellow]Quota monitoring requires SSO authentication "
-                        "(per-user JWT tokens) and cannot be deployed when SSO is disabled.[/yellow]"
+                        "[yellow]Quota monitoring requires user authentication "
+                        "(OIDC or IAM Identity Center) and cannot be deployed without it.[/yellow]"
                     )
                     console.print(
-                        "[dim]See issue #454. Re-run 'ccwb init' with SSO enabled to use quota monitoring.[/dim]"
+                        "[dim]See issue #454. Enable OIDC or IDC authentication to deploy quota monitoring.[/dim]"
                     )
                     return 1
                 if profile.monitoring_enabled:
@@ -202,7 +202,7 @@ class DeployCommand(Command):
             #
             # Ordering constraints:
             # - auth always comes first (produces the IAM role + OIDC provider
-            #   every other stack may reference). Skipped when sso_enabled=False
+            #   every other stack may reference). Skipped when auth_type == "none"
             #   (anonymous mode).
             # - networking must precede any stack that needs VPC/subnet
             #   outputs: monitoring (OTel ECS ALB) and landing-page
@@ -212,7 +212,7 @@ class DeployCommand(Command):
             #   networking but scheduling it here is harmless.
             # - dashboard / analytics / quota all follow monitoring.
             # - codebuild is independent and can trail.
-            if getattr(profile, "sso_enabled", True):
+            if profile.effective_auth_type != "none":
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
 
             # Networking first so any downstream stack can read its outputs.
@@ -241,14 +241,15 @@ class DeployCommand(Command):
                 # has no valid issuer URL otherwise. Skip with a warning rather
                 # than letting CloudFormation fail mid-deploy (issue #454).
                 if getattr(profile, "quota_monitoring_enabled", False):
-                    if getattr(profile, "sso_enabled", True):
+                    if profile.effective_auth_type in ("oidc", "idc"):
                         stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
                     else:
                         console.print(
                             "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
-                            "SSO authentication (per-user JWT tokens) but SSO is disabled in this profile.[/yellow]"
+                            "user authentication (OIDC or IAM Identity Center).[/yellow]"
                         )
                         console.print(
+                            "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy quota monitoring.[/dim]"
                             "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. See issue #454.[/dim]"
                         )
             # Check if CodeBuild is enabled
@@ -718,8 +719,12 @@ class DeployCommand(Command):
                 # Add HTTPS domain parameters if configured
                 monitoring_config = getattr(profile, "monitoring_config", {})
                 if monitoring_config.get("custom_domain"):
-                    params.append(f"CustomDomainName={monitoring_config['custom_domain']}")
-                    params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
+                    domain = monitoring_config["custom_domain"].replace("https://", "").replace("http://", "").rstrip("/")
+                    params.append(f"CustomDomainName={domain}")
+                    if monitoring_config.get("hosted_zone_id"):
+                        params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
+                    if monitoring_config.get("certificate_arn"):
+                        params.append(f"CertificateArn={monitoring_config['certificate_arn']}")
                     # Add OIDC JWT validation parameters for ALB (all IdP types)
                     provider_type = profile.provider_type or ""
                     provider_domain = profile.provider_domain
@@ -1015,7 +1020,7 @@ class DeployCommand(Command):
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-            auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+            auth_type = profile.effective_auth_type
 
             if auth_type == "idc":
                 template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
@@ -1406,7 +1411,12 @@ class DeployCommand(Command):
         Returns ("", "") when SSO is disabled — the CF template's HasJwtAuth
         condition will disable the JWT authorizer and use an open route instead.
         """
-        if not getattr(profile, "sso_enabled", True):
+        # For real Profile objects, use the new auth_type system
+        # For mocks and legacy code, fall back to sso_enabled
+        from claude_code_with_bedrock.config import Profile
+        if isinstance(profile, Profile) and profile.effective_auth_type != "oidc":
+            return "", ""
+        elif not isinstance(profile, Profile) and not getattr(profile, "sso_enabled", True):
             return "", ""
 
         if profile.provider_type == "cognito":

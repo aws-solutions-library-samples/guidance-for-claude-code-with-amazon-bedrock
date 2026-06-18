@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"ccwb-go/internal/config"
 	"ccwb-go/internal/federation"
@@ -71,28 +75,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	// SSO-disabled (passthrough) mode. Resolve before provider-type detection
-	// because cfg.ProviderDomain is intentionally "none" for these profiles
-	// and would trip the auto-detect error otherwise. Mirrors Python PR #303.
+	// Build a minimal app for flag dispatch (works for all auth types).
+	app := &credentialApp{
+		profile: profile,
+		cfg:     cfg,
+	}
+
+	// Flag dispatch — must run before auth-type branching so IDC users
+	// can use --get-monitoring-token, --show-tags, etc.
+	if *clearCache {
+		app.clearCache()
+		os.Exit(0)
+	}
+	if *showTags {
+		os.Exit(app.showTags())
+	}
+	if *getTag != "" {
+		os.Exit(app.getTag(*getTag))
+	}
+	if *getMonitoring {
+		os.Exit(app.getMonitoringToken())
+	}
+	if *checkExpiration {
+		os.Exit(app.checkExpiration())
+	}
+
+	// Auth dispatch: IDC > legacy passthrough > OIDC
+	if cfg.IsIDC() {
+		os.Exit(app.runIDC())
+	}
 	if !cfg.IsSsoEnabled() {
-		// Build a minimal app — we don't need providerType or redirectPort for
-		// passthrough, only the ambient AWS chain.
-		app := &credentialApp{
-			profile: profile,
-			cfg:     cfg,
-		}
-		// Honor the small-but-useful flag set that doesn't depend on OIDC.
-		if *clearCache {
-			app.clearCache()
-			os.Exit(0)
-		}
+		// Legacy passthrough: no IDC fields, just ambient credential chain.
 		os.Exit(app.runPassthrough())
 	}
 
-	// Resolve provider type
+	// OIDC path — resolve provider type and redirect port
 	providerType := resolveProviderType(cfg)
-
-	// Resolve redirect port: REDIRECT_PORT env > config.json > 8400
 	redirectPort := 8400
 	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
 		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
@@ -101,34 +119,8 @@ func main() {
 	} else if cfg.RedirectPort > 0 {
 		redirectPort = cfg.RedirectPort
 	}
-
-	app := &credentialApp{
-		profile:      profile,
-		cfg:          cfg,
-		providerType: providerType,
-		redirectPort: redirectPort,
-	}
-
-	if *clearCache {
-		app.clearCache()
-		os.Exit(0)
-	}
-
-	if *showTags {
-		os.Exit(app.showTags())
-	}
-
-	if *getTag != "" {
-		os.Exit(app.getTag(*getTag))
-	}
-
-	if *getMonitoring {
-		os.Exit(app.getMonitoringToken())
-	}
-
-	if *checkExpiration {
-		os.Exit(app.checkExpiration())
-	}
+	app.providerType = providerType
+	app.redirectPort = redirectPort
 
 	if *refreshIfNeeded {
 		if cfg.CredentialStorage != "session" {
@@ -243,7 +235,17 @@ func (a *credentialApp) getMonitoringToken() int {
 	debugPrint("No valid monitoring token found, triggering authentication...")
 	authResult, err := a.authenticate()
 	if err != nil {
-		debugPrint("Authentication failed: %v", err)
+		// IDC/no-SSO path: OIDC auth not available.
+		// Fall back to writing OTEL cache from STS caller identity so
+		// the otel-helper can serve user attribution headers without a JWT.
+		debugPrint("OIDC authentication not available: %v", err)
+		debugPrint("Attempting STS identity resolution for OTEL attribution...")
+		if a.writeOtelCacheFromSTS() {
+			// Return empty token — otel-helper will use the cached headers
+			// from Layer 1 (file cache) on next invocation.
+			fmt.Println("")
+			return 0
+		}
 		return 1
 	}
 
@@ -526,6 +528,12 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 // installs stay portable across machines. Returns nil for public-client flows.
 func (a *credentialApp) resolveConfidentialAuth() (*oidc.ConfidentialAuth, error) {
 	if a.providerType != "azure" {
+		// Non-Azure providers: use client_secret from config.json if present.
+		// Google Desktop OAuth requires this for token exchange (Google documents
+		// it as non-confidential for installed apps). Other providers use PKCE-only.
+		if a.cfg.ClientSecret != "" {
+			return &oidc.ConfidentialAuth{ClientSecret: a.cfg.ClientSecret}, nil
+		}
 		return nil, nil
 	}
 	mode := a.cfg.AzureAuthMode
@@ -748,6 +756,74 @@ func (a *credentialApp) performQuotaRecheck() {
 	} else {
 		printQuotaWarning(qr)
 	}
+}
+
+// writeOtelCacheFromSTS resolves user identity via STS GetCallerIdentity and
+// writes OTEL attribution headers to the cache file. This enables OTEL user
+// attribution for IDC users who don't have a JWT token.
+//
+// The email is extracted from the assumed-role ARN session name:
+//
+//	arn:aws:sts::123456789012:assumed-role/RoleName/user@company.com
+//
+// Returns true if the cache was written successfully.
+func (a *credentialApp) writeOtelCacheFromSTS() bool {
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		debugPrint("Could not load AWS config for STS: %v", err)
+		return false
+	}
+
+	stsClient := sts.NewFromConfig(cfg)
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		debugPrint("GetCallerIdentity failed: %v", err)
+		return false
+	}
+
+	// Extract email from ARN: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION_NAME
+	arn := ""
+	if identity.Arn != nil {
+		arn = *identity.Arn
+	}
+	email := extractEmailFromARN(arn)
+	if email == "" {
+		debugPrint("Could not extract email from ARN: %s", arn)
+		return false
+	}
+
+	debugPrint("Resolved user email from STS: %s", email)
+
+	// Build OTEL headers with the resolved email
+	userInfo := otel.UserInfo{Email: email}
+	headers := otel.FormatHeaders(userInfo)
+
+	// Cache for 1 hour (IDC sessions are typically longer)
+	expiry := time.Now().Add(1 * time.Hour).Unix()
+	if err := otel.WriteCachedHeaders(a.profile, headers, expiry); err != nil {
+		debugPrint("Failed to write OTEL cache: %v", err)
+		return false
+	}
+
+	debugPrint("Wrote OTEL attribution cache for IDC user: %s", email)
+	return true
+}
+
+// extractEmailFromARN extracts the session name (typically email) from an
+// assumed-role ARN. Format: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION
+func extractEmailFromARN(arn string) string {
+	// Split on "/" — assumed-role ARNs have: assumed-role/RoleName/SessionName
+	parts := strings.Split(arn, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	sessionName := parts[len(parts)-1]
+	// Only return if it looks like an email (contains @)
+	if strings.Contains(sessionName, "@") {
+		return sessionName
+	}
+	return ""
 }
 
 func printQuotaWarning(qr *quota.Result) {

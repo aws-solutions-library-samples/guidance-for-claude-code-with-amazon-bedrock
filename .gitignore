@@ -84,3 +84,4 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+source/go/credential-process

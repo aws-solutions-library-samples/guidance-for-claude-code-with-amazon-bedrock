@@ -479,7 +479,7 @@ class TestInputValidationContract:
         assert response["statusCode"] == 200
         body = _parse(response)
         assert "allowed" in body
-        assert body.get("reason") == "missing_email_claim"
+        assert body.get("reason") in ("missing_email_claim", "missing_identity")
 
     def test_missing_authorizer_context(self, base_env):
         """Request with no authorizer context does not crash."""

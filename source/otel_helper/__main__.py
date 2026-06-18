@@ -197,6 +197,23 @@ def extract_user_info(payload):
     location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
     role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
 
+    # AWS Session Tags — generic extraction from https://aws.amazon.com/tags claim.
+    # If the IdP emits session tags, ALL principal_tags flow through as OTEL dimensions
+    # automatically. No configuration required — whatever tags the admin configured in
+    # their IdP appear as CloudWatch dimensions.
+    # This enables per-project, per-team, per-environment cost attribution without
+    # any code changes when the admin adds new tag keys.
+    aws_tags = payload.get("https://aws.amazon.com/tags", {})
+    principal_tags = aws_tags.get("principal_tags", {}) if isinstance(aws_tags, dict) else {}
+    session_tags = {}
+    if isinstance(principal_tags, dict):
+        for key, value in principal_tags.items():
+            # Session tag values are arrays in Auth0/Okta format, strings in Entra ID
+            if isinstance(value, list) and value and value[0]:
+                session_tags[key] = value[0]
+            elif isinstance(value, str) and value:
+                session_tags[key] = value
+
     return {
         "email": email,
         "user_id": user_id,
@@ -205,6 +222,7 @@ def extract_user_info(payload):
         "department": department,
         "team": team,
         "cost_center": cost_center,
+        "session_tags": session_tags,
         "manager": manager,
         "location": location,
         "role": role,
@@ -235,6 +253,15 @@ def format_as_headers_dict(attributes):
     for attr_key, header_name in header_mapping.items():
         if attr_key in attributes and attributes[attr_key]:
             headers[header_name] = attributes[attr_key]
+
+    # Emit session tags as x-tag-<key> headers (generic, no fixed list)
+    session_tags = attributes.get("session_tags", {})
+    if isinstance(session_tags, dict):
+        for key, value in session_tags.items():
+            if value:  # Skip empty values
+                # Normalize key to lowercase, replace spaces/special chars
+                safe_key = key.lower().replace(" ", "-")
+                headers[f"x-tag-{safe_key}"] = str(value)
 
     return headers
 

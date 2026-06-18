@@ -448,6 +448,7 @@ Resources:
 
   # JWT Authorizer for OIDC token validation (only when SSO is enabled)
   QuotaCheckAuthorizer:
+    Condition: HasJwtAuth
     Type: AWS::ApiGatewayV2::Authorizer
     Condition: HasJwtAuth
     Properties:
@@ -470,7 +471,7 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check (JWT authenticated when SSO enabled, open when disabled)
+  # Route for GET /check — JWT when OIDC configured, IAM auth when IDC/none
   QuotaCheckRouteWithAuth:
     Type: AWS::ApiGatewayV2::Route
     Condition: HasJwtAuth
@@ -481,13 +482,14 @@ Resources:
       AuthorizerId: !Ref QuotaCheckAuthorizer
       AuthorizationType: JWT
 
-  QuotaCheckRouteNoAuth:
+  QuotaCheckRouteIAM:
     Type: AWS::ApiGatewayV2::Route
     Condition: NoJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
+      AuthorizationType: AWS_IAM
 
   # Default stage with auto-deploy
   QuotaCheckStage:
