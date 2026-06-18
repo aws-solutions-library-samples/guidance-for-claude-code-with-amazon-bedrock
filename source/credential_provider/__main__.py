@@ -1173,7 +1173,9 @@ class MultiProviderAuth:
         # Add provider-specific parameters
         if self.provider_type == "azure":
             auth_params["response_mode"] = "query"
-            auth_params["prompt"] = "select_account"
+            prompt = self.config.get("oidc_prompt", "select_account")
+            if prompt:
+                auth_params["prompt"] = prompt
 
         # For generic OIDC, the profile carries full endpoint URLs since path layout varies by IdP.
         # Other providers use the hardcoded paths in PROVIDER_CONFIGS appended to the base URL.
@@ -2465,7 +2467,6 @@ class MultiProviderAuth:
 def main():
     """CLI entry point"""
     import argparse
-    import traceback
 
     parser = argparse.ArgumentParser(description="AWS credential provider for OIDC + Cognito Identity Pool")
     # Check environment variable first, then use default

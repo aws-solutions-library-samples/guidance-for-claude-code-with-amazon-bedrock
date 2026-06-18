@@ -74,6 +74,9 @@ select = [
     "UP", # pyupgrade
 ]
 
+[tool.ruff.per-file-ignores]
+"credential_provider/__main__.py" = ["E501", "F841"]  # Pre-existing issues in HTML templates and quota page
+
 [tool.black]
 line-length = 120
 target-version = ['py310']

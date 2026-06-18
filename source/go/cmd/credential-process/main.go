@@ -258,8 +258,7 @@ func (a *credentialApp) getMonitoringToken() int {
 	_ = a.saveCredentials(awsCreds)
 
 	// Save monitoring token
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
+	a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
 
 	fmt.Println(authResult.IDToken)
 	return 0
@@ -301,8 +300,7 @@ func (a *credentialApp) showTags() int {
 			return 1
 		}
 		claims = authResult.TokenClaims
-		_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-			authResult.IDToken, map[string]interface{}(claims))
+		a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(claims))
 	}
 
 	// Accept both claim shapes that STS itself accepts:
@@ -490,8 +488,7 @@ func (a *credentialApp) run() int {
 	}
 
 	// Save monitoring token (non-blocking)
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
+	a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
 
 	// Persist refresh_token for silent renewal (Cowork 3P support)
 	_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, authResult.RefreshToken)
@@ -520,6 +517,7 @@ func (a *credentialApp) authenticate() (*oidc.AuthResult, error) {
 		a.redirectPort,
 		confidential,
 		generic,
+		a.cfg.OIDCPrompt,
 	)
 }
 
@@ -616,8 +614,7 @@ func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
 		debugPrint("Failed to save silently-refreshed credentials: %v", saveErr)
 	}
 	// Re-save monitoring token to refresh its expiry tracking
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		token, map[string]interface{}(claims))
+	a.saveMonitoringTokenAndHeaders(token, map[string]interface{}(claims))
 	debugPrint("Silent credential refresh succeeded")
 	return creds
 }
@@ -696,8 +693,7 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 	}
 
 	// Update monitoring token with fresh id_token
-	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage,
-		tokenResp.IDToken, map[string]interface{}(claims))
+	a.saveMonitoringTokenAndHeaders(tokenResp.IDToken, map[string]interface{}(claims))
 
 	// Persist rotated refresh_token (some IdPs rotate on every use)
 	if tokenResp.RefreshToken != "" {
@@ -707,6 +703,34 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 	debugPrint("Refresh token exchange succeeded — credentials renewed without browser")
 	return creds
 }
+
+// saveMonitoringTokenAndHeaders persists the monitoring token and also writes
+// the otel-headers cache so the PowerShell fallback (otel-helper.ps1) can serve
+// attribution headers without needing the Go otel-helper binary.
+// This is safe to call from any path that obtains a fresh ID token + claims.
+func (a *credentialApp) saveMonitoringTokenAndHeaders(idToken string, claims map[string]interface{}) {
+	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage, idToken, claims)
+
+	// Also write otel-headers cache for PS1 fallback parity
+	jwtClaims, err := jwt.DecodePayload(idToken)
+	if err != nil {
+		debugPrint("saveMonitoringTokenAndHeaders: JWT decode failed: %v", err)
+		return
+	}
+	costTagKey := "Project"
+	if a.cfg.CostAttributionTagKey != "" {
+		costTagKey = a.cfg.CostAttributionTagKey
+	}
+	userInfo := otel.ExtractUserInfoWithTagKey(jwtClaims, costTagKey)
+	headers := otel.FormatHeaders(userInfo)
+	tokenExp := int64(jwtClaims.GetFloat("exp"))
+	if tokenExp > 0 {
+		if err := otel.WriteCachedHeaders(a.profile, headers, tokenExp); err != nil {
+			debugPrint("saveMonitoringTokenAndHeaders: cache write failed: %v", err)
+		}
+	}
+}
+
 
 func (a *credentialApp) shouldRecheckQuota() bool {
 	if a.cfg.QuotaAPIEndpoint == "" {

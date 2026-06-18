@@ -432,6 +432,11 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 - [Monitoring Guide](assets/docs/MONITORING.md) - OpenTelemetry setup and dashboards
 - [Analytics Guide](assets/docs/ANALYTICS.md) - S3 data lake and Athena SQL queries
 
+### Cost Management
+
+- [Cost Estimates](assets/docs/COST_ESTIMATES.md) - High-level monthly cost estimates by deployment tier and team size
+- [Cost Attribution](assets/docs/COST_ATTRIBUTION.md) - Per-user and per-team cost tracking via CUR 2.0 and Cost Explorer
+
 ### Claude Cowork (Desktop)
 
 - [CoWork 3P Guide](assets/docs/COWORK_3P.md) - Setup and deployment for Claude Desktop with Bedrock

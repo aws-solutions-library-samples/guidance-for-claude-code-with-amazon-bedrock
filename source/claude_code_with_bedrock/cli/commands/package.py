@@ -471,6 +471,17 @@ class PackageCommand(Command):
                 go_results = self._build_go_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
                 built_executables = go_results["executables"]
                 built_otel_helpers = go_results["otel_helpers"]
+
+                # Include PowerShell otel-helper fallback for Windows (AV-safe alternative to .exe)
+                if any(plat == "windows" for plat, _ in built_otel_helpers):
+                    import shutil
+
+                    source_dir = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+                    for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                        script_src = source_dir / script_name
+                        if script_src.exists():
+                            shutil.copy2(script_src, output_dir / script_name)
+                            console.print(f"[dim]  Included {script_name} (AV-safe fallback)[/dim]")
             except Exception as e:
                 console.print(f"[red]Go build failed: {e}[/red]")
                 return 1
@@ -2054,6 +2065,14 @@ RUN pyinstaller \
         for plat, helper_path in built_otel_helpers:
             shutil.copy2(helper_path, output_dir / helper_path.name)
 
+        # Include PowerShell otel-helper fallback for Windows
+        if any(plat == "windows" for plat, _ in built_otel_helpers):
+            otel_src = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+            for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                script_src = otel_src / script_name
+                if script_src.exists():
+                    shutil.copy2(script_src, output_dir / script_name)
+
         # Get federation info — try profile first, fall back to CloudFormation
         federation_type = profile.federation_type
         federation_identifier = None
@@ -2615,11 +2634,13 @@ echo.
 REM Check prerequisites
 echo Checking prerequisites...
 
+set HAS_AWS_CLI=0
 where aws >nul 2>&1
 if %errorlevel% neq 0 (
-    echo INFO: AWS CLI not found -- not required. The credential process binary handles authentication directly.
+    echo INFO: AWS CLI not found -- not required. Profiles will be configured directly.
 ) else (
-    echo OK AWS CLI found [optional]
+    set HAS_AWS_CLI=1
+    echo OK AWS CLI found
 )
 
 echo OK Prerequisites found
@@ -2642,6 +2663,14 @@ REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+)
+
+REM Copy PowerShell OTEL helper (AV-safe alternative to the Go binary)
+if exist "otel-helper.ps1" (
+    copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
+)
+if exist "otel-helper.cmd" (
+    copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
 )
 
 REM Copy configuration
@@ -2667,7 +2696,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -2684,19 +2713,33 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
     REM Get profile-specific region
     for /f %%r in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.'"'"'%%p'"'"'.aws_region"') do set PROFILE_REGION=%%r
 
-
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
+    if "!HAS_AWS_CLI!"=="1" (
+        REM Use AWS CLI to configure profiles
+        aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+        if !errorlevel! neq 0 (
+            echo   ERROR: Failed to configure profile '%%p' via AWS CLI
+        ) else (
+            REM Set region
+            if defined PROFILE_REGION (
+                aws configure set region !PROFILE_REGION! --profile %%p
+            ) else (
+                aws configure set region {profile.aws_region} --profile %%p
+            )
+            echo   OK Created AWS profile '%%p'
+        )
     ) else (
-        aws configure set region {profile.aws_region} --profile %%p
+        REM No AWS CLI — write directly to ~/.aws/config using PowerShell
+        powershell -NoProfile -Command ^
+            "$configDir = Join-Path $env:USERPROFILE '.aws';" ^
+            "if (-not (Test-Path $configDir)) {{ New-Item -ItemType Directory -Path $configDir -Force | Out-Null }};" ^
+            "$configFile = Join-Path $configDir 'config';" ^
+            "$profileName = '%%p';" ^
+            "$region = if ('!PROFILE_REGION!' -ne '') {{ '!PROFILE_REGION!' }} else {{ '{profile.aws_region}' }};" ^
+            "$credProc = ($env:USERPROFILE + '\claude-code-with-bedrock\credential-process.exe --profile ' + $profileName) -replace '\\', '/';" ^
+            "$section = \"`n[profile $profileName]`nregion = $region`ncredential_process = $credProc`n\";" ^
+            "$existing = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }};" ^
+            "if ($existing -notmatch \"\[profile $profileName\]\") {{ Add-Content -Path $configFile -Value $section; Write-Host '  OK Created AWS profile ''$profileName''' }} else {{ Write-Host '  OK AWS profile ''$profileName'' already exists' }}"
     )
-
-    echo   OK Created AWS profile '%%p'
 )
 
 echo.
