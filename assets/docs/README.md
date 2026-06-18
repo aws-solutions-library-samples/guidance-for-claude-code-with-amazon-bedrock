@@ -51,6 +51,12 @@ Once you have your IdP **provider domain** and **client ID**, follow one of thes
 - **Purpose**: Per-user and per-group token quota enforcement and alerts
 - **Audience**: IT administrators managing usage costs
 
+### Cost Estimates
+
+- **File**: [COST_ESTIMATES.md](./COST_ESTIMATES.md)
+- **Purpose**: High-level monthly cost estimates by deployment tier and team size (infrastructure + Bedrock usage)
+- **Audience**: Operations and finance teams planning budget before deployment
+
 ### Cost Attribution
 
 - **File**: [COST_ATTRIBUTION.md](./COST_ATTRIBUTION.md)
