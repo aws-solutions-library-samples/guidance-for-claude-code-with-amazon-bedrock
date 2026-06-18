@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,7 @@ func TestProxyRejectsNonPost(t *testing.T) {
 	handler := makeProxyHandler(
 		aws.Config{
 			Region: "us-east-1",
-			Credentials: aws.CredentialsProviderFunc(func(ctx aws.Context) (aws.Credentials, error) {
+			Credentials: aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 				return aws.Credentials{
 					AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 					SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -79,7 +80,7 @@ func TestProxyForwardsToUpstream(t *testing.T) {
 	handler := makeProxyHandler(
 		aws.Config{
 			Region: "us-east-1",
-			Credentials: aws.CredentialsProviderFunc(func(ctx aws.Context) (aws.Credentials, error) {
+			Credentials: aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 				return aws.Credentials{
 					AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 					SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -129,7 +130,7 @@ func TestProxyPreservesProtobufContentType(t *testing.T) {
 	handler := makeProxyHandler(
 		aws.Config{
 			Region: "us-east-1",
-			Credentials: aws.CredentialsProviderFunc(func(ctx aws.Context) (aws.Credentials, error) {
+			Credentials: aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 				return aws.Credentials{
 					AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 					SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
