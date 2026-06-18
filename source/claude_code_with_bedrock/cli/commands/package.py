@@ -2623,11 +2623,13 @@ echo.
 REM Check prerequisites
 echo Checking prerequisites...
 
+set HAS_AWS_CLI=0
 where aws >nul 2>&1
 if %errorlevel% neq 0 (
-    echo INFO: AWS CLI not found -- not required. The credential process binary handles authentication directly.
+    echo INFO: AWS CLI not found -- not required. Profiles will be configured directly.
 ) else (
-    echo OK AWS CLI found [optional]
+    set HAS_AWS_CLI=1
+    echo OK AWS CLI found
 )
 
 echo OK Prerequisites found
@@ -2700,19 +2702,33 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
     REM Get profile-specific region
     for /f %%r in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.'"'"'%%p'"'"'.aws_region"') do set PROFILE_REGION=%%r
 
-
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
+    if "!HAS_AWS_CLI!"=="1" (
+        REM Use AWS CLI to configure profiles
+        aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+        if !errorlevel! neq 0 (
+            echo   ERROR: Failed to configure profile '%%p' via AWS CLI
+        ) else (
+            REM Set region
+            if defined PROFILE_REGION (
+                aws configure set region !PROFILE_REGION! --profile %%p
+            ) else (
+                aws configure set region {profile.aws_region} --profile %%p
+            )
+            echo   OK Created AWS profile '%%p'
+        )
     ) else (
-        aws configure set region {profile.aws_region} --profile %%p
+        REM No AWS CLI — write directly to ~/.aws/config using PowerShell
+        powershell -NoProfile -Command ^
+            "$configDir = Join-Path $env:USERPROFILE '.aws';" ^
+            "if (-not (Test-Path $configDir)) {{ New-Item -ItemType Directory -Path $configDir -Force | Out-Null }};" ^
+            "$configFile = Join-Path $configDir 'config';" ^
+            "$profileName = '%%p';" ^
+            "$region = if ('!PROFILE_REGION!' -ne '') {{ '!PROFILE_REGION!' }} else {{ '{profile.aws_region}' }};" ^
+            "$credProc = ($env:USERPROFILE + '\claude-code-with-bedrock\credential-process.exe --profile ' + $profileName) -replace '\\', '/';" ^
+            "$section = \"`n[profile $profileName]`nregion = $region`ncredential_process = $credProc`n\";" ^
+            "$existing = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }};" ^
+            "if ($existing -notmatch \"\[profile $profileName\]\") {{ Add-Content -Path $configFile -Value $section; Write-Host '  OK Created AWS profile ''$profileName''' }} else {{ Write-Host '  OK AWS profile ''$profileName'' already exists' }}"
     )
-
-    echo   OK Created AWS profile '%%p'
 )
 
 echo.
