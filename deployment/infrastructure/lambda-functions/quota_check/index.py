@@ -66,16 +66,23 @@ def lambda_handler(event, context):
             email = jwt_claims.get("email")
             groups = extract_groups_from_claims(jwt_claims)
 
-        # Path 2: IAM identity (IDC users) — extract email from caller ARN
+        # Path 2: IAM identity (IDC users) — extract identity from caller ARN
         # ARN format: arn:aws:sts::ACCOUNT:assumed-role/AWSReservedSSO_.../user@company.com
+        # OR:         arn:aws:sts::ACCOUNT:assumed-role/AWSReservedSSO_.../username (non-email IDC usernames)
         if not email:
             identity = event.get("requestContext", {}).get("identity", {})
             caller_arn = identity.get("caller", "") or identity.get("userArn", "")
             if "/" in caller_arn:
                 session_name = caller_arn.split("/")[-1]
                 if "@" in session_name:
+                    # Standard case: IDC username is an email address
                     email = session_name
-                    print(f"Identity resolved from IAM ARN: {email}")
+                    print(f"Identity resolved from IAM ARN (email): {email}")
+                elif session_name and "AWSReservedSSO" in caller_arn:
+                    # IDC username without @ (e.g. "akshaya.claude" instead of "user@company.com")
+                    # Use the raw username as the identity — policies can be set by username
+                    email = session_name
+                    print(f"Identity resolved from IAM ARN (IDC username): {email}")
 
         if not email:
             # Neither JWT nor IAM identity resolved
