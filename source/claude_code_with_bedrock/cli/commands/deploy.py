@@ -779,18 +779,25 @@ class DeployCommand(Command):
                         import boto3
 
                         ecs_client = boto3.client("ecs", region_name=profile.aws_region)
-                        ecs_client.update_service(
-                            cluster="claude-code-otel-cluster",
-                            service="otel-collector-service",
-                            forceNewDeployment=True,
-                        )
-                        console.print("[dim]Forced ECS service redeploy to load new collector config[/dim]")
+                        cluster = "claude-code-otel-cluster"
+                        services = ecs_client.list_services(cluster=cluster)["serviceArns"]
+                        if services:
+                            ecs_client.update_service(
+                                cluster=cluster,
+                                service=services[0],
+                                forceNewDeployment=True,
+                            )
+                            console.print("[dim]Forced ECS service redeploy to load new collector config[/dim]")
+                        else:
+                            console.print(
+                                "[dim]No ECS service found in cluster (first deploy — service starting)[/dim]"
+                            )
                     except Exception as e:
                         # Non-fatal: stack deployed fine, just couldn't force redeploy
                         console.print(
                             f"[yellow]⚠ Stack deployed but could not force ECS redeploy: {e}[/yellow]\n"
-                            "[dim]  Run: aws ecs update-service --cluster claude-code-otel-cluster "
-                            "--service otel-collector-service --force-new-deployment[/dim]"
+                            "[dim]  Run: aws ecs list-services --cluster claude-code-otel-cluster "
+                            "to find the service name, then force redeploy[/dim]"
                         )
 
                 # Save OTel collector endpoint to profile immediately after deploy
