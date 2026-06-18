@@ -145,7 +145,8 @@ class DeployCommand(Command):
                     return 1
                 if getattr(profile, "monitoring_mode", "central") == "sidecar":
                     console.print(
-                        "[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]"
+                        "[yellow]CoWork dashboard requires central monitoring mode"
+                        " (Cowork cannot export telemetry in sidecar mode).[/yellow]"
                     )
                     return 1
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
@@ -192,7 +193,8 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring,"
+                    " dashboard, cowork-dashboard, analytics, quota, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -996,7 +998,7 @@ class DeployCommand(Command):
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -1109,7 +1111,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1138,7 +1140,6 @@ class DeployCommand(Command):
         elif stack_type == "quota":
             template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
             stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
-            dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
             console.print(
                 f"\n[cyan]# Step 1: Package Lambda functions\n"
@@ -1149,7 +1150,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [

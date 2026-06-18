@@ -263,7 +263,10 @@ class QuotaSetUserCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+            console.print(
+                f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                f" {policy.daily_enforcement_mode.value} (daily)"
+            )
             return 0
 
         except PolicyAlreadyExistsError:
@@ -282,7 +285,10 @@ class QuotaSetUserCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+                console.print(
+                    f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                    f" {policy.daily_enforcement_mode.value} (daily)"
+                )
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -377,7 +383,10 @@ class QuotaSetGroupCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+            console.print(
+                f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                f" {policy.daily_enforcement_mode.value} (daily)"
+            )
             return 0
 
         except PolicyAlreadyExistsError:
@@ -396,7 +405,10 @@ class QuotaSetGroupCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+                console.print(
+                    f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                    f" {policy.daily_enforcement_mode.value} (daily)"
+                )
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")
@@ -486,7 +498,10 @@ class QuotaSetDefaultCommand(Command):
             console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
             if policy.daily_token_limit:
                 console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-            console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+            console.print(
+                f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                f" {policy.daily_enforcement_mode.value} (daily)"
+            )
             return 0
 
         except PolicyAlreadyExistsError:
@@ -505,7 +520,10 @@ class QuotaSetDefaultCommand(Command):
                 console.print(f"  Monthly limit: {_format_tokens(policy.monthly_token_limit)}")
                 if policy.daily_token_limit:
                     console.print(f"  Daily limit: {_format_tokens(policy.daily_token_limit)}")
-                console.print(f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)")
+                console.print(
+                    f"  Enforcement: {policy.enforcement_mode.value} (monthly),"
+                    f" {policy.daily_enforcement_mode.value} (daily)"
+                )
                 return 0
             except QuotaPolicyError as e:
                 console.print(f"[red]Failed to update policy: {e}[/red]")

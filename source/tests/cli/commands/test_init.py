@@ -33,9 +33,9 @@ class TestNamedValidationFunctions:
 
         for name in invalid_names:
             result = validate_identity_pool_name(name)
-            assert (
-                result == "Invalid name (alphanumeric, underscore, hyphen only)"
-            ), f"Expected '{name}' to be invalid, but got: {result}"
+            assert result == "Invalid name (alphanumeric, underscore, hyphen only)", (
+                f"Expected '{name}' to be invalid, but got: {result}"
+            )
 
     def test_validate_cognito_user_pool_id_valid(self):
         """Test validate_cognito_user_pool_id with valid IDs."""
@@ -104,9 +104,9 @@ class TestInitCommandValidation:
 
         for name in invalid_names:
             result = validator(name)
-            assert (
-                result == "Invalid name (alphanumeric, underscore, hyphen only)"
-            ), f"Expected '{name}' to be invalid, but got: {result}"
+            assert result == "Invalid name (alphanumeric, underscore, hyphen only)", (
+                f"Expected '{name}' to be invalid, but got: {result}"
+            )
 
     def test_cognito_user_pool_id_validator_valid_ids(self):
         """Test that valid Cognito User Pool IDs pass validation."""
@@ -196,8 +196,7 @@ class TestInitCommandValidation:
 
         def identity_validator(x):
             return (
-                bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-                or "Invalid name (alphanumeric, underscore, hyphen only)"
+                bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or "Invalid name (alphanumeric, underscore, hyphen only)"
             )
 
         def cognito_validator(x):
@@ -313,8 +312,9 @@ class TestInitCommandRegression:
         # The lambdas should be able to execute without raising exceptions
         # We test this by creating similar lambdas here
         test_lambdas = [
-            lambda x: bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x))
-            or "Invalid name (alphanumeric, underscore, hyphen only)",
+            lambda x: (
+                bool(x and re.match(r"^[a-zA-Z0-9_-]+$", x)) or "Invalid name (alphanumeric, underscore, hyphen only)"
+            ),
             lambda x: bool(re.match(r"^[\w-]+_[0-9a-zA-Z]+$", x)) or "Invalid User Pool ID format",
         ]
 
@@ -436,6 +436,7 @@ class TestSsoDisabledRendering:
     @pytest.fixture
     def cmd(self):
         from claude_code_with_bedrock.cli.commands.init import InitCommand
+
         return InitCommand()
 
     @pytest.fixture
@@ -516,6 +517,7 @@ class TestSsoDisabledRendering:
         """
         import json
         from unittest.mock import patch
+
         from claude_code_with_bedrock.config import Config
 
         config_data = {
@@ -536,9 +538,11 @@ class TestSsoDisabledRendering:
         config_file = config_dir / "config.json"
         config_file.write_text(json.dumps({"schema_version": "2.0", "active_profile": None}))
 
-        with patch.object(Config, "CONFIG_DIR", config_dir), \
-             patch.object(Config, "CONFIG_FILE", config_file), \
-             patch.object(Config, "PROFILES_DIR", profiles_dir):
+        with (
+            patch.object(Config, "CONFIG_DIR", config_dir),
+            patch.object(Config, "CONFIG_FILE", config_file),
+            patch.object(Config, "PROFILES_DIR", profiles_dir),
+        ):
             # Must not raise KeyError or TypeError
             cmd._save_configuration(config_data, "test-no-sso")
 
@@ -559,6 +563,7 @@ class TestSsoDisabledRendering:
         """
         import json
         from unittest.mock import patch
+
         from claude_code_with_bedrock.config import Config
 
         config_data = {
@@ -579,9 +584,11 @@ class TestSsoDisabledRendering:
         config_file = config_dir / "config.json"
         config_file.write_text(json.dumps({"schema_version": "2.0", "active_profile": "test-roundtrip"}))
 
-        with patch.object(Config, "CONFIG_DIR", config_dir), \
-             patch.object(Config, "CONFIG_FILE", config_file), \
-             patch.object(Config, "PROFILES_DIR", profiles_dir):
+        with (
+            patch.object(Config, "CONFIG_DIR", config_dir),
+            patch.object(Config, "CONFIG_FILE", config_file),
+            patch.object(Config, "PROFILES_DIR", profiles_dir),
+        ):
             cmd._save_configuration(config_data, "test-roundtrip")
 
             # Reload from disk
@@ -693,11 +700,13 @@ class TestLandingPageRegionResolution:
             return MagicMock()
 
         cmd = InitCommand()
-        with patch.object(questionary, "select", fake_select), \
-             patch.object(questionary, "text", fake_text), \
-             patch.object(questionary, "password", fake_password), \
-             patch.object(questionary, "confirm", fake_confirm), \
-             patch("boto3.client", spy_client):
+        with (
+            patch.object(questionary, "select", fake_select),
+            patch.object(questionary, "text", fake_text),
+            patch.object(questionary, "password", fake_password),
+            patch.object(questionary, "confirm", fake_confirm),
+            patch("boto3.client", spy_client),
+        ):
             try:
                 cmd._gather_configuration(progress)
             except self._StopAfterSecrets:
@@ -731,10 +740,7 @@ class TestStoreIdpSecret:
             pass
 
         client.exceptions.ResourceExistsException = _ResourceExists
-        suffixed = (
-            "arn:aws:secretsmanager:ap-southeast-1:111111111111:"
-            "secret:my-pool-distribution-idp-secret-FhLi4n"
-        )
+        suffixed = "arn:aws:secretsmanager:ap-southeast-1:111111111111:secret:my-pool-distribution-idp-secret-FhLi4n"
         if exists:
             client.create_secret.side_effect = _ResourceExists()
             client.update_secret.return_value = {"ARN": suffixed}

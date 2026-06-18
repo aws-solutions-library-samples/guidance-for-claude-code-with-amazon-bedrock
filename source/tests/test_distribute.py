@@ -5,8 +5,7 @@
 
 import hashlib
 import zipfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -228,7 +227,7 @@ class TestCreatePerOsArchives:
 
     def test_each_archive_contains_platform_binary(self, cmd, package_dir):
         archives = cmd._create_per_os_archives(package_dir)
-        for platform, label, archive_path in archives:
+        for _platform, _label, archive_path in archives:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 names = zf.namelist()
                 # Should have config.json in every platform archive
@@ -237,7 +236,7 @@ class TestCreatePerOsArchives:
     def test_windows_archive_has_bat_and_ps1(self, cmd, package_dir):
         (package_dir / "ccwb-install.ps1").write_text("# ps1")
         archives = cmd._create_per_os_archives(package_dir)
-        win_archives = [(p, l, a) for p, l, a in archives if p == "windows"]
+        win_archives = [(p, label, a) for p, label, a in archives if p == "windows"]
         assert len(win_archives) == 1
         _, _, win_path = win_archives[0]
         with zipfile.ZipFile(win_path, "r") as zf:
@@ -299,4 +298,8 @@ class TestGenerateRestrictedUrl:
 
         cmd._generate_restricted_url(mock_s3, "b", "k", "1.1.1.1", 24)
         call_args = mock_s3.generate_presigned_url.call_args
-        assert call_args[1]["ExpiresIn"] == 24 * 3600 if "ExpiresIn" in call_args[1] else call_args[0][1]["ExpiresIn"] == 24 * 3600
+        assert (
+            call_args[1]["ExpiresIn"] == 24 * 3600
+            if "ExpiresIn" in call_args[1]
+            else call_args[0][1]["ExpiresIn"] == 24 * 3600
+        )

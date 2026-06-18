@@ -5,9 +5,6 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestConfigExportOutput:
@@ -15,12 +12,16 @@ class TestConfigExportOutput:
 
     def test_source_has_output_option(self):
         """ConfigExportCommand defines --output/-o option."""
-        source = (Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py").read_text()
+        source = (
+            Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py"
+        ).read_text()
         assert 'option("output", "o"' in source
 
     def test_source_has_include_secrets_option(self):
         """ConfigExportCommand defines --include-secrets option."""
-        source = (Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py").read_text()
+        source = (
+            Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py"
+        ).read_text()
         assert 'option("include-secrets"' in source
 
     def test_output_path_writes_file(self, tmp_path):
@@ -57,21 +58,27 @@ class TestConfigExportOutput:
     def test_include_secrets_preserves_sensitive_fields(self):
         """When include_secrets is True, sensitive fields are NOT sanitized."""
         # This is a structural test: verify the code path
-        source = (Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py").read_text()
+        source = (
+            Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py"
+        ).read_text()
         # The key logic: include_secrets skips sanitization
         assert "profile_dict if include_secrets else self._sanitize_profile(profile_dict)" in source
 
     def test_default_behavior_unchanged(self):
         """Default (no flags) still outputs to stdout with sanitization."""
-        source = (Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py").read_text()
+        source = (
+            Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py"
+        ).read_text()
         # output default is None (stdout)
-        assert 'default=None' in source
+        assert "default=None" in source
         # When no output_path, prints to stdout
         assert "print(json_output)" in source
 
     def test_file_write_error_handled_gracefully(self):
         """OSError on file write is caught and returns error message."""
-        source = (Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py").read_text()
+        source = (
+            Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "context.py"
+        ).read_text()
         # Verify explicit OSError handling for file write
         assert "except OSError as e:" in source
         assert "Error writing to" in source

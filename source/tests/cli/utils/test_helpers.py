@@ -4,10 +4,7 @@
 """Tests for cli/utils/helpers.py."""
 
 import configparser
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from claude_code_with_bedrock.cli.utils.helpers import (
     CODEBUILD_WINDOWS_REGIONS,

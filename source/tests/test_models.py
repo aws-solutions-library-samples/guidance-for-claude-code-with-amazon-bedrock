@@ -355,11 +355,13 @@ class TestGetAllBedrockRegions:
 
     def test_returns_sorted_list(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         assert regions == sorted(regions)
 
     def test_contains_major_regions(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         # Must include key commercial regions
         assert "us-east-1" in regions
@@ -370,20 +372,24 @@ class TestGetAllBedrockRegions:
 
     def test_no_duplicates(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         assert len(regions) == len(set(regions))
 
     def test_all_regions_valid_format(self):
         """All regions should match AWS region format."""
         import re
+
         from claude_code_with_bedrock.models import get_all_bedrock_regions
-        pattern = re.compile(r'^[a-z]{2}(-gov)?-(north|south|east|west|central|northeast|southeast)-\d+$')
+
+        pattern = re.compile(r"^[a-z]{2}(-gov)?-(north|south|east|west|central|northeast|southeast)-\d+$")
         for region in get_all_bedrock_regions():
             assert pattern.match(region), f"Invalid region format: {region}"
 
     def test_consistent_with_model_data(self):
         """Every destination region in CLAUDE_MODELS should appear (excluding sentinels)."""
         from claude_code_with_bedrock.models import CLAUDE_MODELS, get_all_bedrock_regions
+
         regions = set(get_all_bedrock_regions())
         for model_config in CLAUDE_MODELS.values():
             for profile_config in model_config.get("profiles", {}).values():
@@ -516,5 +522,6 @@ class TestResolveModelForTier:
             for tier in ["haiku", "sonnet", "opus", "fable"]:
                 result = resolve_model_for_tier(tier, prefix)
                 if result is not None:
-                    assert f"{prefix}." in result, \
+                    assert f"{prefix}." in result, (
                         f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    )

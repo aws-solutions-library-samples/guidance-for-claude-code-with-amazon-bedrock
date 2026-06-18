@@ -4,7 +4,6 @@
 """Regression tests for custom:* attribute priority in otel_helper."""
 
 import importlib.util
-import sys
 from pathlib import Path
 
 # Load otel_helper/__main__.py as a module without conflicting with pytest's __main__

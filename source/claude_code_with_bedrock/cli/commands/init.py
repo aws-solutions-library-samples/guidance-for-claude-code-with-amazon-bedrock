@@ -47,7 +47,10 @@ def validate_identity_pool_name(value: str) -> bool | str:
     # Various AWS resources append further suffixes. Removing explicit Names in CF
     # templates avoids hard limits, but shorter names prevent other edge cases.
     if len(value) > 20:
-        return "Name too long (max 20 characters). This is used as the base for all CloudFormation stack names and AWS resources."
+        return (
+            "Name too long (max 20 characters)."
+            " This is used as the base for all CloudFormation stack names and AWS resources."
+        )
     return True
 
 
@@ -655,8 +658,10 @@ class InitCommand(Command):
                 elif auth_mode == "certificate":
                     console.print(
                         "\n[dim]Generate a self-signed cert with:[/dim]\n"
-                        "[dim]  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes[/dim]\n"
-                        "[dim]Then upload cert.pem to your app registration → Certificates & secrets.[/dim]\n"
+                        "[dim]  openssl req -x509 -newkey rsa:2048 -keyout key.pem"
+                        " -out cert.pem -days 365 -nodes[/dim]\n"
+                        "[dim]Then upload cert.pem to your app registration"
+                        " → Certificates & secrets.[/dim]\n"
                     )
                     client_certificate_path = questionary.text(
                         "Path to certificate PEM file:",
@@ -878,14 +883,16 @@ class InitCommand(Command):
                     "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
                     "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
                     "  [yellow]-[/yellow] Each machine manages its own collector process\n"
-                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
+                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported"
+                    " (cannot reach localhost collector)\n"
                 )
                 console.print(
                     "[cyan]Central:[/cyan]\n"
                     "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
                     "  [green]+[/green] Single collector for all users — centralized management\n"
                     "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
-                    "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
+                    "  [green]+[/green] Recommended if IT policies prevent users"
+                    " running a local OTel collector on localhost\n"
                     "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
                     "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
                     "  [yellow]-[/yellow] Requires network connectivity to collector endpoint\n"
@@ -974,7 +981,8 @@ class InitCommand(Command):
                             if manual_zone_id and manual_zone_id.strip():
                                 config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
                                 console.print(
-                                    f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})"
+                                    f"[green]✓[/green] HTTPS configured:"
+                                    f" {custom_domain} (zone: {manual_zone_id.strip()})"
                                 )
                             else:
                                 console.print(
@@ -1488,7 +1496,9 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+                        secret_arn = (
+                            f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+                        )
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")

@@ -60,15 +60,17 @@ def test_windows_only_async_build_is_not_a_failure(mock_config):
     command = PackageCommand()
     tester = CommandTester(command)
 
-    with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config), patch(
-        "questionary.confirm"
-    ) as mock_confirm, patch.object(
-        # Simulate the async CodeBuild submission: no local binary produced.
-        PackageCommand, "_build_executable", return_value=None
-    ), patch.object(
-        PackageCommand, "_create_config"
-    ), patch.object(
-        PackageCommand, "_create_installer"
+    with (
+        patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config),
+        patch("questionary.confirm") as mock_confirm,
+        patch.object(
+            # Simulate the async CodeBuild submission: no local binary produced.
+            PackageCommand,
+            "_build_executable",
+            return_value=None,
+        ),
+        patch.object(PackageCommand, "_create_config"),
+        patch.object(PackageCommand, "_create_installer"),
     ):
         mock_confirm.return_value.ask.return_value = False
 
@@ -88,10 +90,10 @@ def test_windows_only_without_codebuild_still_errors(mock_config, mock_profile):
     command = PackageCommand()
     tester = CommandTester(command)
 
-    with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config), patch(
-        "questionary.confirm"
-    ) as mock_confirm, patch.object(
-        PackageCommand, "_build_executable", return_value=None
+    with (
+        patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config),
+        patch("questionary.confirm") as mock_confirm,
+        patch.object(PackageCommand, "_build_executable", return_value=None),
     ):
         mock_confirm.return_value.ask.return_value = False
 

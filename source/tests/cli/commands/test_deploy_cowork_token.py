@@ -3,10 +3,6 @@
 
 """Tests for CoWork service token parameter threading in deploy."""
 
-import pytest
-
-from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
-
 
 class TestCoWorkServiceTokenParam:
     """Verify CoWorkServiceToken is included in monitoring stack params when set."""

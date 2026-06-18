@@ -286,10 +286,12 @@ class DistributeCommand(Command):
                 f"use one of these fixes:[/yellow]"
             )
             console.print(
-                f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)"
+                f"  Option 1: [cyan]pip install truststore[/cyan]  "
+                f"(makes Python trust the {proxy_name} CA from the OS store)"
             )
             console.print(
-                f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)"
+                f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  "
+                f"(ask IT for the .pem file)"
             )
             console.print()
 

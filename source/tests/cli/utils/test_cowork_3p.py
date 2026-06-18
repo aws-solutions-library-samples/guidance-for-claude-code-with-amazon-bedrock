@@ -5,8 +5,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from claude_code_with_bedrock.cli.utils.cowork_3p import add_monitoring_config
 
 
@@ -52,9 +50,7 @@ class TestAddMonitoringConfig:
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_stack_output_success(self, mock_get_outputs):
         """When stack outputs resolve, endpoint is set from CollectorEndpoint."""
-        mock_get_outputs.return_value = {
-            "CollectorEndpoint": "https://telemetry.example.com"
-        }
+        mock_get_outputs.return_value = {"CollectorEndpoint": "https://telemetry.example.com"}
         profile = FakeProfile()
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
@@ -97,9 +93,7 @@ class TestAddMonitoringConfig:
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_custom_stack_name_from_profile(self, mock_get_outputs):
         """Uses stack name from profile.stack_names if configured."""
-        mock_get_outputs.return_value = {
-            "CollectorEndpoint": "https://custom-stack.example.com"
-        }
+        mock_get_outputs.return_value = {"CollectorEndpoint": "https://custom-stack.example.com"}
         profile = FakeProfile()
         profile.stack_names = {"monitoring": "my-custom-monitoring-stack"}
         mdm = {}
@@ -112,9 +106,7 @@ class TestAddMonitoringConfig:
         """When cowork_service_token is set, otlpHeaders includes X-Cowork-Token."""
         import json
 
-        mock_get_outputs.return_value = {
-            "CollectorEndpoint": "https://collector.example.com"
-        }
+        mock_get_outputs.return_value = {"CollectorEndpoint": "https://collector.example.com"}
         profile = FakeProfile()
         profile.cowork_service_token = "test-token-abc123"
         mdm = {}
@@ -126,9 +118,7 @@ class TestAddMonitoringConfig:
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_no_cowork_service_token_omits_otlp_headers(self, mock_get_outputs):
         """When cowork_service_token is not set, otlpHeaders is not added."""
-        mock_get_outputs.return_value = {
-            "CollectorEndpoint": "https://collector.example.com"
-        }
+        mock_get_outputs.return_value = {"CollectorEndpoint": "https://collector.example.com"}
         profile = FakeProfile()
         # No cowork_service_token attribute
         mdm = {}
@@ -138,9 +128,7 @@ class TestAddMonitoringConfig:
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_empty_cowork_service_token_omits_otlp_headers(self, mock_get_outputs):
         """When cowork_service_token is empty string, otlpHeaders is not added."""
-        mock_get_outputs.return_value = {
-            "CollectorEndpoint": "https://collector.example.com"
-        }
+        mock_get_outputs.return_value = {"CollectorEndpoint": "https://collector.example.com"}
         profile = FakeProfile()
         profile.cowork_service_token = ""
         mdm = {}

@@ -1125,7 +1125,7 @@ class TestCommand(Command):
 
             # Test 1: Create user policy
             try:
-                policy = manager.create_policy(
+                manager.create_policy(
                     policy_type=PolicyType.USER,
                     identifier=test_email,
                     monthly_token_limit=1000000,
@@ -1396,9 +1396,6 @@ class TestCommand(Command):
             result = self._test_quota_config(profile)
             test_results.append(result)
             progress.update(task, completed=True)
-
-            # If config is not valid, we can still continue with some tests
-            config_ok = result["status"] == "✓"
 
             # 2. Test quota API endpoint (/check)
             endpoint = endpoint_override or getattr(profile, "quota_api_endpoint", None)

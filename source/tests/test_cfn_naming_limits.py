@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 INFRA_DIR = Path(__file__).parent.parent.parent / "deployment" / "infrastructure"
 
 # AWS resource types with strict naming limits
@@ -30,12 +29,26 @@ RESOURCE_NAME_LIMITS = {
 
 class CFLoader(yaml.SafeLoader):
     """YAML loader that handles CloudFormation intrinsic functions."""
+
     pass
 
 
 # Register CF intrinsic constructors
-for tag in ["!Ref", "!Sub", "!GetAtt", "!If", "!Equals", "!Not", "!Select",
-            "!Join", "!Split", "!FindInMap", "!Condition", "!Or", "!And"]:
+for tag in [
+    "!Ref",
+    "!Sub",
+    "!GetAtt",
+    "!If",
+    "!Equals",
+    "!Not",
+    "!Select",
+    "!Join",
+    "!Split",
+    "!FindInMap",
+    "!Condition",
+    "!Or",
+    "!And",
+]:
     CFLoader.add_constructor(
         tag,
         lambda loader, node: (
@@ -95,9 +108,8 @@ class TestCFResourceNamingLimits:
                             f"remove Name to let CloudFormation auto-generate"
                         )
 
-        assert not violations, (
-            "CF templates have explicit Name on length-limited resources:\n"
-            + "\n".join(f"  • {v}" for v in violations)
+        assert not violations, "CF templates have explicit Name on length-limited resources:\n" + "\n".join(
+            f"  • {v}" for v in violations
         )
 
     def test_stack_name_suffix_inventory(self):
@@ -111,6 +123,7 @@ class TestCFResourceNamingLimits:
             with open(template_path, encoding="utf-8") as f:
                 content = f.read()
             import re
+
             matches = re.findall(r"\$\{AWS::StackName\}([^'\"}\s]+)", content)
             for suffix in set(matches):
                 patterns.append((template_path.name, suffix))
@@ -139,22 +152,19 @@ class TestIdentityPoolNameOverflow:
     def test_default_name_fits_all_stacks(self):
         """The default 'claude-code-auth' must work with all stack suffixes."""
         default_name = "claude-code-auth"
-        for stack_type, suffix in self.STACK_SUFFIXES.items():
+        for _stack_type, suffix in self.STACK_SUFFIXES.items():
             stack_name = f"{default_name}{suffix}"
             # CF stack name limit is 128
             assert len(stack_name) <= 128, (
-                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) "
-                f"exceeds CF stack name limit"
+                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) exceeds CF stack name limit"
             )
 
     def test_max_validated_name_fits_all_stacks(self):
         """A 20-char name (max allowed by validation) must work with all stacks."""
         max_name = "a" * 20
-        for stack_type, suffix in self.STACK_SUFFIXES.items():
+        for _stack_type, suffix in self.STACK_SUFFIXES.items():
             stack_name = f"{max_name}{suffix}"
-            assert len(stack_name) <= 128, (
-                f"20-char name + '{suffix}' = {len(stack_name)} chars exceeds limit"
-            )
+            assert len(stack_name) <= 128, f"20-char name + '{suffix}' = {len(stack_name)} chars exceeds limit"
 
     def test_no_target_group_overflow_with_max_name(self):
         """Even if someone re-adds a -tg suffix, 20-char name fits in 32.

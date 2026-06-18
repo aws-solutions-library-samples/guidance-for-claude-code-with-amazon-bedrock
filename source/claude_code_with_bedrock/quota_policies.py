@@ -177,7 +177,7 @@ class QuotaPolicyManager:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise PolicyAlreadyExistsError(f"Policy already exists for {policy_type.value}:{identifier}")
+                raise PolicyAlreadyExistsError(f"Policy already exists for {policy_type.value}:{identifier}") from None
             raise QuotaPolicyError(f"Failed to create policy: {e}") from e
 
         return policy
@@ -298,7 +298,7 @@ class QuotaPolicyManager:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise PolicyNotFoundError(f"Policy not found for {policy_type.value}:{identifier}")
+                raise PolicyNotFoundError(f"Policy not found for {policy_type.value}:{identifier}") from None
             raise QuotaPolicyError(f"Failed to update policy: {e}") from e
 
         return QuotaPolicy.from_dynamodb_item(response["Attributes"])
@@ -640,7 +640,9 @@ class QuotaPolicyManager:
         try:
             policy_type = PolicyType(type_str)
         except ValueError:
-            raise ValueError(f"Row {row_num}: Invalid policy type '{type_str}'. Use 'user', 'group', or 'default'.")
+            raise ValueError(
+                f"Row {row_num}: Invalid policy type '{type_str}'. Use 'user', 'group', or 'default'."
+            ) from None
 
         # Parse identifier
         identifier = str(policy_dict["identifier"]).strip()
@@ -653,7 +655,9 @@ class QuotaPolicyManager:
         try:
             monthly_token_limit = _parse_tokens(policy_dict["monthly_token_limit"])
         except (ValueError, TypeError):
-            raise ValueError(f"Row {row_num}: Invalid monthly_token_limit '{policy_dict['monthly_token_limit']}'")
+            raise ValueError(
+                f"Row {row_num}: Invalid monthly_token_limit '{policy_dict['monthly_token_limit']}'"
+            ) from None
 
         result: dict[str, Any] = {
             "policy_type": policy_type,
@@ -667,7 +671,7 @@ class QuotaPolicyManager:
             try:
                 result["daily_token_limit"] = _parse_tokens(daily_str)
             except (ValueError, TypeError):
-                raise ValueError(f"Row {row_num}: Invalid daily_token_limit '{daily_str}'")
+                raise ValueError(f"Row {row_num}: Invalid daily_token_limit '{daily_str}'") from None
         elif auto_daily:
             # Auto-calculate daily limit from monthly with burst buffer
             burst_factor = 1 + (burst_buffer_percent / 100)

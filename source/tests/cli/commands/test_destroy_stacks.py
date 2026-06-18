@@ -13,13 +13,7 @@ from pathlib import Path
 
 from claude_code_with_bedrock.cli.commands.destroy import DESTROYABLE_STACKS
 
-DEPLOY_SOURCE = (
-    Path(__file__).resolve().parents[3]
-    / "claude_code_with_bedrock"
-    / "cli"
-    / "commands"
-    / "deploy.py"
-)
+DEPLOY_SOURCE = Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "deploy.py"
 
 
 def _deployable_stack_types() -> set[str]:

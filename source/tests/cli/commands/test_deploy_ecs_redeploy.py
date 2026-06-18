@@ -3,7 +3,6 @@
 
 """Tests for ECS force-redeploy after monitoring stack deployment."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -21,6 +20,7 @@ class TestECSForceRedeploy:
         region = "us-east-1"
         if result == 0:
             import boto3
+
             ecs_client = boto3.client("ecs", region_name=region)
             ecs_client.update_service(
                 cluster="claude-code-otel-cluster",
@@ -43,6 +43,7 @@ class TestECSForceRedeploy:
         result = 1
         if result == 0:
             import boto3
+
             ecs_client = boto3.client("ecs", region_name="us-east-1")
             ecs_client.update_service(
                 cluster="claude-code-otel-cluster",
@@ -65,6 +66,7 @@ class TestECSForceRedeploy:
         if result == 0:
             try:
                 import boto3
+
                 ecs_client = boto3.client("ecs", region_name="us-east-1")
                 ecs_client.update_service(
                     cluster="claude-code-otel-cluster",

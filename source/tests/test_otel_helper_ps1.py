@@ -4,12 +4,8 @@
 """Tests for otel-helper.ps1 logic (validates the Python-testable cache/splice logic)."""
 
 import json
-import os
-import tempfile
 import time
 from pathlib import Path
-
-import pytest
 
 
 class TestOtelHelperCacheLogic:
@@ -20,8 +16,9 @@ class TestOtelHelperCacheLogic:
     is correct; the PS1 is a mechanical port of this logic.
     """
 
-    def _simulate_otel_helper(self, cache_dir: Path, profile: str = "ClaudeCode",
-                               monitoring_token: str = "", env_token: str = ""):
+    def _simulate_otel_helper(
+        self, cache_dir: Path, profile: str = "ClaudeCode", monitoring_token: str = "", env_token: str = ""
+    ):
         """Simulate the otel-helper.ps1 logic in Python for testing."""
         cache_file = cache_dir / f"{profile}-otel-headers.json"
         raw_file = cache_dir / f"{profile}-otel-headers.raw"
@@ -131,7 +128,7 @@ class TestOtelHelperCacheLogic:
         raw_file = tmp_path / f"{profile}-otel-headers.raw"
 
         cache_file.write_text(json.dumps({"token_exp": int(time.time()) + 3600}))
-        raw_file.write_text('{}')
+        raw_file.write_text("{}")
 
         result = self._simulate_otel_helper(tmp_path, profile, env_token="jwt123")
         parsed = json.loads(result)
@@ -145,7 +142,7 @@ class TestOtelHelperCacheLogic:
         monitoring_file = tmp_path / f"{profile}-monitoring.json"
 
         cache_file.write_text(json.dumps({"token_exp": int(time.time()) + 3600}))
-        raw_file.write_text('{}')
+        raw_file.write_text("{}")
         monitoring_file.write_text(json.dumps({"token": "file-token"}))
 
         result = self._simulate_otel_helper(tmp_path, profile, env_token="env-token")
@@ -174,8 +171,8 @@ class TestOtelHelperScriptFiles:
         """CMD should try the Go binary first for fast path."""
         content = (self.OTEL_HELPER_DIR / "otel-helper.cmd").read_text()
         lines = content.splitlines()
-        exe_line = next((i for i, l in enumerate(lines) if "otel-helper.exe" in l), None)
-        ps1_line = next((i for i, l in enumerate(lines) if "otel-helper.ps1" in l), None)
+        exe_line = next((i for i, line in enumerate(lines) if "otel-helper.exe" in line), None)
+        ps1_line = next((i for i, line in enumerate(lines) if "otel-helper.ps1" in line), None)
         assert exe_line is not None, "CMD must reference otel-helper.exe"
         assert ps1_line is not None, "CMD must reference otel-helper.ps1"
         assert exe_line < ps1_line, "CMD must try .exe before .ps1"
@@ -190,8 +187,8 @@ class TestOtelHelperScriptFiles:
         """PS1 must not invoke otel-helper.exe (that's the whole point)."""
         content = (self.OTEL_HELPER_DIR / "otel-helper.ps1").read_text()
         # Check non-comment lines only
-        code_lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith('#')]
-        code = '\n'.join(code_lines)
+        code_lines = [line for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
+        code = "\n".join(code_lines)
         assert "otel-helper.exe" not in code
         assert "otel-helper-windows.exe" not in code
 
@@ -199,10 +196,12 @@ class TestOtelHelperScriptFiles:
 class TestOtelHelperCacheTTL:
     """Test the anti-hammering cache-miss TTL logic."""
 
-    def _simulate_cache_miss_write(self, cache_dir: Path, profile: str = "ClaudeCode",
-                                    existing_headers: dict | None = None):
+    def _simulate_cache_miss_write(
+        self, cache_dir: Path, profile: str = "ClaudeCode", existing_headers: dict | None = None
+    ):
         """Simulate the empty-headers cache write with TTL."""
         import time
+
         cache_file = cache_dir / f"{profile}-otel-headers.json"
         raw_file = cache_dir / f"{profile}-otel-headers.raw"
 
@@ -217,12 +216,14 @@ class TestOtelHelperCacheTTL:
 
         if should_write_empty:
             now = int(time.time())
-            empty_cache = json.dumps({
-                "schema_version": 2,
-                "headers": {},
-                "token_exp": now + 120,
-                "cached_at": now,
-            })
+            empty_cache = json.dumps(
+                {
+                    "schema_version": 2,
+                    "headers": {},
+                    "token_exp": now + 120,
+                    "cached_at": now,
+                }
+            )
             cache_file.write_text(empty_cache)
             raw_file.write_text("{}")
 
@@ -242,24 +243,32 @@ class TestOtelHelperCacheTTL:
     def test_does_not_clobber_valid_attribution(self, tmp_path):
         """If cache has valid attribution headers, don't overwrite with empty."""
         cache_file = tmp_path / "ClaudeCode-otel-headers.json"
-        cache_file.write_text(json.dumps({
-            "schema_version": 2,
-            "headers": {"x-user-email": "real@user.com"},
-            "token_exp": int(time.time()) - 100,  # expired but has real data
-            "cached_at": int(time.time()) - 200,
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "headers": {"x-user-email": "real@user.com"},
+                    "token_exp": int(time.time()) - 100,  # expired but has real data
+                    "cached_at": int(time.time()) - 200,
+                }
+            )
+        )
         result = self._simulate_cache_miss_write(tmp_path)
         assert result is False  # should NOT overwrite
 
     def test_overwrites_empty_cache(self, tmp_path):
         """If cache exists but has empty headers, OK to overwrite."""
         cache_file = tmp_path / "ClaudeCode-otel-headers.json"
-        cache_file.write_text(json.dumps({
-            "schema_version": 2,
-            "headers": {},
-            "token_exp": int(time.time()) - 100,
-            "cached_at": int(time.time()) - 200,
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "headers": {},
+                    "token_exp": int(time.time()) - 100,
+                    "cached_at": int(time.time()) - 200,
+                }
+            )
+        )
         result = self._simulate_cache_miss_write(tmp_path)
         assert result is True
 

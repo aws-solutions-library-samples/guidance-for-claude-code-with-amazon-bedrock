@@ -392,13 +392,13 @@ class PackageCommand(Command):
                     if current_os == "darwin":
                         host_arch = current_machine  # arm64 or x86_64
                         platforms_to_build.append(f"macos-{'arm64' if host_arch == 'arm64' else 'intel'}")
-                        cross_arch = "x86_64" if host_arch == "arm64" else "arm64"
                         cross_platform = "macos-intel" if host_arch == "arm64" else "macos-arm64"
                         if _universal2_python:
                             platforms_to_build.append(cross_platform)
                         else:
                             console.print(
-                                f"[dim]Note: {cross_platform} skipped — install Python universal2 from python.org to enable.[/dim]"
+                                f"[dim]Note: {cross_platform} skipped — install Python universal2"
+                                " from python.org to enable.[/dim]"
                             )
 
                         try:
@@ -434,7 +434,8 @@ class PackageCommand(Command):
                     platforms_to_build.append(cross_platform)
                 else:
                     console.print(
-                        f"[dim]Note: {cross_platform} skipped — install Python universal2 from python.org to enable.[/dim]"
+                        f"[dim]Note: {cross_platform} skipped — install Python universal2"
+                        " from python.org to enable.[/dim]"
                     )
 
                 # Check if Docker is available for Linux builds
@@ -710,10 +711,10 @@ class PackageCommand(Command):
         try:
             result = subprocess.run(["go", "version"], capture_output=True, text=True, check=True)
             self.line(f"  <info>{result.stdout.strip()}</info>")
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except (FileNotFoundError, subprocess.CalledProcessError) as err:
             raise RuntimeError(
                 "Go is not installed or not in PATH. Install from https://go.dev/dl/ or run: brew install go"
-            )
+            ) from err
 
         platform_map = {
             "macos-arm64": ("darwin", "arm64"),
@@ -1828,7 +1829,8 @@ RUN pyinstaller \
             universal2_python = _find_universal2_python()
             if universal2_python is None:
                 console.print(
-                    f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires universal2 Python (not found)[/yellow]"
+                    f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires"
+                    " universal2 Python (not found)[/yellow]"
                 )
                 return output_dir / binary_name
             venv_dir = _ensure_cross_arch_venv(arch, universal2_python, _OTEL_HELPER_RUNTIME_DEPS, console)
@@ -2050,7 +2052,7 @@ RUN pyinstaller \
             return 1
 
         console.print(f"[green]Found {len(built_executables)} binaries, {len(built_otel_helpers)} OTEL helpers[/green]")
-        for plat, path in built_executables:
+        for _plat, path in built_executables:
             console.print(f"  • {path.name}")
 
         # Create new timestamped output directory
@@ -2060,9 +2062,9 @@ RUN pyinstaller \
 
         # Copy existing binaries to new output dir
         console.print("\n[cyan]Copying binaries...[/cyan]")
-        for plat, binary_path in built_executables:
+        for _plat, binary_path in built_executables:
             shutil.copy2(binary_path, output_dir / binary_path.name)
-        for plat, helper_path in built_otel_helpers:
+        for _plat, helper_path in built_otel_helpers:
             shutil.copy2(helper_path, output_dir / helper_path.name)
 
         # Include PowerShell otel-helper fallback for Windows
@@ -2136,7 +2138,7 @@ RUN pyinstaller \
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Summary
-        console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
+        console.print("\n[green]✓ Installers regenerated successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
         console.print("\nRegenerated files:")
         console.print("  • config.json")
@@ -2149,7 +2151,8 @@ RUN pyinstaller \
             console.print("  • claude-settings/settings.json")
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
         console.print(
-            "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]"
+            "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]'"
+            " to create distribution packages.[/bold]"
         )
         return 0
 
@@ -2606,6 +2609,38 @@ echo
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
 
+        # PowerShell commands extracted to keep f-string lines under 120 chars
+        ps_settings_cmd = (
+            'powershell -Command "$otelPath = $env:USERPROFILE'
+            " + '\\claude-code-with-bedrock\\otel-helper.cmd'"
+            " -replace '\\\\', '/';"
+            " $credPath = $env:USERPROFILE"
+            " + '\\claude-code-with-bedrock\\credential-process.exe'"
+            " -replace '\\\\', '/';"
+            " (Get-Content 'claude-settings\\settings.json')"
+            " -replace '__OTEL_HELPER_PATH__', $otelPath"
+            " -replace '__CREDENTIAL_PROCESS_PATH__', $credPath"
+            " | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')\""
+        )
+        ps_list_profiles = (
+            'powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name"'
+        )
+        ps_get_region = (
+            "powershell -NoProfile -Command"
+            ' "$c=Get-Content config.json|ConvertFrom-Json;'
+            "$c.'\"'\"'%%p'\"'\"'.aws_region\""
+        )
+        ps_list_profiles_display = (
+            'powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"'
+        )
+        ps_first_profile = (
+            "powershell -NoProfile -Command"
+            ' "(Get-Content config.json'
+            " | ConvertFrom-Json).PSObject.Properties.Name"
+            ' | Select-Object -First 1"'
+        )
+        cred_process_cmd = "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p"
+
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
 cd /d "%~dp0"
@@ -2683,7 +2718,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            {ps_settings_cmd}
             echo OK Claude Code settings configured
         )
     )
@@ -2694,15 +2729,15 @@ echo.
 echo Configuring AWS profiles...
 
 REM Read profiles from config.json using PowerShell
-for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.PSObject.Properties.Name"') do (
+for /f %%p in ('{ps_list_profiles}') do (
     echo Configuring AWS profile: %%p
 
     REM Get profile-specific region
-    for /f %%r in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.'"'"'%%p'"'"'.aws_region"') do set PROFILE_REGION=%%r
+    for /f %%r in ('{ps_get_region}') do set PROFILE_REGION=%%r
 
 
     REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+    aws configure set credential_process "{cred_process_cmd}" --profile %%p
 
 
     REM Set region
@@ -2721,7 +2756,7 @@ echo Installation complete!
 echo ======================================
 echo.
 echo Available profiles:
-for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"') do (
+for /f %%p in ('{ps_list_profiles_display}') do (
     echo   - %%p
 )
 echo.
@@ -2730,7 +2765,7 @@ echo   set AWS_PROFILE=^<profile-name^>
 echo   aws sts get-caller-identity
 echo.
 echo Example:
-for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do (
+for /f %%p in ('{ps_first_profile}') do (
     echo   set AWS_PROFILE=%%p
     echo   aws sts get-caller-identity
 )
@@ -3051,7 +3086,8 @@ Available metrics include:
                         "[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]"
                     )
                     console.print(
-                        "[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]"
+                        "[yellow]Run 'ccwb deploy' to deploy the monitoring stack,"
+                        " or enter the endpoint manually.[/yellow]"
                     )
                     try:
                         import questionary
@@ -3070,7 +3106,7 @@ Available metrics include:
 
                                 config = Config.load()
                                 config.save_profile(profile)
-                                console.print(f"[dim]Saved endpoint to profile[/dim]")
+                                console.print("[dim]Saved endpoint to profile[/dim]")
                             except Exception:
                                 pass
                     except Exception:

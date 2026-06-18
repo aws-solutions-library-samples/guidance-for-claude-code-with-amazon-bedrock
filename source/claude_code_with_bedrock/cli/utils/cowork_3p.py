@@ -5,8 +5,8 @@
 
 import json
 import uuid
-from pathlib import Path
 from html import escape as xml_escape
+from pathlib import Path
 
 from rich.console import Console
 

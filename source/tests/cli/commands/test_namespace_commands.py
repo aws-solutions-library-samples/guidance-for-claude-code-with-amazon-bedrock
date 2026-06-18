@@ -43,6 +43,4 @@ class TestBareNamespaceCommands:
         app = create_application()
         for name in app._commands:
             cmd = app._commands[name]
-            assert hasattr(cmd, 'handle'), (
-                f"Command '{name}' is registered but has no handle() method"
-            )
+            assert hasattr(cmd, "handle"), f"Command '{name}' is registered but has no handle() method"

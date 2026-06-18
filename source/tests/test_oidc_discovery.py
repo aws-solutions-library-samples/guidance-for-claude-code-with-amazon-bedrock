@@ -29,13 +29,15 @@ class TestDiscoverEndpoints:
 
     @patch("claude_code_with_bedrock.cli.utils.oidc_discovery.requests.get")
     def test_happy_path(self, mock_get):
-        mock_get.return_value = self._mock_response(json_data={
-            "issuer": "https://auth.example.com",
-            "authorization_endpoint": "https://auth.example.com/as/authorization.oauth2",
-            "token_endpoint": "https://auth.example.com/as/token.oauth2",
-            "jwks_uri": "https://auth.example.com/pf/JWKS",
-            "scopes_supported": ["openid", "profile"],  # extra fields ignored
-        })
+        mock_get.return_value = self._mock_response(
+            json_data={
+                "issuer": "https://auth.example.com",
+                "authorization_endpoint": "https://auth.example.com/as/authorization.oauth2",
+                "token_endpoint": "https://auth.example.com/as/token.oauth2",
+                "jwks_uri": "https://auth.example.com/pf/JWKS",
+                "scopes_supported": ["openid", "profile"],  # extra fields ignored
+            }
+        )
 
         result = discover_oidc_endpoints("https://auth.example.com")
 
@@ -45,25 +47,23 @@ class TestDiscoverEndpoints:
             "token_endpoint": "https://auth.example.com/as/token.oauth2",
             "jwks_uri": "https://auth.example.com/pf/JWKS",
         }
-        mock_get.assert_called_once_with(
-            "https://auth.example.com/.well-known/openid-configuration", timeout=10.0
-        )
+        mock_get.assert_called_once_with("https://auth.example.com/.well-known/openid-configuration", timeout=10.0)
 
     @patch("claude_code_with_bedrock.cli.utils.oidc_discovery.requests.get")
     def test_strips_trailing_slash_from_issuer(self, mock_get):
-        mock_get.return_value = self._mock_response(json_data={
-            "issuer": "https://auth.example.com",
-            "authorization_endpoint": "https://auth.example.com/auth",
-            "token_endpoint": "https://auth.example.com/token",
-            "jwks_uri": "https://auth.example.com/jwks",
-        })
+        mock_get.return_value = self._mock_response(
+            json_data={
+                "issuer": "https://auth.example.com",
+                "authorization_endpoint": "https://auth.example.com/auth",
+                "token_endpoint": "https://auth.example.com/token",
+                "jwks_uri": "https://auth.example.com/jwks",
+            }
+        )
 
         discover_oidc_endpoints("https://auth.example.com/")
 
         # Trailing slash stripped before /.well-known is appended
-        mock_get.assert_called_once_with(
-            "https://auth.example.com/.well-known/openid-configuration", timeout=10.0
-        )
+        mock_get.assert_called_once_with("https://auth.example.com/.well-known/openid-configuration", timeout=10.0)
 
     def test_rejects_http_scheme(self):
         with pytest.raises(OidcDiscoveryError, match="must start with https"):
@@ -112,21 +112,25 @@ class TestDiscoverEndpoints:
     @patch("claude_code_with_bedrock.cli.utils.oidc_discovery.requests.get")
     def test_missing_required_field(self, mock_get):
         # Missing token_endpoint and jwks_uri
-        mock_get.return_value = self._mock_response(json_data={
-            "issuer": "https://auth.example.com",
-            "authorization_endpoint": "https://auth.example.com/auth",
-        })
+        mock_get.return_value = self._mock_response(
+            json_data={
+                "issuer": "https://auth.example.com",
+                "authorization_endpoint": "https://auth.example.com/auth",
+            }
+        )
         with pytest.raises(OidcDiscoveryError, match="missing required fields"):
             discover_oidc_endpoints("https://auth.example.com")
 
     @patch("claude_code_with_bedrock.cli.utils.oidc_discovery.requests.get")
     def test_empty_string_field_treated_as_missing(self, mock_get):
-        mock_get.return_value = self._mock_response(json_data={
-            "issuer": "https://auth.example.com",
-            "authorization_endpoint": "https://auth.example.com/auth",
-            "token_endpoint": "",  # falsy — should count as missing
-            "jwks_uri": "https://auth.example.com/jwks",
-        })
+        mock_get.return_value = self._mock_response(
+            json_data={
+                "issuer": "https://auth.example.com",
+                "authorization_endpoint": "https://auth.example.com/auth",
+                "token_endpoint": "",  # falsy — should count as missing
+                "jwks_uri": "https://auth.example.com/jwks",
+            }
+        )
         with pytest.raises(OidcDiscoveryError, match="token_endpoint"):
             discover_oidc_endpoints("https://auth.example.com")
 

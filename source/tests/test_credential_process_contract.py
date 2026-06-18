@@ -49,9 +49,7 @@ class TestCredentialProcessContract:
         go_code = GO_MAIN.read_text(encoding="utf-8")
         py_code = PY_MAIN.read_text(encoding="utf-8")
 
-        assert "trySilentRefresh" in go_code or "silent" in go_code.lower(), (
-            "Go binary missing silent refresh path"
-        )
+        assert "trySilentRefresh" in go_code or "silent" in go_code.lower(), "Go binary missing silent refresh path"
         assert "silent" in py_code.lower() or "_try_silent_refresh" in py_code, (
             "Python provider missing silent refresh path"
         )
@@ -61,9 +59,7 @@ class TestCredentialProcessContract:
         go_code = GO_MAIN.read_text(encoding="utf-8")
         py_code = PY_MAIN.read_text(encoding="utf-8")
 
-        assert "quota" in go_code.lower() or "Quota" in go_code, (
-            "Go binary missing quota check integration"
-        )
+        assert "quota" in go_code.lower() or "Quota" in go_code, "Go binary missing quota check integration"
         assert "quota" in py_code.lower() or "_check_quota" in py_code, (
             "Python provider missing quota check integration"
         )
@@ -73,9 +69,7 @@ class TestCredentialProcessContract:
         go_code = GO_MAIN.read_text(encoding="utf-8")
         py_code = PY_MAIN.read_text(encoding="utf-8")
 
-        assert "getCachedCredentials" in go_code or "cached" in go_code.lower(), (
-            "Go binary missing credential cache"
-        )
+        assert "getCachedCredentials" in go_code or "cached" in go_code.lower(), "Go binary missing credential cache"
         assert "get_cached_credentials" in py_code or "cached" in py_code.lower(), (
             "Python provider missing credential cache"
         )
@@ -85,24 +79,16 @@ class TestCredentialProcessContract:
         go_code = GO_MAIN.read_text(encoding="utf-8")
         py_code = PY_MAIN.read_text(encoding="utf-8")
 
-        assert "clearCache" in go_code or "clear-cache" in go_code, (
-            "Go binary missing cache clear functionality"
-        )
-        assert "clear" in py_code.lower(), (
-            "Python provider missing cache clear functionality"
-        )
+        assert "clearCache" in go_code or "clear-cache" in go_code, "Go binary missing cache clear functionality"
+        assert "clear" in py_code.lower(), "Python provider missing cache clear functionality"
 
     def test_both_handle_expiration(self):
         """Both must include Expiration in output (for SDK credential refresh)."""
         go_code = GO_MAIN.read_text(encoding="utf-8")
         py_code = PY_MAIN.read_text(encoding="utf-8")
 
-        assert "Expiration" in go_code, (
-            "Go binary missing Expiration field in output"
-        )
-        assert "Expiration" in py_code, (
-            "Python provider missing Expiration field in output"
-        )
+        assert "Expiration" in go_code, "Go binary missing Expiration field in output"
+        assert "Expiration" in py_code, "Python provider missing Expiration field in output"
 
     def test_both_support_monitoring_token(self):
         """Both must support --get-monitoring-token for OTEL helper."""
@@ -112,9 +98,7 @@ class TestCredentialProcessContract:
         assert "get-monitoring-token" in go_code or "getMonitoring" in go_code, (
             "Go binary missing monitoring token support"
         )
-        assert "monitoring" in py_code.lower(), (
-            "Python provider missing monitoring token support"
-        )
+        assert "monitoring" in py_code.lower(), "Python provider missing monitoring token support"
 
     def test_both_handle_port_lock(self):
         """Both must handle OAuth port locking (prevent duplicate auth windows)."""

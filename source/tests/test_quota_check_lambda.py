@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 LAMBDA_PATH = (
     Path(__file__).resolve().parents[2]
     / "deployment"
@@ -295,14 +294,17 @@ class TestDailyEnforcementFineGrainedPath:
 RESPONSE_REQUIRED_KEYS = {"allowed"}
 
 # Keys expected when a quota policy exists and user is within quota
-NORMAL_RESPONSE_KEYS = {
-    "allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"
-}
+NORMAL_RESPONSE_KEYS = {"allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"}
 
 # Valid values for 'reason' field
 VALID_REASONS = {
-    "within_quota", "monthly_exceeded", "daily_exceeded",
-    "no_policy", "no_email", "unblocked", "missing_email_claim",
+    "within_quota",
+    "monthly_exceeded",
+    "daily_exceeded",
+    "no_policy",
+    "no_email",
+    "unblocked",
+    "missing_email_claim",
 }
 
 # Valid values for 'enforcement_mode' field
@@ -503,14 +505,16 @@ class TestInputValidationContract:
     def test_missing_email_blocked_by_default(self, base_env):
         """Missing email defaults to blocked (fail-closed security)."""
         env = {**base_env, "MISSING_EMAIL_ENFORCEMENT": "block"}
-        mod = _load_quota_check({
-            **env,
-            "ENABLE_FINEGRAINED_QUOTAS": "false",
-            "MONTHLY_TOKEN_LIMIT": "1000",
-            "DAILY_TOKEN_LIMIT": "100",
-            "MONTHLY_ENFORCEMENT_MODE": "block",
-            "DAILY_ENFORCEMENT_MODE": "block",
-        })
+        mod = _load_quota_check(
+            {
+                **env,
+                "ENABLE_FINEGRAINED_QUOTAS": "false",
+                "MONTHLY_TOKEN_LIMIT": "1000",
+                "DAILY_TOKEN_LIMIT": "100",
+                "MONTHLY_ENFORCEMENT_MODE": "block",
+                "DAILY_ENFORCEMENT_MODE": "block",
+            }
+        )
         event = {"requestContext": {"authorizer": {"jwt": {"claims": {}}}}}
 
         body = _parse(mod.lambda_handler(event, None))
