@@ -173,7 +173,7 @@ class TestInstallerScriptManagedSettings:
                 output_dir, profile, built_executables, built_otel_helpers=[]
             )
 
-            return installer_path.read_text()
+            return installer_path.read_text(encoding="utf-8")
 
     def test_managed_installer_contains_elevation_check(self):
         """Installer checks for root when managed-settings.json is present."""
