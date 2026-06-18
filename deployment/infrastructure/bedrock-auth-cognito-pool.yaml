@@ -72,7 +72,11 @@ Resources:
     Type: AWS::IAM::OIDCProvider
     Condition: UseDirectIAM
     Properties:
-      Url: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+      # Region is derived from the User Pool ID (format: <region>_<id>), not AWS::Region,
+      # so the pool may live in a different region than this stack. See issue #596.
+      Url: !Sub
+        - 'https://cognito-idp.${PoolRegion}.amazonaws.com/${CognitoUserPoolId}'
+        - PoolRegion: !Select [0, !Split ['_', !Ref CognitoUserPoolId]]
       ClientIdList:
         - !Ref CognitoUserPoolClientId
       ThumbprintList:
@@ -192,7 +196,10 @@ Resources:
       AllowClassicFlow: false
       CognitoIdentityProviders:
         - ClientId: !Ref CognitoUserPoolClientId
-          ProviderName: !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+          # Region derived from the User Pool ID, not AWS::Region (see issue #596).
+          ProviderName: !Sub
+            - 'cognito-idp.${PoolRegion}.amazonaws.com/${CognitoUserPoolId}'
+            - PoolRegion: !Select [0, !Split ['_', !Ref CognitoUserPoolId]]
           ServerSideTokenCheck: true
 
   CognitoAuthenticatedRole:
@@ -306,7 +313,10 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       IdentityPoolId: !Ref CognitoIdentityPool
-      IdentityProviderName: !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+      # Region derived from the User Pool ID, not AWS::Region (see issue #596).
+      IdentityProviderName: !Sub
+        - 'cognito-idp.${PoolRegion}.amazonaws.com/${CognitoUserPoolId}'
+        - PoolRegion: !Select [0, !Split ['_', !Ref CognitoUserPoolId]]
       UseDefaults: false
       PrincipalTags:
         UserEmail: email

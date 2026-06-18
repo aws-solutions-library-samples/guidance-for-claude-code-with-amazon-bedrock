@@ -106,7 +106,10 @@ Resources:
       CognitoIdentityProviders: !If
         - UseCognitoUserPool
         - - ClientId: !Ref CognitoUserPoolClientId
-            ProviderName: !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+            # Region derived from the User Pool ID, not AWS::Region (see issue #596).
+            ProviderName: !Sub
+              - 'cognito-idp.${PoolRegion}.amazonaws.com/${CognitoUserPoolId}'
+              - PoolRegion: !Select [0, !Split ['_', !Ref CognitoUserPoolId]]
             ServerSideTokenCheck: true
         - !Ref 'AWS::NoValue'
 
@@ -280,7 +283,10 @@ Resources:
       IdentityProviderName: !If
         - UseExternalOIDC
         - !Ref OIDCProviderDomain
-        - !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+        # Region derived from the User Pool ID, not AWS::Region (see issue #596).
+        - !Sub
+          - 'cognito-idp.${PoolRegion}.amazonaws.com/${CognitoUserPoolId}'
+          - PoolRegion: !Select [0, !Split ['_', !Ref CognitoUserPoolId]]
       UseDefaults: false
       PrincipalTags:
         UserEmail: email
