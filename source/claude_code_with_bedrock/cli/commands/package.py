@@ -579,7 +579,8 @@ class PackageCommand(Command):
         ) and bool(profile and getattr(profile, "enable_codebuild", False))
 
         # Check if any binaries were built (or are pending in CodeBuild)
-        if not built_executables and not windows_codebuild_pending:
+        # IDC zero-binary mode intentionally skips all binary builds.
+        if not built_executables and not windows_codebuild_pending and not is_idc_zero_binary:
             console.print("\n[red]Error: No binaries were successfully built.[/red]")
             console.print("Please check the error messages above.")
             return 1
@@ -600,21 +601,27 @@ class PackageCommand(Command):
 
         # Generate IDC-specific collector config with static identity
         if is_idc_zero_binary and profile.monitoring_enabled:
-            import shutil
-            from string import Template
-
             idc_config_template = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper" / "collector-config-idc.yaml"
             if idc_config_template.exists():
                 template_content = idc_config_template.read_text(encoding="utf-8")
+
+                # Parse resource attributes safely into a dict
+                attrs = {}
+                if otel_resource_attributes:
+                    for pair in otel_resource_attributes.split(","):
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                            attrs[k.strip()] = v.strip()
+
                 # Replace placeholders with actual values
                 replacements = {
                     "${REGION}": profile.aws_region or "us-east-1",
                     "${USER_EMAIL}": idc_user_email or "unknown@example.com",
                     "${USER_NAME}": (idc_user_email or "unknown").split("@")[0],
-                    "${DEPARTMENT}": otel_resource_attributes.split("department=")[1].split(",")[0] if "department=" in (otel_resource_attributes or "") else "default",
-                    "${TEAM_ID}": otel_resource_attributes.split("team.id=")[1].split(",")[0] if "team.id=" in (otel_resource_attributes or "") else "default",
-                    "${COST_CENTER}": otel_resource_attributes.split("cost_center=")[1].split(",")[0] if "cost_center=" in (otel_resource_attributes or "") else "default",
-                    "${ORGANIZATION}": otel_resource_attributes.split("organization=")[1].split(",")[0] if "organization=" in (otel_resource_attributes or "") else "default",
+                    "${DEPARTMENT}": attrs.get("department", "default"),
+                    "${TEAM_ID}": attrs.get("team.id", "default"),
+                    "${COST_CENTER}": attrs.get("cost_center", "default"),
+                    "${ORGANIZATION}": attrs.get("organization", "default"),
                 }
                 for placeholder, value in replacements.items():
                     template_content = template_content.replace(placeholder, value)
@@ -3311,7 +3318,7 @@ Available metrics include:
                     # Add the helper executable for generating OTEL headers with user attributes
                     # IDC path uses static identity in collector config — no helper needed.
                     # Use a placeholder that will be replaced by the installer script based on platform
-                    _is_idc = getattr(profile, 'effective_auth_type', getattr(profile, 'auth_type', 'oidc')) == 'idc'
+                    _is_idc = getattr(profile, 'effective_auth_type', profile.auth_type) == 'idc'
                     if not _is_idc:
                         settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
