@@ -159,6 +159,7 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+- [Workshop: Claude Code on Amazon Bedrock](https://catalog.workshops.aws/claude-code-on-amazon-bedrock/en-US) - Hands-on guided workshop with example plugins
 - [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) - Blog post covering deployment patterns and best practices
 
 ### Architecture & Deployment
@@ -177,6 +178,11 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Cost Estimates](assets/docs/COST_ESTIMATES.md) - High-level monthly cost estimates by deployment tier and team size
 - [Cost Attribution](assets/docs/COST_ATTRIBUTION.md) - Per-user and per-team cost tracking via CUR 2.0 and Cost Explorer
+
+### Plugins & Extensions
+
+- [Plugin Distribution Guide](assets/docs/PLUGINS.md) - How to distribute plugins for Claude Code and Cowork 3P
+- [Example Plugins](assets/claude-code-plugins/) - Enterprise plugin examples (security, architecture, testing, etc.)
 
 ### Claude Cowork (Desktop)
 
