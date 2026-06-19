@@ -149,6 +149,13 @@ class Profile:
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
     cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
 
+    # AgentCore Web Search (CUSTOM_JWT gateway, OIDC deployments)
+    # web_search_enabled gates deploy of the us-east-1 websearch stack and emission
+    # of the mcpServers block during packaging. agentcore_gateway_url is saved from
+    # the websearch stack output post-deploy and read profile-first during packaging.
+    web_search_enabled: bool = False  # Enable AgentCore Gateway web search MCP server
+    agentcore_gateway_url: str = ""  # AgentCore Gateway MCP endpoint URL (saved from deploy)
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
