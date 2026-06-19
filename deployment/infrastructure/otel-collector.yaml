@@ -197,7 +197,6 @@ Resources:
   DNSRecord:
     Type: AWS::Route53::RecordSet
     Condition: CreateDnsRecord
-    DependsOn: Certificate
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref CustomDomainName
