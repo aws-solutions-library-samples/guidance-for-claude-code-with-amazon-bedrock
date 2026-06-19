@@ -715,6 +715,28 @@ ccwb deploy quota --parameters EnableBypassDetection=true
 - Group membership requires JWT group claims from identity provider (not available for IDC users — user-level policies only)
 - Enforcement only at credential issuance (see [Enforcement Timing](#enforcement-timing) for mitigation)
 
+## CoWork 3P Usage Counting
+
+When the CoWork dashboard stack is deployed, CoWork (Claude Desktop) token usage is automatically counted toward the same per-user quota as Claude Code:
+
+| Source | Namespace | Metric | Dimension |
+|--------|-----------|--------|-----------|
+| Claude Code | `ClaudeCode` | `claude_code.token.usage` | `user.email` |
+| CoWork 3P | `ClaudeCoWork` | `token.usage.input` / `token.usage.output` | `user_email` |
+
+The `quota_monitor` Lambda queries both namespaces and merges the results into a single DynamoDB record per user. This means:
+
+- `ccwb quota usage <email>` shows combined Claude Code + CoWork usage
+- Quota limits apply to the combined total
+- A user hitting their limit on CoWork will be blocked on the next Claude Code credential refresh (and vice versa)
+
+**Requirements:**
+- CoWork monitoring stack deployed (`ccwb deploy --stack cowork-dashboard`)
+- Attribution headers configured (collector injects `user_email` from `x-user-email` HTTP header)
+- Central monitoring mode (sidecar mode does not support CoWork telemetry counting)
+
+**Without attribution headers:** CoWork usage is aggregate-only and cannot be counted toward individual user quotas. The `quota_monitor` CoWork query gracefully returns empty results.
+
 ## Data Latency
 
 Different data paths have different latency characteristics:

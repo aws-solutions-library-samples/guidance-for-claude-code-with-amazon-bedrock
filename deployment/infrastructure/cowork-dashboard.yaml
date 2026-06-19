@@ -36,6 +36,9 @@ Resources:
           MetricName: token.usage.input
           MetricValue: $.attributes.input_tokens
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   OutputTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -48,6 +51,9 @@ Resources:
           MetricName: token.usage.output
           MetricValue: $.attributes.output_tokens
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   CacheReadTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -60,6 +66,9 @@ Resources:
           MetricName: token.usage.cache_read
           MetricValue: $.attributes.cache_read_tokens
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   CacheCreationTokenMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -72,6 +81,9 @@ Resources:
           MetricName: token.usage.cache_creation
           MetricValue: $.attributes.cache_creation_tokens
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   CostMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -84,6 +96,9 @@ Resources:
           MetricName: cost.usage
           MetricValue: $.attributes.cost_usd
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   SessionCountMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -96,6 +111,9 @@ Resources:
           MetricName: session.turns
           MetricValue: "1"
           DefaultValue: 0
+          Dimensions:
+            - Key: "user_email"
+              Value: "$.attributes.user_email"
 
   # --- Local Agent Mode schema (body.name="lam_session_turn_completed") ---
   # These emit to the SAME metric names so both modes contribute to the dashboard.
