@@ -84,7 +84,7 @@ class TestCoWorkQuotaCounting:
             / "docs"
             / "COWORK_3P.md"
         )
-        content = docs_path.read_text()
+        content = docs_path.read_text(encoding="utf-8")
         assert "## Quota Enforcement" in content
         assert "credential-process" in content
         assert "credential refresh" in content.lower() or "refresh cycle" in content.lower()
