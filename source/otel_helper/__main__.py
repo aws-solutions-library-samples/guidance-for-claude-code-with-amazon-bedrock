@@ -106,6 +106,27 @@ def parse_args():
 # This prevents macOS keychain permission prompts for the OTEL helper
 
 
+def is_token_expired(token, buffer_seconds=60):
+    """Check if a JWT token's exp claim has passed.
+
+    Returns True if the token is expired or unparseable (fail-safe: treat
+    bad tokens as expired so they fall through to re-authentication).
+    """
+    try:
+        _, payload_b64, _ = token.split(".")
+        padding_needed = len(payload_b64) % 4
+        if padding_needed:
+            payload_b64 += "=" * (4 - padding_needed)
+        payload_b64 = payload_b64.replace("-", "+").replace("_", "/")
+        payload = json.loads(base64.b64decode(payload_b64))
+        exp = payload.get("exp")
+        if exp is None:
+            return True  # No exp claim = treat as expired
+        return time.time() > (exp - buffer_seconds)
+    except Exception:
+        return True  # Unparseable = treat as expired
+
+
 def decode_jwt_payload(token):
     """Decode the payload portion of a JWT token"""
     try:
@@ -666,7 +687,10 @@ def build_proxy_user_headers() -> dict:
     """
     token = None
     if not ANONYMOUS_MODE:
-        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+        if token and is_token_expired(token):
+            token = None
+        token = token or get_token_via_credential_process()
 
     if token:
         payload = decode_jwt_payload(token)
@@ -863,7 +887,10 @@ def main():
         if cached_headers is not None:
             # Resolve Bearer fresh — the cache stores attribution headers only,
             # never the token itself. Try env var (free) then credential-process (~20ms).
-            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+            if _bearer_token and is_token_expired(_bearer_token):
+                _bearer_token = None
+            _bearer_token = _bearer_token or get_token_via_credential_process()
             if _bearer_token:
                 _attach_bearer(cached_headers, _bearer_token)
             else:
@@ -882,6 +909,9 @@ def main():
     token = None
     if not ANONYMOUS_MODE:
         token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+        if token and is_token_expired(token):
+            logger.info("Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process")
+            token = None
         if token:
             logger.info("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
         else:
