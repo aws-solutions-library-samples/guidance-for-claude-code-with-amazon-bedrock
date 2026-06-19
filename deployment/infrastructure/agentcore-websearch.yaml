@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Claude Code web search via Amazon Bedrock AgentCore. Deploys an AgentCore
+  Gateway (CUSTOM_JWT authorizer validating the same OIDC id_token the solution
+  already mints) fronting a managed web-search connector target, plus the
+  service role the gateway assumes to invoke the web-search tool. us-east-1 only.
+
+# NOTE (us-east-1 pin): AgentCore Web Search and the web-search connector tool
+# (arn:aws:bedrock-agentcore:us-east-1:aws:tool/web-search.v1) are only available
+# in us-east-1. deploy.py deploys this stack via a region-pinned CloudFormation
+# manager regardless of profile.aws_region (see .claude/rules/region-availability.md).
+
+Parameters:
+  DiscoveryUrl:
+    Type: String
+    Description: >-
+      OIDC discovery (.well-known/openid-configuration) URL for the identity
+      provider. Derived per-provider from the profile by deploy.py so the
+      gateway's expected issuer matches the id_token's actual issuer
+      (Okta /oauth2/default, Auth0 trailing slash, Azure /v2.0, Cognito pool URL).
+    AllowedPattern: '^https://.+'
+    ConstraintDescription: must be an https:// URL
+
+  ClientId:
+    Type: String
+    Description: >-
+      OIDC client_id. Becomes the gateway's allowedClients entry; the minted
+      id_token carries aud == client_id (no per-resource audience requested),
+      so the same token validates here as at the quota authorizer.
+    MinLength: 1
+
+  DomainExcludeList:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      Optional list of domains to exclude from web-search results
+      (domainFilter.exclude). Empty by default.
+
+Conditions:
+  HasDomainExcludeList: !Not [!Equals [!Join ['', !Ref DomainExcludeList], '']]
+
+Resources:
+  # IAM role the gateway assumes to invoke the managed web-search tool.
+  # Trust is scoped to this account + this gateway (confused-deputy guard).
+  WebSearchGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-gateway-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*'
+      Policies:
+        - PolicyName: WebSearchInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeWebSearchTool
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeWebSearch
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:tool/web-search.v1'
+              - Sid: InvokeGateway
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeGateway
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*'
+
+  # AgentCore Gateway: MCP protocol, CUSTOM_JWT authorizer validating the
+  # solution's OIDC id_token (same token the quota HTTP API authorizer accepts).
+  WebSearchGateway:
+    Type: AWS::BedrockAgentCore::Gateway
+    Properties:
+      Name: !Sub '${AWS::StackName}-gw'
+      Description: Claude Code web search gateway (CUSTOM_JWT, OIDC id_token)
+      ProtocolType: MCP
+      AuthorizerType: CUSTOM_JWT
+      AuthorizerConfiguration:
+        CustomJWTAuthorizer:
+          DiscoveryUrl: !Ref DiscoveryUrl
+          AllowedClients:
+            - !Ref ClientId
+      RoleArn: !GetAtt WebSearchGatewayRole.Arn
+
+  # Managed web-search connector target. Validates asynchronously (~30s) →
+  # deploy.py polls Status until READY. The gateway invokes the tool with the
+  # GATEWAY_IAM_ROLE credential provider (WebSearchGatewayRole above).
+  WebSearchTarget:
+    Type: AWS::BedrockAgentCore::GatewayTarget
+    # cfn-lint spec lag (tracking): the bundled GatewayTarget schema (cfn-lint 1.51.x)
+    # only models TargetConfiguration.Mcp variants OpenApiSchema | SmithyModel | Lambda |
+    # McpServer | ApiGateway — it lacks the "Connector" branch entirely. The live
+    # AgentCore CloudFormation schema DOES accept Mcp.Connector (verified by a real
+    # us-east-1 deploy reaching READY, 2026-06-19). A valid template therefore trips
+    # E3002/E3003/E3018 on this resource only. Scoped here (not in the global CI ignore
+    # list) so every other template keeps full schema coverage. Remove when cfn-lint
+    # ships the connector shape (track against the registry schema, not docs).
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+            - E3003
+            - E3018
+    Properties:
+      Name: !Sub '${AWS::StackName}-web-search'
+      GatewayIdentifier: !GetAtt WebSearchGateway.GatewayIdentifier
+      Description: Managed web-search connector target
+      TargetConfiguration:
+        Mcp:
+          Connector:
+            Source:
+              ConnectorId: web-search
+            Configurations:
+              # ParameterValues must always be present (the service rejects an empty
+              # config entry). Empty object = no domain filter; otherwise a nested
+              # domainFilter.exclude array (NOT a dotted key / comma-string).
+              - Name: WebSearch
+                ParameterValues: !If
+                  - HasDomainExcludeList
+                  - domainFilter:
+                      exclude: !Ref DomainExcludeList
+                  - {}
+      CredentialProviderConfigurations:
+        - CredentialProviderType: GATEWAY_IAM_ROLE
+
+Outputs:
+  GatewayUrl:
+    Description: MCP endpoint URL of the web-search gateway (ends in /mcp)
+    Value: !GetAtt WebSearchGateway.GatewayUrl
+    Export:
+      Name: !Sub '${AWS::StackName}-GatewayUrl'
+
+  GatewayArn:
+    Description: ARN of the web-search gateway
+    Value: !GetAtt WebSearchGateway.GatewayArn
+
+  GatewayId:
+    Description: ID of the web-search gateway
+    Value: !GetAtt WebSearchGateway.GatewayIdentifier
