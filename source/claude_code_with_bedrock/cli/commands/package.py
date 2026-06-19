@@ -589,6 +589,8 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+        if (output_dir / "claude-settings" / "managed-settings.json").exists():
+            console.print("  • claude-settings/managed-settings.json - Organization-wide enforcement settings")
         if profile.cowork_3p_enabled:
             if (output_dir / "cowork-3p-config.json").exists():
                 console.print("  • cowork-3p-config.json - CoWork 3P MDM configuration (JSON)")
@@ -2384,7 +2386,7 @@ if [ "$HAS_ERRORS" = "true" ]; then
     exit 1
 fi
 
-if [ ! -f "claude-settings/settings.json" ]; then
+if [ ! -f "claude-settings/settings.json" ] && [ ! -f "claude-settings/managed-settings.json" ]; then
     echo "WARNING: claude-settings/settings.json not found"
     echo "         Claude Code IDE settings will not be configured automatically"
     echo ""
@@ -2463,7 +2465,42 @@ if [ -d "claude-settings" ]; then
     echo "Installing Claude Code settings..."
     mkdir -p ~/.claude
 
-    # Copy settings and replace placeholders
+    # Install managed-settings.json (OS-level enforcement) if present
+    if [ -f "claude-settings/managed-settings.json" ]; then
+        echo "Managed settings detected (organization-wide enforcement)..."
+
+        # Determine OS-appropriate managed-settings path
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            MANAGED_DIR="/Library/Application Support/ClaudeCode"
+        else
+            MANAGED_DIR="/etc/claude-code"
+        fi
+
+        # Require elevated privileges for managed-settings
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "ERROR: Managed settings require root/sudo privileges."
+            echo "       Re-run the installer with: sudo ./install.sh"
+            echo "       (Managed settings are written to: $MANAGED_DIR/managed-settings.json)"
+            exit 1
+        fi
+
+        mkdir -p "$MANAGED_DIR"
+
+        # Replace placeholders and write managed settings
+        sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
+            -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
+            "claude-settings/managed-settings.json" > "$MANAGED_DIR/managed-settings.json"
+
+        # Verify placeholders were replaced
+        if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' "$MANAGED_DIR/managed-settings.json" 2>/dev/null; then
+            echo "WARNING: Some path placeholders were not replaced in managed-settings.json"
+        else
+            echo "OK Managed settings installed: $MANAGED_DIR/managed-settings.json"
+            echo "   These settings have highest precedence and cannot be overridden by users."
+        fi
+    fi
+
+    # Copy user-scope settings.json if present
     if [ -f "claude-settings/settings.json" ]; then
         # Check if settings file already exists
         if [ -f ~/.claude/settings.json ]; then
@@ -2472,30 +2509,68 @@ if [ -d "claude-settings" ]; then
             BACKUP_NAME="settings.json.backup-$(date +%Y%m%d-%H%M%S)"
             cp ~/.claude/settings.json ~/.claude/$BACKUP_NAME
             echo "  Backed up to: ~/.claude/$BACKUP_NAME"
-            read -p "Overwrite with new settings? (Y/n): " -n 1 -r
-            echo
-            # Default to Yes if user just presses enter (empty REPLY)
-            if [[ -z "$REPLY" ]]; then
-                REPLY="y"
-            fi
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "Skipping Claude Code settings..."
-                SKIP_SETTINGS=true
+
+            # Merge new settings into existing (preserves user customizations)
+            $PYTHON -c "
+import json, sys
+try:
+    with open('$HOME/.claude/$BACKUP_NAME') as f:
+        existing = json.load(f)
+except (json.JSONDecodeError, FileNotFoundError):
+    existing = {{}}
+
+with open('claude-settings/settings.json') as f:
+    incoming = json.load(f)
+
+# Deep merge: incoming overwrites existing keys, but existing keys not in incoming are preserved
+def deep_merge(base, override):
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+merged = deep_merge(existing, incoming)
+with open('$HOME/.claude/settings.json', 'w') as f:
+    json.dump(merged, f, indent=2)
+" 2>/dev/null
+
+            if [ $? -eq 0 ]; then
+                echo "OK Claude Code settings merged: ~/.claude/settings.json"
+                echo "   (existing user settings preserved, new Bedrock config added)"
+            else
+                # Fallback: overwrite if merge fails
+                read -p "Merge failed. Overwrite with new settings? (Y/n): " -n 1 -r
+                echo
+                if [[ -z "$REPLY" ]]; then REPLY="y"; fi
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "Skipping Claude Code settings..."
+                    SKIP_SETTINGS=true
+                fi
             fi
         fi
 
-        if [ "$SKIP_SETTINGS" != "true" ]; then
-            # Replace placeholders and write settings
+        if [ "$SKIP_SETTINGS" != "true" ] && [ ! -f ~/.claude/settings.json ]; then
+            # No existing settings — just write directly
             sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
                 -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
                 "claude-settings/settings.json" > ~/.claude/settings.json
+            echo "OK Claude Code settings configured: ~/.claude/settings.json"
+        fi
+
+        # Replace placeholders in the final settings file
+        if [ -f ~/.claude/settings.json ] && [ "$SKIP_SETTINGS" != "true" ]; then
+            sed -i.tmp -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
+                       -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
+                       ~/.claude/settings.json
+            rm -f ~/.claude/settings.json.tmp
 
             # Verify placeholders were replaced
             if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' ~/.claude/settings.json 2>/dev/null; then
                 echo "WARNING: Some path placeholders were not replaced in settings.json"
                 echo "         You may need to edit the file manually: ~/.claude/settings.json"
-            else
-                echo "OK Claude Code settings configured: ~/.claude/settings.json"
             fi
         fi
     fi
@@ -2539,6 +2614,11 @@ if [ -f "claude-settings/settings.json" ]; then
     DEFAULT_REGION=$($PYTHON -c "
 import json
 print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])
+" 2>/dev/null || echo "{profile.aws_region}")
+elif [ -f "claude-settings/managed-settings.json" ]; then
+    DEFAULT_REGION=$($PYTHON -c "
+import json
+print(json.load(open('claude-settings/managed-settings.json'))['env']['AWS_REGION'])
 " 2>/dev/null || echo "{profile.aws_region}")
 else
     DEFAULT_REGION="{profile.aws_region}"
@@ -2680,23 +2760,53 @@ copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
-    if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
+    if not exist "%USERPROFILE%\.claude" mkdir "%USERPROFILE%\.claude"
 
-    REM Copy settings and replace placeholders
-    if exist "claude-settings\\settings.json" (
+    REM Install managed-settings.json (organization-wide enforcement) if present
+    if exist "claude-settings\managed-settings.json" (
+        echo Managed settings detected [organization-wide enforcement]...
+
+        REM Check for Administrator privileges
+        net session >nul 2>&1
+        if %errorlevel% neq 0 (
+            echo ERROR: Managed settings require Administrator privileges.
+            echo        Right-click install.bat and select "Run as administrator"
+            echo        [Target: C:\Program Files\ClaudeCode\managed-settings.json]
+            pause
+            exit /b 1
+        )
+
+        REM Create managed-settings directory
+        if not exist "C:\Program Files\ClaudeCode" mkdir "C:\Program Files\ClaudeCode"
+
+        REM Replace placeholders and write managed settings
+        powershell -Command "$otelPath = $env:USERPROFILE + '\claude-code-with-bedrock\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\claude-code-with-bedrock\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\managed-settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content 'C:\Program Files\ClaudeCode\managed-settings.json'"
+        echo OK Managed settings installed: C:\Program Files\ClaudeCode\managed-settings.json
+        echo    These settings have highest precedence and cannot be overridden by users.
+    )
+
+    REM Copy user-scope settings.json if present (with merge support)
+    if exist "claude-settings\settings.json" (
         set SKIP_SETTINGS=false
-        if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
-                echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
+        if exist "%USERPROFILE%\.claude\settings.json" (
+            echo Existing Claude Code settings found - merging...
+
+            REM Merge new settings into existing (preserves user customizations)
+            powershell -NoProfile -Command "$otelPath = $env:USERPROFILE + '\claude-code-with-bedrock\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\claude-code-with-bedrock\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\settings.json')"
+            if %errorlevel% equ 0 (
+                echo OK Claude Code settings merged [user settings preserved]
+            ) else (
+                set /p OVERWRITE="Merge failed. Overwrite with new settings? (y/n): "
+                if /i not "%OVERWRITE%"=="y" (
+                    echo Skipping Claude Code settings...
+                    set SKIP_SETTINGS=true
+                )
             )
         )
 
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+        if not "%SKIP_SETTINGS%"=="true" if not exist "%USERPROFILE%\.claude\settings.json" (
+            REM No existing settings - write directly
+            powershell -Command "$otelPath = $env:USERPROFILE + '\claude-code-with-bedrock\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\claude-code-with-bedrock\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -3138,8 +3248,15 @@ Available metrics include:
                     console.print("[red]ERROR: Monitoring enabled but no OTel endpoint configured.[/red]")
                     console.print("[red]Run 'ccwb deploy' first or set otel_collector_endpoint in the profile.[/red]")
 
-            # Save settings.json
-            settings_path = claude_dir / "settings.json"
+            # Determine output filename based on settings_target
+            settings_target = getattr(profile, "settings_target", "user")
+            if settings_target == "managed":
+                settings_filename = "managed-settings.json"
+                console.print("[dim]Writing to managed-settings.json (OS-level enforcement)[/dim]")
+            else:
+                settings_filename = "settings.json"
+
+            settings_path = claude_dir / settings_filename
             with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
 

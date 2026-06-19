@@ -129,6 +129,11 @@ class Profile:
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
+    # Settings deployment target
+    # "user" = ~/.claude/settings.json (default, lowest precedence)
+    # "managed" = OS-level managed-settings.json (highest precedence, non-overridable)
+    settings_target: str = "user"
+
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
