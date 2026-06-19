@@ -51,7 +51,7 @@ Parameters:
 
   IdPProvider:
     Type: String
-    AllowedValues: [okta, azure, auth0, cognito]
+    AllowedValues: [okta, azure, auth0, cognito, generic]
     Description: Identity provider type
 
   # Okta parameters
@@ -123,6 +123,39 @@ Parameters:
     Default: ''
     Description: Secrets Manager ARN for Cognito client secret
 
+  # Generic OIDC parameters (PingFederate, Keycloak, ForgeRock, etc.)
+  # ALB authenticate-oidc requires each endpoint explicitly because they cannot be
+  # derived from a single domain the way the other providers' endpoints can.
+  GenericIssuer:
+    Type: String
+    Default: ''
+    Description: Generic OIDC issuer URL (e.g., https://auth.example.com)
+
+  GenericAuthorizationEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC authorization endpoint (full URL)
+
+  GenericTokenEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC token endpoint (full URL)
+
+  GenericUserInfoEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC userinfo endpoint (full URL)
+
+  GenericClientId:
+    Type: String
+    Default: ''
+    Description: Generic OIDC web application client ID
+
+  GenericClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for generic OIDC client secret
+
   # REQUIRED: Custom domain for HTTPS/OIDC authentication
   CustomDomainName:
     Type: String
@@ -145,6 +178,8 @@ Conditions:
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
   IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
   IsCognito: !Equals [!Ref IdPProvider, 'cognito']
+  # Note: 'generic' is the terminal fallback in the AuthenticateOidcConfig !If chains
+  # (the else branch after Okta/Azure/Auth0/Cognito), so no named condition is needed.
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
 
 Resources:
@@ -897,7 +932,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}'
-                  - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+                    - !Ref GenericIssuer
             AuthorizationEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/authorize'
@@ -907,7 +945,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/authorize'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+                    - !Ref GenericAuthorizationEndpoint
             TokenEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/token'
@@ -917,7 +958,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/oauth/token'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+                    - !Ref GenericTokenEndpoint
             UserInfoEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/userinfo'
@@ -927,7 +971,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/userinfo'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+                    - !Ref GenericUserInfoEndpoint
             ClientId: !If
               - IsOkta
               - !Ref OktaClientId
@@ -937,7 +984,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Ref Auth0ClientId
-                  - !Ref CognitoClientId
+                  - !If
+                    - IsCognito
+                    - !Ref CognitoClientId
+                    - !Ref GenericClientId
             ClientSecret: !If
               - IsOkta
               - !Sub '{{resolve:secretsmanager:${OktaClientSecretArn}:SecretString}}'
@@ -947,7 +997,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub '{{resolve:secretsmanager:${Auth0ClientSecretArn}:SecretString}}'
-                  - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+                  - !If
+                    - IsCognito
+                    - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+                    - !Sub '{{resolve:secretsmanager:${GenericClientSecretArn}:SecretString}}'
             SessionTimeout: 43200  # 12 hours
             Scope: 'openid email profile'
             OnUnauthenticatedRequest: authenticate

@@ -1393,6 +1393,7 @@ class InitCommand(Command):
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
                 questionary.Choice("Google", value="google"),
+                questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
             ]
 
             idp_provider = questionary.select(
@@ -1492,6 +1493,91 @@ class InitCommand(Command):
                 idp_client_secret = questionary.password(
                     "Web application client secret:",
                 ).ask()
+
+            # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP) can't have
+            # their ALB authenticate-oidc endpoints derived from a single domain the way
+            # Okta/Azure/Auth0/Cognito can, so collect each one explicitly. Try OIDC discovery
+            # first (mirrors the SSO generic flow) and fall back to manual entry.
+            dist_oidc_issuer = None
+            dist_oidc_authorization_endpoint = None
+            dist_oidc_token_endpoint = None
+            dist_oidc_userinfo_endpoint = None
+            if idp_provider == "generic":
+                from claude_code_with_bedrock.cli.utils.oidc_discovery import (
+                    OidcDiscoveryError,
+                    discover_oidc_endpoints,
+                )
+
+                console.print("\n[bold]Generic OIDC Landing Page Configuration[/bold]")
+                console.print(
+                    "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
+                    "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
+                )
+
+                # Use the domain entered above as the default issuer; let the user override.
+                default_issuer = (
+                    idp_domain
+                    if idp_domain and idp_domain.startswith(("http://", "https://"))
+                    else (f"https://{idp_domain}" if idp_domain else "")
+                ).rstrip("/")
+
+                dist_oidc_issuer = questionary.text(
+                    "OIDC issuer URL:",
+                    validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
+                    default=config.get("distribution", {}).get("idp_issuer", default_issuer),
+                    instruction="(must match the 'iss' claim in tokens)",
+                ).ask()
+                if not dist_oidc_issuer:
+                    return None
+                dist_oidc_issuer = dist_oidc_issuer.rstrip("/")
+
+                discovered: dict[str, str] = {}
+                console.print(f"[dim]Querying {dist_oidc_issuer}/.well-known/openid-configuration ...[/dim]")
+                try:
+                    discovered = discover_oidc_endpoints(dist_oidc_issuer)
+                    console.print("[green]✓ Discovery succeeded.[/green]")
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Discovery failed: {e}[/yellow]")
+                    console.print("[dim]Falling back to manual entry.[/dim]")
+
+                dist_oidc_authorization_endpoint = questionary.text(
+                    "Authorization endpoint:",
+                    validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
+                    default=(
+                        discovered.get("authorization_endpoint")
+                        or config.get("distribution", {}).get("idp_authorization_endpoint")
+                        or f"{dist_oidc_issuer}/as/authorization.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_authorization_endpoint:
+                    return None
+
+                dist_oidc_token_endpoint = questionary.text(
+                    "Token endpoint:",
+                    validate=lambda x: bool(x) or "Token endpoint cannot be empty",
+                    default=(
+                        discovered.get("token_endpoint")
+                        or config.get("distribution", {}).get("idp_token_endpoint")
+                        or f"{dist_oidc_issuer}/as/token.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_token_endpoint:
+                    return None
+
+                dist_oidc_userinfo_endpoint = questionary.text(
+                    "UserInfo endpoint:",
+                    validate=lambda x: bool(x) or "UserInfo endpoint cannot be empty",
+                    default=(
+                        discovered.get("userinfo_endpoint")
+                        or config.get("distribution", {}).get("idp_userinfo_endpoint")
+                        or f"{dist_oidc_issuer}/idp/userinfo.openid"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_userinfo_endpoint:
+                    return None
 
             # Store secret in AWS Secrets Manager (only if not auto-configured)
             import boto3
@@ -1597,6 +1683,17 @@ class InitCommand(Command):
                     "hosted_zone_id": hosted_zone_id,
                 }
             )
+
+            # Generic OIDC: persist the explicit endpoints (only set for provider == "generic")
+            if idp_provider == "generic":
+                config["distribution"].update(
+                    {
+                        "idp_issuer": dist_oidc_issuer,
+                        "idp_authorization_endpoint": dist_oidc_authorization_endpoint,
+                        "idp_token_endpoint": dist_oidc_token_endpoint,
+                        "idp_userinfo_endpoint": dist_oidc_userinfo_endpoint,
+                    }
+                )
 
             console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
@@ -2264,6 +2361,12 @@ class InitCommand(Command):
             "distribution_idp_client_secret_arn": config_data.get("distribution", {}).get("idp_client_secret_arn"),
             "distribution_custom_domain": config_data.get("distribution", {}).get("custom_domain"),
             "distribution_hosted_zone_id": config_data.get("distribution", {}).get("hosted_zone_id"),
+            "distribution_idp_issuer": config_data.get("distribution", {}).get("idp_issuer"),
+            "distribution_idp_authorization_endpoint": config_data.get("distribution", {}).get(
+                "idp_authorization_endpoint"
+            ),
+            "distribution_idp_token_endpoint": config_data.get("distribution", {}).get("idp_token_endpoint"),
+            "distribution_idp_userinfo_endpoint": config_data.get("distribution", {}).get("idp_userinfo_endpoint"),
             "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -2655,6 +2758,10 @@ class InitCommand(Command):
                     "idp_client_secret_arn": getattr(profile, "distribution_idp_client_secret_arn", None),
                     "custom_domain": getattr(profile, "distribution_custom_domain", None),
                     "hosted_zone_id": getattr(profile, "distribution_hosted_zone_id", None),
+                    "idp_issuer": getattr(profile, "distribution_idp_issuer", None),
+                    "idp_authorization_endpoint": getattr(profile, "distribution_idp_authorization_endpoint", None),
+                    "idp_token_endpoint": getattr(profile, "distribution_idp_token_endpoint", None),
+                    "idp_userinfo_endpoint": getattr(profile, "distribution_idp_userinfo_endpoint", None),
                 }
 
             # Add quota monitoring configuration if present

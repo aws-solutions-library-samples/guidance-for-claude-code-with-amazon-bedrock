@@ -61,12 +61,22 @@ class Profile:
 
     # Distribution platform configuration
     distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
-    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_provider: str | None = None  # okta|azure|auth0|cognito|generic (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+
+    # Generic OIDC distribution config (distribution_idp_provider == "generic").
+    # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,
+    # Keycloak, ForgeRock). Unlike those providers, ALB authenticate-oidc endpoints cannot be
+    # derived from a single domain, so each must be supplied explicitly. The ALB runs the OAuth
+    # authorization-code flow (not JWT signature validation), so no JWKS/thumbprint is needed here.
+    distribution_idp_issuer: str | None = None  # OIDC issuer URL (must match the 'iss' claim)
+    distribution_idp_authorization_endpoint: str | None = None  # Full authorization endpoint URL
+    distribution_idp_token_endpoint: str | None = None  # Full token endpoint URL
+    distribution_idp_userinfo_endpoint: str | None = None  # Full userinfo endpoint URL
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
