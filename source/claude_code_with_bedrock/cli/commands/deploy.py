@@ -933,6 +933,19 @@ class DeployCommand(Command):
                     if result == 0:
                         self._create_default_quota_policy(profile, stack_name, console)
 
+                        # If using IAM auth (IDC/non-OIDC), remind about execute-api:Invoke permission
+                        if profile.effective_auth_type == "idc":
+                            quota_outputs = get_stack_outputs(stack_name, profile.aws_region)
+                            policy_arn = (quota_outputs or {}).get("QuotaApiInvokePolicyArn", "")
+                            if policy_arn:
+                                console.print(
+                                    f"\n[yellow]\u26a0 IAM Auth Mode: Attach this policy to your IDC permission set "
+                                    f"(or the IAM role used by Claude Code users):[/yellow]\n"
+                                    f"[bold]{policy_arn}[/bold]\n"
+                                    f"[dim]This grants execute-api:Invoke on the quota API. "
+                                    f"Without it, quota checks will return 403.[/dim]"
+                                )
+
                     return result
 
                 finally:

@@ -32,8 +32,10 @@ def getatt_constructor(loader, node):
 
 
 def sub_constructor(loader, node):
-    """Handle !Sub function."""
-    return {"Fn::Sub": loader.construct_scalar(node)}
+    """Handle !Sub function (scalar or sequence form)."""
+    if node.id == "scalar":
+        return {"Fn::Sub": loader.construct_scalar(node)}
+    return {"Fn::Sub": loader.construct_sequence(node)}
 
 
 def if_constructor(loader, node):
