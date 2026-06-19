@@ -1514,15 +1514,19 @@ class InitCommand(Command):
             # Only prompt for manual configuration if not auto-configured
             if not cognito_auto_configured:
                 # IdP domain
+                # Use `or ""`, not just the .get default: a reloaded profile stores these
+                # keys with an explicit None (see _build_config_from_profile), so the key
+                # is present and .get returns None — and questionary.text(default=None)
+                # crashes with "object of type 'NoneType' has no len()".
                 idp_domain = questionary.text(
                     "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
-                    default=config.get("distribution", {}).get("idp_domain", ""),
+                    default=config.get("distribution", {}).get("idp_domain") or "",
                 ).ask()
 
                 # Web app client ID
                 idp_client_id = questionary.text(
                     "Web application client ID (separate from CLI native app):",
-                    default=config.get("distribution", {}).get("idp_client_id", ""),
+                    default=config.get("distribution", {}).get("idp_client_id") or "",
                 ).ask()
 
                 # Web app client secret
@@ -1655,7 +1659,7 @@ class InitCommand(Command):
 
             custom_domain = questionary.text(
                 "Custom domain (e.g., downloads.company.com):",
-                default=config.get("distribution", {}).get("custom_domain", ""),
+                default=config.get("distribution", {}).get("custom_domain") or "",
                 validate=lambda text: (
                     len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
                 ),
