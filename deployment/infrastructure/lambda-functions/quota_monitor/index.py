@@ -103,6 +103,32 @@ def fetch_usage_from_promql():
                 u["cache_tokens"] = val
 
     print(f"Fetched delta usage for {len(users)} users from PromQL ({window}s window)")
+
+    # Also fetch CoWork 3P token usage (separate namespace, MetricFilter-derived).
+    # CoWork events are logged to /aws/claude-cowork/events and MetricFilters extract
+    # per-user metrics into the ClaudeCoWork namespace with user_email dimension.
+    # This ensures CoWork token consumption counts toward the same quota as Claude Code.
+    try:
+        cowork_input = _promql_query(
+            f'sum by ("user_email")(increase({{"ClaudeCoWork","token.usage.input"}}[{window}s]))'
+        )
+        cowork_output = _promql_query(
+            f'sum by ("user_email")(increase({{"ClaudeCoWork","token.usage.output"}}[{window}s]))'
+        )
+        cowork_count = 0
+        for r in cowork_input + cowork_output:
+            email = r["metric"].get("user_email", "")
+            val = float(r["value"][1])
+            if email and val > 0:
+                u = users.setdefault(email, {"total_tokens": 0})
+                u["total_tokens"] = u.get("total_tokens", 0) + val
+                cowork_count += 1
+        if cowork_count > 0:
+            print(f"Added CoWork 3P usage for {cowork_count} user-metric pairs")
+    except Exception as e:
+        # CoWork metrics are optional — don't fail quota monitoring if unavailable
+        print(f"CoWork PromQL query skipped (non-fatal): {e}")
+
     return users
 
 

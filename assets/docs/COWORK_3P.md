@@ -319,6 +319,48 @@ Per-device dashboard dimensions are planned — see [#585](https://github.com/aw
 
 ![Claude CoWork Dashboard](../../assets/images/ClaudeCoworkDashboard.png)
 
+## Quota Enforcement
+
+CoWork 3P usage is subject to the same per-user quota enforcement as Claude Code. Here's how it works:
+
+### How enforcement applies
+
+CoWork uses `credential-process` for credential refresh (via the `inferenceBedrockProfile` AWS named profile). The credential-process binary checks the quota API on every refresh cycle:
+
+1. CoWork's AWS session token expires (~1 hour)
+2. AWS SDK calls `credential-process --profile <name>` for fresh credentials
+3. `credential-process` calls the quota-check API (`GET /check`)
+4. If the user is over quota → credentials are denied → CoWork loses Bedrock access
+5. If under quota → fresh credentials issued → CoWork continues
+
+**Enforcement granularity:** Per credential refresh (~1 hour). A user can exceed their quota within a session but will be blocked on the next refresh.
+
+### How CoWork usage is counted
+
+CoWork sends OTLP **log events** (not metrics) to the collector. The monitoring pipeline processes them:
+
+1. CoWork sends `claude_code.api_request` log events to the OTEL collector
+2. Collector injects `user_email` from HTTP attribution headers
+3. Events are written to `/aws/claude-cowork/events` CloudWatch Logs
+4. MetricFilters extract per-user token counts into the `ClaudeCoWork` namespace (with `user_email` dimension)
+5. `quota_monitor` Lambda queries both `ClaudeCode` and `ClaudeCoWork` PromQL metrics
+6. Combined usage is aggregated into a single DynamoDB record per user
+
+**Result:** A user's total quota includes both Claude Code CLI and CoWork Desktop usage.
+
+### Requirements for per-user CoWork quota
+
+- Monitoring stack deployed with custom domain + HTTPS (central mode)
+- CoWork service token configured (`ccwb init` generates it)
+- Attribution headers flowing (credential-process provides `x-user-email`)
+- CoWork dashboard stack deployed (`ccwb deploy --stack cowork-dashboard`)
+
+### Limitations
+
+- **No inline blocking:** CoWork calls Bedrock directly via AWS credentials. There is no per-request interception — enforcement happens at credential refresh boundaries only.
+- **Attribution required:** If `x-user-email` header is not configured, CoWork usage is aggregate-only and cannot be attributed to individual users for quota purposes.
+- **CoWork-native `user.id`:** The opaque hash in raw CoWork events cannot be mapped back to an email without a separate device registry.
+
 ## Additional Resources
 
 - [AWS Blog: From Developer Desks to the Whole Organization — Running Claude Cowork in Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/from-developer-desks-to-the-whole-organization-running-claude-cowork-in-amazon-bedrock/)

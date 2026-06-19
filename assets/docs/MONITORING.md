@@ -113,6 +113,8 @@ Quota monitoring uses the CloudWatch Prometheus-compatible API (`monitoring.<reg
 
 The quota check Lambda provides real-time allow/block decisions by reading the DynamoDB table (fast reads, at most 15 minutes stale).
 
+Both Claude Code and CoWork 3P (Claude Desktop) usage are counted toward the same per-user quota when the CoWork dashboard stack is deployed. See [CoWork 3P Quota Enforcement](COWORK_3P.md#quota-enforcement) for details.
+
 > **Detailed Information**: See the [Quota Monitoring Guide](QUOTA_MONITORING.md).
 
 ## Analytics Pipeline (Optional)
