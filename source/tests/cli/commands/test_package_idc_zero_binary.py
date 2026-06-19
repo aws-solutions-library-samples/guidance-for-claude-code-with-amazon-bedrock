@@ -4,7 +4,6 @@
 """Tests for IDC zero-binary packaging logic."""
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from claude_code_with_bedrock.config import Profile
 
@@ -27,7 +26,6 @@ class TestIDCZeroBinaryDetection:
             idc_start_url="https://d-123456.awsapps.com/start",
             idc_account_id="123456789012",
             idc_permission_set_name="BedrockAccess",
-
         )
 
     def test_idc_without_quota_is_zero_binary(self):
@@ -141,6 +139,14 @@ class TestIDCCollectorConfigParsing:
         assert attrs["department"] == "platform"
         assert attrs["team.id"] == "core"
 
+    def test_defaults_for_missing_keys(self):
+        """Missing keys should use .get() defaults safely."""
+        attrs = self._parse_attrs("department=engineering")
+        assert attrs.get("department", "default") == "engineering"
+        assert attrs.get("team.id", "default") == "default"
+        assert attrs.get("cost_center", "default") == "default"
+        assert attrs.get("organization", "default") == "default"
+
 
 class TestIDCOtelHeadersHelper:
     """Test that otelHeadersHelper is correctly omitted for IDC profiles."""
@@ -159,12 +165,9 @@ class TestIDCOtelHeadersHelper:
             idc_start_url="https://d-123456.awsapps.com/start",
             idc_account_id="123456789012",
             idc_permission_set_name="BedrockAccess",
-
         )
         _is_idc = profile.effective_auth_type == "idc"
         assert _is_idc is True
-        # In the actual code: if not _is_idc: settings["otelHeadersHelper"] = ...
-        # So for IDC, otelHeadersHelper should NOT be set.
 
     def test_oidc_profile_has_otel_headers_helper(self):
         """OIDC profiles SHOULD set otelHeadersHelper."""
@@ -180,4 +183,3 @@ class TestIDCOtelHeadersHelper:
         )
         _is_idc = profile.effective_auth_type == "idc"
         assert _is_idc is False
-        # For non-IDC, otelHeadersHelper SHOULD be set.
