@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ABOUTME: Group Policy ADMX template for Claude Cowork 3P with Amazon Bedrock
+  ABOUTME: Deploy via Intune (Import ADMX), Omnissa UEM, or AD Group Policy
+
+  Registry path: HKCU\SOFTWARE\Policies\Claude
+  Each setting maps to a REG_SZ value under that key.
+  Claude Desktop reads these at launch and treats them as managed MDM policy.
+
+  Usage:
+    1. Import this ADMX + en-US\ClaudeCowork3P.adml into your MDM solution
+    2. Configure the policies (at minimum: Bedrock region + AWS profile name)
+    3. Assign to device/user groups
+    4. Verify: Claude Desktop Settings → About → "Managed by your organization"
+
+  Compatible with: Intune (Import ADMX), Omnissa Workspace ONE (GPO templates),
+  Active Directory Group Policy, and any ADMX-aware MDM.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions"
+                   revision="1.0" schemaVersion="1.0">
+  <policyNamespaces>
+    <target prefix="claudecowork" namespace="AWS.Policies.ClaudeCowork3P" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <categories>
+    <category name="Cat_ClaudeCowork" displayName="$(string.Cat_ClaudeCowork)" />
+    <category name="Cat_Inference" displayName="$(string.Cat_Inference)" parentCategory="Cat_ClaudeCowork" />
+    <category name="Cat_Features" displayName="$(string.Cat_Features)" parentCategory="Cat_ClaudeCowork" />
+    <category name="Cat_Monitoring" displayName="$(string.Cat_Monitoring)" parentCategory="Cat_ClaudeCowork" />
+  </categories>
+  <policies>
+    <!-- Inference Configuration -->
+    <policy name="InferenceProvider"
+            class="User"
+            displayName="$(string.InferenceProvider)"
+            explainText="$(string.InferenceProvider_Explain)"
+            key="SOFTWARE\Policies\Claude"
+            valueName="inferenceProvider">
+      <parentCategory ref="Cat_Inference" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue><string>bedrock</string></enabledValue>
+      <disabledValue><string></string></disabledValue>
+    </policy>
+
+    <policy name="InferenceBedrockRegion"
+            class="User"
+            displayName="$(string.InferenceBedrockRegion)"
+            explainText="$(string.InferenceBedrockRegion_Explain)"
+            presentation="$(presentation.InferenceBedrockRegion)"
+            key="SOFTWARE\Policies\Claude">
+      <parentCategory ref="Cat_Inference" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="BedrockRegion" valueName="inferenceBedrockRegion" required="true" maxLength="64" />
+      </elements>
+    </policy>
+
+    <policy name="InferenceBedrockProfile"
+            class="User"
+            displayName="$(string.InferenceBedrockProfile)"
+            explainText="$(string.InferenceBedrockProfile_Explain)"
+            presentation="$(presentation.InferenceBedrockProfile)"
+            key="SOFTWARE\Policies\Claude">
+      <parentCategory ref="Cat_Inference" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="BedrockProfile" valueName="inferenceBedrockProfile" required="true" maxLength="128" />
+      </elements>
+    </policy>
+
+    <policy name="InferenceModels"
+            class="User"
+            displayName="$(string.InferenceModels)"
+            explainText="$(string.InferenceModels_Explain)"
+            presentation="$(presentation.InferenceModels)"
+            key="SOFTWARE\Policies\Claude">
+      <parentCategory ref="Cat_Inference" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="Models" valueName="inferenceModels" required="true" maxLength="512" />
+      </elements>
+    </policy>
+
+    <!-- Feature Toggles -->
+    <policy name="ClaudeCodeForDesktop"
+            class="User"
+            displayName="$(string.ClaudeCodeForDesktop)"
+            explainText="$(string.ClaudeCodeForDesktop_Explain)"
+            key="SOFTWARE\Policies\Claude"
+            valueName="isClaudeCodeForDesktopEnabled">
+      <parentCategory ref="Cat_Features" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue><string>true</string></enabledValue>
+      <disabledValue><string>false</string></disabledValue>
+    </policy>
+
+    <policy name="DesktopExtension"
+            class="User"
+            displayName="$(string.DesktopExtension)"
+            explainText="$(string.DesktopExtension_Explain)"
+            key="SOFTWARE\Policies\Claude"
+            valueName="isDesktopExtensionEnabled">
+      <parentCategory ref="Cat_Features" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue><string>true</string></enabledValue>
+      <disabledValue><string>false</string></disabledValue>
+    </policy>
+
+    <policy name="LocalDevMcp"
+            class="User"
+            displayName="$(string.LocalDevMcp)"
+            explainText="$(string.LocalDevMcp_Explain)"
+            key="SOFTWARE\Policies\Claude"
+            valueName="isLocalDevMcpEnabled">
+      <parentCategory ref="Cat_Features" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue><string>true</string></enabledValue>
+      <disabledValue><string>false</string></disabledValue>
+    </policy>
+
+    <!-- Monitoring -->
+    <policy name="OtlpEndpoint"
+            class="User"
+            displayName="$(string.OtlpEndpoint)"
+            explainText="$(string.OtlpEndpoint_Explain)"
+            presentation="$(presentation.OtlpEndpoint)"
+            key="SOFTWARE\Policies\Claude">
+      <parentCategory ref="Cat_Monitoring" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="Endpoint" valueName="otlpEndpoint" maxLength="512" />
+      </elements>
+    </policy>
+
+    <policy name="OtlpHeaders"
+            class="User"
+            displayName="$(string.OtlpHeaders)"
+            explainText="$(string.OtlpHeaders_Explain)"
+            presentation="$(presentation.OtlpHeaders)"
+            key="SOFTWARE\Policies\Claude">
+      <parentCategory ref="Cat_Monitoring" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="Headers" valueName="otlpHeaders" maxLength="2048" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>
