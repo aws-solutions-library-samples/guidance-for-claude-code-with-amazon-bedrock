@@ -385,7 +385,9 @@ func (a *credentialApp) run() int {
 	if cached := a.getCachedCredentials(); cached != nil {
 		// Periodic quota re-check
 		if a.shouldRecheckQuota() {
-			a.performQuotaRecheck()
+			if !a.performQuotaRecheck() {
+				return 1
+			}
 		}
 		outputJSON(cached)
 		return 0
@@ -428,6 +430,7 @@ func (a *credentialApp) run() int {
 					printQuotaBlocked(qr)
 					return 1
 				}
+				_ = storage.SaveQuotaState(a.profile)
 			}
 		}
 		outputJSON(creds)
@@ -446,6 +449,7 @@ func (a *credentialApp) run() int {
 					printQuotaBlocked(qr)
 					return 1
 				}
+				_ = storage.SaveQuotaState(a.profile)
 			}
 		}
 		outputJSON(creds)
@@ -467,6 +471,7 @@ func (a *credentialApp) run() int {
 			printQuotaBlocked(qr)
 			return 1
 		}
+		_ = storage.SaveQuotaState(a.profile)
 	}
 
 	// Get AWS credentials
@@ -736,26 +741,34 @@ func (a *credentialApp) shouldRecheckQuota() bool {
 	if a.cfg.QuotaAPIEndpoint == "" {
 		return false
 	}
-	// Simple interval check - omitting full persistence for now
-	return false
+	// Check if enough time has passed since last quota check
+	lastCheck := storage.ReadQuotaState(a.profile)
+	if lastCheck.IsZero() {
+		// Never checked — trigger check
+		return true
+	}
+	interval := time.Duration(a.cfg.QuotaCheckInterval) * time.Minute
+	return time.Since(lastCheck) >= interval
 }
 
-func (a *credentialApp) performQuotaRecheck() {
+func (a *credentialApp) performQuotaRecheck() bool {
 	token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
 	if token == "" {
-		return
-	}
-	claims, err := jwt.DecodePayload(token)
-	if err != nil {
-		return
+		return true // no token to check with — allow (fail-open for missing token)
 	}
 	qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-	_ = claims // suppress unused
+
+	// Persist the check timestamp regardless of outcome
+	_ = storage.SaveQuotaState(a.profile)
+
 	if !qr.Allowed {
 		printQuotaBlocked(qr)
-	} else {
-		printQuotaWarning(qr)
+		// Clear cached credentials so subsequent invocations also block
+		a.clearCache()
+		return false
 	}
+	printQuotaWarning(qr)
+	return true
 }
 
 // writeOtelCacheFromSTS resolves user identity via STS GetCallerIdentity and
