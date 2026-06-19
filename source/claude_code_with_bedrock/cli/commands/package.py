@@ -370,11 +370,20 @@ class PackageCommand(Command):
         # Determine if this is a zero-binary IDC deployment
         # IDC users authenticate via 'aws sso login' (no credential-process) and
         # get static identity baked into the collector config (no otel-helper).
-        is_idc_zero_binary = getattr(profile, 'effective_auth_type', profile.auth_type) == 'idc'
+        # Exception: if quota enforcement is configured, credential-process IS needed.
+        _is_idc_auth = getattr(profile, 'effective_auth_type', profile.auth_type) == 'idc'
+        _has_quota = bool(getattr(profile, 'quota_api_endpoint', None))
+        is_idc_zero_binary = _is_idc_auth and not _has_quota
         idc_user_email = None
-        if is_idc_zero_binary:
-            console.print("\n[dim]IDC auth detected — skipping credential-process and otel-helper binaries[/dim]")
-            console.print("[dim]User identity will be baked into collector config at package time[/dim]")
+        if _is_idc_auth and _has_quota:
+            console.print("\n[dim]IDC auth + quota enforcement detected — credential-process binary will be included[/dim]")
+        elif is_idc_zero_binary:
+            console.print("\n[bold]IDC zero-binary package mode:[/bold]")
+            console.print("  ✅ Authentication: aws sso login (no binary needed)")
+            console.print("  ✅ Monitoring: static identity in collector config")
+            console.print("  ⚠️  Quota enforcement: disabled (requires credential-process binary)")
+            console.print("[dim]To enable quota enforcement, run: ccwb init → enable quota monitoring[/dim]")
+            console.print()
 
             # Auto-detect user email from STS caller identity (IDC ARN session name = email)
             try:
