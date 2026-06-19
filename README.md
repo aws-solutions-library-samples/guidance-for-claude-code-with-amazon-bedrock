@@ -3,75 +3,47 @@
 [![Stable Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&label=stable)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases/latest)
 [![Beta Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&include_prereleases&label=beta)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/beta)
 
-This guidance provides enterprise deployment patterns for Claude Code and Claude Cowork (Claude Desktop) with Amazon Bedrock using existing identity providers. Deploy once to enable both Claude Code CLI and Claude Cowork Desktop across your organization, with centralized access control, audit trails, and usage monitoring.
+Deploy Claude Code CLI and Claude Cowork (Claude Desktop) on Amazon Bedrock at scale — with enterprise identity, per-user quotas, and full usage visibility. One deployment covers your entire organization.
 
 ## Key Features
 
-### For Organizations
-
-- **Enterprise IdP Integration**: Leverage existing OIDC identity providers (Okta, Azure AD, Auth0, Google, etc.)
-- **AWS SSO / IAM Identity Center**: Native AWS identity path with per-user quota enforcement and OTEL attribution — no external IdP required
-- **Centralized Access Control**: Manage Claude Code access through your identity provider
-- **No API Key Management**: Eliminate the need to distribute or rotate long-lived credentials
-- **Usage Monitoring**: Optional CloudWatch dashboards for tracking usage and costs
-- **Multi-Region Support**: Configure which AWS regions users can access Bedrock in
-- **Multi-Partition Support**: Deploy to AWS Commercial or AWS GovCloud (US) regions
-- **Multi-Platform Support**: Windows, macOS (ARM & Intel), and Linux distributions
-- **Claude Cowork 3P Compatible**: Same credential helper works with Claude Desktop in third-party platform mode — one deployment covers both Claude Code CLI and Claude Cowork
-
-### For End Users
-
-- **Seamless Authentication**: Log in with corporate credentials
-- **Automatic Credential Refresh**: No manual token management required
-- **AWS CLI/SDK Integration**: Works with any AWS tool or SDK
-- **Multi-Profile Support**: Manage multiple authentication profiles
-- **Cross-Platform**: Works on Windows, macOS, and Linux
-
-### For Users (Claude Cowork)
-
-- **Claude Desktop Experience**: Research, document analysis, data processing, and report generation
-- **No CLI Required**: Users just open Claude Desktop — authentication is handled by the credential helper
-- **MDM Deployment**: Configure via Jamf, Intune, or Group Policy using generated .mobileconfig/.reg files
-- **Projects, Artifacts, and MCP**: Core Claude Desktop capabilities including projects, artifacts, and MCP servers. Feature availability on Bedrock may differ from claude.ai.
-- **Consumption-Based Pricing**: No Anthropic seat licensing — billed through your existing AWS agreement
+- **Secure Access**: Secure single sign-on (SSO) with enterprise identity providers such as Okta, Entra ID, Auth0, Google, Cognito, or AWS IAM Identity Center — temporary credentials, automatic refresh, no API keys to manage
+- **Usage Monitoring**: CloudWatch dashboards with per-user cost attribution, plus S3 + Athena for historical analytics
+- **Quota Enforcement**: Per-user and per-team token limits with configurable thresholds, warnings, and block modes
+- **Multi-Platform**: Windows, macOS, Linux — Go or Python binaries, pre-built from GitHub Releases
+- **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop
+- **Model Flexibility**: Choose from Opus, Sonnet, Haiku with model aliases (e.g. `opusplan` for Opus planning + Sonnet execution)
+- **Native Desktop Experience**: Deploy and manage Claude Cowork (Claude Desktop) via MDM (Jamf, Intune, Group Policy)
+- **Data Residency**: Select your cross-region inference profile (US, EU, AU) to keep data within your compliance boundary
+- **AWS-Native**: Your data, your AWS account, your compliance controls — no Anthropic licensing required
 
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
 2. [Architecture Overview](#architecture-overview)
-3. [Prerequisites](#prerequisites)
-4. [AWS Partition Support](#aws-partition-support)
-5. [What Gets Deployed](#what-gets-deployed)
-6. [Monitoring and Operations](#monitoring-and-operations)
-7. [Additional Resources](#additional-resources)
+3. [Authentication Modes](#authentication-modes)
+4. [Usage Monitoring](#usage-monitoring)
+5. [Deployment](#deployment)
+6. [Additional Resources](#additional-resources)
 
 ## Quick Start
 
-This guidance integrates Claude Code with your existing OIDC identity provider (Okta, Azure AD, Auth0, Google, or Cognito User Pools) to provide federated access to Amazon Bedrock.
+This guidance integrates Claude Code CLI and Claude Desktop with your existing OIDC identity provider (Okta, Entra ID, Auth0, Google, or Cognito User Pools) to provide federated access to Amazon Bedrock.
 
 ### What You Need
 
-**Existing Identity Provider:**
-You must have an active OIDC provider with the ability to create application registrations. The guidance federates this IdP with AWS IAM to issue temporary credentials for Bedrock access.
-
-**AWS Environment:**
-
+- An OIDC identity provider (Okta, Entra ID, Auth0, Google, Cognito) OR AWS IAM Identity Center
 - AWS account with IAM and CloudFormation permissions
 - Amazon Bedrock activated in target regions
-- Python 3.10+ development environment for deployment
+- Python 3.10+ for deployment
 
 ### What Gets Deployed
 
-The deployment creates:
-
-- IAM OIDC Provider or Cognito Identity Pool for federation
-- IAM roles with scoped Bedrock access policies
+- Authentication infrastructure (IAM OIDC Provider or IDC auth stack)
 - Platform-specific installation packages (Windows, macOS, Linux)
-- Optional: OpenTelemetry monitoring infrastructure
+- Optional: OpenTelemetry monitoring + quota enforcement
 
-**Deployment time:** 2-3 hours for initial setup including IdP configuration.
-
-See [QUICK_START.md](QUICK_START.md) for complete step-by-step deployment instructions.
+**Deployment time:** 2-3 hours for initial setup. See [QUICK_START.md](QUICK_START.md) for step-by-step instructions.
 
 ### Extend to Claude Cowork
 
@@ -85,11 +57,9 @@ This generates MDM configuration files (JSON, macOS .mobileconfig, Windows .reg)
 
 ## Architecture Overview
 
-This guidance uses Direct IAM OIDC federation as the recommended authentication pattern. This provides temporary AWS credentials with complete user attribution for audit trails and usage monitoring.
+This guidance supports three authentication paths (see [Authentication Modes](#authentication-modes) for details). The recommended path is Direct IAM Federation:
 
-**Alternative:** Cognito Identity Pool is also supported for legacy IdP integrations. See [Deployment Guide](assets/docs/DEPLOYMENT.md) for comparison.
-
-### Authentication Flow (Direct IAM Federation)
+### Recommended: Direct IAM Federation
 
 ![Architecture Diagram](assets/images/credential-flow-direct-diagram.png)
 
@@ -100,23 +70,18 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 5. **Access Amazon Bedrock**: Application uses the temporary credentials to call Amazon Bedrock
 6. **Bedrock response**: Amazon Bedrock processes the request and returns the response
 
-> **For IAM Identity Center (IDC):** Users authenticate via the AWS access portal. The credential-process binary handles the SSO flow automatically and obtains temporary credentials via the IDC permission set role — no external IdP configuration required.
+### What Gets Deployed
 
-### Optional: Deploy Without SSO Authentication
+| Component | What | Deployed via |
+|-----------|------|-------------|
+| **Authentication** | IAM OIDC Provider + federated role, or IDC auth stack | `ccwb deploy --stack auth` |
+| **User packages** | Platform-specific binaries (credential-process, otel-helper) + install scripts | `ccwb package` |
+| **Monitoring** (optional) | Central mode: ECS Fargate OTEL collector + ALB. Sidecar mode: local collector on each machine. Both export to CloudWatch dashboards. | `ccwb deploy --stack monitoring` |
+| **Quota enforcement** (optional) | Quota check API + DynamoDB policies + per-user/team limits | `ccwb deploy --stack quota` |
+| **Analytics** (optional) | S3 data lake + Athena for historical SQL queries on usage data | `ccwb deploy --stack analytics` |
+| **Distribution** (optional) | S3 presigned URLs or self-service landing page with IdP auth | `ccwb deploy --stack distribution` |
 
-You can deploy the observability/analytics stack without configuring an identity provider. Select **"None"** during `ccwb init`.
-
-- No OIDC provider or IdP configuration required
-- Uses AWS IAM for access control directly
-- Identity detection is automatic:
-  - **IAM Identity Center users**: real username/email extracted from ARN
-  - **IAM users**: username from ARN
-  - **Other assumed roles**: hashed anonymous identifier
-- Best for: internal tools, analytics-only deployments, or orgs where users already have IAM access to Bedrock
-
-For full user-level attribution (department, team, cost centre) and centralized access control, use the OIDC or IAM Identity Center auth modes instead.
-
-> **IAM Identity Center** is fully supported — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Per-user quota enforcement, OTEL attribution, and a dedicated auth stack are included.
+See [Monitoring Guide](assets/docs/MONITORING.md), [Quota Guide](assets/docs/QUOTA_MONITORING.md), [Analytics Guide](assets/docs/ANALYTICS.md), and [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup.
 
 ## Authentication Modes
 
@@ -124,281 +89,69 @@ This guidance supports three identity paths. Each path provides usage monitoring
 
 | Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
 |------|--------------------|----------------|----------------|-------------------|----------|
-| **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Azure AD, Auth0, Google, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
+| **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Entra ID, Auth0, Google, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
 | **AWS IAM Identity Center** | `AWS IAM Identity Center` | `AWSReservedSSO_*` IAM role ARN (email in session name) | Up to 90 days (recommended: 7 days) | ✅ Via SigV4 | Orgs on native AWS identity, or where OIDC localhost callback is blocked |
 | **None** | `None` | IAM user ARN or hashed role principal | AWS credential TTL | ❌ Not available | Internal tools / analytics-only deployments |
 
-**Choosing a path:**
-
-- Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
-- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Includes dedicated auth stack, OTEL attribution, and per-user quota enforcement.
-- Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
-
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
 
-## Prerequisites
+### Optional: Deploy Without SSO Authentication
 
-### For Deployment (IT Administrators)
+You can deploy the observability/analytics stack without configuring an identity provider. Select **"None"** during `ccwb init`.
 
-**Software Requirements:**
+- No OIDC provider or IdP configuration required
+- Uses AWS IAM for access control directly
+- Identity detection is automatic (IDC users: email from ARN, IAM users: username, other roles: hashed identifier)
+- Best for: internal tools, analytics-only deployments, or orgs where users already have IAM access to Bedrock
 
-- Python 3.10-3.12
-- Poetry (dependency management)
-- AWS CLI v2
-- Git
-- Go 1.23+ (optional — only needed for building the OTEL collector sidecar)
+## Usage Monitoring
 
-**AWS Requirements:**
+Per-user usage attribution works across all authentication modes and both products:
 
-- AWS account with appropriate IAM permissions to create:
-  - CloudFormation stacks
-  - IAM OIDC Providers or Cognito Identity Pools
-  - IAM roles and policies
-  - (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
-  - (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
-  - (Optional) AWS CodeBuild
-- Amazon Bedrock activated in target regions
+| Auth Mode | Identity Source | CLI Attribution | Desktop Attribution | Quota Enforcement |
+|-----------|----------------|-----------------|---------------------|-------------------|
+| **OIDC** | JWT email claim | ✅ Per-user | ✅ Per-user (with headers) | ✅ Pre-credential |
+| **IAM Identity Center** | IAM ARN session name | ✅ Per-user | ✅ Per-user (with headers) | ✅ Pre-credential |
+| **None** | Hashed IAM principal | ⚠️ Anonymous | ⚠️ Anonymous | ❌ Not available |
 
-**OIDC Provider Requirements:**
+Usage from both Claude Code CLI and Claude Desktop counts toward the same per-user limit — a single quota applies regardless of which surface consumed the tokens.
 
-- Existing OIDC identity provider (Okta, Azure AD, Auth0, etc.)
-- Ability to create OIDC applications
-- Redirect URI support for `http://localhost:8400/callback`
+See [Quota Monitoring Guide](assets/docs/QUOTA_MONITORING.md) for enforcement details and [CoWork 3P Guide](assets/docs/COWORK_3P.md#quota-enforcement) for Desktop-specific behavior.
 
-### For End Users
+## Deployment
 
-**Claude Code:**
+### Requirements
 
-- Claude Code installed
-- Web browser for SSO authentication
-- AWS CLI v2 (optional)
+- Python 3.10+, Poetry, AWS CLI v2, Git
+- AWS account with Bedrock activated and IAM/CloudFormation permissions
+- OIDC identity provider (Okta, Entra ID, Auth0, Google, Cognito) or AWS IAM Identity Center
+- Go 1.24+ (optional — only for local builds; [pre-built binaries](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases) available from v2.4.0+)
 
-**Claude Cowork:**
+**End users need only:** Claude Code or Claude Desktop installed. No Python, AWS account, or build tools required — IT distributes pre-built packages.
 
-- Claude Desktop installed ([download](https://claude.com/download))
-- MDM configuration deployed by IT admin (generated via `ccwb cowork generate`)
+See [QUICK_START.md](QUICK_START.md) for the full step-by-step walkthrough.
 
-**No AWS account required** - users authenticate through your organization's identity provider and receive temporary credentials automatically.
+### Supported Regions
 
-**No Python, Poetry, or Git required** - users receive pre-built installation packages from IT administrators.
-
-### Supported AWS Regions
-
-The guidance can be deployed in any AWS region that supports:
-
-- IAM OIDC Providers or Amazon Cognito Identity Pools
-- Amazon Bedrock
-- (Optional) Amazon Elastic Container Service (Amazon ECS) tasks and Amazon CloudWatch dashboards
-- (Optional) Amazon Athena, AWS Glue, AWS Lambda, and Amazon Data Firehose resources
-- (Optional) AWS CodeBuild
-
-Both AWS Commercial and AWS GovCloud (US) partitions are supported. See [AWS Partition Support](#aws-partition-support) for details.
+Deploys to any AWS region with Bedrock support, across both AWS Commercial and AWS GovCloud (US) partitions. During `ccwb init`, select your region and the wizard auto-configures partition-appropriate models and endpoints.
 
 ### Cross-Region Inference
 
-Claude Code uses Amazon Bedrock's cross-region inference for optimal performance and availability. During setup, you can:
+Select your preferred model (Opus, Sonnet, Haiku) and cross-region inference profile (US, EU, AU) for optimal routing and data residency. Modern Claude models (3.7+) require cross-region inference.
 
-- Select your preferred Claude model (Opus, Sonnet, Haiku)
-- Choose a cross-region profile (US, Europe, APAC) for optimal regional routing
-- Select a specific source region within your profile for model inference
-
-This automatically routes requests across multiple AWS regions to ensure the best response times and highest availability. Modern Claude models (3.7+) require cross-region inference for access.
+See [Model Configuration](https://code.claude.com/docs/en/model-config) for model aliases (including `opusplan` for Opus planning + Sonnet execution).
 
 ### Platform Support
 
-The authentication tools support all major platforms:
+| Platform | Architecture | Build Methods |
+|----------|-------------|---------------|
+| Windows | x64 | Go (recommended) or Nuitka via CodeBuild |
+| macOS | ARM64 / Intel / Universal | Go or PyInstaller |
+| Linux | x86_64 / ARM64 | Go or PyInstaller (Docker) |
 
-| Platform | Architecture          | Build Method                | Installation |
-| -------- | --------------------- | --------------------------- | ------------ |
-| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat + ccwb-install.ps1 |
-| macOS    | ARM64 (Apple Silicon) | Native (PyInstaller)        | install.sh   |
-| macOS    | Intel (x86_64)        | Cross-compile (PyInstaller) | install.sh   |
-| macOS    | Universal (both)      | Universal2 (PyInstaller)    | install.sh   |
-| Linux    | x86_64                | Docker (PyInstaller)        | install.sh   |
-| Linux    | ARM64                 | Docker (PyInstaller)        | install.sh   |
+**Pre-built binaries:** From v2.4.0+, [GitHub Releases](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases) include binaries for all platforms — no local build tools needed.
 
-**Build System:**
-
-The package builder automatically creates executables for all platforms using PyInstaller (macOS/Linux) and AWS CodeBuild with Nuitka (Windows). All builds create standalone executables - no Python installation required for end users.
-
-See [QUICK_START.md](QUICK_START.md#platform-builds) for detailed build configuration.
-
-## AWS Partition Support
-
-This guidance supports deployment across multiple AWS partitions with a single, unified codebase. The same CloudFormation templates and deployment process work seamlessly in both AWS Commercial and AWS GovCloud (US) regions.
-
-### Supported Partitions
-
-| Partition | Regions | Use Cases |
-|-----------|---------|-----------|
-| **AWS Commercial** (`aws`) | All regions where Bedrock is available | Standard commercial workloads |
-| **AWS GovCloud (US)** (`aws-us-gov`) | us-gov-west-1, us-gov-east-1 | US government agencies, contractors, and regulated workloads |
-
-### How It Works
-
-The guidance automatically detects the AWS partition at deployment time and configures resources appropriately:
-
-**Resource ARNs:**
-- CloudFormation uses the `${AWS::Partition}` pseudo-parameter
-- Automatically resolves to `aws` or `aws-us-gov`
-- Example: `arn:${AWS::Partition}:bedrock:*::foundation-model/*`
-
-**Service Principals:**
-- Cognito Identity service principals are partition-specific
-- Commercial: `cognito-identity.amazonaws.com`
-- GovCloud West: `cognito-identity-us-gov.amazonaws.com`
-- GovCloud East: `cognito-identity.us-gov-east-1.amazonaws.com`
-- IAM role trust policies automatically use the correct principal based on region
-
-**S3 Endpoints:**
-- Commercial: `s3.region.amazonaws.com`
-- GovCloud: `s3.region.amazonaws.com`
-
-### Deploying to AWS GovCloud
-
-Follow the same [Quick Start](#quick-start) instructions with your GovCloud credentials active. During `ccwb init`, select a GovCloud region (us-gov-west-1 or us-gov-east-1) and the wizard will automatically configure GovCloud-compatible models and endpoints.
-
-**GovCloud-Specific Considerations:**
-
-1. **Credentials:** GovCloud requires separate AWS credentials from commercial accounts
-2. **Model IDs:** GovCloud uses region-prefixed model IDs (e.g., `us-gov.anthropic.*`)
-3. **FIPS Endpoints:** Cognito hosted UI uses `{prefix}.auth-fips.{region}.amazoncognito.com`
-4. **Managed Login:** Branding must be created for each Cognito app client
-
-### Validation
-
-After deployment, verify the correct partition configuration:
-
-```bash
-# Check IAM role ARN uses correct partition
-aws iam get-role \
-  --role-name BedrockCognitoFederatedRole \
-  --region <region> \
-  --query 'Role.Arn'
-
-# Expected ARN formats:
-# Commercial: arn:aws:iam::ACCOUNT:role/BedrockCognitoFederatedRole
-# GovCloud: arn:aws-us-gov:iam::ACCOUNT:role/BedrockCognitoFederatedRole
-```
-
-### Backward Compatibility
-
-✅ **All changes are fully backward compatible**
-
-- Existing commercial deployments continue to work without modification
-- CloudFormation updates can be applied to existing stacks
-- No changes to user-facing functionality
-- No data migration required
-
-## What Gets Deployed
-
-### Authentication Infrastructure
-
-The `ccwb deploy` command creates:
-
-**IAM Resources:**
-
-- IAM OIDC Provider (for Direct IAM federation) or Cognito Identity Pool (for legacy IdP)
-- IAM role with trust relationship for federated access
-- IAM policies scoped to:
-  - Bedrock model invocation in configured regions
-  - CloudWatch metric publishing (if monitoring enabled)
-
-**User Distribution Packages:**
-
-- Platform-specific executables (Windows, macOS ARM64/Intel, Linux x64/ARM64)
-- Installation scripts that configure AWS CLI credential process
-- Pre-configured settings (OIDC provider, model selection, monitoring endpoints)
-
-### Distribution Options (Optional)
-
-After building packages, you can share them with users in three ways:
-
-| Method                | Best For               | Authentication                 |
-| --------------------- | ---------------------- | ------------------------------ |
-| **Manual Sharing**    | Any size team          | None                           |
-| **Presigned S3 URLs** | Automated distribution | None                           |
-| **Landing Page**      | Self-service portal    | IdP (Okta/Azure/Auth0/Cognito) |
-
-**Manual Sharing:** Zip the `dist/` folder and share via email or internal file sharing. No additional infrastructure required.
-
-**Presigned URLs:** Generate time-limited S3 URLs for direct downloads. Automated but requires S3 bucket setup.
-
-**Landing Page:** Self-service portal with IdP authentication, platform detection, and custom domain support. Full automation with compliance features.
-
-See [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup guides.
-
-### Monitoring Infrastructure (Optional)
-
-Enable usage visibility with OpenTelemetry monitoring. During `ccwb init`, choose between two monitoring modes:
-
-| Mode | Description | Infrastructure | Analytics | Cost |
-|------|-------------|----------------|-----------|------|
-| **Central collector** (ECS Fargate) | Server-side collector shared by all users | VPC, ECS Fargate, ALB | Supported | ~$30-50/mo |
-| **Sidecar collector** (local) | Runs on each developer's machine | None | Not in v1 | $0 server cost |
-
-Both modes use OTLP to send metrics to CloudWatch and share the same PromQL dashboard.
-
-**Central collector components:**
-
-- VPC and networking resources (or use existing VPC)
-- ECS Fargate cluster running OpenTelemetry collector (OTLP export; adds EMF when analytics enabled)
-- Application Load Balancer for metric ingestion
-- CloudWatch dashboards with PromQL widgets over OTLP-ingested metrics
-
-**Optional Analytics Add-On:**
-
-- Kinesis Data Firehose streaming metrics to S3
-- S3 data lake for long-term storage
-- Amazon Athena for SQL queries on historical data
-- AWS Glue Data Catalog for schema management
-
-See [QUICK_START.md](QUICK_START.md) for step-by-step deployment instructions.
-
-## Monitoring and Operations
-
-Optional OpenTelemetry monitoring provides comprehensive usage visibility for cost attribution, capacity planning, and productivity insights.
-
-### Available Metrics
-
-**Token Economics:**
-
-- Input/output/cache token consumption by user, model, and type
-- Prompt caching effectiveness (hit rates, token savings)
-- Cost attribution by user, team, or department
-
-**Code Activity:**
-
-- Lines of code written vs accepted (productivity signal)
-- File operations breakdown (edits, searches, reads)
-- Programming language distribution
-
-**Operational Health:**
-
-- Active users and top consumers
-- Usage patterns (hourly/daily heatmaps)
-- Authentication and API error rates
-
-### Infrastructure
-
-During `ccwb init`, choose between two monitoring modes:
-
-| Mode | Description | Infrastructure | Analytics | Cost |
-|------|-------------|----------------|-----------|------|
-| **Central collector** (ECS Fargate) | Server-side collector shared by all users | VPC, ECS Fargate, ALB | Supported | ~$30-50/mo |
-| **Sidecar collector** (local) | Runs on each developer's machine | None | Not in v1 | $0 server cost |
-
-Both modes use OTLP to send metrics to CloudWatch and share the same PromQL dashboard.
-
-The central collector stack (deployed with `ccwb deploy monitoring`) includes:
-
-- ECS Fargate running OpenTelemetry collector
-- Application Load Balancer for metric ingestion
-- CloudWatch dashboards for real-time visualization
-- Optional: S3 data lake + Athena for historical analysis
-
-See [Monitoring Guide](assets/docs/MONITORING.md) for setup details and dashboard examples.
-See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical data.
+See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 ## Additional Resources
 
@@ -433,7 +186,7 @@ See [Analytics Guide](assets/docs/ANALYTICS.md) for SQL queries on historical da
 ### Identity Provider Setup
 
 - [Okta](assets/docs/providers/okta-setup.md)
-- [Microsoft Entra ID (Azure AD)](assets/docs/providers/microsoft-entra-id-setup.md)
+- [Microsoft Entra ID](assets/docs/providers/microsoft-entra-id-setup.md)
 - [Auth0](assets/docs/providers/auth0-setup.md)
 - [Google](assets/docs/providers/google-oidc-setup.md)
 - [AWS Cognito User Pool](assets/docs/providers/cognito-user-pool-setup.md)
