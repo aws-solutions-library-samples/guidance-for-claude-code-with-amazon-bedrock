@@ -92,10 +92,12 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 
 1. **User initiates authentication**: User requests access to Amazon Bedrock through Claude Code or Claude Cowork
 2. **OIDC authentication**: User authenticates with their OIDC provider and receives an ID token
-3. **Token submission to IAM**: Application sends the OIDC ID token to Amazon Cognito
-4. **IAM returns credentials**: AWS IAM validates and returns temporary AWS credentials
+3. **Token exchange with AWS STS**: Application calls `AssumeRoleWithWebIdentity` with the OIDC ID token
+4. **STS returns credentials**: AWS STS validates the token against the registered IAM OIDC provider and returns temporary AWS credentials (scoped to Bedrock access)
 5. **Access Amazon Bedrock**: Application uses the temporary credentials to call Amazon Bedrock
 6. **Bedrock response**: Amazon Bedrock processes the request and returns the response
+
+> **For IAM Identity Center (IDC):** Users authenticate via the AWS access portal. The credential-process binary handles the SSO flow automatically and obtains temporary credentials via the IDC permission set role — no external IdP configuration required.
 
 ### Optional: Deploy Without SSO Authentication
 
