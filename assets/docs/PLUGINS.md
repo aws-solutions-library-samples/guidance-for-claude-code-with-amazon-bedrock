@@ -46,7 +46,7 @@ For Cowork on third-party platforms (e.g., Amazon Bedrock), administrators provi
 
 **Official documentation:** [MCP, plugins, skills, and hooks for Cowork 3P](https://claude.com/docs/cowork/3p/extensions)
 
-### Comparison
+### Distribution Comparison
 
 | Aspect | Claude Code | Cowork 3P (admin) |
 |--------|------------|-------------------|
@@ -54,8 +54,35 @@ For Cowork on third-party platforms (e.g., Amazon Bedrock), administrators provi
 | Who decides | Individual developer | IT administrator |
 | Removable by user | Yes | No (org plugins) |
 | Update mechanism | `/plugin marketplace update` | Re-push via MDM |
-| MCP servers | Bundled in plugin `.mcp.json` | Separate `managedMcpServers` config key |
+| MCP servers | Bundled in plugin `.mcp.json` | Bundled `.mcp.json` + separate `managedMcpServers` config key |
 | Team enforcement | `.claude/settings.json` `requiredPlugins` | MDM policy |
+
+## Plugin Component Differences
+
+The plugin directory format is largely shared between Claude Code and Cowork, but each product supports different component types:
+
+| Component | Claude Code | Cowork | Notes |
+|-----------|:-----------:|:------:|-------|
+| Skills (`skills/`) | ✅ | ✅ | Same format on both |
+| Commands (`commands/`) | ✅ | ✅ | Slash commands |
+| Agents/Sub-agents (`agents/`) | ✅ | ✅ | Same format on both |
+| Hooks (`hooks/hooks.json`) | ✅ | ✅ | Same lifecycle events |
+| MCP servers (`.mcp.json`) | ✅ | ✅ | Called "connectors" in Cowork UI |
+| LSP servers | ✅ | ❌ | Code intelligence (editor-only) |
+| Monitors | ✅ | ❌ | Claude Code-specific |
+| Themes | ✅ | ❌ | Terminal UI theming |
+| Tool policy locks | ❌ | ✅ | Admin can set `allow`/`ask`/`blocked` per tool |
+
+**Key behavioral differences:**
+
+- **MCP server approval:** In Claude Code, users approve MCP server access at runtime. In Cowork org plugins, MCP servers are pre-approved by the administrator — users cannot block them.
+- **Connectors vs MCP servers:** Cowork uses the term "connectors" in the UI for MCP servers. The underlying protocol (MCP) is the same.
+- **Standalone MCP provisioning:** Cowork admins can deploy MCP servers *without* a plugin via the `managedMcpServers` configuration key. Claude Code requires MCP servers to be either in a plugin's `.mcp.json` or in the user's `.claude/settings.json`.
+- **LSP/Monitors/Themes:** These are Claude Code-specific (terminal editor features). Plugins containing only these components won't provide any value when deployed to Cowork.
+
+**Official documentation:**
+- Claude Code plugin components: [Plugins reference](https://code.claude.com/docs/en/plugins-reference)
+- Cowork 3P extensions: [MCP, plugins, skills, and hooks](https://claude.com/docs/cowork/3p/extensions)
 
 ## Customization Before Deployment
 
