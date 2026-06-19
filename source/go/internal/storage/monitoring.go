@@ -5,13 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"ccwb-go/internal/jwt"
 )
 
 // GetMonitoringToken retrieves a valid monitoring token from the configured storage.
 func GetMonitoringToken(profile, storageType string) (string, error) {
-	// Check environment first
+	// Check environment first. Drop an expired env-var token (mirrors the
+	// file/keyring expiry check below and the Python otel-helper) so callers
+	// fall through to credential-process refresh instead of attaching a stale
+	// token that the collector/ALB would reject with a silent 401.
 	if token := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); token != "" {
-		return token, nil
+		if !jwt.IsTokenExpired(token) {
+			return token, nil
+		}
 	}
 
 	var data *MonitoringTokenData

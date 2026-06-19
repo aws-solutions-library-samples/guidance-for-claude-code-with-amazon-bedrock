@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Claims is a map of JWT payload claims.
@@ -64,4 +65,26 @@ func DecodePayload(token string) (Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// expiryBufferSeconds is the freshness margin applied when checking a token's
+// exp claim. It mirrors the Python otel-helper's is_token_expired buffer so the
+// Go and Python variants treat the same token identically (parity).
+const expiryBufferSeconds = 60
+
+// IsTokenExpired reports whether a JWT's exp claim has passed (within a 60s
+// buffer). It is fail-safe: a token that is unparseable or has no exp claim is
+// treated as expired, so callers fall through to re-authentication rather than
+// attaching a stale or malformed token. The signature is NOT verified — exp is
+// read for freshness/display only, never for trust decisions.
+func IsTokenExpired(token string) bool {
+	claims, err := DecodePayload(token)
+	if err != nil {
+		return true // unparseable = treat as expired
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return true // missing/non-numeric exp = treat as expired
+	}
+	return time.Now().Unix() > int64(exp)-expiryBufferSeconds
 }

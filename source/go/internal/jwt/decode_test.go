@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func makeTestJWT(claims map[string]interface{}) string {
@@ -95,5 +96,58 @@ func TestGetFloat_WrongType(t *testing.T) {
 	claims := Claims{"str": "hello"}
 	if claims.GetFloat("str") != 0 {
 		t.Error("expected 0 for non-float value")
+	}
+}
+
+// IsTokenExpired mirrors the Python otel-helper's is_token_expired (60s buffer,
+// fail-safe). These cases match the Python regression suite for #561 so the Go
+// and Python variants treat the same token identically.
+
+func TestIsTokenExpired_Valid(t *testing.T) {
+	token := makeTestJWT(map[string]interface{}{
+		"exp": float64(time.Now().Unix() + 3600),
+	})
+	if IsTokenExpired(token) {
+		t.Error("token expiring in 1h should not be expired")
+	}
+}
+
+func TestIsTokenExpired_Expired(t *testing.T) {
+	token := makeTestJWT(map[string]interface{}{
+		"exp": float64(time.Now().Unix() - 3600),
+	})
+	if !IsTokenExpired(token) {
+		t.Error("token that expired 1h ago should be expired")
+	}
+}
+
+func TestIsTokenExpired_WithinBuffer(t *testing.T) {
+	// Expires in 30s — inside the 60s buffer, so treated as expired.
+	token := makeTestJWT(map[string]interface{}{
+		"exp": float64(time.Now().Unix() + 30),
+	})
+	if !IsTokenExpired(token) {
+		t.Error("token expiring within the 60s buffer should be treated as expired")
+	}
+}
+
+func TestIsTokenExpired_NoExpClaim(t *testing.T) {
+	token := makeTestJWT(map[string]interface{}{
+		"sub": "user123",
+	})
+	if !IsTokenExpired(token) {
+		t.Error("token without exp claim should be treated as expired (fail-safe)")
+	}
+}
+
+func TestIsTokenExpired_Malformed(t *testing.T) {
+	if !IsTokenExpired("not-a-jwt") {
+		t.Error("unparseable token should be treated as expired (fail-safe)")
+	}
+}
+
+func TestIsTokenExpired_Empty(t *testing.T) {
+	if !IsTokenExpired("") {
+		t.Error("empty token should be treated as expired (fail-safe)")
 	}
 }

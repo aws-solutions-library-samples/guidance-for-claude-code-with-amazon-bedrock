@@ -104,7 +104,9 @@ func run(testMode bool) int {
 			debugPrint("Using cached OTEL headers (token still valid)")
 			// Resolve Bearer fresh — the cache stores attribution headers only,
 			// never the token itself. Try env var (free) then credential-process (~20ms).
-			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" {
+			// An expired env-var token is skipped so we fall through to
+			// credential-process refresh instead of attaching a stale Bearer.
+			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" && !jwt.IsTokenExpired(t) {
 				attachBearer(headers, t)
 			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
 				attachBearer(headers, t)
@@ -120,8 +122,14 @@ func run(testMode bool) int {
 		}
 	}
 
-	// Layer 2: Check environment variable
+	// Layer 2: Check environment variable. An expired env-var token is treated
+	// as absent so we fall through to credential-process (which handles refresh)
+	// instead of attaching a stale token that would yield a silent 401.
 	token := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN")
+	if token != "" && jwt.IsTokenExpired(token) {
+		debugPrint("Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process")
+		token = ""
+	}
 	if token != "" {
 		debugPrint("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
 	} else {
