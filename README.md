@@ -130,7 +130,7 @@ When SSO authentication is disabled:
 
 To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
 
-> **IAM Identity Center** works today via SSO-disabled mode — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Full first-class IDC support (dedicated auth stack, OTEL attribution, quota enforcement) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
+> **IAM Identity Center** is fully supported — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Per-user quota enforcement, OTEL attribution, and a dedicated auth stack are included.
 
 ## Authentication Modes
 
@@ -138,14 +138,14 @@ This guidance supports three identity paths. Each path provides usage monitoring
 
 | Mode | `ccwb init` choice | Identity Source | Session Length | Quota Enforcement | Best For |
 |------|--------------------|----------------|----------------|-------------------|----------|
-| **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Azure AD, Auth0, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
+| **External IdP (OIDC)** | `OIDC / Direct IdP` | Okta, Azure AD, Auth0, Google, Cognito User Pools JWT claims | Refresh token lifetime | ✅ Full | Orgs with an existing enterprise IdP |
 | **AWS IAM Identity Center** | `AWS IAM Identity Center` | `AWSReservedSSO_*` IAM role ARN (email in session name) | Up to 90 days (recommended: 7 days) | ✅ Via SigV4 | Orgs on native AWS identity, or where OIDC localhost callback is blocked |
 | **None** | `None` | IAM user ARN or hashed role principal | AWS credential TTL | ❌ Not available | Internal tools / analytics-only deployments |
 
 **Choosing a path:**
 
 - Use **External IdP (OIDC)** when you need full quota enforcement, rich user attribution (department, team, cost centre from JWT claims), and have an OIDC provider (Okta, Azure AD, Auth0, or Cognito).
-- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Full IAM IDC integration (dedicated auth stack, OTEL attribution, quota support) is available on the [`feat/aws-iam-idc-support`](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/feat/aws-iam-idc-support) branch.
+- Use **AWS IAM Identity Center** when your team already uses IAM IDC, or when corporate policies block `localhost:8400`, or when you want sessions up to 7 days without browser re-prompts. Includes dedicated auth stack, OTEL attribution, and per-user quota enforcement.
 - Use **None** when deploying the observability/analytics stack only, or when users already have IAM access to Bedrock and need no additional authentication layer.
 
 For deployment patterns and best practices, see the [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) blog post.
