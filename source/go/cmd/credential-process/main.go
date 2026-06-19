@@ -44,6 +44,7 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Show version")
 	shortVersion := flag.Bool("v", false, "Show version (short)")
 	getMonitoring := flag.Bool("get-monitoring-token", false, "Get cached monitoring token")
+	getMCPAuthHeader := flag.Bool("get-mcp-auth-header", false, "Print {\"Authorization\":\"Bearer <id_token>\"} from the cached token for an MCP headersHelper (never opens a browser)")
 	clearCache := flag.Bool("clear-cache", false, "Clear cached credentials")
 	checkExpiration := flag.Bool("check-expiration", false, "Check if credentials are expired")
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
@@ -95,6 +96,9 @@ func main() {
 	}
 	if *getMonitoring {
 		os.Exit(app.getMonitoringToken())
+	}
+	if *getMCPAuthHeader {
+		os.Exit(app.getMCPAuthHeader())
 	}
 	if *checkExpiration {
 		os.Exit(app.checkExpiration())
@@ -261,6 +265,39 @@ func (a *credentialApp) getMonitoringToken() int {
 	a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
 
 	fmt.Println(authResult.IDToken)
+	return 0
+}
+
+// getMCPAuthHeader prints {"Authorization":"Bearer <id_token>"} to stdout for
+// use as an MCP server headersHelper (the AgentCore web-search gateway uses a
+// CUSTOM_JWT authorizer that validates the same OIDC id_token the solution
+// already mints). It MUST NOT open a browser and MUST return quickly so it fits
+// inside Claude Code's headersHelper budget — so unlike getMonitoringToken it
+// never falls through to authenticate(). On a cache miss it attempts only the
+// browserless refresh_token exchange; if that also fails it exits non-zero with
+// a clear stderr message rather than hanging or prompting.
+func (a *credentialApp) getMCPAuthHeader() int {
+	token, err := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+	if (err != nil || token == "") && a.cfg.IsSsoEnabled() && !a.cfg.IsIDC() {
+		// Cached id_token expired/near-expiry. Try the silent refresh_token
+		// exchange (no browser) before giving up — mirrors getMonitoringToken
+		// but stops here: an MCP headersHelper can never drive an interactive
+		// login. Only attempt for OIDC; idc/none have no id_token (Story B).
+		if creds := a.tryRefreshToken(); creds != nil {
+			token, err = storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+		}
+	}
+	if err != nil || token == "" {
+		fmt.Fprintf(os.Stderr, "Error: no valid cached token for profile '%s'; run the credential process once to authenticate.\n", a.profile)
+		return 1
+	}
+
+	out, mErr := json.Marshal(map[string]string{"Authorization": "Bearer " + token})
+	if mErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to encode auth header: %v\n", mErr)
+		return 1
+	}
+	fmt.Println(string(out))
 	return 0
 }
 
