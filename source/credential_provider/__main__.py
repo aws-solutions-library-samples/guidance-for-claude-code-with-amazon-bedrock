@@ -899,6 +899,19 @@ class MultiProviderAuth:
         except Exception:
             return None
 
+    def get_mcp_auth_header(self):
+        """Return the MCP Authorization header dict from the cached id_token, or None.
+
+        {"Authorization": "Bearer <id_token>"} for the AgentCore web-search MCP
+        headersHelper. Reads only the cached/silently-refreshed token via
+        get_monitoring_token() — never opens a browser. Returns None when no
+        valid token is available so the caller fails cleanly (no hang, no prompt).
+        """
+        token = self.get_monitoring_token()
+        if not token:
+            return None
+        return {"Authorization": f"Bearer {token}"}
+
     def save_to_credentials_file(self, credentials, profile="ClaudeCode"):
         """Save credentials to ~/.aws/credentials file
 
@@ -2471,6 +2484,14 @@ def main():
         "--get-monitoring-token", action="store_true", help="Get cached monitoring token instead of AWS credentials"
     )
     parser.add_argument(
+        "--get-mcp-auth-header",
+        action="store_true",
+        help=(
+            'Print {"Authorization":"Bearer <id_token>"} from the cached token for an MCP '
+            "headersHelper (never opens a browser)"
+        ),
+    )
+    parser.add_argument(
         "--clear-cache", action="store_true", help="Clear cached credentials and force re-authentication"
     )
     parser.add_argument(
@@ -2559,6 +2580,27 @@ def main():
                 # Return failure exit code so OTEL helper knows auth failed
                 # This prevents OTEL helper from using default/unknown values
                 sys.exit(1)
+
+    # Handle MCP auth-header request.
+    # Used as the headersHelper for the AgentCore web-search MCP server, whose
+    # gateway runs a CUSTOM_JWT authorizer validating the same OIDC id_token the
+    # solution already mints. MUST be fast and MUST NOT open a browser — an MCP
+    # headersHelper can never drive an interactive login. So, unlike
+    # --get-monitoring-token, this never falls through to authentication: on a
+    # cache miss it fails cleanly with a non-zero exit.
+    if args.get_mcp_auth_header:
+        header = auth.get_mcp_auth_header()
+        if header:
+            # Compact separators so Go (encoding/json) and Python emit byte-identical output.
+            print(json.dumps(header, separators=(",", ":")))
+            sys.exit(0)
+        else:
+            print(
+                f"Error: no valid cached token for profile '{args.profile}'; "
+                "run the credential process once to authenticate.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Handle check-expiration request
     if args.check_expiration:
