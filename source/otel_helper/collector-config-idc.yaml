@@ -1,0 +1,80 @@
+# ABOUTME: Local OTEL Collector sidecar config for IAM Identity Center (IDC) users
+# ABOUTME: Same as collector-config.yaml but uses STATIC identity attributes instead of
+# ABOUTME: extracting from HTTP headers (no otel-helper binary needed)
+#
+# Placeholders replaced by installer:
+#   ${REGION}     - AWS region (e.g. us-east-1)
+#   ${USER_EMAIL} - User's email (resolved from IDC ARN at package time)
+#   ${USER_NAME}  - User's display name (optional, defaults to email prefix)
+#   ${DEPARTMENT} - Department (optional)
+#   ${TEAM_ID}    - Team identifier (optional)
+#   ${COST_CENTER} - Cost center (optional)
+#   ${ORGANIZATION} - Organization (optional)
+#
+# Why no otel-helper? IDC users authenticate via 'aws sso login' which provides
+# SigV4 credentials directly. User identity is known at distribution time (from
+# the IDC session name = email), so we bake it statically rather than extracting
+# from JWT at runtime.
+
+extensions:
+  sigv4auth:
+    service: "monitoring"
+    region: "${REGION}"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+        include_metadata: true
+
+processors:
+  batch/metrics:
+    timeout: 60s
+  # Static identity: baked at distribution time from IDC user's email.
+  # Unlike the OIDC path (collector-config.yaml) which extracts identity from
+  # HTTP headers injected by otel-helper, the IDC path sets them as fixed
+  # resource attributes — no helper binary needed.
+  resource/identity:
+    attributes:
+      - key: user.email
+        value: "${USER_EMAIL}"
+        action: upsert
+      - key: user.name
+        value: "${USER_NAME}"
+        action: upsert
+      - key: department
+        value: "${DEPARTMENT}"
+        action: upsert
+      - key: team.id
+        value: "${TEAM_ID}"
+        action: upsert
+      - key: cost_center
+        value: "${COST_CENTER}"
+        action: upsert
+      - key: organization
+        value: "${ORGANIZATION}"
+        action: upsert
+      - key: deployment.environment
+        value: "production"
+        action: insert
+
+exporters:
+  otlphttp:
+    tls:
+      insecure: false
+    endpoint: "https://monitoring.${REGION}.amazonaws.com"
+    auth:
+      authenticator: sigv4auth
+
+service:
+  extensions: [sigv4auth]
+  telemetry:
+    logs:
+      level: info
+      output_paths: [stderr]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [resource/identity, batch/metrics]
+      exporters: [otlphttp]

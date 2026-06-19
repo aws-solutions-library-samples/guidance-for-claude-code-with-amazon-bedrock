@@ -4,7 +4,13 @@ This guide covers setting up Claude Code with Bedrock using AWS IAM Identity Cen
 
 ## How It Works
 
-IDC uses your existing AWS SSO credentials — no external IdP or JWT tokens needed. The credential-process passes through ambient AWS creds from `aws sso login`, resolves your email from the STS caller ARN session name, writes OTEL attribution headers to a local cache, and checks quota via SigV4-signed API requests.
+IDC uses your existing AWS SSO credentials — no external IdP or JWT tokens needed, and **no custom binaries required on developer machines**.
+
+- **Authentication:** Developers run `aws sso login` — Claude Code picks up ambient AWS credentials automatically via the standard credential chain. No credential-process binary needed.
+- **Monitoring:** The local OTEL sidecar collector sends metrics to CloudWatch's native OTLP endpoint using the developer's SSO session credentials (SigV4). User identity is baked as a static resource attribute in the collector config at distribution time.
+- **Attribution:** User email is resolved from the IAM Identity Center ARN session name (e.g. `user@company.com`) during `ccwb init` or `ccwb package` and embedded directly in the collector configuration.
+
+This means the IDC developer bundle contains **only the collector binary** — no credential-process, no otel-helper.
 
 ## When to Choose IAM Identity Center vs OIDC
 
@@ -118,10 +124,12 @@ Example session settings:
 
 ## Per-User Cost Attribution
 
-IDC users get per-user OTEL attribution automatically. The credential-process extracts the user email from the STS assumed-role ARN session name and writes it to the OTEL cache. Dashboard widgets (Token Usage by User, Active Users) work without additional configuration.
+IDC users get per-user OTEL attribution automatically. The user email is baked into the collector configuration at distribution time (`ccwb package` resolves it from `aws sts get-caller-identity`). Dashboard widgets (Token Usage by User, Active Users) work without additional configuration.
 
 **Requirement:** IAM Identity Center must use email as the session name (the default). The ARN format must be:
 `arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com`
+
+> **Note:** Unlike the OIDC path (which extracts identity dynamically from JWT tokens at runtime), the IDC path uses a static email set at distribution time. This works well for single-user machines. If a user's email changes, regenerate their package with `ccwb package`.
 
 ### Verifying Attribution
 
