@@ -101,34 +101,17 @@ This guidance uses Direct IAM OIDC federation as the recommended authentication 
 
 ### Optional: Deploy Without SSO Authentication
 
-**New in v2.1+:** You can now deploy the observability and analytics solution without SSO authentication. This is ideal for:
+You can deploy the observability/analytics stack without configuring an identity provider. Select **"None"** during `ccwb init`.
 
-- **Internal tools and development environments** where user authentication isn't required
-- **Analytics-only deployments** where you want usage tracking without managing IdP integrations
-- **Simplified deployments** using AWS IAM roles for access control
+- No OIDC provider or IdP configuration required
+- Uses AWS IAM for access control directly
+- Identity detection is automatic:
+  - **IAM Identity Center users**: real username/email extracted from ARN
+  - **IAM users**: username from ARN
+  - **Other assumed roles**: hashed anonymous identifier
+- Best for: internal tools, analytics-only deployments, or orgs where users already have IAM access to Bedrock
 
-When SSO authentication is disabled:
-
-- **Access Control**: Uses AWS IAM roles and policies directly (no OIDC provider required)
-- **Identity Detection**: Automatically detects how users authenticate to AWS:
-  - **AWS IAM Identity Center (SSO) users**: Real username/email is extracted from the assumed-role ARN — no configuration needed. Each SSO user gets full identity attribution (name, email, permission set) in the observability dashboard.
-  - **IAM users**: Username is extracted from the IAM user ARN.
-  - **Non-SSO assumed roles**: Usage is tracked using a hashed anonymous identifier (consistent per IAM principal, but individual identity cannot be determined).
-- **No IdP Configuration**: Skip OIDC provider setup entirely — if your organization uses AWS IAM Identity Center for Bedrock access, identity "just works"
-
-**When to use this:**
-- You're deploying only the observability/analytics infrastructure
-- Your users already have AWS IAM access to Bedrock
-- You want simplified deployment without IdP integration
-- You need usage monitoring but don't require individual user authentication
-
-**When to use SSO authentication:**
-- You need centralized access control through your identity provider
-- You require user-level attribution with real identities (email, department, etc.)
-- You want to enforce organization-wide access policies
-- You need detailed audit trails with user information
-
-To deploy without SSO authentication, select **"None (use existing AWS credentials)"** when prompted for the authentication method during `ccwb init`. The deployment will skip the authentication stack and use anonymous tracking for metrics.
+For full user-level attribution (department, team, cost centre) and centralized access control, use the OIDC or IAM Identity Center auth modes instead.
 
 > **IAM Identity Center** is fully supported — users authenticate with `aws sso login` and identity is extracted from the IAM ARN automatically. Per-user quota enforcement, OTEL attribution, and a dedicated auth stack are included.
 
