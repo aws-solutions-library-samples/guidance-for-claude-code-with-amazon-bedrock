@@ -345,23 +345,39 @@ class InitCommand(Command):
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            console.print("\n[bold]SSO Authentication[/bold]")
-            console.print("Enable Single Sign-On authentication via identity providers")
-            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
-            console.print("\nWhen disabled:")
-            console.print("  • Uses AWS IAM roles for access control")
-            console.print("  • Metrics will use anonymous tracking based on IAM identity")
-            console.print("  • No user authentication required\n")
+            console.print("\n[bold]Authentication Method[/bold]")
+            console.print("Choose how developers will authenticate to use Claude Code:\n")
 
-            sso_enabled = questionary.confirm(
-                "Enable SSO authentication?",
-                default=config.get("sso_enabled", True),
+            # Determine default based on existing config
+            _existing_sso = config.get("sso_enabled", True)
+            _existing_auth_type = config.get("auth_type", "oidc" if _existing_sso else "none")
+            _default_auth = _existing_auth_type if _existing_auth_type in ("oidc", "idc", "none") else "oidc"
+
+            auth_method = questionary.select(
+                "Select authentication method:",
+                choices=[
+                    questionary.Choice(
+                        "OIDC (Okta, Azure AD, Auth0, Cognito)",
+                        value="oidc",
+                    ),
+                    questionary.Choice(
+                        "IAM Identity Center",
+                        value="idc",
+                    ),
+                    questionary.Choice(
+                        "None",
+                        value="none",
+                    ),
+                ],
+                default=_default_auth,
             ).ask()
 
-            if sso_enabled is None:
+            if auth_method is None:
                 return None
 
-            config["sso_enabled"] = sso_enabled
+            # Map selection to stored config fields (backward compatible)
+            config["auth_type"] = auth_method
+            config["sso_enabled"] = auth_method == "oidc"
 
         # OIDC Provider Configuration
         if not skip_okta and config.get("sso_enabled", True):
@@ -1016,18 +1032,38 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
-                # the API Gateway authorizer cannot validate requests without one.
-                # Skip the prompt entirely when SSO is disabled (issue #454).
-                if not config.get("sso_enabled", True):
+                # IDC path: quota enforcement works via credential-process binary
+                # (SigV4-signed requests to quota API). Show the option with clear tradeoff.
+                # None path: no per-user identity → cannot enforce quotas.
+                if config.get("auth_type") == "none":
                     if "quota" not in config:
                         config["quota"] = {}
                     config["quota"]["enabled"] = False
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print(
-                        "[dim]Skipped — quota monitoring requires SSO authentication "
-                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
+                        "[dim]Skipped — quota enforcement requires per-user identity "
+                        "(OIDC or IAM Identity Center) and is not available with anonymous auth.[/dim]"
                     )
+                elif config.get("auth_type") == "idc":
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print("Track per-user token consumption, set limits, and receive alerts")
+                    console.print("when users approach or exceed their quotas.")
+                    console.print()
+                    console.print("⚠️  Quota enforcement on AWS IAM Identity Center requires the credential-process binary.")
+                    console.print("    Without it: monitoring only (usage visible, no blocking)")
+                    console.print("    With it: full enforcement (blocks when over limit)")
+                    console.print()
+                    enable_quota_monitoring = questionary.confirm(
+                        "Enable quota enforcement?",
+                        default=config.get("quota", {}).get("enabled", False),
+                    ).ask()
+
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = enable_quota_monitoring
+
+                    if enable_quota_monitoring:
+                        console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
                 else:
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print("Track per-user token consumption, set limits, and receive alerts")
