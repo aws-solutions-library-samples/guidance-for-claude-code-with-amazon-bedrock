@@ -19,7 +19,7 @@ class TestInstallBatAwsCliHandling:
             / "commands"
             / "package.py"
         )
-        self.content = self.package_path.read_text()
+        self.content = self.package_path.read_text(encoding="utf-8")
 
     def test_has_aws_cli_detection_variable(self):
         """install.bat must set HAS_AWS_CLI variable based on 'where aws' check."""

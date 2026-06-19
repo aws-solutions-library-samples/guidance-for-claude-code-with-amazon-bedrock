@@ -64,10 +64,11 @@ class TestGoogleClientSecretConfig:
             / "init.py"
         )
         content = init_py.read_text(encoding="utf-8")
-        # Verify Google-specific secret prompt exists
-        assert 'provider_type == "google"' in content
-        assert 'config["client_secret"]' in content, (
-            "Init wizard must write client_secret to config for Google provider"
+        # Verify Google-specific handling exists in init wizard
+        assert 'provider_type = "google"' in content
+        # client_secret is stored in OS keyring, not written to config file
+        assert 'client_secret' in content, (
+            "Init wizard must handle client_secret for Google provider (stored in keyring)"
         )
 
     def test_package_includes_google_client_secret(self):

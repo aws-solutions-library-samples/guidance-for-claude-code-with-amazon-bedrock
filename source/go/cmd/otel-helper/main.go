@@ -59,6 +59,9 @@ func main() {
 	testMode := flag.Bool("test", false, "Run in test mode with verbose output")
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
 	versionFlag := flag.Bool("version", false, "Show version")
+	proxyMode := flag.Bool("proxy", false, "Run as SigV4 signing proxy for CoWork OTLP logs")
+	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the signing proxy (default 4318)")
+	proxyRegion := flag.String("proxy-region", "", "AWS region for CloudWatch OTLP (default: AWS_REGION env)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -68,6 +71,18 @@ func main() {
 
 	verbose = *verboseFlag || *testMode
 	debug = os.Getenv("DEBUG_MODE") != "" || verbose
+
+	if *proxyMode {
+		profile := os.Getenv("AWS_PROFILE")
+		if profile == "" {
+			profile = "ClaudeCode"
+		}
+		os.Exit(startProxy(proxyConfig{
+			port:    *proxyPort,
+			region:  *proxyRegion,
+			profile: profile,
+		}))
+	}
 
 	os.Exit(run(*testMode))
 }
