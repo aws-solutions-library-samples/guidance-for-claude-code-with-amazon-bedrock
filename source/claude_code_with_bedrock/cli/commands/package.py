@@ -367,6 +367,41 @@ class PackageCommand(Command):
         # Show what will be packaged using shared display utility
         display_configuration_info(profile, identity_pool_id or federated_role_arn, format_type="simple")
 
+        # Determine if this is a zero-binary IDC deployment
+        # IDC users authenticate via 'aws sso login' (no credential-process) and
+        # get static identity baked into the collector config (no otel-helper).
+        is_idc_zero_binary = getattr(profile, 'effective_auth_type', profile.auth_type) == 'idc'
+        idc_user_email = None
+        if is_idc_zero_binary:
+            console.print("\n[dim]IDC auth detected — skipping credential-process and otel-helper binaries[/dim]")
+            console.print("[dim]User identity will be baked into collector config at package time[/dim]")
+
+            # Auto-detect user email from STS caller identity (IDC ARN session name = email)
+            try:
+                import boto3
+                sts = boto3.client('sts', region_name=profile.aws_region)
+                identity = sts.get_caller_identity()
+                arn = identity.get('Arn', '')
+                # IDC ARN format: arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com
+                session_name = arn.rsplit('/', 1)[-1] if '/' in arn else ''
+                if '@' in session_name:
+                    idc_user_email = session_name
+                    console.print(f"[dim]Detected user email from IDC: {idc_user_email}[/dim]")
+                else:
+                    # Prompt if we can't auto-detect
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution (IDC session name):",
+                        default=session_name or "",
+                    ).ask()
+            except Exception:
+                idc_user_email = questionary.text(
+                    "User email for OTEL attribution:",
+                    default="",
+                ).ask()
+
+            if not idc_user_email:
+                console.print("[yellow]Warning: No user email — OTEL attribution will be anonymous[/yellow]")
+
         # Build package
         console.print("\n[bold]Building package...[/bold]")
 
@@ -464,7 +499,10 @@ class PackageCommand(Command):
 
         console.print()
 
-        if use_go:
+        if is_idc_zero_binary:
+            # IDC path: no binaries needed — skip all Go/Python builds
+            console.print("[dim]Skipping binary builds (IDC zero-binary mode)[/dim]")
+        elif use_go:
             # Go cross-compilation: build all selected platforms at once
             console.print("[cyan]Building Go binaries (cross-compilation)...[/cyan]")
             try:
@@ -550,6 +588,33 @@ class PackageCommand(Command):
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
+
+        # Generate IDC-specific collector config with static identity
+        if is_idc_zero_binary and profile.monitoring_enabled:
+            import shutil
+            from string import Template
+
+            idc_config_template = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper" / "collector-config-idc.yaml"
+            if idc_config_template.exists():
+                template_content = idc_config_template.read_text(encoding="utf-8")
+                # Replace placeholders with actual values
+                replacements = {
+                    "${REGION}": profile.aws_region or "us-east-1",
+                    "${USER_EMAIL}": idc_user_email or "unknown@example.com",
+                    "${USER_NAME}": (idc_user_email or "unknown").split("@")[0],
+                    "${DEPARTMENT}": otel_resource_attributes.split("department=")[1].split(",")[0] if "department=" in (otel_resource_attributes or "") else "default",
+                    "${TEAM_ID}": otel_resource_attributes.split("team.id=")[1].split(",")[0] if "team.id=" in (otel_resource_attributes or "") else "default",
+                    "${COST_CENTER}": otel_resource_attributes.split("cost_center=")[1].split(",")[0] if "cost_center=" in (otel_resource_attributes or "") else "default",
+                    "${ORGANIZATION}": otel_resource_attributes.split("organization=")[1].split(",")[0] if "organization=" in (otel_resource_attributes or "") else "default",
+                }
+                for placeholder, value in replacements.items():
+                    template_content = template_content.replace(placeholder, value)
+
+                config_output = output_dir / "collector-config.yaml"
+                config_output.write_text(template_content, encoding="utf-8")
+                console.print(f"[dim]Generated IDC collector config with identity: {idc_user_email}[/dim]")
+            else:
+                console.print("[yellow]Warning: collector-config-idc.yaml template not found[/yellow]")
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -3235,8 +3300,11 @@ Available metrics include:
                     )
 
                     # Add the helper executable for generating OTEL headers with user attributes
+                    # IDC path uses static identity in collector config — no helper needed.
                     # Use a placeholder that will be replaced by the installer script based on platform
-                    settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                    _is_idc = getattr(profile, 'effective_auth_type', getattr(profile, 'auth_type', 'oidc')) == 'idc'
+                    if not _is_idc:
+                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
                     is_https = endpoint.startswith("https://")
                     console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
