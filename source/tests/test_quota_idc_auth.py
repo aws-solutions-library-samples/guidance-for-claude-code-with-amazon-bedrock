@@ -83,7 +83,11 @@ class TestIdentityResolution:
             assert body["allowed"] is True
 
     def test_idc_user_arn_without_email(self):
-        """IDC user with ARN that has no email in session name — missing identity."""
+        """IDC user with ARN that has no email in session name — resolves as username identity.
+
+        Per #597, usernames without @ are now valid identity (not rejected as missing).
+        The Lambda resolves the session name and proceeds to quota check.
+        """
         event = self._make_event(
             caller_arn="arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockAccess_abc123/session123"
         )
@@ -91,7 +95,9 @@ class TestIdentityResolution:
         result = index.lambda_handler(event, None)
         body = json.loads(result["body"])
 
-        assert body["reason"] == "missing_identity"
+        # Identity is resolved (session123), but no quota policy exists for this user
+        assert body["allowed"] is True
+        assert body.get("reason") in ("no_policy", None) or "identity" not in body.get("reason", "")
 
     def test_no_auth_at_all(self):
         """No JWT claims and no IAM identity — missing identity."""
