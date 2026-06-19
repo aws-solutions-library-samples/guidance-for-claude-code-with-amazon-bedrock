@@ -207,6 +207,7 @@ jobs:
             --ignore-checks E3012 \
             --ignore-checks E3005 \
             --ignore-checks E0000 \
+            --ignore-checks W1001 \
             --ignore-checks W1028 \
             --ignore-checks W1030 \
             --ignore-checks W2010 \

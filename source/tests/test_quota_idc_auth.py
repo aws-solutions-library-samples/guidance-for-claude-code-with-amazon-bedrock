@@ -17,6 +17,10 @@ import pytest
 # Add the lambda function to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "deployment", "infrastructure", "lambda-functions", "quota_check"))
 
+# Lambda initializes boto3 clients at module level; set region to avoid NoRegionError
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+
 import index
 
 
