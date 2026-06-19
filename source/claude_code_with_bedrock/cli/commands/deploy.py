@@ -623,6 +623,20 @@ class DeployCommand(Command):
                                 f"CognitoClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]
                         )
+                    elif profile.distribution_idp_provider == "generic":
+                        # Generic OIDC (PingFederate, Keycloak, etc.): endpoints can't be derived
+                        # from a domain, so pass each explicitly. Client ID + secret reuse the
+                        # shared distribution fields.
+                        params.extend(
+                            [
+                                f"GenericIssuer={profile.distribution_idp_issuer or ''}",
+                                f"GenericAuthorizationEndpoint={profile.distribution_idp_authorization_endpoint or ''}",
+                                f"GenericTokenEndpoint={profile.distribution_idp_token_endpoint or ''}",
+                                f"GenericUserInfoEndpoint={profile.distribution_idp_userinfo_endpoint or ''}",
+                                f"GenericClientId={profile.distribution_idp_client_id}",
+                                f"GenericClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
 
                     # Add optional custom domain parameters
                     if profile.distribution_custom_domain:

@@ -171,15 +171,27 @@ class ProfileValidator:
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
-                elif dist_provider not in ["okta", "auth0", "azure", "cognito"]:
+                elif dist_provider not in ["okta", "auth0", "azure", "cognito", "generic"]:
                     errors.append(
                         f"Invalid distribution_idp_provider: {dist_provider}. "
-                        "Must be 'okta', 'auth0', 'azure', or 'cognito'"
+                        "Must be 'okta', 'auth0', 'azure', 'cognito', or 'generic'"
                     )
 
-                dist_domain = profile_data.get("distribution_idp_domain")
-                if not dist_domain:
-                    errors.append("distribution_idp_domain is required for landing-page distribution")
+                # Domain-derived providers need a domain; generic providers supply explicit
+                # endpoints instead (the domain isn't used to build the ALB OIDC config).
+                if dist_provider == "generic":
+                    for required_field in (
+                        "distribution_idp_issuer",
+                        "distribution_idp_authorization_endpoint",
+                        "distribution_idp_token_endpoint",
+                        "distribution_idp_userinfo_endpoint",
+                    ):
+                        if not profile_data.get(required_field):
+                            errors.append(f"{required_field} is required for generic landing-page distribution")
+                else:
+                    dist_domain = profile_data.get("distribution_idp_domain")
+                    if not dist_domain:
+                        errors.append("distribution_idp_domain is required for landing-page distribution")
 
                 dist_client_id = profile_data.get("distribution_idp_client_id")
                 if not dist_client_id:
