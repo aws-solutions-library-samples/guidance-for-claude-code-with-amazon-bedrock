@@ -210,10 +210,6 @@ Resources:
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: !If
-        - HasCustomDomain
-        - otel-collector-https-alb
-        - otel-collector-alb
       Type: application
       IpAddressType: ipv4
       Scheme: internet-facing
@@ -248,8 +244,6 @@ Resources:
         HttpCode: '200,404'
 
   # Listeners
-  # IMPORTANT: Enabling HTTPS on an existing HTTP-only stack requires deletion and recreation
-  # due to CloudFormation's inability to atomically switch target groups between listeners
   HTTPListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -257,25 +251,12 @@ Resources:
       Port: 80
       Protocol: HTTP
       DefaultActions:
-        - Type: !If
-            - EnableHttps
-            - redirect
-            - forward
-          RedirectConfig: !If
-            - EnableHttps
-            - Protocol: HTTPS
-              Port: '443'
-              StatusCode: HTTP_301
-            - !Ref AWS::NoValue
-          TargetGroupArn: !If
-            - EnableHttps
-            - !Ref AWS::NoValue
-            - !Ref HTTPTargetGroup
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
 
   HTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Condition: EnableHttps
-    DependsOn: HTTPListener  # Ensure HTTP listener updates first to release target group
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 443
@@ -812,7 +793,7 @@ Resources:
     DependsOn:
       - HTTPListener
     Properties:
-      ServiceName: otel-collector-service
+
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
       LaunchType: FARGATE
@@ -838,7 +819,7 @@ Resources:
       - HTTPListener
       - HTTPSListener
     Properties:
-      ServiceName: otel-collector-service
+
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
       LaunchType: FARGATE
