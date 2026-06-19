@@ -1,9 +1,9 @@
 > **Part of**: [Guidance for Claude Code with Amazon Bedrock](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock)
-> **Purpose**: This subdirectory contains production-ready Claude Code plugins - completely independent of the authentication setup
+> **Purpose**: This subdirectory contains example Claude Code plugins - completely independent of the authentication setup
 
 # Claude Code Plugins Marketplace
 
-Production-ready agents, hooks, and workflows for Claude Code - a comprehensive plugin marketplace providing specialized tools for systematic development, documentation, architecture, security, and more.
+Example agents, hooks, and workflows for Claude Code - a comprehensive plugin marketplace providing specialized tools for systematic development, documentation, architecture, security, and more.
 
 ## 🚀 Quick Start
 
@@ -336,12 +336,12 @@ This project is licensed under MIT-0 - see the [LICENSE](LICENSE) file for detai
 
 ## ⭐ Highlights
 
-- **11 Production-Ready Plugins** - Comprehensive tooling for modern development
+- **11 Example Plugins** - Reference implementations for modern development patterns
 - **Advanced Metadata** - Rich discoverability with keywords, tags, and categories
 - **Modular Design** - Install only what you need
 - **Team-Friendly** - Enforce standards with required plugins
 - **Well-Documented** - Complete guides and examples
-- **Battle-Tested** - Based on proven patterns and workflows
+- **Fork & Customize** - Designed as starting points for your organization's specific needs
 
 ---
 
