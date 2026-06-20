@@ -109,6 +109,23 @@ class TestCoWorkDashboardMetricFilters:
                 f"{name}: expected /aws/claude-cowork/events, got {log_group}"
             )
 
+    def test_no_filter_combines_dimensions_and_default_value(self):
+        """DefaultValue and Dimensions are mutually exclusive in AWS::Logs::MetricFilter.
+
+        Regression: CloudWatch Logs rejects a MetricTransformation that sets both
+        ("dimensions and default value are mutually exclusive properties"), which
+        broke `ccwb deploy` of the cowork-dashboard stack.
+        """
+        filters = self._get_filters()
+        for name, res in filters.items():
+            for transform in res["Properties"]["MetricTransformations"]:
+                has_dimensions = "Dimensions" in transform
+                has_default = "DefaultValue" in transform
+                assert not (has_dimensions and has_default), (
+                    f"{name}: MetricTransformation sets both Dimensions and DefaultValue; "
+                    "they are mutually exclusive and CloudWatch Logs will reject the filter"
+                )
+
     def test_all_filters_use_claude_cowork_namespace(self):
         """All filters must emit to ClaudeCoWork namespace."""
         filters = self._get_filters()

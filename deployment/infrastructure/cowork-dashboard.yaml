@@ -35,7 +35,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.input
           MetricValue: $.attributes.input_tokens
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
@@ -50,7 +52,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.output
           MetricValue: $.attributes.output_tokens
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
@@ -65,7 +69,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_read
           MetricValue: $.attributes.cache_read_tokens
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
@@ -80,7 +86,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: token.usage.cache_creation
           MetricValue: $.attributes.cache_creation_tokens
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
@@ -95,7 +103,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: cost.usage
           MetricValue: $.attributes.cost_usd
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
@@ -110,7 +120,9 @@ Resources:
         - MetricNamespace: ClaudeCoWork
           MetricName: session.turns
           MetricValue: "1"
-          DefaultValue: 0
+          # NOTE: DefaultValue and Dimensions are mutually exclusive in
+          # AWS::Logs::MetricFilter (CloudWatch Logs rejects both together).
+          # Dimensions win here for per-user attribution.
           Dimensions:
             - Key: "user_email"
               Value: "$.attributes.user_email"
