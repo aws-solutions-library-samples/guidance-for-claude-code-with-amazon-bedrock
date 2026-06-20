@@ -23,11 +23,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/sso"
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 
+	"ccwb-go/internal/otel"
 	"ccwb-go/internal/quota"
 )
 
@@ -130,8 +133,10 @@ func (a *credentialApp) runIDC() int {
 		printQuotaWarning(qr)
 	}
 
-	// Write OTEL attribution cache (email from STS ARN session name).
-	a.writeOtelCacheFromSTS()
+	// Write OTEL attribution cache using the just-obtained IDC credentials.
+	// We pass creds explicitly to avoid LoadDefaultConfig resolving via
+	// credential_process (which would recurse back into this binary).
+	a.writeOtelCacheFromIDC(creds, region)
 
 	// Output credential_process JSON.
 	out := passthroughOutput{
@@ -151,4 +156,49 @@ func (a *credentialApp) runIDC() int {
 	}
 	fmt.Println(string(data))
 	return 0
+}
+
+// writeOtelCacheFromIDC resolves user identity via STS GetCallerIdentity
+// using the just-obtained IDC credentials (passed explicitly to avoid
+// LoadDefaultConfig resolving via credential_process recursion).
+func (a *credentialApp) writeOtelCacheFromIDC(creds aws.Credentials, region string) {
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(
+			aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+				return creds, nil
+			}),
+		),
+	)
+	if err != nil {
+		debugPrint("writeOtelCacheFromIDC: failed to load AWS config: %v", err)
+		return
+	}
+
+	stsClient := sts.NewFromConfig(cfg)
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		debugPrint("writeOtelCacheFromIDC: GetCallerIdentity failed: %v", err)
+		return
+	}
+
+	arn := ""
+	if identity.Arn != nil {
+		arn = *identity.Arn
+	}
+	email := extractEmailFromARN(arn)
+	if email == "" {
+		debugPrint("writeOtelCacheFromIDC: could not extract identity from ARN: %s", arn)
+		return
+	}
+
+	debugPrint("writeOtelCacheFromIDC: resolved identity: %s", email)
+
+	userInfo := otel.UserInfo{Email: email}
+	headers := otel.FormatHeaders(userInfo)
+	expiry := time.Now().Add(1 * time.Hour).Unix()
+	if err := otel.WriteCachedHeaders(a.profile, headers, expiry); err != nil {
+		debugPrint("writeOtelCacheFromIDC: cache write failed: %v", err)
+	}
 }
