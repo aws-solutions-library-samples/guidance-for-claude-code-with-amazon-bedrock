@@ -2892,6 +2892,13 @@ class InitCommand(Command):
                 "oidc_token_endpoint",
                 "oidc_jwks_uri",
                 "oidc_thumbprint",
+                # Issue #528: restore the reused-provider ARN so a re-run of init
+                # pre-fills the prompt with the saved value instead of blank. Without
+                # this, the prompt defaults to "" -> user presses Enter -> the field is
+                # wiped -> the next deploy recreates the shared provider and fails with
+                # EntityAlreadyExists (the exact bug this feature prevents). Must mirror
+                # _save_configuration, which persists existing_oidc_provider_arn.
+                "existing_oidc_provider_arn",
             ):
                 if getattr(profile, oidc_field, None):
                     existing_config[oidc_field] = getattr(profile, oidc_field)
