@@ -77,7 +77,12 @@ def fetch_usage_from_promql():
         f'sum by ("user.email")(increase({{"claude_code.token.usage"}}[{window}s]))'
     )
 
-    # Delta token type breakdown per user
+    # Delta token type AND model breakdown per user (for cost calculation)
+    type_model_results = _promql_query(
+        f'sum by ("user.email", type, model)(increase({{"claude_code.token.usage"}}[{window}s]))'
+    )
+
+    # Delta token type breakdown per user (without model, for backward compat)
     type_results = _promql_query(
         f'sum by ("user.email", type)(increase({{"claude_code.token.usage"}}[{window}s]))'
     )
@@ -101,6 +106,29 @@ def fetch_usage_from_promql():
                 u["output_tokens"] = val
             elif token_type in ("cache_read", "cacheRead"):
                 u["cache_tokens"] = val
+
+    # Calculate per-user cost from model-aware token breakdown
+    try:
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from shared.pricing import calculate_cost, resolve_model_family, get_rates
+
+        rates = get_rates()
+        for r in type_model_results:
+            email = r["metric"].get("user.email", "")
+            token_type = r["metric"].get("type", "")
+            model = r["metric"].get("model", "")
+            val = float(r["value"][1])
+            if email and val > 0 and token_type and model:
+                u = users.setdefault(email, {})
+                family = resolve_model_family(model)
+                family_rates = rates.get(family, rates.get("sonnet", {}))
+                rate = family_rates.get(token_type.replace("cacheRead", "cache_read"), 0)
+                cost_delta = (val / 1_000_000) * rate
+                u["cost_usd"] = u.get("cost_usd", 0) + cost_delta
+    except Exception as e:
+        # Cost calculation is optional — don't fail the whole run
+        print(f"Cost calculation skipped (non-fatal): {e}")
 
     print(f"Fetched delta usage for {len(users)} users from PromQL ({window}s window)")
 
@@ -149,25 +177,23 @@ def update_quota_metrics(usage_data):
             existing = response.get("Item", {})
             daily_reset = existing.get("daily_date") != current_date
 
-            update_expr = "ADD total_tokens :delta, input_tokens :inp, output_tokens :out, cache_tokens :cache"
+            update_expr = "ADD total_tokens :delta, input_tokens :inp, output_tokens :out, cache_tokens :cache, cost_usd :cost"
+            cost_delta = usage.get("cost_usd", 0)
             expr_values = {
                 ":delta": Decimal(str(int(delta))),
                 ":inp": Decimal(str(int(usage.get("input_tokens", 0)))),
                 ":out": Decimal(str(int(usage.get("output_tokens", 0)))),
                 ":cache": Decimal(str(int(usage.get("cache_tokens", 0)))),
+                ":cost": Decimal(str(round(cost_delta, 6))),
                 ":ts": now.isoformat().replace("+00:00", "Z"),
                 ":ttl": ttl,
                 ":email": email,
             }
             if daily_reset:
-                update_expr += " SET daily_tokens = :delta, daily_date = :date, last_updated = :ts, #ttl = :ttl, email = :email"
-                # :date is only referenced on the reset path; including it otherwise
-                # makes DynamoDB reject the whole UpdateItem with a ValidationException
-                # ("Value provided in ExpressionAttributeValues unused"), which silently
-                # froze same-day usage accumulation after the first daily write.
+                update_expr += " SET daily_tokens = :delta, daily_cost_usd = :cost, daily_date = :date, last_updated = :ts, #ttl = :ttl, email = :email"
                 expr_values[":date"] = current_date
             else:
-                update_expr += ", daily_tokens :delta SET last_updated = :ts, #ttl = :ttl, email = :email"
+                update_expr += ", daily_tokens :delta, daily_cost_usd :cost SET last_updated = :ts, #ttl = :ttl, email = :email"
 
             quota_table.update_item(
                 Key={"pk": f"USER#{email}", "sk": f"MONTH#{current_month}"},

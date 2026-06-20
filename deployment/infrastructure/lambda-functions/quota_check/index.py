@@ -148,13 +148,49 @@ def lambda_handler(event, context):
                 "message": "Access granted - enforcement mode is alert-only"
             })
 
-        # 5. Check limits (monthly, daily)
+        # 5. Check limits (monthly, daily) — supports both token and cost modes
         monthly_tokens = usage.get("total_tokens", 0)
         daily_tokens = usage.get("daily_tokens", 0)
+        monthly_cost = float(usage.get("cost_usd", 0))
+        daily_cost = float(usage.get("daily_cost_usd", 0))
 
         monthly_limit = policy.get("monthly_token_limit", 0)
         daily_limit = policy.get("daily_token_limit")
+        monthly_cost_limit = float(policy.get("monthly_cost_limit", 0))
+        daily_cost_limit = float(policy.get("daily_cost_limit", 0))
 
+        # Cost-based enforcement (takes precedence when configured)
+        if monthly_cost_limit > 0 and monthly_cost >= monthly_cost_limit:
+            return build_response(200, {
+                "allowed": False,
+                "reason": "monthly_cost_exceeded",
+                "enforcement_mode": enforcement_mode,
+                "usage": usage_summary,
+                "policy": {
+                    "type": policy.get("policy_type"),
+                    "identifier": policy.get("identifier")
+                },
+                "unblock_status": {"is_unblocked": False},
+                "message": f"Monthly spend limit exceeded: ${monthly_cost:.2f} / ${monthly_cost_limit:.2f} ({monthly_cost/monthly_cost_limit*100:.1f}%). Contact your administrator."
+            })
+
+        if daily_cost_limit > 0 and daily_cost >= daily_cost_limit:
+            daily_mode = policy.get("daily_enforcement_mode", "alert")
+            if daily_mode == "block":
+                return build_response(200, {
+                    "allowed": False,
+                    "reason": "daily_cost_exceeded",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {
+                        "type": policy.get("policy_type"),
+                        "identifier": policy.get("identifier")
+                    },
+                    "unblock_status": {"is_unblocked": False},
+                    "message": f"Daily spend limit exceeded: ${daily_cost:.2f} / ${daily_cost_limit:.2f}. Resets at UTC midnight."
+                })
+
+        # Token-based enforcement (existing behavior)
         # Check monthly token limit
         if monthly_limit > 0 and monthly_tokens >= monthly_limit:
             return build_response(200, {
