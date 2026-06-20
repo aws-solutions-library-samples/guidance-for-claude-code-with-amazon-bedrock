@@ -1,0 +1,97 @@
+site_name: Guidance for Claude Code and Cowork on Amazon Bedrock
+site_description: Enterprise deployment guide for Claude Code on Amazon Bedrock
+site_url: https://wirjo.github.io/guidance-for-claude-code-with-amazon-bedrock/
+repo_url: https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock
+repo_name: aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock
+edit_uri: edit/beta/
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font: false
+  icon:
+    logo: custom/aws
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+    - toc.integrate
+
+extra_css:
+  - stylesheets/custom.css?v=11
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+
+nav:
+  - Home: index.md
+  - Getting Started: QUICK_START.md
+  - Authentication:
+    - Okta: providers/okta-setup.md
+    - Microsoft Entra ID: providers/microsoft-entra-id-setup.md
+    - Auth0: providers/auth0-setup.md
+    - AWS Cognito: providers/cognito-user-pool-setup.md
+    - Google OIDC: providers/google-oidc-setup.md
+    - Generic OIDC: providers/generic-oidc-setup.md
+    - IAM Identity Center: providers/iam-identity-center-setup.md
+  - Deployment:
+    - Deployment Guide: DEPLOYMENT.md
+    - Architecture: ARCHITECTURE.md
+    - Windows Build System: WINDOWS_BUILD_SYSTEM.md
+  - Distribution:
+    - Platform Comparison: distribution/comparison.md
+    - Deployment Guide: distribution/deployment-guide.md
+  - Operations:
+    - Monitoring: MONITORING.md
+    - Analytics: ANALYTICS.md
+    - Quota Monitoring: QUOTA_MONITORING.md
+    - Cost Estimates: COST_ESTIMATES.md
+    - Cost Attribution: COST_ATTRIBUTION.md
+  - Usage:
+    - CLI Reference: CLI_REFERENCE.md
+    - Local Testing: LOCAL_TESTING.md
+    - Claude Desktop (CoWork): COWORK_3P.md
+    - Plugins: PLUGINS.md
