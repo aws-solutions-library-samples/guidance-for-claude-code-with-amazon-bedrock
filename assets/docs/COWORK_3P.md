@@ -315,7 +315,7 @@ Every CoWork 3P OTEL event includes a `user.id` attribute — an anonymous devic
 
 > **Note:** `user.email`, `user.account_uuid`, and `organization.id` are only available in Claude.ai-managed CoWork deployments (not 3P).  
 
-Per-device dashboard dimensions are planned — see [#585](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/585). Central monitoring mode is required (sidecar mode does not support CoWork telemetry).
+Per-device dashboard dimensions are planned — see [#585](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/585). Both central and sidecar monitoring modes are supported for CoWork telemetry.
 
 ![Claude CoWork Dashboard](../../assets/images/ClaudeCoworkDashboard.png)
 
@@ -350,7 +350,7 @@ CoWork sends OTLP **log events** (not metrics) to the collector. The monitoring 
 
 ### Requirements for per-user CoWork quota
 
-- Monitoring stack deployed with custom domain + HTTPS (central mode)
+- Monitoring stack deployed (central mode with custom domain + HTTPS, or sidecar mode with local proxy)
 - CoWork service token configured (`ccwb init` generates it)
 - Attribution headers flowing (credential-process provides `x-user-email`)
 - CoWork dashboard stack deployed (`ccwb deploy --stack cowork-dashboard`)
