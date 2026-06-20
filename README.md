@@ -72,6 +72,8 @@ The architecture is modular — start with authentication, then optionally add [
 
 ### What Gets Deployed
 
+`ccwb init` creates a profile that selects which stacks to enable. Deploy all at once with `ccwb deploy`, or individually with `--stack <name>`:
+
 | Component | What | Deployed via |
 |-----------|------|-------------|
 | **Authentication** | IAM OIDC Provider + federated role, or IDC auth stack | `ccwb deploy --stack auth` |
