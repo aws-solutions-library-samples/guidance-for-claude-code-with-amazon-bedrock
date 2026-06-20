@@ -11,7 +11,7 @@ This guidance enables enterprise deployment of Claude Code and Claude Cowork on 
 - **Usage Monitoring**: CloudWatch dashboards with per-user cost attribution, plus S3 + Athena for historical analytics
 - **Quota Enforcement**: Per-user and per-team token limits with configurable thresholds, warnings, and block modes
 - **Multi-Platform**: Windows, macOS, Linux — Go or Python binaries, pre-built from GitHub Releases
-- **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop
+- **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop (which features Chat, Cowork and Code)
 - **Model Flexibility**: Choose from Opus, Sonnet, Haiku with model aliases (e.g. `opusplan` for Opus planning + Sonnet execution)
 - **Native Desktop Experience**: Deploy and manage Claude Cowork (Claude Desktop) via MDM (Jamf, Intune, Group Policy)
 - **Data Residency**: Select your cross-region inference profile (US, EU, AU) to keep data within your compliance boundary
@@ -21,10 +21,13 @@ This guidance enables enterprise deployment of Claude Code and Claude Cowork on 
 
 1. [Quick Start](#quick-start)
 2. [Architecture Overview](#architecture-overview)
-3. [Authentication Modes](#authentication-modes)
-4. [Usage Monitoring](#usage-monitoring)
-5. [Deployment](#deployment)
-6. [Additional Resources](#additional-resources)
+   - [Authentication Modes](#authentication-modes)
+   - [Per-User Attribution](#per-user-attribution)
+3. [How It Works](#how-it-works)
+   - [Usage Monitoring](#usage-monitoring)
+   - [Quota Enforcement and Cost Controls](#quota-enforcement-and-cost-controls)
+4. [Deployment](#deployment)
+5. [Additional Resources](#additional-resources)
 
 ## Quick Start
 
@@ -84,8 +87,7 @@ The architecture is modular — start with authentication, then optionally add [
 | **Distribution** (optional) | S3 presigned URLs or self-service landing page with IdP auth | `ccwb deploy --stack distribution` |
 
 See [Monitoring Guide](assets/docs/MONITORING.md), [Quota Guide](assets/docs/QUOTA_MONITORING.md), [Analytics Guide](assets/docs/ANALYTICS.md), and [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup.
-
-## Authentication Modes
+### Authentication Modes
 
 This guidance supports three identity paths. Each path provides usage monitoring and audit trails. Per-user identity resolution and quota enforcement depend on the authentication mode chosen.
 
@@ -106,19 +108,92 @@ You can deploy the observability/analytics stack without configuring an identity
 - Identity detection is automatic (IDC users: email from ARN, IAM users: username, other roles: hashed identifier)
 - Best for: internal tools, analytics-only deployments, or orgs where users already have IAM access to Bedrock
 
-## Usage Monitoring
+### Per-User Attribution
 
-Per-user usage attribution works across all authentication modes and both products:
+Per-user usage attribution works across all authentication modes and Claude Code CLI and Claude Desktop (Cowork):
 
-| Auth Mode | Identity Source | CLI Attribution | Desktop Attribution | Quota Enforcement |
-|-----------|----------------|-----------------|---------------------|-------------------|
-| **OIDC** | JWT email claim | ✅ Per-user | ✅ Per-user (with headers) | ✅ Pre-credential |
-| **IAM Identity Center** | IAM ARN session name | ✅ Per-user | ✅ Per-user (with headers) | ✅ Pre-credential |
-| **None** | Hashed IAM principal | ⚠️ Anonymous | ⚠️ Anonymous | ❌ Not available |
+| Auth Mode | Identity Source | Telemetry Attribution | Quota Enforcement | CUR 2.0 Cost Visibility |
+|-----------|----------------|----------------------|-------------------|-------------------------|
+| **OIDC** | JWT email claim | Per-user (email, team, department) | ✅ | ✅ Per-user via STS session tags |
+| **IAM Identity Center** | IAM ARN session name | Per-user (email only) | ✅ | ✅ Per-user if [ABAC attributes](https://docs.aws.amazon.com/singlesignon/latest/userguide/abac.html) configured in IDC |
+| **None** | Hashed IAM principal | Anonymous | ❌ | ✅ Per-IAM-role |
 
-Usage from both Claude Code CLI and Claude Desktop counts toward the same per-user limit — a single quota applies regardless of which surface consumed the tokens.
+Usage from both Claude Code CLI and Claude Desktop (Cowork) counts toward the same per-user limit — a single quota applies regardless of which surface consumed the tokens.
 
 See [Quota Monitoring Guide](assets/docs/QUOTA_MONITORING.md) for enforcement details and [CoWork 3P Guide](assets/docs/COWORK_3P.md#quota-enforcement) for Desktop-specific behavior.
+
+## How It Works
+
+Once distributed, the **credential-process** binary runs on each user's machine:
+- **Claude Code:** configured via `credential_process` in `~/.aws/config` (AWS SDK calls it automatically)
+- **Claude Desktop (Cowork):** configured via `inferenceBedrockProfile` MDM key pointing to the AWS profile that has `credential_process` set
+
+```mermaid
+flowchart LR
+    CC1[Claude Code CLI] -->|needs credentials| CP[credential-process binary]
+    CC2[Claude Desktop] -->|needs credentials| CP
+    CP --> AUTH{Auth Mode}
+    AUTH -->|OIDC| OIDC[IdP → STS]
+    AUTH -->|IDC| IDC[SSO → STS]
+    OIDC --> OUT[Temporary AWS credentials]
+    IDC --> OUT
+```
+
+The **otel-helper** attaches user identity to telemetry so CloudWatch dashboards can show per-user metrics:
+
+```mermaid
+flowchart LR
+    CC1[Claude Code CLI] -->|telemetry| OH[otel-helper]
+    CC2[Claude Desktop] -->|telemetry| OH
+    OH -->|adds user identity| COLL[Collector] --> CW[CloudWatch]
+```
+
+### Usage Monitoring
+
+Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as a local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
+
+```mermaid
+flowchart LR
+    CC[Claude Code CLI] -->|OTLP| OH1[otel-helper<br/>header mode]
+    CW[Claude Desktop] -->|OTLP| OH2[otel-helper<br/>proxy mode]
+    OH1 -->|"user identity + Bearer JWT"| COLL[Collector]
+    OH2 -->|"user identity + X-Cowork-Token"| COLL
+    COLL --> DASH[CloudWatch Dashboards]
+```
+
+| Surface | How otel-helper is used | Collector mode | Identity in telemetry |
+|---------|------------------------|----------------|----------------------|
+| **Claude Code (CLI)** | Header provider — called once per request, returns JSON headers | Central (ECS/ALB) or Sidecar (local) | User's JWT (email, team, department) |
+| **Claude Desktop (Cowork)** | Local proxy — runs on `localhost:4318`, injects user headers, forwards to collector | Central (ECS/ALB) | Email from IAM ARN (no team/department without OIDC) |
+
+**Local proxy explained:** Claude Desktop doesn't support custom OTLP headers natively. When using a central collector (ECS/ALB), otel-helper runs as a lightweight HTTP proxy on the user's machine. Cowork sends telemetry to `localhost:4318` (configured via MDM), and otel-helper adds user identity headers before forwarding to the remote central collector. This proxy is not needed in sidecar mode, where the local collector reads identity from a cache file directly.
+
+**Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
+
+**Dashboards:** Pre-built CloudWatch dashboards for [Claude Code](assets/images/ClaudeCodeDashboard.png) and [Claude Desktop (Cowork)](assets/images/ClaudeCoworkDashboard.png). See [Monitoring Guide](assets/docs/MONITORING.md) for setup.
+
+### Quota Enforcement and Cost Controls
+
+Quota is enforced at the **credential layer** — before any Bedrock call is made:
+
+```mermaid
+flowchart LR
+    CP[credential-process binary] -->|"am I allowed?"| API[Quota API]
+    API --> Lambda[Lambda]
+    Lambda -->|check limits| DDB[(DynamoDB Policies)]
+    Lambda -->|check usage| CW[CloudWatch Metrics]
+    Lambda -->|allowed| OUT[✅ Credentials issued]
+    Lambda -->|blocked| STOP[❌ Credentials denied]
+```
+
+How it works:
+- **Policies** (DynamoDB): Admins set per-user or per-team monthly/daily token limits via `ccwb quota` commands
+- **Usage** (CloudWatch): The OTEL collector aggregates token consumption metrics per user
+- **Check** (Lambda): On each credential request, compares current usage against the policy limit
+- **Enforcement**: If over limit, credentials are withheld and the user sees a quota exceeded message
+
+If a user exceeds their quota, access to Bedrock is denied until usage resets or an admin unblocks them. See [Quota Guide](assets/docs/QUOTA_MONITORING.md) for configuration details.
+
 
 ## Deployment
 
