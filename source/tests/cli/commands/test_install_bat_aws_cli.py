@@ -3,8 +3,9 @@
 
 """Tests for install.bat AWS CLI handling logic."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 class TestInstallBatAwsCliHandling:
@@ -13,11 +14,7 @@ class TestInstallBatAwsCliHandling:
     @pytest.fixture(autouse=True)
     def load_package_py(self):
         self.package_path = (
-            Path(__file__).parent.parent.parent.parent
-            / "claude_code_with_bedrock"
-            / "cli"
-            / "commands"
-            / "package.py"
+            Path(__file__).parent.parent.parent.parent / "claude_code_with_bedrock" / "cli" / "commands" / "package.py"
         )
         self.content = self.package_path.read_text(encoding="utf-8")
 
@@ -50,7 +47,7 @@ class TestInstallBatAwsCliHandling:
             stripped = line.strip()
             if stripped.startswith("aws configure"):
                 # Look backwards for the HAS_AWS_CLI check (within 15 lines)
-                context = "\n".join(lines[max(0, i - 15):i])
+                context = "\n".join(lines[max(0, i - 15) : i])
                 assert "HAS_AWS_CLI" in context, (
                     f"Line {i}: 'aws configure' called without HAS_AWS_CLI guard: {stripped}"
                 )
@@ -66,12 +63,6 @@ class TestInstallBatAwsCliHandling:
         for i, line in enumerate(lines):
             if "OK Created AWS profile" in line:
                 # Must be inside a conditional (errorlevel check or PowerShell Write-Host)
-                context = "\n".join(lines[max(0, i - 3):i + 1])
-                is_conditional = (
-                    "errorlevel" in context.lower()
-                    or "else" in context
-                    or "Write-Host" in line
-                )
-                assert is_conditional, (
-                    f"'OK Created AWS profile' at line {i} must be inside an error-check branch"
-                )
+                context = "\n".join(lines[max(0, i - 3) : i + 1])
+                is_conditional = "errorlevel" in context.lower() or "else" in context or "Write-Host" in line
+                assert is_conditional, f"'OK Created AWS profile' at line {i} must be inside an error-check branch"

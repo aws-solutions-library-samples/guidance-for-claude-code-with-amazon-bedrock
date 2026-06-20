@@ -47,10 +47,10 @@ def test_build_failure_before_assignment_does_not_crash(mock_config):
     command = PackageCommand()
     tester = CommandTester(command)
 
-    with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config), patch(
-        "questionary.confirm"
-    ) as mock_confirm, patch.object(
-        PackageCommand, "_build_executable", side_effect=RuntimeError("Nuitka not found")
+    with (
+        patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config),
+        patch("questionary.confirm") as mock_confirm,
+        patch.object(PackageCommand, "_build_executable", side_effect=RuntimeError("Nuitka not found")),
     ):
         # All confirm() prompts (co-authored-by, customize OTEL) answer No.
         mock_confirm.return_value.ask.return_value = False

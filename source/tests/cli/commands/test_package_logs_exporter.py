@@ -70,9 +70,7 @@ class TestLogsExporterDisabled:
         command = PackageCbCommand()
         profile = _monitoring_profile()
 
-        cfn_outputs = json.dumps(
-            [{"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com"}]
-        )
+        cfn_outputs = json.dumps([{"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com"}])
 
         class _FakeResult:
             returncode = 0

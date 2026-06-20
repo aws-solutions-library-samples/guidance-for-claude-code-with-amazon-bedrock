@@ -165,9 +165,9 @@ def test_layer1_cache_hit_includes_bearer(mock_cache_dir, otel_headers_cache_fil
 
     # Cache file must NOT have been updated to include the Bearer token
     cache_data = json.loads(otel_headers_cache_file.read_text())
-    assert "authorization" not in cache_data.get(
-        "headers", {}
-    ), "Bearer token must not be persisted to the cache file on a Layer 1 hit"
+    assert "authorization" not in cache_data.get("headers", {}), (
+        "Bearer token must not be persisted to the cache file on a Layer 1 hit"
+    )
 
 
 def test_layer1_cache_hit_no_bearer_logs_info(mock_cache_dir, otel_headers_cache_file, monkeypatch, caplog):
@@ -200,9 +200,9 @@ def test_layer1_cache_hit_no_bearer_logs_info(mock_cache_dir, otel_headers_cache
     assert output.get("x-user-email") == "cached@example.com"
     assert "authorization" not in output
     # The omission must be logged so an ALB 401 is diagnosable, not silent.
-    assert any(
-        "no Bearer token available" in rec.message for rec in caplog.records
-    ), "Layer 1 no-token cache hit must log a diagnostic breadcrumb"
+    assert any("no Bearer token available" in rec.message for rec in caplog.records), (
+        "Layer 1 no-token cache hit must log a diagnostic breadcrumb"
+    )
 
     # Cache file untouched — no Bearer leaked to disk.
     cache_data = json.loads(otel_headers_cache_file.read_text())

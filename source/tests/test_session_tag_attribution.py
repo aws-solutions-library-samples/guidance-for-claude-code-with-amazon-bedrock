@@ -3,16 +3,12 @@
 
 """Tests for session tag attribution in otel-helper."""
 
-import sys
-import os
 import importlib.util
-
-import pytest
+import os
 
 # Load the otel_helper module
 _spec = importlib.util.spec_from_file_location(
-    "otel_helper_main",
-    os.path.join(os.path.dirname(__file__), "..", "otel_helper", "__main__.py")
+    "otel_helper_main", os.path.join(os.path.dirname(__file__), "..", "otel_helper", "__main__.py")
 )
 _otel_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_otel_mod)
@@ -36,35 +32,41 @@ class TestSessionTagExtraction:
 
     def test_single_tag_array_format(self):
         """Single tag with array value (Auth0/Okta format)."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {"Project": ["Platform"]},
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {"Project": ["Platform"]},
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         assert info["session_tags"] == {"Project": "Platform"}
 
     def test_single_tag_string_format(self):
         """Single tag with string value (Entra ID format)."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {"Project": "MLOps"},
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {"Project": "MLOps"},
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         assert info["session_tags"] == {"Project": "MLOps"}
 
     def test_multiple_tags(self):
         """Multiple tags all extracted."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {
-                    "Project": ["Platform"],
-                    "CostCenter": ["CC-1234"],
-                    "Environment": ["production"],
-                },
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {
+                        "Project": ["Platform"],
+                        "CostCenter": ["CC-1234"],
+                        "Environment": ["production"],
+                    },
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         assert info["session_tags"] == {
             "Project": "Platform",
@@ -74,36 +76,38 @@ class TestSessionTagExtraction:
 
     def test_empty_tag_values_excluded(self):
         """Tags with empty values are not included."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {
-                    "Project": ["Platform"],
-                    "EmptyTag": [""],
-                    "NullTag": [],
-                },
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {
+                        "Project": ["Platform"],
+                        "EmptyTag": [""],
+                        "NullTag": [],
+                    },
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         assert info["session_tags"] == {"Project": "Platform"}
 
     def test_malformed_aws_tags_claim(self):
         """Non-dict aws_tags claim doesn't crash."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": "not a dict"
-        })
+        payload = self._base_payload(**{"https://aws.amazon.com/tags": "not a dict"})
         info = extract_user_info(payload)
         assert info["session_tags"] == {}
 
     def test_tags_emitted_as_x_tag_headers(self):
         """Session tags flow through as x-tag-<key> headers."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {
-                    "Project": ["InfraTeam"],
-                    "CostCenter": ["CC-5678"],
-                },
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {
+                        "Project": ["InfraTeam"],
+                        "CostCenter": ["CC-5678"],
+                    },
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         headers = format_as_headers_dict(info)
         assert headers["x-tag-project"] == "InfraTeam"
@@ -118,11 +122,13 @@ class TestSessionTagExtraction:
 
     def test_tag_key_normalized_to_lowercase(self):
         """Tag keys are lowercased in header names."""
-        payload = self._base_payload(**{
-            "https://aws.amazon.com/tags": {
-                "principal_tags": {"BillingCode": ["BC-999"]},
+        payload = self._base_payload(
+            **{
+                "https://aws.amazon.com/tags": {
+                    "principal_tags": {"BillingCode": ["BC-999"]},
+                }
             }
-        })
+        )
         info = extract_user_info(payload)
         headers = format_as_headers_dict(info)
         assert "x-tag-billingcode" in headers
@@ -130,10 +136,12 @@ class TestSessionTagExtraction:
 
     def test_existing_claims_still_work(self):
         """Existing fixed claims (department, team, etc.) are unaffected."""
-        info = extract_user_info(self._base_payload(
-            department="Engineering",
-            team="Platform",
-        ))
+        info = extract_user_info(
+            self._base_payload(
+                department="Engineering",
+                team="Platform",
+            )
+        )
         assert info["department"] == "Engineering"
         assert info["team"] == "Platform"
         headers = format_as_headers_dict(info)
@@ -143,7 +151,5 @@ class TestSessionTagExtraction:
     def test_custom_prefix_cognito_compat(self):
         """custom: prefix works as fallback for Cognito attributes."""
         # custom: is lower priority than direct claim (backward compat)
-        info = extract_user_info(self._base_payload(**{
-            "custom:department": "DataScience"
-        }))
+        info = extract_user_info(self._base_payload(**{"custom:department": "DataScience"}))
         assert info["department"] == "DataScience"

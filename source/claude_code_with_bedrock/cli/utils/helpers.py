@@ -95,7 +95,7 @@ def find_nearest_codebuild_region(region: str) -> str:
         if candidate.split("-", 1)[0] != continent:
             return 0
         n = 0
-        for ra, rc in zip(region.split("-"), candidate.split("-")):
+        for ra, rc in zip(region.split("-"), candidate.split("-"), strict=False):
             if ra != rc:
                 break
             n += 1

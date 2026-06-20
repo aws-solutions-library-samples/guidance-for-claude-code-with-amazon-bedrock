@@ -3,10 +3,7 @@
 
 """Tests for CoWork 3P quota counting in quota_monitor Lambda."""
 
-import json
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 
 class TestCoWorkQuotaCounting:
@@ -47,20 +44,21 @@ class TestCoWorkQuotaCounting:
     def test_cowork_dashboard_has_user_email_dimension(self):
         """CoWork metric filters must include user_email dimension for per-user attribution."""
         import yaml
+
         dashboard_path = (
-            Path(__file__).parent.parent.parent.parent
-            / "deployment"
-            / "infrastructure"
-            / "cowork-dashboard.yaml"
+            Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
         )
         loader = yaml.SafeLoader
-        loader.add_multi_constructor("!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n))
+        loader.add_multi_constructor(
+            "!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
+        )
         with open(dashboard_path) as f:
             template = yaml.load(f, Loader=loader)
 
         resources = template.get("Resources", {})
         api_request_filters = [
-            (name, res) for name, res in resources.items()
+            (name, res)
+            for name, res in resources.items()
             if res.get("Type") == "AWS::Logs::MetricFilter"
             and "claude_code.api_request" in res.get("Properties", {}).get("FilterPattern", "")
         ]
@@ -78,12 +76,7 @@ class TestCoWorkQuotaCounting:
 
     def test_cowork_docs_mention_quota_enforcement(self):
         """COWORK_3P.md must document quota enforcement behavior."""
-        docs_path = (
-            Path(__file__).parent.parent.parent.parent
-            / "assets"
-            / "docs"
-            / "COWORK_3P.md"
-        )
+        docs_path = Path(__file__).parent.parent.parent.parent / "assets" / "docs" / "COWORK_3P.md"
         content = docs_path.read_text(encoding="utf-8")
         assert "## Quota Enforcement" in content
         assert "credential-process" in content

@@ -324,9 +324,7 @@ class TestBedrockAuthGenericTemplate:
 
         thumbprint_list = oidc_provider["Properties"]["ThumbprintList"]
         # Must be a !Ref to OidcThumbprintList, not a literal list of hex strings
-        assert isinstance(thumbprint_list, dict), (
-            f"ThumbprintList must be a !Ref, got literal: {thumbprint_list}"
-        )
+        assert isinstance(thumbprint_list, dict), f"ThumbprintList must be a !Ref, got literal: {thumbprint_list}"
         assert thumbprint_list.get("Ref") == "OidcThumbprintList"
 
     def test_no_hardcoded_okta_thumbprint_anywhere(self):
@@ -376,9 +374,7 @@ class TestBedrockAuthGenericTemplate:
         for branch in if_branches[1:]:
             assert "Fn::Sub" in branch
             sub_string = branch["Fn::Sub"]
-            assert '"provider_type": "generic"' in sub_string, (
-                f"Expected provider_type=generic in: {sub_string!r}"
-            )
+            assert '"provider_type": "generic"' in sub_string, f"Expected provider_type=generic in: {sub_string!r}"
 
     def test_supports_both_federation_modes(self):
         """Template must support both direct STS and Cognito Identity Pool federation."""

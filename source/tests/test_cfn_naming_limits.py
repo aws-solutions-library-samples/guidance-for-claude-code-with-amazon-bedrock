@@ -193,7 +193,7 @@ class TestIdentityPoolNameOverflow:
             stack_name = f"{default_name}{suffix}"
             # CF stack name limit is 128
             assert len(stack_name) <= 128, (
-                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) " f"exceeds CF stack name limit"
+                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) exceeds CF stack name limit"
             )
 
     def test_max_validated_name_fits_all_stacks(self):

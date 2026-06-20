@@ -3,10 +3,10 @@
 
 """Tests for CoWork dashboard metric filter schema coverage."""
 
-import yaml
-import pytest
 from pathlib import Path
 
+import pytest
+import yaml
 
 DASHBOARD_PATH = Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
 
@@ -19,25 +19,25 @@ class TestCoWorkDashboardMetricFilters:
         # Add CloudFormation intrinsic function constructors
         loader = yaml.SafeLoader
         for tag in ["!Sub", "!Ref", "!GetAtt", "!If", "!Not", "!Equals", "!Select", "!Join", "!Split"]:
-            loader.add_constructor(tag, lambda l, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n))
-        loader.add_multi_constructor("!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n))
+            loader.add_constructor(
+                tag, lambda l, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
+            )
+        loader.add_multi_constructor(
+            "!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
+        )
         with open(DASHBOARD_PATH) as f:
             self.template = yaml.load(f, Loader=loader)
         self.resources = self.template.get("Resources", {})
 
     def _get_filters(self):
         """Extract all MetricFilter resources."""
-        return {
-            name: res for name, res in self.resources.items()
-            if res.get("Type") == "AWS::Logs::MetricFilter"
-        }
+        return {name: res for name, res in self.resources.items() if res.get("Type") == "AWS::Logs::MetricFilter"}
 
     def test_has_api_request_schema_filters(self):
         """Dashboard should have filters for claude_code.api_request schema."""
         filters = self._get_filters()
         api_request_filters = [
-            name for name, res in filters.items()
-            if 'claude_code.api_request' in res["Properties"]["FilterPattern"]
+            name for name, res in filters.items() if "claude_code.api_request" in res["Properties"]["FilterPattern"]
         ]
         # Should have input, output, cache_read, cache_creation, cost, sessions
         assert len(api_request_filters) >= 6, (
@@ -48,19 +48,16 @@ class TestCoWorkDashboardMetricFilters:
         """Dashboard should have filters for lam_session_turn_completed schema."""
         filters = self._get_filters()
         lam_filters = [
-            name for name, res in filters.items()
-            if 'lam_session_turn_completed' in res["Properties"]["FilterPattern"]
+            name for name, res in filters.items() if "lam_session_turn_completed" in res["Properties"]["FilterPattern"]
         ]
-        assert len(lam_filters) >= 6, (
-            f"Expected at least 6 lam filters, got {len(lam_filters)}: {lam_filters}"
-        )
+        assert len(lam_filters) >= 6, f"Expected at least 6 lam filters, got {len(lam_filters)}: {lam_filters}"
 
     def test_api_request_uses_top_level_attributes(self):
         """api_request schema uses $.attributes.* (not $.body.attributes.*)."""
         filters = self._get_filters()
         for name, res in filters.items():
             props = res["Properties"]
-            if 'claude_code.api_request' in props["FilterPattern"]:
+            if "claude_code.api_request" in props["FilterPattern"]:
                 for transform in props["MetricTransformations"]:
                     value = transform["MetricValue"]
                     if value == "1":
@@ -77,7 +74,7 @@ class TestCoWorkDashboardMetricFilters:
         filters = self._get_filters()
         for name, res in filters.items():
             props = res["Properties"]
-            if 'lam_session_turn_completed' in props["FilterPattern"]:
+            if "lam_session_turn_completed" in props["FilterPattern"]:
                 for transform in props["MetricTransformations"]:
                     value = transform["MetricValue"]
                     if value == "1":
@@ -91,13 +88,13 @@ class TestCoWorkDashboardMetricFilters:
         filters = self._get_filters()
         api_metrics = set()
         lam_metrics = set()
-        for name, res in filters.items():
+        for _name, res in filters.items():
             props = res["Properties"]
             for transform in props["MetricTransformations"]:
                 metric_name = transform["MetricName"]
-                if 'claude_code.api_request' in props["FilterPattern"]:
+                if "claude_code.api_request" in props["FilterPattern"]:
                     api_metrics.add(metric_name)
-                elif 'lam_session_turn_completed' in props["FilterPattern"]:
+                elif "lam_session_turn_completed" in props["FilterPattern"]:
                     lam_metrics.add(metric_name)
         assert api_metrics == lam_metrics, (
             f"Schema metric name mismatch:\n  api_request: {sorted(api_metrics)}\n  lam: {sorted(lam_metrics)}"

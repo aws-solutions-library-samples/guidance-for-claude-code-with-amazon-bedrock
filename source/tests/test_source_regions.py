@@ -121,8 +121,7 @@ class TestSourceRegionFunctionality:
                     if profile_key == "us" and region.startswith("ca-"):
                         continue
                     assert region.startswith(expected_prefix), (
-                        f"Region {region} doesn't match expected prefix {expected_prefix} "
-                        f"for {model_key}/{profile_key}"
+                        f"Region {region} doesn't match expected prefix {expected_prefix} for {model_key}/{profile_key}"
                     )
 
     def test_source_region_invalid_model_profile_combinations(self):
@@ -154,9 +153,9 @@ class TestSourceRegionFunctionality:
         """Test that all models in CLAUDE_MODELS have source regions defined."""
         for model_key, model_config in CLAUDE_MODELS.items():
             for profile_key, profile_config in model_config["profiles"].items():
-                assert (
-                    "source_regions" in profile_config
-                ), f"Model {model_key} profile {profile_key} missing source_regions"
+                assert "source_regions" in profile_config, (
+                    f"Model {model_key} profile {profile_key} missing source_regions"
+                )
 
                 source_regions = profile_config["source_regions"]
                 assert len(source_regions) > 0, f"Model {model_key} profile {profile_key} has empty source_regions"

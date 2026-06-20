@@ -3,8 +3,6 @@
 
 """Tests for IDC zero-binary packaging logic."""
 
-import pytest
-
 from claude_code_with_bedrock.config import Profile
 
 

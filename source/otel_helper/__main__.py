@@ -32,6 +32,7 @@ from pathlib import Path
 try:
     import boto3
     from botocore.config import Config as BotocoreConfig
+
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
@@ -196,7 +197,11 @@ def extract_user_info(payload):
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
                 okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                    "okta.com",
+                    "oktapreview.com",
+                    "okta-emea.com",
+                ):
                     org_id = "okta"
                 elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
@@ -211,12 +216,38 @@ def extract_user_info(payload):
 
     # Extract team/department information - these fields vary by IdP
     # Provide defaults for consistent metric dimensions
-    department = payload.get("custom:department") or payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
-    team = payload.get("custom:team") or payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
-    cost_center = payload.get("custom:cost_center") or payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
+    department = (
+        payload.get("custom:department")
+        or payload.get("department")
+        or payload.get("dept")
+        or payload.get("division")
+        or "unspecified"
+    )
+    team = (
+        payload.get("custom:team")
+        or payload.get("team")
+        or payload.get("team_id")
+        or payload.get("group")
+        or "default-team"
+    )
+    cost_center = (
+        payload.get("custom:cost_center")
+        or payload.get("cost_center")
+        or payload.get("costCenter")
+        or payload.get("cost_code")
+        or "general"
+    )
     manager = payload.get("custom:manager") or payload.get("manager") or payload.get("manager_email") or "unassigned"
-    location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
-    role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    location = (
+        payload.get("custom:location")
+        or payload.get("location")
+        or payload.get("office_location")
+        or payload.get("office")
+        or "remote"
+    )
+    role = (
+        payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    )
 
     # AWS Session Tags — generic extraction from https://aws.amazon.com/tags claim.
     # If the IdP emits session tags, ALL principal_tags flow through as OTEL dimensions
@@ -443,8 +474,8 @@ def get_aws_caller_identity():
 
     try:
         sts_client = boto3.client(
-            'sts',
-            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={'max_attempts': 0}),
+            "sts",
+            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={"max_attempts": 0}),
         )
         identity = sts_client.get_caller_identity()
 
@@ -491,17 +522,17 @@ def _parse_arn_identity(arn):
         # Case 1: SSO assumed role
         # Pattern: assumed-role/AWSReservedSSO_<PermissionSet>_<hash>/<session-name>
         if resource.startswith("assumed-role/AWSReservedSSO_"):
-            role_and_session = resource[len("assumed-role/"):]
+            role_and_session = resource[len("assumed-role/") :]
             slash_idx = role_and_session.find("/")
             if slash_idx == -1:
                 return None
 
             role_name = role_and_session[:slash_idx]
-            session_name = role_and_session[slash_idx + 1:]
+            session_name = role_and_session[slash_idx + 1 :]
 
             # Extract permission set name from role: AWSReservedSSO_<Name>_<hash>
             # Remove "AWSReservedSSO_" prefix and trailing "_<hash>" (12 hex chars)
-            perm_set = role_name[len("AWSReservedSSO_"):]
+            perm_set = role_name[len("AWSReservedSSO_") :]
             # The hash suffix is the last segment after underscore
             last_underscore = perm_set.rfind("_")
             if last_underscore > 0:
@@ -522,7 +553,7 @@ def _parse_arn_identity(arn):
         # Case 2: IAM user
         # Pattern: user/<username> or user/<path>/<username>
         if resource.startswith("user/"):
-            user_path = resource[len("user/"):]
+            user_path = resource[len("user/") :]
             # Take the last segment as username (handles path-based users)
             username = user_path.rsplit("/", 1)[-1]
             return {
@@ -561,13 +592,13 @@ def _parse_assumed_role_arn(arn):
         if not resource.startswith("assumed-role/"):
             return None
 
-        role_and_session = resource[len("assumed-role/"):]
+        role_and_session = resource[len("assumed-role/") :]
         slash_idx = role_and_session.find("/")
         if slash_idx == -1:
             return None
 
         role_name = role_and_session[:slash_idx]
-        session_name = role_and_session[slash_idx + 1:]
+        session_name = role_and_session[slash_idx + 1 :]
 
         return {
             "role_name": role_name,
@@ -586,9 +617,9 @@ def create_anonymous_user_info(caller_identity=None):
     For IAM users, the username is extracted from the user ARN.
     For non-SSO assumed roles, a hashed anonymous identifier is generated.
     """
-    if caller_identity and caller_identity.get('Arn'):
-        arn = caller_identity['Arn']
-        account_id = caller_identity.get('Account', 'unknown')
+    if caller_identity and caller_identity.get("Arn"):
+        arn = caller_identity["Arn"]
+        account_id = caller_identity.get("Account", "unknown")
         # SECURITY NOTE: 'aws-{account_id}' exposes the AWS account ID in metrics.
         # This is acceptable for internal observability but should be reviewed if
         # metrics are exported to external or third-party monitoring systems.
@@ -798,6 +829,7 @@ def run_proxy(target_url: str, port: int = 4318):
 
     import signal
     import threading as _threading
+
     if _threading.current_thread() is _threading.main_thread():
         signal.signal(signal.SIGTERM, shutdown_on_signal)
         signal.signal(signal.SIGINT, shutdown_on_signal)
@@ -830,7 +862,8 @@ def ensure_collector_running():
                 # os.kill(pid, 0) raises OSError on Windows even for running processes
                 result = subprocess.run(
                     ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 if str(pid) in result.stdout:
                     return  # already running
@@ -910,7 +943,9 @@ def main():
     if not ANONYMOUS_MODE:
         token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
         if token and is_token_expired(token):
-            logger.info("Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process")
+            logger.info(
+                "Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process"
+            )
             token = None
         if token:
             logger.info("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")

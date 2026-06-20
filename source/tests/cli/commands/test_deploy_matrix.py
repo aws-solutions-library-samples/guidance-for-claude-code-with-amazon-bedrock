@@ -15,43 +15,41 @@ Bugs this prevents:
 - #454: Quota monitoring stack deploy fails when SSO disabled
 """
 
-from dataclasses import replace
-from unittest.mock import patch, MagicMock
-
 import pytest
 
 from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
 from claude_code_with_bedrock.config import Profile
 
-
 # --- Profile fixtures representing each auth mode ---
+
 
 def _base_profile(**overrides):
     """Create a minimal valid profile with overrides."""
     import dataclasses
+
     field_names = {f.name for f in dataclasses.fields(Profile)}
-    defaults = dict(
-        name="TestProfile",
-        provider_domain="company.okta.com",
-        client_id="test-client-id",
-        credential_storage="session",
-        aws_region="us-east-1",
-        identity_pool_name="claude-code-test",
-        sso_enabled=True,
-        provider_type="okta",
-        monitoring_enabled=True,
-        monitoring_mode="central",
-        quota_monitoring_enabled=True,
-        federation_type="direct",
-        federated_role_arn="arn:aws:iam::123456789012:role/BedrockRole",
-        enable_finegrained_quotas=False,
-        monthly_token_limit=225000000,
-        daily_token_limit=8250000,
-        daily_enforcement_mode="alert",
-        monthly_enforcement_mode="block",
-        warning_threshold_80=180000000,
-        warning_threshold_90=202500000,
-    )
+    defaults = {
+        "name": "TestProfile",
+        "provider_domain": "company.okta.com",
+        "client_id": "test-client-id",
+        "credential_storage": "session",
+        "aws_region": "us-east-1",
+        "identity_pool_name": "claude-code-test",
+        "sso_enabled": True,
+        "provider_type": "okta",
+        "monitoring_enabled": True,
+        "monitoring_mode": "central",
+        "quota_monitoring_enabled": True,
+        "federation_type": "direct",
+        "federated_role_arn": "arn:aws:iam::123456789012:role/BedrockRole",
+        "enable_finegrained_quotas": False,
+        "monthly_token_limit": 225000000,
+        "daily_token_limit": 8250000,
+        "daily_enforcement_mode": "alert",
+        "monthly_enforcement_mode": "block",
+        "warning_threshold_80": 180000000,
+        "warning_threshold_90": 202500000,
+    }
     defaults.update(overrides)
     return Profile(**{k: v for k, v in defaults.items() if k in field_names})
 
@@ -117,9 +115,7 @@ class TestDeployParameterMatrix:
             assert issuer == "", f"SSO disabled but issuer is '{issuer}'"
             assert client_id == "", f"SSO disabled but client_id is '{client_id}'"
 
-    @pytest.mark.parametrize("mode_name", [
-        m for m, p in PROFILE_MODES.items() if getattr(p, "sso_enabled", True)
-    ])
+    @pytest.mark.parametrize("mode_name", [m for m, p in PROFILE_MODES.items() if getattr(p, "sso_enabled", True)])
     def test_oidc_config_non_empty_when_sso_enabled(self, command, mode_name):
         """When SSO is enabled, OIDC config must have a valid issuer URL."""
         profile = PROFILE_MODES[mode_name]
@@ -127,7 +123,7 @@ class TestDeployParameterMatrix:
             pytest.skip("monitoring disabled")
         issuer, client_id = command._resolve_oidc_config(profile)
         assert issuer.startswith("https://"), f"Issuer must be https URL, got '{issuer}'"
-        assert client_id != "", f"Client ID should not be empty when SSO enabled"
+        assert client_id != "", "Client ID should not be empty when SSO enabled"
 
     @pytest.mark.parametrize("mode_name", list(PROFILE_MODES.keys()))
     def test_auth0_issuer_has_trailing_slash(self, command, mode_name):

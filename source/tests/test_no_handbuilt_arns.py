@@ -11,9 +11,7 @@ SRC = Path(__file__).parent.parent / "claude_code_with_bedrock"
 # only correct option; constructing them is the bug. Scoped to f-strings because
 # that is the only interpolation style the codebase uses for ARNs; .format()/%
 # are intentionally out of scope to keep the check high-signal.
-DANGEROUS = re.compile(
-    r'f["\'][^"\']*arn:aws:(secretsmanager)[^"\']*\{[^"\']*\}[^"\']*["\']'
-)
+DANGEROUS = re.compile(r'f["\'][^"\']*arn:aws:(secretsmanager)[^"\']*\{[^"\']*\}[^"\']*["\']')
 
 # Lines explicitly accepted (e.g. documented last-resort fallback after
 # describe_secret fails) carry this marker. Deliberately NOT a `# noqa:` code —

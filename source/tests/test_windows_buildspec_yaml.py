@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 INFRA_DIR = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure"
 TEMPLATE = INFRA_DIR / "codebuild-windows.yaml"
 
@@ -109,17 +108,15 @@ def test_windows_post_build_preserves_powershell_semantics():
     win = _collect_buildspecs()["WindowsBuildProject"]
     commands = [c for _, _, c in _all_commands(win)]
     assert all(isinstance(c, str) for c in commands), (
-        "WindowsBuildProject has a non-string command (see "
-        "test_every_buildspec_command_is_a_string)"
+        "WindowsBuildProject has a non-string command (see test_every_buildspec_command_is_a_string)"
     )
     joined = "\n".join(commands)
 
     # Single-quoted PowerShell literal must survive intact (not "" or dropped).
     assert "'ccwb package --go'" in joined, (
-        "PowerShell single-quoted literal 'ccwb package --go' was lost or "
-        "mangled by YAML quoting"
+        "PowerShell single-quoted literal 'ccwb package --go' was lost or mangled by YAML quoting"
     )
     # Double-quoted PowerShell strings must survive intact.
     assert '"FATAL: credential-process-windows.exe was not built.' in joined
     assert '"FATAL: otel-helper-windows.exe was not built.' in joined
-    assert '$([math]::Round($_.Length/1MB, 1))' in joined
+    assert "$([math]::Round($_.Length/1MB, 1))" in joined

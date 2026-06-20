@@ -10,12 +10,15 @@ the full quota calculation flow (that's tested in test_quota_check_lambda.py).
 import json
 import os
 import sys
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 # Add the lambda function to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "deployment", "infrastructure", "lambda-functions", "quota_check"))
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "deployment", "infrastructure", "lambda-functions", "quota_check"
+    ),
+)
 
 # Lambda initializes boto3 clients at module level; set region to avoid NoRegionError
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -40,9 +43,11 @@ class TestIdentityResolution:
         """OIDC user: identity resolved from JWT email claim."""
         event = self._make_event(jwt_claims={"email": "alice@company.com", "sub": "abc123"})
 
-        with patch.object(index, "resolve_quota_for_user") as mock_resolve, \
-             patch.object(index, "get_unblock_status", return_value=None), \
-             patch.object(index, "get_user_usage_summary", return_value={}):
+        with (
+            patch.object(index, "resolve_quota_for_user") as mock_resolve,
+            patch.object(index, "get_unblock_status", return_value=None),
+            patch.object(index, "get_user_usage_summary", return_value={}),
+        ):
             mock_resolve.return_value = {
                 "monthly_limit": 225000000,
                 "daily_limit": 0,
@@ -64,9 +69,11 @@ class TestIdentityResolution:
             caller_arn="arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockAccess_abc123/bob@company.com"
         )
 
-        with patch.object(index, "resolve_quota_for_user") as mock_resolve, \
-             patch.object(index, "get_unblock_status", return_value=None), \
-             patch.object(index, "get_user_usage_summary", return_value={}):
+        with (
+            patch.object(index, "resolve_quota_for_user") as mock_resolve,
+            patch.object(index, "get_unblock_status", return_value=None),
+            patch.object(index, "get_user_usage_summary", return_value={}),
+        ):
             mock_resolve.return_value = {
                 "monthly_limit": 225000000,
                 "daily_limit": 0,
@@ -112,12 +119,14 @@ class TestIdentityResolution:
         """JWT present but missing email claim — falls through to IAM ARN."""
         event = self._make_event(
             jwt_claims={"sub": "abc123"},  # no email
-            caller_arn="arn:aws:sts::123456789012:assumed-role/Role/carol@company.com"
+            caller_arn="arn:aws:sts::123456789012:assumed-role/Role/carol@company.com",
         )
 
-        with patch.object(index, "resolve_quota_for_user") as mock_resolve, \
-             patch.object(index, "get_unblock_status", return_value=None), \
-             patch.object(index, "get_user_usage_summary", return_value={}):
+        with (
+            patch.object(index, "resolve_quota_for_user") as mock_resolve,
+            patch.object(index, "get_unblock_status", return_value=None),
+            patch.object(index, "get_user_usage_summary", return_value={}),
+        ):
             mock_resolve.return_value = {
                 "monthly_limit": 225000000,
                 "daily_limit": 0,
@@ -147,12 +156,14 @@ class TestIdentityResolution:
         """When both JWT email and ARN are available, JWT takes priority."""
         event = self._make_event(
             jwt_claims={"email": "jwt-user@company.com", "sub": "abc"},
-            caller_arn="arn:aws:sts::123456789012:assumed-role/Role/arn-user@company.com"
+            caller_arn="arn:aws:sts::123456789012:assumed-role/Role/arn-user@company.com",
         )
 
-        with patch.object(index, "resolve_quota_for_user") as mock_resolve, \
-             patch.object(index, "get_unblock_status", return_value=None), \
-             patch.object(index, "get_user_usage_summary", return_value={}):
+        with (
+            patch.object(index, "resolve_quota_for_user") as mock_resolve,
+            patch.object(index, "get_unblock_status", return_value=None),
+            patch.object(index, "get_user_usage_summary", return_value={}),
+        ):
             mock_resolve.return_value = {
                 "monthly_limit": 225000000,
                 "daily_limit": 0,
@@ -163,7 +174,7 @@ class TestIdentityResolution:
             }
 
             result = index.lambda_handler(event, None)
-            body = json.loads(result["body"])
+            json.loads(result["body"])
 
             # JWT email takes priority
             mock_resolve.assert_called_once_with("jwt-user@company.com", [])

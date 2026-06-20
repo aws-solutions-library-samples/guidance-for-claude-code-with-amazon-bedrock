@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
 LAMBDA_PATH = (
     Path(__file__).resolve().parents[2]
     / "deployment"
@@ -135,6 +134,7 @@ class TestLambdaHandler:
 
     def _mock_dynamodb(self, items_by_email):
         """Mock DynamoDB table to return items keyed by email."""
+
         def get_item_side_effect(**kwargs):
             pk = kwargs.get("Key", {}).get("pk", "")
             email = pk.replace("USER#", "")
@@ -153,12 +153,11 @@ class TestLambdaHandler:
     def _make_cloudtrail_event(self, email):
         """Create a mock CloudTrail event with assumed-role ARN."""
         import json
+
         return {
-            "CloudTrailEvent": json.dumps({
-                "userIdentity": {
-                    "arn": f"arn:aws:sts::123456789012:assumed-role/ClaudeCodeRole/{email}"
-                }
-            })
+            "CloudTrailEvent": json.dumps(
+                {"userIdentity": {"arn": f"arn:aws:sts::123456789012:assumed-role/ClaudeCodeRole/{email}"}}
+            )
         }
 
     def test_no_bypass_detected(self):
@@ -172,6 +171,7 @@ class TestLambdaHandler:
         result = index.lambda_handler({}, None)
 
         import json
+
         body = json.loads(result["body"])
         assert body["sidecar_stopped_users"] == []
         assert body["bedrock_active_users"] == 1
@@ -189,6 +189,7 @@ class TestLambdaHandler:
         result = index.lambda_handler({}, None)
 
         import json
+
         body = json.loads(result["body"])
         assert "bob@co.com" in body["sidecar_stopped_users"]
         index.sns_client.publish.assert_called_once()
@@ -208,6 +209,7 @@ class TestLambdaHandler:
         result = index.lambda_handler({}, None)
 
         import json
+
         body = json.loads(result["body"])
         assert body["bedrock_active_users"] == 0
         assert body["sidecar_stopped_users"] == []
@@ -216,16 +218,20 @@ class TestLambdaHandler:
     def test_mixed_users(self):
         """Some users reporting, some not → only non-reporters flagged."""
         now = datetime.now(timezone.utc)
-        self._mock_cloudtrail([
-            self._make_cloudtrail_event("alice@co.com"),
-            self._make_cloudtrail_event("bob@co.com"),
-            self._make_cloudtrail_event("carol@co.com"),
-        ])
-        self._mock_dynamodb({
-            "alice@co.com": {"last_updated": now.isoformat()},
-            # bob has no record
-            "carol@co.com": {"last_updated": now.isoformat()},
-        })
+        self._mock_cloudtrail(
+            [
+                self._make_cloudtrail_event("alice@co.com"),
+                self._make_cloudtrail_event("bob@co.com"),
+                self._make_cloudtrail_event("carol@co.com"),
+            ]
+        )
+        self._mock_dynamodb(
+            {
+                "alice@co.com": {"last_updated": now.isoformat()},
+                # bob has no record
+                "carol@co.com": {"last_updated": now.isoformat()},
+            }
+        )
         self._mock_cloudwatch()
         self._mock_sns()
         index.SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:123:test-topic"
@@ -233,6 +239,7 @@ class TestLambdaHandler:
         result = index.lambda_handler({}, None)
 
         import json
+
         body = json.loads(result["body"])
         assert body["sidecar_stopped_users"] == ["bob@co.com"]
         assert body["bedrock_active_users"] == 3

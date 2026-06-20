@@ -13,9 +13,6 @@ Bugs this prevents:
 """
 
 import json
-from unittest.mock import Mock, patch
-
-import pytest
 
 
 class TestRunPassthrough:

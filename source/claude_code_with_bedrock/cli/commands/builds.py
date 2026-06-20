@@ -15,10 +15,9 @@ from cleo.helpers import option
 from rich.console import Console
 from rich.table import Table
 
-from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
-
 from claude_code_with_bedrock.cli.commands.package_cb import CODEBUILD_PLATFORMS
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 
 

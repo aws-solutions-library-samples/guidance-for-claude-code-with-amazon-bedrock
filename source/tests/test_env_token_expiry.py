@@ -4,9 +4,9 @@
 """Regression tests for monitoring token expiry check (issue #561)."""
 
 import base64
+import importlib.util
 import json
 import time
-import importlib.util
 from pathlib import Path
 
 # Load otel_helper module

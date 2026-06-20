@@ -118,9 +118,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -135,9 +133,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -169,9 +165,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -224,9 +218,7 @@ class TestClaudeSettingsGeneration:
         """When monitoring is enabled and stack exists, otelHeadersHelper must be set."""
         command = PackageCommand()
 
-        mock_outputs = [
-            {"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com:4318"}
-        ]
+        mock_outputs = [{"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com:4318"}]
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = json.dumps(mock_outputs)
@@ -241,8 +233,7 @@ class TestClaudeSettingsGeneration:
             with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
-            assert "otelHeadersHelper" in settings, \
-                "otelHeadersHelper must be configured when monitoring is enabled"
+            assert "otelHeadersHelper" in settings, "otelHeadersHelper must be configured when monitoring is enabled"
             assert settings["otelHeadersHelper"] == "__OTEL_HELPER_PATH__"
             assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
             assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example.com:4318"
@@ -487,10 +478,9 @@ class TestWindowsPsOtelHelperIncluded:
         import tempfile
         from pathlib import Path
 
-        from claude_code_with_bedrock.cli.commands.package import PackageCommand
         from claude_code_with_bedrock.config import Profile
 
-        profile = Profile(
+        Profile(
             name="test",
             provider_domain="test.okta.com",
             client_id="test-client",

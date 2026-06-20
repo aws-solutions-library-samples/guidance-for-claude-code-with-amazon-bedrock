@@ -5,7 +5,6 @@
 
 from pathlib import Path
 
-
 COMMANDS_DIR = Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands"
 HELPER_IMPORT = "from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region"
 

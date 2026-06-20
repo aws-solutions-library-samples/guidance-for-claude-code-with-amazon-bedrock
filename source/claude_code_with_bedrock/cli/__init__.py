@@ -7,7 +7,6 @@ from cleo.application import Application
 
 from .commands.builds import BuildsCommand
 from .commands.cleanup import CleanupCommand
-from .commands.cowork import CoworkGenerateCommand
 from .commands.context import (
     ConfigCommand,
     ConfigExportCommand,
@@ -19,6 +18,7 @@ from .commands.context import (
     ContextShowCommand,
     ContextUseCommand,
 )
+from .commands.cowork import CoworkGenerateCommand
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand

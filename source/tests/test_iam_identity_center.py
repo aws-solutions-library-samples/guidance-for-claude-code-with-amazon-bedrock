@@ -1,8 +1,10 @@
 """Test cases for AWS IAM Identity Center authentication support."""
 
-import pytest
 from unittest.mock import Mock, patch
-from claude_code_with_bedrock.config import Config, Profile
+
+import pytest
+
+from claude_code_with_bedrock.config import Profile
 
 
 class TestAuthTypeBackwardCompat:
@@ -16,7 +18,7 @@ class TestAuthTypeBackwardCompat:
             "client_id": "test-client",
             "aws_region": "us-east-1",
             "identity_pool_name": "test-pool",
-            "sso_enabled": True
+            "sso_enabled": True,
         }
 
         profile = Profile.from_dict(data)
@@ -33,7 +35,7 @@ class TestAuthTypeBackwardCompat:
             "client_id": "none",
             "aws_region": "us-east-1",
             "identity_pool_name": "test-pool",
-            "sso_enabled": False
+            "sso_enabled": False,
         }
 
         profile = Profile.from_dict(data)
@@ -53,7 +55,7 @@ class TestAuthTypeBackwardCompat:
             "auth_type": "idc",
             "idc_start_url": "https://company.awsapps.com/start",
             "idc_account_id": "123456789012",
-            "idc_permission_set_name": "BedrockAccess"
+            "idc_permission_set_name": "BedrockAccess",
         }
 
         profile = Profile.from_dict(data)
@@ -73,7 +75,7 @@ class TestAuthTypeBackwardCompat:
             "aws_region": "us-east-1",
             "identity_pool_name": "test-pool",
             "sso_enabled": True,  # This should be ignored
-            "auth_type": "none"   # This should take precedence
+            "auth_type": "none",  # This should take precedence
         }
 
         profile = Profile.from_dict(data)
@@ -85,7 +87,7 @@ class TestAuthTypeBackwardCompat:
 class TestDeployAuthRouting:
     """Verify deploy routes to correct template based on auth_type."""
 
-    @patch('claude_code_with_bedrock.cli.commands.deploy.Path')
+    @patch("claude_code_with_bedrock.cli.commands.deploy.Path")
     def test_oidc_deploys_provider_template(self, mock_path):
         """Test that auth_type=oidc deploys the appropriate OIDC provider template."""
         profile = Profile(
@@ -96,7 +98,7 @@ class TestDeployAuthRouting:
             aws_region="us-east-1",
             identity_pool_name="test-pool",
             auth_type="oidc",
-            provider_type="okta"
+            provider_type="okta",
         )
 
         from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
@@ -105,7 +107,7 @@ class TestDeployAuthRouting:
         mock_project_root = Mock()
         mock_path.return_value.parent.parent.parent = mock_project_root
 
-        deploy_cmd = DeployCommand()
+        DeployCommand()
 
         # Test that the method would select okta template
         assert profile.effective_auth_type == "oidc"
@@ -123,7 +125,7 @@ class TestDeployAuthRouting:
             auth_type="idc",
             idc_start_url="https://company.awsapps.com/start",
             idc_account_id="123456789012",
-            idc_permission_set_name="BedrockAccess"
+            idc_permission_set_name="BedrockAccess",
         )
 
         assert profile.effective_auth_type == "idc"
@@ -138,7 +140,7 @@ class TestDeployAuthRouting:
             credential_storage="session",
             aws_region="us-east-1",
             identity_pool_name="test-pool",
-            auth_type="none"
+            auth_type="none",
         )
 
         assert profile.effective_auth_type == "none"
@@ -154,7 +156,7 @@ class TestDeployAuthRouting:
             aws_region="us-east-1",
             identity_pool_name="test-pool",
             auth_type="idc",
-            quota_monitoring_enabled=True  # This should be ignored
+            quota_monitoring_enabled=True,  # This should be ignored
         )
 
         assert profile.effective_auth_type == "idc"
@@ -170,7 +172,7 @@ class TestDeployAuthRouting:
             aws_region="us-east-1",
             identity_pool_name="test-pool",
             auth_type="none",
-            quota_monitoring_enabled=True  # This should be ignored
+            quota_monitoring_enabled=True,  # This should be ignored
         )
 
         assert profile.effective_auth_type == "none"
@@ -186,7 +188,7 @@ class TestDeployAuthRouting:
             aws_region="us-east-1",
             identity_pool_name="test-pool",
             auth_type="oidc",
-            quota_monitoring_enabled=True
+            quota_monitoring_enabled=True,
         )
 
         assert profile.effective_auth_type == "oidc"
@@ -211,15 +213,10 @@ class TestIdcCfnTemplate:
 
         template_path = Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
 
-        with open(template_path, 'r') as f:
+        with open(template_path) as f:
             template_content = f.read()
 
-        required_params = [
-            "FederatedRoleName",
-            "IdentityPoolName",
-            "AllowedBedrockRegions",
-            "EnableMonitoring"
-        ]
+        required_params = ["FederatedRoleName", "IdentityPoolName", "AllowedBedrockRegions", "EnableMonitoring"]
 
         for param in required_params:
             assert param in template_content, f"Required parameter {param} not found in template"
@@ -227,18 +224,14 @@ class TestIdcCfnTemplate:
     def test_template_has_required_outputs(self):
         """Test that the template has all required outputs."""
         from pathlib import Path
-        
+
         template_path = Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
-        
-        with open(template_path, 'r') as f:
+
+        with open(template_path) as f:
             template_content = f.read()
-        
-        required_outputs = [
-            "RoleArn",
-            "PolicyArn", 
-            "RoleName"
-        ]
-        
+
+        required_outputs = ["RoleArn", "PolicyArn", "RoleName"]
+
         for output in required_outputs:
             assert output in template_content, f"Required output {output} not found in template"
 
@@ -248,15 +241,12 @@ class TestIdcCfnTemplate:
             import subprocess
             from pathlib import Path
 
-            template_path = Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+            template_path = (
+                Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+            )
 
             # Try to run cfn-lint if it's available
-            result = subprocess.run(
-                ["cfn-lint", str(template_path)],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            result = subprocess.run(["cfn-lint", str(template_path)], capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
                 print(f"cfn-lint output: {result.stdout}")
@@ -285,7 +275,7 @@ class TestConfigSaveLoad:
             auth_type="idc",
             idc_start_url="https://company.awsapps.com/start",
             idc_account_id="123456789012",
-            idc_permission_set_name="BedrockDeveloperAccess"
+            idc_permission_set_name="BedrockDeveloperAccess",
         )
 
         # Convert to dict and back to simulate save/load
