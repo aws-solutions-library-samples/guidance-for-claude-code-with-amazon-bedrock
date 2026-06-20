@@ -1171,6 +1171,33 @@ class InitCommand(Command):
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
                     config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
+                    # Cost-based limits (optional, alongside token limits)
+                    console.print("\n[bold]Cost-Based Limits (Optional)[/bold]")
+                    console.print("Set dollar-denominated limits alongside token limits.")
+                    console.print("Cost is calculated from per-model Bedrock pricing rates.")
+                    console.print("[dim]Set to 0 to disable cost-based enforcement.[/dim]")
+
+                    monthly_cost_limit_str = questionary.text(
+                        "Monthly cost limit (USD, 0 to disable):",
+                        default=str(config.get("quota", {}).get("monthly_cost_limit", 0)),
+                        validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) >= 0)
+                        or "Must be a non-negative number",
+                    ).ask()
+                    config["quota"]["monthly_cost_limit"] = float(monthly_cost_limit_str) if monthly_cost_limit_str else 0
+
+                    daily_cost_limit_str = questionary.text(
+                        "Daily cost limit (USD, 0 to disable):",
+                        default=str(config.get("quota", {}).get("daily_cost_limit", 0)),
+                        validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) >= 0)
+                        or "Must be a non-negative number",
+                    ).ask()
+                    config["quota"]["daily_cost_limit"] = float(daily_cost_limit_str) if daily_cost_limit_str else 0
+
+                    if config["quota"]["monthly_cost_limit"] > 0 or config["quota"]["daily_cost_limit"] > 0:
+                        console.print(f"  \u2192 Monthly cost limit: ${config['quota']['monthly_cost_limit']:.2f}")
+                        console.print(f"  \u2192 Daily cost limit: ${config['quota']['daily_cost_limit']:.2f}")
+                        console.print("[dim]  \u26a0 Cost estimates use published on-demand Bedrock rates.[/dim]")
+
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
                     console.print("How often to re-check quota with cached credentials:")

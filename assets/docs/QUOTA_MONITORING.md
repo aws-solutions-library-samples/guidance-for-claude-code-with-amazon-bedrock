@@ -752,6 +752,8 @@ When using `opusplan` (Opus planning + Sonnet execution), each token batch inclu
 
 > ⚠️ Cost estimates use published on-demand Bedrock rates. Actual billing may differ with committed throughput or custom agreements. Use AWS Cost Explorer for billing truth.
 
+> **CoWork limitation:** Claude Desktop tokens are counted toward raw token limits but not cost limits. Cost calculation requires the `model` OTEL dimension which is not available in CoWork MetricFilter-derived metrics. Cost-based enforcement applies to Claude Code CLI usage only.
+
 ## Current Limitations
 
 - Quotas reset on calendar month/day (UTC timezone)
