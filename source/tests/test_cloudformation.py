@@ -425,3 +425,408 @@ class TestBedrockAuthGenericTemplate:
                         partition_found = True
                         break
         assert partition_found, "Bedrock ARNs must use ${AWS::Partition} for GovCloud support"
+
+
+class TestExistingOIDCProviderReuse:
+    """Tests for ExistingOIDCProviderArn parameter across all bedrock-auth-* templates.
+
+    Issue #528: All 6 bedrock-auth templates now support an optional ExistingOIDCProviderArn
+    parameter so a second profile sharing an IdP issuer in one AWS account can reuse an
+    existing IAM OIDC provider instead of failing with EntityAlreadyExists.
+
+    Verifies:
+    1. Parameter exists with proper Type, Default, and AllowedPattern
+    2. CreateOIDCProvider condition exists and is properly structured
+    3. OIDC provider resource is conditionally created (Condition: CreateOIDCProvider)
+    4. All references to the provider ARN use !If [CreateOIDCProvider, !GetAtt, !Ref ExistingOIDCProviderArn]
+    5. No bare !GetAtt references remain outside the !If wrapper
+    """
+
+    TEMPLATES = [
+        ("bedrock-auth-okta.yaml", "OktaOIDCProvider"),
+        ("bedrock-auth-azure.yaml", "AzureOIDCProvider"),
+        ("bedrock-auth-auth0.yaml", "Auth0OIDCProvider"),
+        ("bedrock-auth-generic.yaml", "OidcProvider"),
+        ("bedrock-auth-google.yaml", "GoogleOIDCProvider"),
+        ("bedrock-auth-cognito-pool.yaml", "CognitoUserPoolOIDCProvider"),
+    ]
+
+    def _load_template(self, template_file):
+        """Load a CloudFormation template using the CloudFormationLoader."""
+        template_path = Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / template_file
+        with open(template_path, encoding="utf-8") as f:
+            return yaml.load(f, Loader=CloudFormationLoader)
+
+    def _find_bare_getatt_arn(self, node, provider_id):
+        """Recursively search for bare !GetAtt [provider_id, Arn] references.
+
+        Returns True if a bare reference is found (NOT wrapped in proper !If structure).
+        A proper wrapper is: !If [CreateOIDCProvider, !GetAtt [provider_id, Arn], !Ref ExistingOIDCProviderArn]
+        """
+        if isinstance(node, dict):
+            # Check if this is a !GetAtt that references our provider's Arn
+            if "Fn::GetAtt" in node:
+                getatt_args = node["Fn::GetAtt"]
+                if isinstance(getatt_args, list) and len(getatt_args) == 2:
+                    if getatt_args[0] == provider_id and getatt_args[1] == "Arn":
+                        # Found a !GetAtt reference - is it wrapped?
+                        return True  # Caller needs to verify it's inside proper !If
+
+            # Check if this is a proper !If wrapper
+            if "Fn::If" in node:
+                if_args = node["Fn::If"]
+                if isinstance(if_args, list) and len(if_args) == 3:
+                    condition_name = if_args[0]
+                    true_branch = if_args[1]
+                    false_branch = if_args[2]
+
+                    # If this is the correct !If structure, don't recurse into the true branch
+                    # (it's allowed to have !GetAtt there)
+                    if condition_name == "CreateOIDCProvider":
+                        # Verify false branch is !Ref ExistingOIDCProviderArn
+                        if isinstance(false_branch, dict) and false_branch.get("Ref") == "ExistingOIDCProviderArn":
+                            # This is a proper wrapper - verify true branch has the !GetAtt
+                            if isinstance(true_branch, dict) and "Fn::GetAtt" in true_branch:
+                                getatt_args = true_branch["Fn::GetAtt"]
+                                if (
+                                    isinstance(getatt_args, list)
+                                    and len(getatt_args) == 2
+                                    and getatt_args[0] == provider_id
+                                    and getatt_args[1] == "Arn"
+                                ):
+                                    # This is wrapped correctly, skip recursing into this subtree
+                                    return False
+                        # For other !If structures, continue recursing
+                        for branch in if_args[1:]:
+                            if self._find_bare_getatt_arn(branch, provider_id):
+                                return True
+                        return False
+
+            # Recurse into dict values
+            for value in node.values():
+                if self._find_bare_getatt_arn(value, provider_id):
+                    return True
+
+        elif isinstance(node, list):
+            for item in node:
+                if self._find_bare_getatt_arn(item, provider_id):
+                    return True
+
+        return False
+
+    def test_existing_oidc_provider_parameter_exists(self):
+        """Verify ExistingOIDCProviderArn parameter exists in all templates with correct properties."""
+        for template_file, _ in self.TEMPLATES:
+            template = self._load_template(template_file)
+            params = template.get("Parameters", {})
+
+            assert "ExistingOIDCProviderArn" in params, f"{template_file}: Missing ExistingOIDCProviderArn parameter"
+
+            param = params["ExistingOIDCProviderArn"]
+            assert param["Type"] == "String", f"{template_file}: ExistingOIDCProviderArn must be Type: String"
+            assert param["Default"] == "", f"{template_file}: ExistingOIDCProviderArn Default must be empty string"
+            assert "AllowedPattern" in param, f"{template_file}: ExistingOIDCProviderArn must have AllowedPattern"
+
+            # Verify pattern allows empty or valid IAM OIDC provider ARN
+            pattern = param["AllowedPattern"]
+            assert "arn:aws" in pattern, f"{template_file}: AllowedPattern must accept ARN format"
+            assert "iam" in pattern, f"{template_file}: AllowedPattern must include iam service"
+            assert "oidc-provider" in pattern, f"{template_file}: AllowedPattern must include oidc-provider"
+
+    def test_create_oidc_provider_condition_exists(self):
+        """Verify CreateOIDCProvider condition exists and has correct structure."""
+        for template_file, _ in self.TEMPLATES:
+            template = self._load_template(template_file)
+            conditions = template.get("Conditions", {})
+
+            assert (
+                "CreateOIDCProvider" in conditions
+            ), f"{template_file}: Missing CreateOIDCProvider condition"
+
+            condition = conditions["CreateOIDCProvider"]
+
+            # For cognito-pool, condition must be !And [UseDirectIAM, !Equals [ExistingOIDCProviderArn, '']]
+            if template_file == "bedrock-auth-cognito-pool.yaml":
+                assert "Fn::And" in condition, (
+                    f"{template_file}: CreateOIDCProvider must use !And for cognito-pool"
+                )
+                and_args = condition["Fn::And"]
+                assert len(and_args) == 2, f"{template_file}: !And must have 2 conditions"
+
+                # First condition should be !Condition UseDirectIAM
+                assert and_args[0] == {"Condition": "UseDirectIAM"}, (
+                    f"{template_file}: First condition must be UseDirectIAM"
+                )
+
+                # Second condition should be !Equals [!Ref ExistingOIDCProviderArn, '']
+                assert "Fn::Equals" in and_args[1], (
+                    f"{template_file}: Second condition must be !Equals"
+                )
+                equals_args = and_args[1]["Fn::Equals"]
+                assert equals_args == [{"Ref": "ExistingOIDCProviderArn"}, ""], (
+                    f"{template_file}: !Equals must check ExistingOIDCProviderArn == ''"
+                )
+            else:
+                # For all other templates, condition must be !Equals [!Ref ExistingOIDCProviderArn, '']
+                assert "Fn::Equals" in condition, f"{template_file}: CreateOIDCProvider must use !Equals"
+                equals_args = condition["Fn::Equals"]
+                assert equals_args == [{"Ref": "ExistingOIDCProviderArn"}, ""], (
+                    f"{template_file}: Condition must check ExistingOIDCProviderArn == ''"
+                )
+
+    def test_oidc_provider_resource_has_condition(self):
+        """Verify OIDC provider resource has Condition: CreateOIDCProvider."""
+        for template_file, provider_id in self.TEMPLATES:
+            template = self._load_template(template_file)
+            resources = template.get("Resources", {})
+
+            assert provider_id in resources, f"{template_file}: Missing OIDC provider resource {provider_id}"
+
+            resource = resources[provider_id]
+            assert resource["Type"] == "AWS::IAM::OIDCProvider", (
+                f"{template_file}: {provider_id} must be AWS::IAM::OIDCProvider"
+            )
+            assert "Condition" in resource, f"{template_file}: {provider_id} must have Condition"
+            assert resource["Condition"] == "CreateOIDCProvider", (
+                f"{template_file}: {provider_id} Condition must be CreateOIDCProvider"
+            )
+
+    def test_direct_iam_role_trust_policy_uses_conditional_arn(self):
+        """Verify DirectIAMRole trust policy Principal.Federated uses !If structure."""
+        for template_file, provider_id in self.TEMPLATES:
+            template = self._load_template(template_file)
+            resources = template.get("Resources", {})
+
+            # cognito-pool template only creates OIDC provider in direct mode, so this is especially important
+            if "DirectIAMRole" not in resources:
+                continue
+
+            role = resources["DirectIAMRole"]
+            assume_policy = role["Properties"]["AssumeRolePolicyDocument"]
+            statements = assume_policy["Statement"]
+
+            # Find the statement with Federated principal
+            federated_stmt = None
+            for stmt in statements:
+                if "Principal" in stmt and "Federated" in stmt["Principal"]:
+                    federated_stmt = stmt
+                    break
+
+            assert federated_stmt is not None, f"{template_file}: DirectIAMRole must have Federated principal"
+
+            federated = federated_stmt["Principal"]["Federated"]
+
+            # Must be !If [CreateOIDCProvider, !GetAtt provider.Arn, !Ref ExistingOIDCProviderArn]
+            assert isinstance(federated, dict), f"{template_file}: Federated must be a dict (intrinsic function)"
+            assert "Fn::If" in federated, f"{template_file}: Federated must use !If"
+
+            if_args = federated["Fn::If"]
+            assert len(if_args) == 3, f"{template_file}: !If must have [condition, true, false]"
+            assert if_args[0] == "CreateOIDCProvider", (
+                f"{template_file}: !If condition must be CreateOIDCProvider"
+            )
+
+            # True branch: !GetAtt provider.Arn
+            true_branch = if_args[1]
+            assert "Fn::GetAtt" in true_branch, f"{template_file}: True branch must be !GetAtt"
+            assert true_branch["Fn::GetAtt"] == [provider_id, "Arn"], (
+                f"{template_file}: True branch must be !GetAtt {provider_id}.Arn"
+            )
+
+            # False branch: !Ref ExistingOIDCProviderArn
+            false_branch = if_args[2]
+            assert "Ref" in false_branch, f"{template_file}: False branch must be !Ref"
+            assert false_branch["Ref"] == "ExistingOIDCProviderArn", (
+                f"{template_file}: False branch must be !Ref ExistingOIDCProviderArn"
+            )
+
+    def test_cognito_identity_pool_uses_conditional_arn(self):
+        """Verify CognitoIdentityPool OpenIdConnectProviderARNs uses !If structure.
+
+        Note: cognito-pool template does NOT have a CognitoIdentityPool resource that references
+        the OIDC provider ARN (it uses the User Pool directly), so we skip it.
+        """
+        for template_file, provider_id in self.TEMPLATES:
+            # Skip cognito-pool - it doesn't have CognitoIdentityPool with OpenIdConnectProviderARNs
+            if template_file == "bedrock-auth-cognito-pool.yaml":
+                continue
+
+            template = self._load_template(template_file)
+            resources = template.get("Resources", {})
+
+            if "CognitoIdentityPool" not in resources:
+                continue
+
+            pool = resources["CognitoIdentityPool"]
+            props = pool["Properties"]
+
+            assert "OpenIdConnectProviderARNs" in props, (
+                f"{template_file}: CognitoIdentityPool must have OpenIdConnectProviderARNs"
+            )
+
+            arns = props["OpenIdConnectProviderARNs"]
+            assert isinstance(arns, list), f"{template_file}: OpenIdConnectProviderARNs must be a list"
+            assert len(arns) >= 1, f"{template_file}: OpenIdConnectProviderARNs must have at least one entry"
+
+            # First entry should be the !If structure
+            arn_entry = arns[0]
+            assert isinstance(arn_entry, dict), f"{template_file}: ARN entry must be a dict (intrinsic function)"
+            assert "Fn::If" in arn_entry, f"{template_file}: ARN entry must use !If"
+
+            if_args = arn_entry["Fn::If"]
+            assert len(if_args) == 3, f"{template_file}: !If must have [condition, true, false]"
+            assert if_args[0] == "CreateOIDCProvider", (
+                f"{template_file}: !If condition must be CreateOIDCProvider"
+            )
+
+            # True branch: !GetAtt provider.Arn
+            true_branch = if_args[1]
+            assert "Fn::GetAtt" in true_branch, f"{template_file}: True branch must be !GetAtt"
+            assert true_branch["Fn::GetAtt"] == [provider_id, "Arn"], (
+                f"{template_file}: True branch must be !GetAtt {provider_id}.Arn"
+            )
+
+            # False branch: !Ref ExistingOIDCProviderArn
+            false_branch = if_args[2]
+            assert "Ref" in false_branch, f"{template_file}: False branch must be !Ref"
+            assert false_branch["Ref"] == "ExistingOIDCProviderArn", (
+                f"{template_file}: False branch must be !Ref ExistingOIDCProviderArn"
+            )
+
+    def test_output_oidc_provider_arn_uses_conditional(self):
+        """Verify Outputs.OIDCProviderArn.Value uses !If structure."""
+        for template_file, provider_id in self.TEMPLATES:
+            template = self._load_template(template_file)
+            outputs = template.get("Outputs", {})
+
+            assert "OIDCProviderArn" in outputs, f"{template_file}: Missing OIDCProviderArn output"
+
+            output = outputs["OIDCProviderArn"]
+            value = output["Value"]
+
+            # Must be !If [CreateOIDCProvider, !GetAtt provider.Arn, !Ref ExistingOIDCProviderArn]
+            assert isinstance(value, dict), f"{template_file}: Output Value must be a dict (intrinsic function)"
+            assert "Fn::If" in value, f"{template_file}: Output Value must use !If"
+
+            if_args = value["Fn::If"]
+            assert len(if_args) == 3, f"{template_file}: !If must have [condition, true, false]"
+            assert if_args[0] == "CreateOIDCProvider", (
+                f"{template_file}: !If condition must be CreateOIDCProvider"
+            )
+
+            # True branch: !GetAtt provider.Arn
+            true_branch = if_args[1]
+            assert "Fn::GetAtt" in true_branch, f"{template_file}: True branch must be !GetAtt"
+            assert true_branch["Fn::GetAtt"] == [provider_id, "Arn"], (
+                f"{template_file}: True branch must be !GetAtt {provider_id}.Arn"
+            )
+
+            # False branch: !Ref ExistingOIDCProviderArn
+            false_branch = if_args[2]
+            assert "Ref" in false_branch, f"{template_file}: False branch must be !Ref"
+            assert false_branch["Ref"] == "ExistingOIDCProviderArn", (
+                f"{template_file}: False branch must be !Ref ExistingOIDCProviderArn"
+            )
+
+    def test_no_bare_getatt_arn_references(self):
+        """Verify no bare !GetAtt [provider, Arn] references exist outside proper !If wrappers.
+
+        This is the key falsifiable assertion - ensures ALL references to the provider ARN
+        are wrapped in !If [CreateOIDCProvider, !GetAtt, !Ref ExistingOIDCProviderArn].
+        """
+        for template_file, provider_id in self.TEMPLATES:
+            template = self._load_template(template_file)
+
+            # Check specific known locations where provider ARN should be referenced
+            resources = template.get("Resources", {})
+            outputs = template.get("Outputs", {})
+
+            # Locations to check (these are the critical ones):
+            # 1. DirectIAMRole trust policy - already tested above, but verify no bare reference
+            # 2. CognitoIdentityPool OpenIdConnectProviderARNs - already tested above
+            # 3. Outputs.OIDCProviderArn - already tested above
+
+            # Do a comprehensive scan to ensure no bare references anywhere
+            # Start with Resources (excluding the provider resource itself)
+            for resource_name, resource in resources.items():
+                if resource_name == provider_id:
+                    continue  # Skip the provider resource itself
+
+                # Check if this resource has bare GetAtt references
+                has_bare = self._find_bare_getatt_arn(resource, provider_id)
+
+                # If we found a GetAtt, verify it's properly wrapped
+                if has_bare:
+                    # This means we found a !GetAtt reference - need to verify it's wrapped
+                    # Re-check with proper wrapping verification
+                    import json
+
+                    resource_json = json.dumps(resource, default=str)
+                    if (
+                        f'"Fn::GetAtt": ["{provider_id}", "Arn"]' in resource_json
+                        or f'"Fn::GetAtt": [\\"{provider_id}\\", \\"Arn\\"]' in resource_json
+                    ):
+                        # Found a GetAtt reference - ensure it's inside a proper If
+                        # Check if the full pattern exists
+                        if (
+                            '"Fn::If": ["CreateOIDCProvider"' not in resource_json
+                            or '"Ref": "ExistingOIDCProviderArn"' not in resource_json
+                        ):
+                            raise AssertionError(
+                                f"{template_file}: Found bare !GetAtt {provider_id}.Arn in {resource_name} "
+                                f"without proper !If wrapper"
+                            )
+
+            # Check Outputs
+            for output_name, output in outputs.items():
+                has_bare = self._find_bare_getatt_arn(output, provider_id)
+
+                if has_bare:
+                    import json
+
+                    output_json = json.dumps(output, default=str)
+                    if f'"Fn::GetAtt": ["{provider_id}", "Arn"]' in output_json:
+                        if (
+                            '"Fn::If": ["CreateOIDCProvider"' not in output_json
+                            or '"Ref": "ExistingOIDCProviderArn"' not in output_json
+                        ):
+                            raise AssertionError(
+                                f"{template_file}: Found bare !GetAtt {provider_id}.Arn in output {output_name} "
+                                f"without proper !If wrapper"
+                            )
+
+    def test_cognito_pool_condition_is_combined(self):
+        """Verify bedrock-auth-cognito-pool.yaml has combined condition while others have simple condition.
+
+        cognito-pool: CreateOIDCProvider = !And [UseDirectIAM, !Equals [ExistingOIDCProviderArn, '']]
+        others: CreateOIDCProvider = !Equals [ExistingOIDCProviderArn, '']
+        """
+        for template_file, _ in self.TEMPLATES:
+            template = self._load_template(template_file)
+            conditions = template.get("Conditions", {})
+            condition = conditions["CreateOIDCProvider"]
+
+            if template_file == "bedrock-auth-cognito-pool.yaml":
+                # Must be !And with two conditions
+                assert "Fn::And" in condition, "cognito-pool CreateOIDCProvider must use !And"
+                and_args = condition["Fn::And"]
+                assert len(and_args) == 2, "cognito-pool !And must have exactly 2 conditions"
+
+                # Verify first condition is !Condition UseDirectIAM
+                assert and_args[0] == {"Condition": "UseDirectIAM"}, (
+                    "cognito-pool first condition must be !Condition UseDirectIAM"
+                )
+
+                # Verify second condition is !Equals [!Ref ExistingOIDCProviderArn, '']
+                assert "Fn::Equals" in and_args[1], (
+                    "cognito-pool second condition must be !Equals"
+                )
+                assert and_args[1]["Fn::Equals"] == [{"Ref": "ExistingOIDCProviderArn"}, ""], (
+                    "cognito-pool !Equals must check ExistingOIDCProviderArn == ''"
+                )
+            else:
+                # Must be simple !Equals [!Ref ExistingOIDCProviderArn, '']
+                assert "Fn::Equals" in condition, f"{template_file} CreateOIDCProvider must use !Equals"
+                assert condition["Fn::Equals"] == [{"Ref": "ExistingOIDCProviderArn"}, ""], (
+                    f"{template_file} Condition must check ExistingOIDCProviderArn == ''"
+                )

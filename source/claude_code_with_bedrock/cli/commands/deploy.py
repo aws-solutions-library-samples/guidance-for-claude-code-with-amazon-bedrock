@@ -522,6 +522,17 @@ class DeployCommand(Command):
                         ]
                     )
 
+                # Issue #528: reuse an existing IAM OIDC provider instead of creating a
+                # duplicate when multiple profiles share an issuer in one account.
+                if getattr(profile, "existing_oidc_provider_arn", None):
+                    params.append(f"ExistingOIDCProviderArn={profile.existing_oidc_provider_arn}")
+
+                # Issue #528: per-profile IAM role name so multiple profiles in one
+                # account don't collide on the federation role. Passed only when set;
+                # unset -> template default (preserves existing single-profile deploys).
+                if getattr(profile, "federated_role_name", None):
+                    params.append(f"FederatedRoleName={profile.federated_role_name}")
+
                 # Use profile regions, or fall back to all known Bedrock regions
                 bedrock_regions = profile.allowed_bedrock_regions
                 if not bedrock_regions:
@@ -1101,6 +1112,13 @@ class DeployCommand(Command):
                             f"CognitoUserPoolDomain={cognito_domain}",
                         ]
                     )
+                # Issue #528: reuse an existing IAM OIDC provider instead of creating a
+                # duplicate when multiple profiles share an issuer in one account.
+                if getattr(profile, "existing_oidc_provider_arn", None):
+                    params.append(f"ExistingOIDCProviderArn={profile.existing_oidc_provider_arn}")
+                # Issue #528: per-profile IAM role name (passed only when set).
+                if getattr(profile, "federated_role_name", None):
+                    params.append(f"FederatedRoleName={profile.federated_role_name}")
                 params.extend(
                     [
                         f"IdentityPoolName={profile.identity_pool_name}",

@@ -55,10 +55,27 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
+  ExistingOIDCProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of a pre-existing IAM OIDC provider for this issuer URL. Leave empty
+      (default) to create a new provider. Provide an existing provider's ARN to
+      reuse it instead of creating a duplicate - useful when deploying multiple
+      profiles that share the same identity provider in one AWS account/region
+      (IAM allows only one OIDC provider per issuer URL per account). The
+      existing provider's ClientIdList must already include this profile's
+      client ID.
+    AllowedPattern: '^(arn:aws[a-zA-Z-]*:iam::[0-9]{12}:oidc-provider/.+)?$'
+    ConstraintDescription: Must be empty or a valid IAM OIDC provider ARN
+
 Conditions:
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
+  CreateOIDCProvider: !And
+    - !Condition UseDirectIAM
+    - !Equals [!Ref ExistingOIDCProviderArn, '']
   # Partition-aware conditions for Cognito Identity service principals
   IsGovCloudWest: !Equals [!Ref 'AWS::Region', 'us-gov-west-1']
   IsGovCloudEast: !Equals [!Ref 'AWS::Region', 'us-gov-east-1']
@@ -70,7 +87,7 @@ Resources:
 
   CognitoUserPoolOIDCProvider:
     Type: AWS::IAM::OIDCProvider
-    Condition: UseDirectIAM
+    Condition: CreateOIDCProvider
     Properties:
       # Region is derived from the User Pool ID (format: <region>_<id>), not AWS::Region,
       # so the pool may live in a different region than this stack. See issue #596.
@@ -169,7 +186,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !GetAtt CognitoUserPoolOIDCProvider.Arn
+              Federated: !If
+                - CreateOIDCProvider
+                - !GetAtt CognitoUserPoolOIDCProvider.Arn
+                - !Ref ExistingOIDCProviderArn
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
               - 'sts:TagSession'
@@ -343,7 +363,10 @@ Outputs:
   OIDCProviderArn:
     Description: ARN of the Cognito User Pool OIDC Provider
     Condition: UseDirectIAM
-    Value: !GetAtt CognitoUserPoolOIDCProvider.Arn
+    Value: !If
+      - CreateOIDCProvider
+      - !GetAtt CognitoUserPoolOIDCProvider.Arn
+      - !Ref ExistingOIDCProviderArn
     Export:
       Name: !Sub '${AWS::StackName}-OIDCProviderArn'
 
