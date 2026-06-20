@@ -29,5 +29,13 @@ os.rename(src, dst)  # Fails cross-device
 open(path)  # Uses system default encoding
 ```
 
+## Common Cross-Platform Mistakes
+
+- `os.rename` → use `os.replace` (rename fails on Windows when target exists)
+- `subprocess` with `shell=True` → uses `cmd.exe` on Windows, not bash. Verify portability.
+- Hardcoded `/` in paths → use `pathlib.Path` or `os.path.join`
+- `print()` in credential-process → only for final JSON output (AWS SDK parses stdout)
+- File permissions `0o600` → no-op on Windows (skip permission checks with `runtime.GOOS` guard in Go)
+
 ## Related Issues
 #267, #348, #350, #353, #356, #357, #381, #427, #428, #429
