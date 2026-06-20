@@ -733,7 +733,7 @@ The `quota_monitor` Lambda queries both namespaces and merges the results into a
 **Requirements:**
 - CoWork monitoring stack deployed (`ccwb deploy --stack cowork-dashboard`)
 - Attribution headers configured (collector injects `user_email` from `x-user-email` HTTP header)
-- Central monitoring mode (sidecar mode does not support CoWork telemetry counting)
+- Central or sidecar monitoring mode (both support CoWork telemetry counting)
 
 **Without attribution headers:** CoWork usage is aggregate-only and cannot be counted toward individual user quotas. The `quota_monitor` CoWork query gracefully returns empty results.
 

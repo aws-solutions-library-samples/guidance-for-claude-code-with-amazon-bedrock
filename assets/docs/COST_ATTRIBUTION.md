@@ -188,4 +188,4 @@ Once configured, the CloudWatch dashboard shows usage grouped by project in the 
 
 ### IDC limitation
 
-IAM Identity Center (SSO) users do not have JWT claims, so project attribution via OTEL is not available for IDC deployments. Use CUR 2.0 with IAM principal tags (section 2) as an alternative.
+IAM Identity Center (SSO) users do not have JWT claims, so project/team/department attribution via OTEL is not available for IDC deployments (per-user email attribution still works). For per-user cost visibility in CUR 2.0, configure [ABAC attributes](https://docs.aws.amazon.com/singlesignon/latest/userguide/abac.html) in IAM Identity Center so session tags flow automatically.
