@@ -57,7 +57,7 @@ This generates MDM configuration files (JSON, macOS .mobileconfig, Windows .reg)
 
 ## Architecture Overview
 
-The architecture is modular — start with authentication, then optionally add [monitoring, quota enforcement, analytics, or distribution](#what-gets-deployed) independently via `ccwb deploy --stack <name>`. This guidance supports three authentication paths (see [Authentication Modes](#authentication-modes) for details). The recommended path is Direct IAM Federation:
+The architecture is modular — start with authentication, then optionally add [monitoring, quota enforcement, analytics, or distribution](#what-gets-deployed) independently as requirements grow. This guidance supports three authentication paths (see [Authentication Modes](#authentication-modes) for details). The recommended path is Direct IAM Federation:
 
 ### Recommended: Direct IAM Federation
 
