@@ -111,8 +111,8 @@ class Profile:
     auth_type: str = "oidc"
 
     # IAM Identity Center specific fields (only populated when auth_type == "idc")
-    idc_start_url: str | None = None       # e.g. https://company.awsapps.com/start
-    idc_account_id: str | None = None      # AWS account ID for IDC access
+    idc_start_url: str | None = None  # e.g. https://company.awsapps.com/start
+    idc_account_id: str | None = None  # AWS account ID for IDC access
     idc_permission_set_name: str | None = None  # Permission set / role name
 
     # Confidential client authentication (Azure AD / Entra ID)
@@ -163,7 +163,7 @@ class Profile:
     @property
     def effective_auth_type(self) -> str:
         """Resolve auth_type with backward compatibility for sso_enabled."""
-        if hasattr(self, 'auth_type') and self.auth_type:
+        if hasattr(self, "auth_type") and self.auth_type:
             return self.auth_type
         return "oidc" if self.sso_enabled else "none"
 

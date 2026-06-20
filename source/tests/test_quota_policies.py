@@ -10,8 +10,6 @@ from botocore.exceptions import ClientError
 
 from claude_code_with_bedrock.quota_policies import (
     PolicyAlreadyExistsError,
-    PolicyNotFoundError,
-    QuotaPolicyError,
     QuotaPolicyManager,
     _format_tokens,
     _parse_tokens,
@@ -108,7 +106,7 @@ class TestQuotaPolicyManagerCreatePolicy:
 
     @patch("claude_code_with_bedrock.quota_policies.boto3")
     def test_create_policy_success(self, mock_boto3):
-        from claude_code_with_bedrock.models import EnforcementMode, PolicyType
+        from claude_code_with_bedrock.models import PolicyType
 
         mock_table = MagicMock()
         mock_boto3.resource.return_value.Table.return_value = mock_table

@@ -1,13 +1,11 @@
 # ABOUTME: Tests for anonymous/identity mode in OTEL helper
 # ABOUTME: Validates _parse_arn_identity(), create_anonymous_user_info(), and get_aws_caller_identity()
 
-import hashlib
+import os
+import sys
 import time
 import unittest.mock
 from unittest.mock import MagicMock, patch
-
-import sys
-import os
 
 # Add source directory to path so we can import otel_helper
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -204,8 +202,14 @@ class TestCreateAnonymousUserInfo:
         """Different ARNs produce different user IDs"""
         from otel_helper.__main__ import create_anonymous_user_info
 
-        id1 = {"Arn": "arn:aws:sts::111111111111:assumed-role/AWSReservedSSO_Dev_abc/a@x.com", "Account": "111111111111"}
-        id2 = {"Arn": "arn:aws:sts::222222222222:assumed-role/AWSReservedSSO_Dev_def/b@x.com", "Account": "222222222222"}
+        id1 = {
+            "Arn": "arn:aws:sts::111111111111:assumed-role/AWSReservedSSO_Dev_abc/a@x.com",
+            "Account": "111111111111",
+        }
+        id2 = {
+            "Arn": "arn:aws:sts::222222222222:assumed-role/AWSReservedSSO_Dev_def/b@x.com",
+            "Account": "222222222222",
+        }
 
         result1 = create_anonymous_user_info(id1)
         result2 = create_anonymous_user_info(id2)
@@ -281,9 +285,19 @@ class TestCreateAnonymousUserInfo:
         from otel_helper.__main__ import create_anonymous_user_info
 
         required_fields = [
-            "email", "user_id", "username", "organization_id", "department",
-            "team", "cost_center", "manager", "location", "role",
-            "account_uuid", "issuer", "subject",
+            "email",
+            "user_id",
+            "username",
+            "organization_id",
+            "department",
+            "team",
+            "cost_center",
+            "manager",
+            "location",
+            "role",
+            "account_uuid",
+            "issuer",
+            "subject",
         ]
 
         # Test all three code paths

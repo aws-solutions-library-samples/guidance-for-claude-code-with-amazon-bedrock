@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 OTEL_TEMPLATE = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure" / "otel-collector.yaml"
 
 
@@ -39,7 +38,7 @@ class TestAlbJwtAudFormat:
                 for j in range(i + 1, min(i + 3, len(lines))):
                     if "Format:" in lines[j]:
                         assert "single-string" in lines[j], (
-                            f"Line {j+1}: aud claim uses wrong format.\n"
+                            f"Line {j + 1}: aud claim uses wrong format.\n"
                             f"  Found:    {lines[j].strip()}\n"
                             f"  Expected: Format: single-string\n"
                             f"  Reason:   Most OIDC providers emit aud as a plain string, "
@@ -62,9 +61,9 @@ class TestAlbJwtAudFormat:
         for i, line in enumerate(lines):
             if "Name: aud" in line:
                 # Check surrounding lines for string-array
-                context = lines[max(0, i-1):min(len(lines), i+4)]
+                context = lines[max(0, i - 1) : min(len(lines), i + 4)]
                 for ctx_line in context:
                     assert "string-array" not in ctx_line, (
-                        f"Found 'string-array' near aud claim definition (line {i+1}). "
+                        f"Found 'string-array' near aud claim definition (line {i + 1}). "
                         f"Must be 'single-string'. See issue #346."
                     )

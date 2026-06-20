@@ -188,9 +188,7 @@ class TestBuildsCommand:
                     mock_boto.return_value = mock_codebuild
 
                     now = datetime.now(timezone.utc)
-                    mock_codebuild.list_builds_for_project.return_value = {
-                        "ids": ["test-pool-windows-build:build-1"]
-                    }
+                    mock_codebuild.list_builds_for_project.return_value = {"ids": ["test-pool-windows-build:build-1"]}
                     mock_codebuild.batch_get_builds.return_value = {
                         "builds": [
                             {
@@ -316,8 +314,17 @@ class TestBuildsCommand:
 
         responses = [
             {"builds": [{"id": "win", "buildStatus": "SUCCEEDED", "startTime": now, "endTime": now}]},
-            {"builds": [{"id": "lx64", "buildStatus": "FAILED", "startTime": now, "endTime": now,
-                         "phases": [{"phaseType": "BUILD", "phaseStatus": "FAILED"}]}]},
+            {
+                "builds": [
+                    {
+                        "id": "lx64",
+                        "buildStatus": "FAILED",
+                        "startTime": now,
+                        "endTime": now,
+                        "phases": [{"phaseType": "BUILD", "phaseStatus": "FAILED"}],
+                    }
+                ]
+            },
         ]
 
         with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config):

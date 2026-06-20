@@ -1823,9 +1823,7 @@ class MultiProviderAuth:
             if id_token:
                 # OIDC path: JWT in Authorization header
                 response = requests.get(
-                    f"{quota_api_endpoint}/check",
-                    headers={"Authorization": f"Bearer {id_token}"},
-                    timeout=timeout
+                    f"{quota_api_endpoint}/check", headers={"Authorization": f"Bearer {id_token}"}, timeout=timeout
                 )
             else:
                 # IDC/IAM path: SigV4-signed request using resolved credentials
@@ -1850,11 +1848,7 @@ class MultiProviderAuth:
                 url = f"{quota_api_endpoint}/check"
                 request = AWSRequest(method="GET", url=url)
                 SigV4Auth(credentials, "execute-api", self.config.get("aws_region", "us-east-1")).add_auth(request)
-                response = requests.get(
-                    url,
-                    headers=dict(request.headers),
-                    timeout=timeout
-                )
+                response = requests.get(url, headers=dict(request.headers), timeout=timeout)
 
             if response.status_code == 200:
                 result = response.json()

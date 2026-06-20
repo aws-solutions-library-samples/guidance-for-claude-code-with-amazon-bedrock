@@ -105,19 +105,16 @@ class TestArnValidation:
     """Tests for _is_valid_arn."""
 
     def test_valid_iam_role_arn(self):
-        assert ProfileValidator._is_valid_arn(
-            "arn:aws:iam::123456789012:role/MyRole"
-        ) is True
+        assert ProfileValidator._is_valid_arn("arn:aws:iam::123456789012:role/MyRole") is True
 
     def test_valid_cognito_arn(self):
-        assert ProfileValidator._is_valid_arn(
-            "arn:aws:cognito-identity:us-east-1:123456789012:identitypool/us-east-1:abc"
-        ) is True
+        assert (
+            ProfileValidator._is_valid_arn("arn:aws:cognito-identity:us-east-1:123456789012:identitypool/us-east-1:abc")
+            is True
+        )
 
     def test_govcloud_arn(self):
-        assert ProfileValidator._is_valid_arn(
-            "arn:aws-us-gov:iam::123456789012:role/MyRole"
-        ) is True
+        assert ProfileValidator._is_valid_arn("arn:aws-us-gov:iam::123456789012:role/MyRole") is True
 
     def test_empty_arn(self):
         assert ProfileValidator._is_valid_arn("") is False

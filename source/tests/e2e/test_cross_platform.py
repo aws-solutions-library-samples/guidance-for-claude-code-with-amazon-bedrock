@@ -19,7 +19,6 @@ Bugs this prevents:
 import ast
 import importlib
 import platform
-import sys
 from pathlib import Path
 
 import pytest
@@ -247,8 +246,7 @@ class TestPathResolution:
         config_dir_name = Config.CONFIG_DIR.name
         for char in config_dir_name:
             assert char not in windows_invalid, (
-                f"Config directory name contains Windows-invalid character '{char}': "
-                f"{Config.CONFIG_DIR}"
+                f"Config directory name contains Windows-invalid character '{char}': {Config.CONFIG_DIR}"
             )
 
     def test_profile_names_filesystem_safe(self):
@@ -263,10 +261,7 @@ class TestPathResolution:
         # Check if validation exists and handles reserved names
         if hasattr(config, "_is_valid_profile_name"):
             # Track which dangerous names are NOT rejected (known gap)
-            unrejected = [
-                name for name in dangerous_names
-                if config._is_valid_profile_name(name)
-            ]
+            [name for name in dangerous_names if config._is_valid_profile_name(name)]
             # For now, just verify the method exists and is callable.
             # Windows reserved name validation is a known enhancement.
             # This test documents the gap without blocking CI.
@@ -284,6 +279,7 @@ class TestKeyringAvailability:
     def test_keyring_importable(self):
         """keyring module must import without errors."""
         import keyring
+
         assert keyring is not None
 
     def test_keyring_backend_detected(self):
@@ -332,9 +328,7 @@ class TestPlatformCodePaths:
     def test_credential_provider_platform_detection(self):
         """credential-provider must detect current platform without errors."""
         current_system = platform.system()
-        assert current_system in ("Windows", "Darwin", "Linux"), (
-            f"Unexpected platform: {current_system}"
-        )
+        assert current_system in ("Windows", "Darwin", "Linux"), f"Unexpected platform: {current_system}"
 
     def test_binary_name_resolution(self):
         """Binary name must resolve correctly for current platform.
@@ -367,9 +361,7 @@ class TestPlatformCodePaths:
         else:
             cmd = ["echo", "hello"]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8"
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
         assert result.returncode == 0
         assert "hello" in result.stdout
 
@@ -417,9 +409,8 @@ class TestOtelHelperContract:
         source_file = OTEL_DIR / "__main__.py"
         content = source_file.read_text(encoding="utf-8")
         # Must have a fallback that prints {} (empty headers) and exits 0
-        assert 'print("{}")' in content or "print('{}')" in content or 'json.dumps({})' in content, (
-            "otel_helper must emit empty JSON object on error path "
-            "to satisfy Claude Code's otelHeadersHelper contract"
+        assert 'print("{}")' in content or "print('{}')" in content or "json.dumps({})" in content, (
+            "otel_helper must emit empty JSON object on error path to satisfy Claude Code's otelHeadersHelper contract"
         )
 
     def test_cache_uses_os_replace(self):
@@ -434,10 +425,7 @@ class TestOtelHelperContract:
         )
         # Should NOT have rename-based cache writes (old pattern)
         # Allow rename in non-cache contexts if any exist
-        lines_with_rename = [
-            l for l in content.split("\n")
-            if RENAME_CALL in l and "cache" in l.lower()
-        ]
+        lines_with_rename = [l for l in content.split("\n") if RENAME_CALL in l and "cache" in l.lower()]
         assert len(lines_with_rename) == 0, (
             f"Found {RENAME_CALL} in cache context (should be os.replace): {lines_with_rename}"
         )
@@ -576,10 +564,7 @@ class TestCfnTemplateValidation:
             if "IsGovCloud:" in content and "!Or" in content.split("IsGovCloud:")[1][:50]:
                 # It's a condition definition — check it's actually used
                 lines = content.split("\n")
-                references = [
-                    l for l in lines
-                    if "IsGovCloud" in l and "!Condition IsGovCloud" in l
-                ]
+                references = [l for l in lines if "IsGovCloud" in l and "!Condition IsGovCloud" in l]
                 assert len(references) > 0, (
                     f"{tmpl.name} defines 'IsGovCloud' condition but never references it. "
                     f"Remove unused conditions to fix cfn-lint W8001."
@@ -613,9 +598,8 @@ class TestSsoEnabledConsistency:
                 if matches:
                     violations.append(f"{src.name}: {matches}")
 
-        assert not violations, (
-            f"Found sso_enabled with default=False (must be True for backward compat):\n"
-            + "\n".join(violations)
+        assert not violations, "Found sso_enabled with default=False (must be True for backward compat):\n" + "\n".join(
+            violations
         )
 
 
@@ -654,6 +638,8 @@ class TestProfilePreservation:
             "init.py wizard_fields must include model_alias so it's preserved "
             "when re-running ccwb init (added in PR #278)"
         )
+
+
 # Server/Client Auth Contract Alignment
 # ---------------------------------------------------------------------------
 
@@ -739,12 +725,8 @@ class TestAuthContractAlignment:
                 if is_attach and main_auth_line is None:
                     main_auth_line = i
 
-        assert main_cache_write_line is not None, (
-            "Expected 'WriteCachedHeaders' in main auth flow of otel-helper"
-        )
-        assert main_auth_line is not None, (
-            "Expected authorization header assignment in main auth flow of otel-helper"
-        )
+        assert main_cache_write_line is not None, "Expected 'WriteCachedHeaders' in main auth flow of otel-helper"
+        assert main_auth_line is not None, "Expected authorization header assignment in main auth flow of otel-helper"
         assert main_cache_write_line < main_auth_line, (
             f"Bearer token (line {main_auth_line}) must be added AFTER "
             f"WriteCachedHeaders (line {main_cache_write_line}) — "

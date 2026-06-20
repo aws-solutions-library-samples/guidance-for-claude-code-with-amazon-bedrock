@@ -20,18 +20,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-SETTINGS_JSON_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "source"
-    / "dist"
-    / "claude-settings"
-    / "settings.json"
-)
+SETTINGS_JSON_PATH = Path(__file__).resolve().parents[2] / "source" / "dist" / "claude-settings" / "settings.json"
 
 
 def _reset_sts_cache():
@@ -55,9 +48,7 @@ class TestSettingsJsonTelemetryEnvVar:
 
     def test_settings_json_exists(self):
         """Sanity check: the settings file must be present."""
-        assert SETTINGS_JSON_PATH.exists(), (
-            f"settings.json not found at {SETTINGS_JSON_PATH}"
-        )
+        assert SETTINGS_JSON_PATH.exists(), f"settings.json not found at {SETTINGS_JSON_PATH}"
 
     def test_claude_code_enable_telemetry_not_in_env_block(self):
         """CLAUDE_CODE_ENABLE_TELEMETRY must be absent from the env block.
@@ -90,9 +81,7 @@ class TestSettingsJsonTelemetryEnvVar:
         env_block = settings.get("env", {})
         required_keys = {"CLAUDE_CODE_USE_BEDROCK", "AWS_PROFILE"}
         missing = required_keys - env_block.keys()
-        assert not missing, (
-            f"Required env keys missing from settings.json: {missing}"
-        )
+        assert not missing, f"Required env keys missing from settings.json: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +125,7 @@ class TestReadCachedHeadersEmptyDict:
 
         result = mod.read_cached_headers()
 
-        assert result is None, (
-            f"Expected None for a null headers entry, got {result!r}"
-        )
+        assert result is None, f"Expected None for a null headers entry, got {result!r}"
 
     def test_missing_headers_key_is_cache_miss(self, tmp_path, monkeypatch):
         """Cache file with no 'headers' key must return None."""
@@ -151,9 +138,7 @@ class TestReadCachedHeadersEmptyDict:
 
         result = mod.read_cached_headers()
 
-        assert result is None, (
-            f"Expected None when 'headers' key is absent, got {result!r}"
-        )
+        assert result is None, f"Expected None when 'headers' key is absent, got {result!r}"
 
     def test_nonexistent_cache_file_is_cache_miss(self, tmp_path, monkeypatch):
         """Missing cache file must return None."""
@@ -235,6 +220,7 @@ class TestReadCachedHeadersRoundTrip:
         CI and doesn't require a Windows runner to stay green.
         """
         import os as _os
+
         import otel_helper.__main__ as mod  # noqa: F811 – needed for monkeypatch target
 
         cache_file = tmp_path / "ClaudeCode-otel-headers.json"
@@ -259,9 +245,9 @@ class TestReadCachedHeadersRoundTrip:
 
         result = mod.read_cached_headers()
         assert result == second_headers, (
-            f"Cache still contains first headers after second write. "
-            f"Ensure os.replace() is used instead of os.rename() so the "
-            f"destination file is atomically overwritten on Windows."
+            "Cache still contains first headers after second write. "
+            "Ensure os.replace() is used instead of os.rename() so the "
+            "destination file is atomically overwritten on Windows."
         )
 
 
@@ -287,7 +273,11 @@ class TestGetAwsCallerIdentityTimeoutConfig:
         """
         import otel_helper.__main__ as mod
 
-        mock_identity = {"Arn": "arn:aws:iam::123456789012:user/testuser", "Account": "123456789012", "UserId": "AIDATEST"}
+        mock_identity = {
+            "Arn": "arn:aws:iam::123456789012:user/testuser",
+            "Account": "123456789012",
+            "UserId": "AIDATEST",
+        }
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.return_value = mock_identity
 
@@ -299,15 +289,13 @@ class TestGetAwsCallerIdentityTimeoutConfig:
 
         with patch("otel_helper.__main__.boto3") as mock_boto3:
             mock_boto3.client.side_effect = fake_boto3_client
-            result = mod.get_aws_caller_identity()
+            mod.get_aws_caller_identity()
 
         assert mock_boto3.client.called, "boto3.client was never called"
         call_args = mock_boto3.client.call_args
 
         # First positional argument must be 'sts'
-        assert call_args[0][0] == "sts", (
-            f"Expected boto3.client('sts', ...) but got service={call_args[0][0]!r}"
-        )
+        assert call_args[0][0] == "sts", f"Expected boto3.client('sts', ...) but got service={call_args[0][0]!r}"
 
         config_arg = call_args[1].get("config") or (call_args[0][1] if len(call_args[0]) > 1 else None)
         assert config_arg is not None, (
@@ -315,12 +303,8 @@ class TestGetAwsCallerIdentityTimeoutConfig:
             "The fix must pass Config(connect_timeout=2, read_timeout=2, retries={...})."
         )
 
-        assert config_arg.connect_timeout == 2, (
-            f"Expected connect_timeout=2, got {config_arg.connect_timeout}"
-        )
-        assert config_arg.read_timeout == 2, (
-            f"Expected read_timeout=2, got {config_arg.read_timeout}"
-        )
+        assert config_arg.connect_timeout == 2, f"Expected connect_timeout=2, got {config_arg.connect_timeout}"
+        assert config_arg.read_timeout == 2, f"Expected read_timeout=2, got {config_arg.read_timeout}"
 
     def test_boto3_client_called_with_zero_retries(self):
         """STS Config must set max_attempts=0 to prevent boto3 retry delays."""
@@ -342,9 +326,7 @@ class TestGetAwsCallerIdentityTimeoutConfig:
 
         retries = config_arg.retries
         assert retries is not None, "Config.retries must be set"
-        assert retries.get("max_attempts") == 0, (
-            f"Expected retries.max_attempts=0, got {retries.get('max_attempts')}"
-        )
+        assert retries.get("max_attempts") == 0, f"Expected retries.max_attempts=0, got {retries.get('max_attempts')}"
 
     def test_sts_timeout_returns_none_quickly(self):
         """get_aws_caller_identity() must return None quickly when STS times out.
@@ -354,10 +336,13 @@ class TestGetAwsCallerIdentityTimeoutConfig:
         returns None on exception).
         """
         import botocore.exceptions
+
         import otel_helper.__main__ as mod
 
         mock_sts = MagicMock()
-        mock_sts.get_caller_identity.side_effect = botocore.exceptions.ReadTimeoutError(endpoint_url="https://sts.amazonaws.com")
+        mock_sts.get_caller_identity.side_effect = botocore.exceptions.ReadTimeoutError(
+            endpoint_url="https://sts.amazonaws.com"
+        )
 
         start = time.monotonic()
         with patch("otel_helper.__main__.boto3") as mock_boto3:
@@ -365,21 +350,21 @@ class TestGetAwsCallerIdentityTimeoutConfig:
             result = mod.get_aws_caller_identity()
         elapsed = time.monotonic() - start
 
-        assert result is None, (
-            f"Expected None on ReadTimeoutError, got {result!r}"
-        )
+        assert result is None, f"Expected None on ReadTimeoutError, got {result!r}"
         assert elapsed < 5.0, (
-            f"get_aws_caller_identity took {elapsed:.2f}s after a timeout error; "
-            "the fix must prevent long hangs."
+            f"get_aws_caller_identity took {elapsed:.2f}s after a timeout error; the fix must prevent long hangs."
         )
 
     def test_sts_connect_timeout_returns_none(self):
         """get_aws_caller_identity() must return None on ConnectTimeoutError."""
         import botocore.exceptions
+
         import otel_helper.__main__ as mod
 
         mock_sts = MagicMock()
-        mock_sts.get_caller_identity.side_effect = botocore.exceptions.ConnectTimeoutError(endpoint_url="https://sts.amazonaws.com")
+        mock_sts.get_caller_identity.side_effect = botocore.exceptions.ConnectTimeoutError(
+            endpoint_url="https://sts.amazonaws.com"
+        )
 
         with patch("otel_helper.__main__.boto3") as mock_boto3:
             mock_boto3.client.return_value = mock_sts
@@ -451,9 +436,7 @@ class TestMainErrorPathEmitsValidJson:
         # Bypass expiry check so the dummy token reaches decode_jwt_payload
         monkeypatch.setattr(mod, "is_token_expired", lambda *a, **kw: False)
         # Raise after the token is obtained, before any stdout is printed.
-        monkeypatch.setattr(
-            mod, "decode_jwt_payload", lambda _t: (_ for _ in ()).throw(ValueError("boom"))
-        )
+        monkeypatch.setattr(mod, "decode_jwt_payload", lambda _t: (_ for _ in ()).throw(ValueError("boom")))
 
         rc = mod.main()
 

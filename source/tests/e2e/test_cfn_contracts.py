@@ -13,7 +13,6 @@ Catches issues like:
 - #398: SSM parameter conflicts on stack updates
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -99,14 +98,47 @@ class TestIAMPolicyValidity:
 
     # Valid IAM action prefixes for services used in this project
     VALID_ACTION_PREFIXES = {
-        "bedrock", "cloudtrail", "cognito-identity", "cognito-idp", "sts", "logs",
-        "cloudwatch", "s3", "s3express", "s3-object-lambda", "s3outposts",
-        "dynamodb", "lambda", "iam", "ssm",
-        "firehose", "glue", "athena", "kms", "codebuild", "ec2",
-        "ecs", "ecr", "elasticloadbalancing", "route53", "acm",
-        "secretsmanager", "cloudformation", "events", "sns", "sqs",
-        "tag", "pricing", "oam", "lakeformation", "execute-api",
-        "application-autoscaling", "ce", "cur", "es", "aoss",
+        "bedrock",
+        "cloudtrail",
+        "cognito-identity",
+        "cognito-idp",
+        "sts",
+        "logs",
+        "cloudwatch",
+        "s3",
+        "s3express",
+        "s3-object-lambda",
+        "s3outposts",
+        "dynamodb",
+        "lambda",
+        "iam",
+        "ssm",
+        "firehose",
+        "glue",
+        "athena",
+        "kms",
+        "codebuild",
+        "ec2",
+        "ecs",
+        "ecr",
+        "elasticloadbalancing",
+        "route53",
+        "acm",
+        "secretsmanager",
+        "cloudformation",
+        "events",
+        "sns",
+        "sqs",
+        "tag",
+        "pricing",
+        "oam",
+        "lakeformation",
+        "execute-api",
+        "application-autoscaling",
+        "ce",
+        "cur",
+        "es",
+        "aoss",
     }
 
     def _extract_actions(self, template: dict) -> list[str]:
@@ -187,9 +219,7 @@ class TestQuotaMonitoringTemplateContract:
         }
 
         for var in expected_vars:
-            assert var in env_vars, (
-                f"quota_check Lambda missing env var '{var}' that the code reads at import time"
-            )
+            assert var in env_vars, f"quota_check Lambda missing env var '{var}' that the code reads at import time"
 
     def test_quota_monitor_role_has_update_item(self):
         """QuotaMonitorRole must have dynamodb:UpdateItem for atomic counter upserts."""

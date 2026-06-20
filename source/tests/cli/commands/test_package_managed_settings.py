@@ -6,9 +6,6 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
@@ -169,9 +166,7 @@ class TestInstallerScriptManagedSettings:
             (output_dir / "credential-process").touch()
 
             # Generate installer
-            installer_path = command._create_installer(
-                output_dir, profile, built_executables, built_otel_helpers=[]
-            )
+            installer_path = command._create_installer(output_dir, profile, built_executables, built_otel_helpers=[])
 
             return installer_path.read_text(encoding="utf-8")
 

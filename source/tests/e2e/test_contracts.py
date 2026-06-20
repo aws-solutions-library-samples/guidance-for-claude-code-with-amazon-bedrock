@@ -12,11 +12,9 @@ These tests verify the contract between credential-provider and its consumers.
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -183,14 +181,17 @@ class TestQuotaCheckResponseContract:
     RESPONSE_REQUIRED = {"allowed"}
 
     # Fields present in a normal (policy-found) response
-    NORMAL_RESPONSE_FIELDS = {
-        "allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"
-    }
+    NORMAL_RESPONSE_FIELDS = {"allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"}
 
     # Valid reason values the credential-provider switches on
     VALID_REASONS = {
-        "within_quota", "monthly_exceeded", "daily_exceeded",
-        "no_policy", "no_email", "unblocked", "missing_email_claim",
+        "within_quota",
+        "monthly_exceeded",
+        "daily_exceeded",
+        "no_policy",
+        "no_email",
+        "unblocked",
+        "missing_email_claim",
     }
 
     def test_allowed_response_structure(self):

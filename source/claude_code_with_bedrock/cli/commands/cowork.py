@@ -143,6 +143,7 @@ class CoworkGenerateCommand(Command):
 
         if output_format in ("all", "admx"):
             from claude_code_with_bedrock.cli.utils.cowork_3p import generate_admx
+
             generate_admx(output_dir, mdm_config)
             generated.append("ClaudeCowork3P.admx")
             generated.append("en-US/ClaudeCowork3P.adml")
@@ -150,6 +151,7 @@ class CoworkGenerateCommand(Command):
 
         if output_format in ("all", "ps1"):
             from claude_code_with_bedrock.cli.utils.cowork_3p import generate_intune_script
+
             generate_intune_script(output_dir, mdm_config)
             generated.append("Set-CoworkPolicy.ps1")
             console.print("[green]✓[/green] Generated Set-CoworkPolicy.ps1 (Intune platform script)")

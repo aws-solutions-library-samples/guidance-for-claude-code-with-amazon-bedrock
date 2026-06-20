@@ -733,7 +733,9 @@ class DeployCommand(Command):
                 # Add HTTPS domain parameters if configured
                 monitoring_config = getattr(profile, "monitoring_config", {})
                 if monitoring_config.get("custom_domain"):
-                    domain = monitoring_config["custom_domain"].replace("https://", "").replace("http://", "").rstrip("/")
+                    domain = (
+                        monitoring_config["custom_domain"].replace("https://", "").replace("http://", "").rstrip("/")
+                    )
                     params.append(f"CustomDomainName={domain}")
                     if monitoring_config.get("hosted_zone_id"):
                         params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
@@ -1035,7 +1037,7 @@ class DeployCommand(Command):
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -1148,7 +1150,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1177,7 +1179,7 @@ class DeployCommand(Command):
         elif stack_type == "quota":
             template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
             stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
-            dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
+            profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
             console.print(
                 f"\n[cyan]# Step 1: Package Lambda functions\n"
@@ -1188,7 +1190,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [
@@ -1448,6 +1450,7 @@ class DeployCommand(Command):
         # For real Profile objects, use the new auth_type system
         # For mocks and legacy code, fall back to sso_enabled
         from claude_code_with_bedrock.config import Profile
+
         if isinstance(profile, Profile) and profile.effective_auth_type != "oidc":
             return "", ""
         elif not isinstance(profile, Profile) and not getattr(profile, "sso_enabled", True):

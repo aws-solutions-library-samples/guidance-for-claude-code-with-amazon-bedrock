@@ -14,7 +14,6 @@ from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationMana
 from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials, get_codebuild_region
 from claude_code_with_bedrock.config import Config
 
-
 # All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
 # Keep in sync with deploy.py's stack types when adding new stacks.
 DESTROYABLE_STACKS = [
@@ -313,8 +312,7 @@ class DestroyCommand(Command):
                 for stack in stacks:
                     console.print(f"  • {stack}")
                     console.print(
-                        f"    [cyan]aws cloudformation delete-stack "
-                        f"--stack-name {stack} --region {region}[/cyan]"
+                        f"    [cyan]aws cloudformation delete-stack --stack-name {stack} --region {region}[/cyan]"
                     )
                 console.print(
                     "\n[dim]A delete may still be in progress - re-run "

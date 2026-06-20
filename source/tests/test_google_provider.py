@@ -5,8 +5,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from claude_code_with_bedrock.utils.url_validation import detect_provider_type_secure as detect_provider_type
 
 
@@ -75,11 +73,7 @@ class TestGoogleDeployParams:
     def test_deploy_has_google_in_template_map(self):
         """deploy.py maps 'google' to the correct template file."""
         source_path = (
-            Path(__file__).resolve().parents[1]
-            / "claude_code_with_bedrock"
-            / "cli"
-            / "commands"
-            / "deploy.py"
+            Path(__file__).resolve().parents[1] / "claude_code_with_bedrock" / "cli" / "commands" / "deploy.py"
         )
         source = source_path.read_text(encoding="utf-8")
         assert '"google": "bedrock-auth-google.yaml"' in source
@@ -87,14 +81,9 @@ class TestGoogleDeployParams:
     def test_deploy_passes_google_params(self):
         """deploy.py has elif block for google that passes GoogleDomain and GoogleClientId."""
         source_path = (
-            Path(__file__).resolve().parents[1]
-            / "claude_code_with_bedrock"
-            / "cli"
-            / "commands"
-            / "deploy.py"
+            Path(__file__).resolve().parents[1] / "claude_code_with_bedrock" / "cli" / "commands" / "deploy.py"
         )
         source = source_path.read_text(encoding="utf-8")
         # Verify the parameter wiring exists
         assert "GoogleDomain={profile.provider_domain}" in source
         assert "GoogleClientId={profile.client_id}" in source
-

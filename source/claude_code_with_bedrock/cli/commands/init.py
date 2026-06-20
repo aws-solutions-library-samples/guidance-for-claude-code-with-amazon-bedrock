@@ -1049,7 +1049,9 @@ class InitCommand(Command):
                     console.print("Track per-user token consumption, set limits, and receive alerts")
                     console.print("when users approach or exceed their quotas.")
                     console.print()
-                    console.print("⚠️  Quota enforcement on AWS IAM Identity Center requires the credential-process binary.")
+                    console.print(
+                        "⚠️  Quota enforcement on AWS IAM Identity Center requires the credential-process binary."
+                    )
                     console.print("    Without it: monitoring only (usage visible, no blocking)")
                     console.print("    With it: full enforcement (blocks when over limit)")
                     console.print()
@@ -1648,7 +1650,9 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+                        secret_arn = (
+                            f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+                        )
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -2424,7 +2428,9 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
-            "settings_target": "managed" if (self._io and self.option("managed")) else config_data.get("settings_target", "user"),
+            "settings_target": "managed"
+            if (self._io and self.option("managed"))
+            else config_data.get("settings_target", "user"),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }

@@ -191,6 +191,7 @@ class TestResolveOidcConfig:
         assert issuer == "https://login.microsoftonline.com/tenant-id/v2.0"
         assert not issuer.endswith("/")
 
+
 class TestQuotaSkippedWhenSsoDisabled:
     """Regression tests for issue #454.
 
@@ -269,9 +270,7 @@ class TestQuotaSkippedWhenSsoDisabled:
         assert "quota" not in stacks
 
     def test_quota_stack_skipped_when_monitoring_disabled(self):
-        profile = self._make_profile(
-            sso_enabled=True, quota_enabled=True, monitoring_enabled=False
-        )
+        profile = self._make_profile(sso_enabled=True, quota_enabled=True, monitoring_enabled=False)
         stacks = self._stacks_for_profile(profile)
         assert "quota" not in stacks
 
@@ -287,11 +286,10 @@ class TestInitQuotaSkippedWhenSsoDisabled:
     def test_init_sets_quota_disabled_when_sso_off(self):
         """When sso_enabled=False, the wizard must set quota.enabled=False
         without prompting the user (there's no valid OIDC issuer for JWT auth)."""
-        from claude_code_with_bedrock.cli.commands.init import InitCommand
-        from unittest.mock import patch, MagicMock
-        from io import StringIO
 
-        cmd = InitCommand()
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        InitCommand()
         config = {
             "sso_enabled": False,
             "monitoring": {"enabled": True},
