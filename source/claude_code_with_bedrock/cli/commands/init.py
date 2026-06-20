@@ -2804,13 +2804,24 @@ class InitCommand(Command):
                     "idp_userinfo_endpoint": getattr(profile, "distribution_idp_userinfo_endpoint", None),
                 }
 
-            # Add quota monitoring configuration if present
+            # Add quota monitoring configuration if present.
+            # Must mirror every quota field that _save_configuration persists, or a
+            # re-run of `ccwb init` silently resets the omitted fields to their prompt
+            # defaults (e.g. quota_check_interval -> 30). Note the key-name mapping:
+            # the config dict uses "check_interval" while the Profile attribute is
+            # "quota_check_interval" (see _save_configuration), so reverse it here.
             if hasattr(profile, "quota_monitoring_enabled"):
                 existing_config["quota"] = {
                     "enabled": profile.quota_monitoring_enabled,
                     "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
                     "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
                     "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                    "daily_limit": getattr(profile, "daily_token_limit", None),
+                    "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
+                    "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
+                    "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "check_interval": getattr(profile, "quota_check_interval", 30),
+                    "enable_bypass_detection": getattr(profile, "enable_bypass_detection", False),
                 }
 
             # Add analytics configuration if present
