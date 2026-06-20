@@ -825,6 +825,11 @@ func (a *credentialApp) writeOtelCacheFromSTS() bool {
 
 // extractEmailFromARN extracts the session name (typically email) from an
 // assumed-role ARN. Format: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION
+//
+// For IAM Identity Center, the session name is the IDC username — which may
+// be an email (user@company.com) or a plain username (akshaya.claude).
+// Non-email usernames are accepted when the role name contains "AWSReservedSSO"
+// (confirming it's an IDC-assumed role, not a Lambda/service role).
 func extractEmailFromARN(arn string) string {
 	// Split on "/" — assumed-role ARNs have: assumed-role/RoleName/SessionName
 	parts := strings.Split(arn, "/")
@@ -832,8 +837,15 @@ func extractEmailFromARN(arn string) string {
 		return ""
 	}
 	sessionName := parts[len(parts)-1]
-	// Only return if it looks like an email (contains @)
+	if sessionName == "" {
+		return ""
+	}
+	// Standard case: session name is an email address
 	if strings.Contains(sessionName, "@") {
+		return sessionName
+	}
+	// Non-email IDC username (e.g. "akshaya.claude") — accept if AWSReservedSSO role
+	if strings.Contains(arn, "AWSReservedSSO") {
 		return sessionName
 	}
 	return ""
