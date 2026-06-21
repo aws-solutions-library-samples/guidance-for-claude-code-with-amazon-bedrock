@@ -787,6 +787,11 @@ class DeployCommand(Command):
                 analytics_enabled = "true" if getattr(profile, "analytics_enabled", True) else "false"
                 params.append(f"EnableAnalytics={analytics_enabled}")
 
+                # Pass ALB scheme (internet-facing or internal) for private network deployments
+                alb_scheme = monitoring_config.get("alb_scheme", "internet-facing")
+                if alb_scheme == "internal":
+                    params.append("ALBScheme=internal")
+
                 console.print(f"[dim]Using parameters: {params}[/dim]")
                 result = deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."

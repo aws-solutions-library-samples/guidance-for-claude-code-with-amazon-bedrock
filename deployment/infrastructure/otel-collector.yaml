@@ -62,6 +62,17 @@ Parameters:
       CoWork cannot perform OIDC auth (no browser/helper), so this
       provides an alternative auth path for its OTLP events.
 
+  ALBScheme:
+    Type: String
+    Default: 'internet-facing'
+    AllowedValues:
+      - 'internet-facing'
+      - 'internal'
+    Description: >-
+      Load balancer scheme. Use 'internal' for private network deployments
+      where users connect via VPN, Direct Connect, or internal office networks.
+      Default: internet-facing (backwards compatible).
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
@@ -87,6 +98,7 @@ Conditions:
     - !Condition HasJwtAuth
     - !Condition HasCoWorkToken
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
+  IsInternalALB: !Equals [!Ref ALBScheme, 'internal']
 
 # Rules section removed - validation handled by deployment script
 
@@ -153,13 +165,45 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: HTTPS access from anywhere
+          CidrIp: !If [IsInternalALB, '10.0.0.0/8', '0.0.0.0/0']
+          Description: !If [IsInternalALB, 'HTTPS from private networks (10.x.x.x)', 'HTTPS access from anywhere']
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: '172.16.0.0/12'
+            Description: 'HTTPS from private networks (172.16.x.x)'
+          - !Ref AWS::NoValue
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: '192.168.0.0/16'
+            Description: 'HTTPS from private networks (192.168.x.x)'
+          - !Ref AWS::NoValue
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP access (redirects to HTTPS)
+          CidrIp: !If [IsInternalALB, '10.0.0.0/8', '0.0.0.0/0']
+          Description: !If [IsInternalALB, 'HTTP from private networks (10.x.x.x)', 'HTTP access (redirects to HTTPS)']
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: '172.16.0.0/12'
+            Description: 'HTTP from private networks (172.16.x.x)'
+          - !Ref AWS::NoValue
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: '192.168.0.0/16'
+            Description: 'HTTP from private networks (192.168.x.x)'
+          - !Ref AWS::NoValue
       Tags:
         - Key: Name
           Value: otel-collector-alb-sg
@@ -212,7 +256,7 @@ Resources:
     Properties:
       Type: application
       IpAddressType: ipv4
-      Scheme: internet-facing
+      Scheme: !Ref ALBScheme
       SecurityGroups:
         - !Ref ALBSecurityGroup
       Subnets: !Ref SubnetIds
