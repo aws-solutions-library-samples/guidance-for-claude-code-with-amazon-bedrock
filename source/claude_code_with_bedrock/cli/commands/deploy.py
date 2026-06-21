@@ -189,10 +189,25 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "websearch":
+                # Late-enablement path (AC10): adopt web search on an existing
+                # deployment via `ccwb deploy websearch` without teardown.
+                if not getattr(profile, "web_search_enabled", False):
+                    console.print("[yellow]Web search is not enabled in your configuration.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and enable web search.")
+                    return 1
+                if profile.effective_auth_type != "oidc":
+                    console.print(
+                        "[yellow]Web search requires OIDC authentication "
+                        "(its gateway validates the OIDC id_token via CUSTOM_JWT).[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("websearch", "AgentCore Web Search Gateway (us-east-1)"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, "
+                    "cowork-dashboard, analytics, quota, codebuild, websearch\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -256,6 +271,12 @@ class DeployCommand(Command):
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
+            # Web search gateway (Story A). Only for OIDC — its CUSTOM_JWT
+            # authorizer validates the OIDC id_token; idc/none have none.
+            # Pinned to us-east-1 at deploy time regardless of aws_region.
+            if self._should_deploy_websearch(profile):
+                stacks_to_deploy.append(("websearch", "AgentCore Web Search Gateway (us-east-1)"))
+
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
 
@@ -274,6 +295,8 @@ class DeployCommand(Command):
                 cb_region = get_codebuild_region(profile)
                 if cb_region != profile.aws_region:
                     status_manager = CloudFormationManager(region=cb_region)
+            elif stack_type == "websearch":
+                status_manager = self._websearch_cf_manager(profile, cf_manager)
             status = status_manager.get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
@@ -310,6 +333,8 @@ class DeployCommand(Command):
                             cb_region = get_codebuild_region(profile)
                             if cb_region != profile.aws_region:
                                 del_mgr = CloudFormationManager(region=cb_region)
+                        elif stack_type == "websearch":
+                            del_mgr = self._websearch_cf_manager(profile, cf_manager)
                         del_mgr.delete_stack(stack_name)
                         console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
                     except Exception as e:
@@ -1016,6 +1041,63 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "websearch":
+                # Web-search gateway is region-pinned to us-east-1 regardless of
+                # the deployment's primary region (managed connector availability).
+                ws_region = self.WEBSEARCH_REGION
+                cf = self._websearch_cf_manager(profile, cf_manager)
+                template = project_root / "deployment" / "infrastructure" / "agentcore-websearch.yaml"
+                stack_name = profile.stack_names.get("websearch", f"{profile.identity_pool_name}-websearch")
+
+                # Derive the CUSTOM_JWT discovery URL per-provider so the gateway's
+                # expected issuer matches the id_token (AC3).
+                try:
+                    discovery_url = self._resolve_websearch_discovery_url(profile)
+                except ValueError as e:
+                    console.print(f"[red]✗ Cannot deploy web search: {e}[/red]")
+                    return 1
+
+                # DomainExcludeList is an optional template param (defaults empty);
+                # no profile field feeds it yet, so we accept the template default.
+                params = [
+                    f"DiscoveryUrl={discovery_url}",
+                    f"ClientId={profile.client_id}",
+                ]
+
+                if profile.aws_region != ws_region:
+                    console.print(
+                        f"[dim]Web search gateway pinned to {ws_region} "
+                        f"(deployment region is {profile.aws_region}).[/dim]"
+                    )
+
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    # The gateway service role uses an explicit RoleName
+                    # (${AWS::StackName}-gateway-role), so CFN requires
+                    # CAPABILITY_NAMED_IAM — not the CAPABILITY_IAM default.
+                    capabilities=["CAPABILITY_NAMED_IAM"],
+                    task_description=f"Deploying web-search gateway in {ws_region}...",
+                    cf=cf,
+                )
+                if result != 0:
+                    return result
+
+                # CFN CREATE_COMPLETE precedes the connector target reaching READY;
+                # poll explicitly so a half-provisioned gateway is surfaced (AC1).
+                outputs = get_stack_outputs(stack_name, ws_region)
+                gateway_id = outputs.get("GatewayId", "") if outputs else ""
+                if gateway_id:
+                    ready = self._poll_websearch_target_ready(gateway_id, ws_region, console)
+                    if not ready:
+                        return 1
+                    console.print("[green]✓ Web-search connector target is READY[/green]")
+
+                # Persist the gateway URL so package can read it (AC8).
+                self._persist_websearch_gateway_url(profile, outputs, console)
+                return result
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1031,8 +1113,14 @@ class DeployCommand(Command):
         """Show AWS CLI commands for manual deployment."""
         project_root = Path(__file__).parents[4]
         # CodeBuild may deploy to a different region than the main infrastructure;
-        # print the command for the region it actually deploys to.
-        region = get_codebuild_region(profile) if stack_type == "codebuild" else profile.aws_region
+        # web search is region-pinned to us-east-1. Print each command for the
+        # region it actually deploys to.
+        if stack_type == "codebuild":
+            region = get_codebuild_region(profile)
+        elif stack_type == "websearch":
+            region = self.WEBSEARCH_REGION
+        else:
+            region = profile.aws_region
 
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
@@ -1213,6 +1301,19 @@ class DeployCommand(Command):
             params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
             print_deploy_cmd(template, stack_name, params)
 
+        elif stack_type == "websearch":
+            template = project_root / "deployment" / "infrastructure" / "agentcore-websearch.yaml"
+            stack_name = profile.stack_names.get("websearch", f"{profile.identity_pool_name}-websearch")
+            try:
+                discovery_url = self._resolve_websearch_discovery_url(profile)
+            except ValueError:
+                discovery_url = "<derived per-provider from profile>"
+            params = [
+                f"DiscoveryUrl={discovery_url}",
+                f"ClientId={profile.client_id}",
+            ]
+            print_deploy_cmd(template, stack_name, params)
+
         elif stack_type == "distribution":
             stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
             if profile.distribution_type == "landing-page":
@@ -1382,6 +1483,7 @@ class DeployCommand(Command):
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
             "codebuild": "CodeBuild",
+            "websearch": "AgentCore Web Search Gateway",
         }
 
         # Stack types that are being deployed
@@ -1392,14 +1494,17 @@ class DeployCommand(Command):
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
                 # This stack type is not being deployed - check if it exists.
-                # CodeBuild may live in a different region (cross-region builds), so
-                # check it there or a cross-region orphan is never detected.
+                # CodeBuild may live in a different region (cross-region builds)
+                # and web search is region-pinned to us-east-1, so check those
+                # in their own region or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
                 mgr = cf_manager
                 if stack_type == "codebuild":
                     cb_region = get_codebuild_region(profile)
                     if cb_region != profile.aws_region:
                         mgr = CloudFormationManager(region=cb_region)
+                elif stack_type == "websearch":
+                    mgr = self._websearch_cf_manager(profile, cf_manager)
                 status = mgr.get_stack_status(stack_name)
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
@@ -1482,3 +1587,153 @@ class DeployCommand(Command):
             issuer_url += "/"
 
         return issuer_url, profile.client_id
+
+    # ------------------------------------------------------------------
+    # Web search (AgentCore Gateway, CUSTOM_JWT) — Story A
+    # ------------------------------------------------------------------
+    # The gateway lives ONLY in us-east-1 (AgentCore web-search connector
+    # availability), independent of the deployment's primary region. This is
+    # the single deliberate region-pin exception in the deploy path
+    # (.claude/rules/region-availability.md — "never hardcode us-east-1
+    # without a reason"; here the reason is the managed tool's region).
+    WEBSEARCH_REGION = "us-east-1"
+
+    def _should_deploy_websearch(self, profile) -> bool:
+        """Web search deploys only when enabled AND on an OIDC deployment.
+
+        Story A's gateway authorizer is CUSTOM_JWT, which validates the OIDC
+        id_token the solution already mints. idc/none deployments have no
+        id_token — they are Story B (AWS_IAM + SigV4 proxy), deferred. Gating
+        here mirrors the quota rule (.claude/rules/quota-requires-oidc.md).
+        """
+        if not getattr(profile, "web_search_enabled", False):
+            return False
+        return profile.effective_auth_type == "oidc"
+
+    def _websearch_cf_manager(self, profile, primary_manager: CloudFormationManager) -> CloudFormationManager:
+        """Return the CFN manager for the websearch stack (always us-east-1).
+
+        Reuses the primary manager when the deployment is already in us-east-1;
+        otherwise builds a region-pinned manager. Mirrors the cross-region
+        CodeBuild pattern already in this file.
+        """
+        if profile.aws_region == self.WEBSEARCH_REGION:
+            return primary_manager
+        return CloudFormationManager(region=self.WEBSEARCH_REGION)
+
+    def _resolve_websearch_discovery_url(self, profile) -> str:
+        """Build the OIDC discovery URL for the gateway's CUSTOM_JWT authorizer.
+
+        The gateway's expected issuer must match the id_token's actual `iss`
+        claim, so this reuses the same per-provider issuer logic as the ALB /
+        quota authorizers (NOT the quota issuer shortcut) and appends the
+        well-known discovery suffix (.claude/rules/issuer-url-format.md).
+        """
+        provider_type = profile.provider_type or ""
+        provider_domain = (profile.provider_domain or "").rstrip("/")
+
+        if provider_type == "azure":
+            tenant_id = _extract_azure_tenant_id(provider_domain)
+            issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+        elif provider_type == "okta":
+            issuer = f"https://{provider_domain}/oauth2/default"
+        elif provider_type == "auth0":
+            # Auth0 iss carries a trailing slash; the discovery suffix follows it.
+            issuer = f"https://{provider_domain}"
+        elif provider_type == "cognito":
+            pool_id = getattr(profile, "cognito_user_pool_id", "")
+            if not pool_id:
+                raise ValueError(
+                    "Cognito User Pool ID is required to derive the web-search gateway "
+                    "discovery URL. Set cognito_user_pool_id in your profile."
+                )
+            pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+            issuer = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+        elif provider_type == "google":
+            issuer = "https://accounts.google.com"
+        elif provider_type == "generic":
+            issuer = (getattr(profile, "oidc_issuer_url", "") or "").rstrip("/")
+            if not issuer:
+                raise ValueError(
+                    "Generic OIDC provider requires oidc_issuer_url to derive the "
+                    "web-search gateway discovery URL. Re-run `ccwb init`."
+                )
+            if not issuer.startswith(("http://", "https://")):
+                issuer = f"https://{issuer}"
+        else:
+            raise ValueError(
+                f"Unsupported provider_type '{provider_type}' for web search. "
+                "Web search requires an OIDC provider."
+            )
+
+        return f"{issuer}/.well-known/openid-configuration"
+
+    def _poll_websearch_target_ready(
+        self, gateway_id: str, region: str, console: Console, timeout: int = 600, interval: int = 15
+    ) -> bool:
+        """Poll the gateway's connector target until READY (returns True).
+
+        CFN CREATE_COMPLETE precedes the target reaching READY — the connector
+        provisions asynchronously, so we must not assume it's ready when the
+        stack completes (.claude/rules/stack-ordering.md). Returns False on a
+        FAILED status (surfacing the reason) or on timeout.
+        """
+        import time
+
+        try:
+            import boto3
+
+            client = boto3.client("bedrock-agentcore-control", region_name=region)
+        except Exception as e:  # pragma: no cover - defensive
+            console.print(f"[yellow]⚠ Could not create AgentCore client to poll target: {e}[/yellow]")
+            return False
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                resp = client.list_gateway_targets(gatewayIdentifier=gateway_id)
+            except Exception as e:
+                console.print(f"[yellow]⚠ Error polling web-search target: {e}[/yellow]")
+                return False
+
+            targets = resp.get("items", [])
+            if targets:
+                target = targets[0]
+                status = target.get("status", "")
+                if status == "READY":
+                    return True
+                if status in ("FAILED", "CREATE_PENDING_AUTH", "UPDATE_UNSUCCESSFUL"):
+                    reasons = "; ".join(target.get("statusReasons", []) or [])
+                    console.print(
+                        f"[red]✗ Web-search target did not reach READY (status={status}). "
+                        f"{reasons}[/red]"
+                    )
+                    return False
+
+            if time.monotonic() >= deadline:
+                console.print(
+                    "[yellow]⚠ Timed out waiting for the web-search target to reach READY. "
+                    "It may still be provisioning — re-run `ccwb deploy websearch` to re-check.[/yellow]"
+                )
+                return False
+
+            time.sleep(interval)
+
+    def _persist_websearch_gateway_url(self, profile, outputs: dict, console: Console) -> str:
+        """Save the gateway URL to the profile (best-effort). Returns the URL.
+
+        Mirrors the OTel-endpoint save precedent: persist immediately after
+        deploy so `ccwb package` can read it profile-first (AC8). A save failure
+        is non-fatal — the stack deployed fine and package has a CFN-output
+        fallback.
+        """
+        url = outputs.get("GatewayUrl", "") if outputs else ""
+        if not url:
+            return ""
+        profile.agentcore_gateway_url = url
+        try:
+            Config.load().save_profile(profile)
+            console.print(f"[dim]Saved web-search gateway URL to profile: {url}[/dim]")
+        except Exception:
+            pass
+        return url

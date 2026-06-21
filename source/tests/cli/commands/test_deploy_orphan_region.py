@@ -48,9 +48,14 @@ def test_orphan_check_uses_codebuild_region_for_codebuild_stack():
     assert any(stack_type == "codebuild" for stack_type, _, _ in orphaned)
 
 
-def test_orphan_check_no_extra_manager_when_codebuild_same_region():
-    """No region-specific manager is built when codebuild uses the main region."""
-    profile = _profile(codebuild_region=None)  # -> aws_region
+def test_orphan_check_no_extra_manager_when_all_stacks_in_main_region():
+    """No region-specific manager is built when every stack uses the main region.
+
+    Orphan detection checks all stack types (to find orphans of disabled
+    features), so both codebuild and the us-east-1-pinned websearch reuse the
+    primary manager only when the deployment region is itself us-east-1.
+    """
+    profile = _profile(codebuild_region=None, aws_region="us-east-1")  # codebuild -> aws_region
     main_mgr = MagicMock()
     main_mgr.get_stack_status.return_value = None
 
@@ -62,5 +67,28 @@ def test_orphan_check_no_extra_manager_when_codebuild_same_region():
     ):
         cmd._check_orphaned_stacks([], profile, main_mgr, MagicMock())
 
-    # codebuild_region resolves to aws_region, so no separate manager is constructed.
+    # Everything resolves to the main region (us-east-1), so no separate manager.
     assert built == []
+
+
+def test_orphan_check_pins_websearch_to_us_east_1():
+    """Web search orphan status must be checked in us-east-1, not the main region.
+
+    Orphan detection is not gated on web_search_enabled — a disabled-but-extant
+    gateway is exactly the orphan we want to surface — so the us-east-1 manager
+    is always built when the deployment region differs.
+    """
+    profile = _profile(codebuild_region=None)  # aws_region defaults to ap-southeast-1
+    main_mgr = MagicMock()
+    main_mgr.get_stack_status.return_value = None
+
+    built = []
+    cmd = DeployCommand()
+    with patch(
+        "claude_code_with_bedrock.cli.commands.deploy.CloudFormationManager",
+        side_effect=lambda region: built.append(region) or MagicMock(),
+    ):
+        cmd._check_orphaned_stacks([], profile, main_mgr, MagicMock())
+
+    # aws_region is ap-southeast-1, so the websearch check builds a us-east-1 manager.
+    assert built == ["us-east-1"]
