@@ -3,18 +3,15 @@
 
 """Tests for cost-based quota enforcement."""
 
-import json
-import os
 import sys
 from pathlib import Path
-from decimal import Decimal
 
 import pytest
 
 # Add shared to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "lambda-functions"))
 
-from shared.pricing import calculate_cost, resolve_model_family, get_rates, DEFAULT_RATES
+from shared.pricing import DEFAULT_RATES, calculate_cost, get_rates, resolve_model_family
 
 
 class TestPricingUtility:
