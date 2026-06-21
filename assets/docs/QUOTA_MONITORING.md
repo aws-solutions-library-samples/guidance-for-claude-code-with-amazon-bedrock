@@ -752,6 +752,8 @@ When using `opusplan` (Opus planning + Sonnet execution), each token batch inclu
 
 > ⚠️ Cost estimates use published on-demand Bedrock rates. Actual billing may differ with committed throughput or custom agreements. Use AWS Cost Explorer for billing truth.
 
+> **Why not use the client-side `claude_code.cost.usage` metric?** Claude Code emits a cost estimate natively, but it uses generic Anthropic rates (not Bedrock-specific), resets per session (not accumulated monthly), and cannot be trusted for enforcement (client-controlled). Server-side calculation from raw token counts is tamper-resistant, uses admin-configurable Bedrock rates, and aggregates across all sessions.
+
 > **CoWork support:** Claude Desktop cost enforcement works when the CoWork dashboard stack is deployed with the `model` MetricFilter dimension (included by default). Requires attribution headers configured so `user_email` and `model` dimensions are present in the events.
 
 ## Current Limitations
