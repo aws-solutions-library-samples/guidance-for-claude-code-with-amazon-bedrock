@@ -1104,23 +1104,29 @@ class InitCommand(Command):
                         monthly_cost_limit_str = questionary.text(
                             "Monthly budget per user (USD):",
                             default=str(config.get("quota", {}).get("monthly_cost_limit", 50)),
-                            validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) > 0)
-                            or "Must be a positive number",
+                            validate=lambda x: (
+                                (x.replace(".", "", 1).isdigit() and float(x) > 0) or "Must be a positive number"
+                            ),
                         ).ask()
-                        config["quota"]["monthly_cost_limit"] = float(monthly_cost_limit_str) if monthly_cost_limit_str else 50
+                        config["quota"]["monthly_cost_limit"] = (
+                            float(monthly_cost_limit_str) if monthly_cost_limit_str else 50
+                        )
 
                         daily_cost_limit_str = questionary.text(
                             "Daily budget per user (USD, 0 for no daily cap):",
                             default=str(config.get("quota", {}).get("daily_cost_limit", 0)),
-                            validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) >= 0)
-                            or "Must be a non-negative number",
+                            validate=lambda x: (
+                                (x.replace(".", "", 1).isdigit() and float(x) >= 0) or "Must be a non-negative number"
+                            ),
                         ).ask()
                         config["quota"]["daily_cost_limit"] = float(daily_cost_limit_str) if daily_cost_limit_str else 0
 
                         console.print(f"  \u2192 Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user")
                         if config["quota"]["daily_cost_limit"] > 0:
                             console.print(f"  \u2192 Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user")
-                        console.print("[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]")
+                        console.print(
+                            "[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]"
+                        )
 
                         # Set token limits to 0 (disabled) when using cost mode
                         config["quota"]["monthly_limit"] = 0

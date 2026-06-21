@@ -123,23 +123,20 @@ class TestCostEnforcementLogic:
 
     def test_within_budget_allowed(self):
         result = self._simulate_enforcement(
-            {"cost_usd": 30.0, "daily_cost_usd": 5.0},
-            {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
+            {"cost_usd": 30.0, "daily_cost_usd": 5.0}, {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
         )
         assert result["allowed"] is True
 
     def test_monthly_exceeded_blocked(self):
         result = self._simulate_enforcement(
-            {"cost_usd": 55.0, "daily_cost_usd": 5.0},
-            {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
+            {"cost_usd": 55.0, "daily_cost_usd": 5.0}, {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
         )
         assert result["allowed"] is False
         assert result["reason"] == "monthly_cost_exceeded"
 
     def test_daily_exceeded_blocked(self):
         result = self._simulate_enforcement(
-            {"cost_usd": 30.0, "daily_cost_usd": 12.0},
-            {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
+            {"cost_usd": 30.0, "daily_cost_usd": 12.0}, {"monthly_cost_limit": 50.0, "daily_cost_limit": 10.0}
         )
         assert result["allowed"] is False
         assert result["reason"] == "daily_cost_exceeded"
@@ -148,7 +145,7 @@ class TestCostEnforcementLogic:
         """When no cost limit configured, cost enforcement is skipped."""
         result = self._simulate_enforcement(
             {"cost_usd": 999.0},
-            {"monthly_cost_limit": 0}  # disabled
+            {"monthly_cost_limit": 0},  # disabled
         )
         assert result["allowed"] is True
 
@@ -156,6 +153,6 @@ class TestCostEnforcementLogic:
         """If cost_usd not in usage (old data), enforcement passes."""
         result = self._simulate_enforcement(
             {"total_tokens": 5000000},  # no cost_usd field
-            {"monthly_cost_limit": 50.0}
+            {"monthly_cost_limit": 50.0},
         )
         assert result["allowed"] is True
