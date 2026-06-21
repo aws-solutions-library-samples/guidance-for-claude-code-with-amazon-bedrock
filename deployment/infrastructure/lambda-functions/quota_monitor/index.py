@@ -192,7 +192,7 @@ def update_quota_metrics(usage_data):
             existing = response.get("Item", {})
             daily_reset = existing.get("daily_date") != current_date
 
-            update_expr = "ADD total_tokens :delta, input_tokens :inp, output_tokens :out, cache_tokens :cache, cost_usd :cost"
+            update_expr = "ADD total_tokens :delta, input_tokens :inp, output_tokens :out, cache_tokens :cache, estimated_cost :cost"
             cost_delta = usage.get("cost_usd", 0)
             expr_values = {
                 ":delta": Decimal(str(int(delta))),
