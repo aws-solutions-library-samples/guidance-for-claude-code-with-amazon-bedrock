@@ -138,18 +138,33 @@ def fetch_usage_from_promql():
     # This ensures CoWork token consumption counts toward the same quota as Claude Code.
     try:
         cowork_input = _promql_query(
-            f'sum by ("user_email")(increase({{"ClaudeCoWork","token.usage.input"}}[{window}s]))'
+            f'sum by ("user_email", "model")(increase({{"ClaudeCoWork","token.usage.input"}}[{window}s]))'
         )
         cowork_output = _promql_query(
-            f'sum by ("user_email")(increase({{"ClaudeCoWork","token.usage.output"}}[{window}s]))'
+            f'sum by ("user_email", "model")(increase({{"ClaudeCoWork","token.usage.output"}}[{window}s]))'
         )
         cowork_count = 0
         for r in cowork_input + cowork_output:
             email = r["metric"].get("user_email", "")
+            model = r["metric"].get("model", "")
             val = float(r["value"][1])
             if email and val > 0:
                 u = users.setdefault(email, {"total_tokens": 0})
                 u["total_tokens"] = u.get("total_tokens", 0) + val
+                # Calculate cost if model dimension is available
+                if model:
+                    try:
+                        family = resolve_model_family(model)
+                        family_rates = rates.get(family, rates.get("sonnet", {}))
+                        # Determine token type from metric name
+                        metric_name = r["metric"].get("__name__", "")
+                        if "input" in metric_name:
+                            rate = family_rates.get("input", 3.0)
+                        else:
+                            rate = family_rates.get("output", 15.0)
+                        u["cost_usd"] = u.get("cost_usd", 0) + (val / 1_000_000) * rate
+                    except Exception:
+                        pass
                 cowork_count += 1
         if cowork_count > 0:
             print(f"Added CoWork 3P usage for {cowork_count} user-metric pairs")
