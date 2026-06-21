@@ -5,7 +5,45 @@
 
 import configparser
 import logging
+import platform
 from pathlib import Path
+
+
+def is_wsl() -> bool:
+    """Detect if running under Windows Subsystem for Linux (WSL).
+
+    Checks /proc/version for Microsoft/WSL indicators, which is the
+    standard detection method used by most Linux tools.
+    """
+    if platform.system() != "Linux":
+        return False
+    try:
+        version_info = Path("/proc/version").read_text().lower()
+        return "microsoft" in version_info or "wsl" in version_info
+    except (OSError, IOError):
+        return False
+
+
+def is_keyring_available() -> bool:
+    """Check if a functional keyring backend is available.
+
+    Returns False under WSL (no keyring backend) or if keyring
+    imports fail. Returns True on native Linux with SecretService,
+    macOS, or Windows.
+    """
+    if is_wsl():
+        return False
+    try:
+        import keyring
+        from keyring.backends.fail import Keyring as FailKeyring
+
+        backend = keyring.get_keyring()
+        # keyring falls back to FailKeyring when no backend is available
+        if isinstance(backend, FailKeyring):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def clear_cached_credentials(profile_name: str) -> bool:

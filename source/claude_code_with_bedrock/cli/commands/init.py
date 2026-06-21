@@ -702,19 +702,34 @@ class InitCommand(Command):
                 config["client_certificate_key_path"] = client_certificate_key_path
 
             # Credential Storage Method
+            from claude_code_with_bedrock.cli.utils.helpers import is_wsl, is_keyring_available
+
+            wsl_detected = is_wsl()
+            keyring_available = is_keyring_available()
+
             console.print("\n[bold]Credential Storage Method[/bold]")
             console.print("Choose how to store AWS credentials locally:")
-            console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
+            if wsl_detected:
+                console.print("  • [dim]Keyring[/dim]: [yellow]Unavailable under WSL (no keyring backend)[/yellow]")
+            elif not keyring_available:
+                console.print("  • [dim]Keyring[/dim]: [yellow]No keyring backend detected[/yellow]")
+            else:
+                console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
             console.print("  • [cyan]Session Files[/cyan]: Temporary files (deleted on logout)\n")
 
-            credential_storage = questionary.select(
-                "Select credential storage method:",
-                choices=[
-                    questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
-                    questionary.Choice("Session Files (Temporary storage)", value="session"),
-                ],
-                default=config.get("credential_storage", "session"),
-            ).ask()
+            if keyring_available and not wsl_detected:
+                credential_storage = questionary.select(
+                    "Select credential storage method:",
+                    choices=[
+                        questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
+                        questionary.Choice("Session Files (Temporary storage)", value="session"),
+                    ],
+                    default=config.get("credential_storage", "session"),
+                ).ask()
+            else:
+                reason = "WSL" if wsl_detected else "no backend"
+                console.print(f"[yellow]Keyring unavailable ({reason}) — using session files.[/yellow]")
+                credential_storage = "session"
 
             if not credential_storage:
                 return None
