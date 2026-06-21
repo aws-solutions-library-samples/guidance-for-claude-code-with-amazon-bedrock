@@ -375,12 +375,12 @@ class QuotaSetUserCommand(Command):
                 console.print(f"  Monthly cost limit: ${monthly_cost_limit:.2f}")
             if daily_cost_limit:
                 console.print(f"  Daily cost limit: ${daily_cost_limit:.2f}")
-            console.print(
             if not monthly_cost_limit and policy.monthly_token_limit > 0:
                 console.print(
-                    "[dim]  ⚠ Token limits include cache reads (~90%% of volume, 10%% of cost). "
+                    "[dim]  ⚠ Token limits include cache reads (~90% of volume, 10% of cost). "
                     "Consider --budget for cost-based limits.[/dim]"
                 )
+            console.print(
                 f"  Enforcement: {policy.enforcement_mode.value} (monthly), {policy.daily_enforcement_mode.value} (daily)"
             )
             return 0
