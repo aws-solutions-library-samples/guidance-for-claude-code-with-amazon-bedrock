@@ -722,11 +722,14 @@ Set dollar limits instead of (or alongside) token limits. Cost is calculated ser
 ### Setting cost limits
 
 ```bash
-# Set $50/month budget for a user
-ccwb quota set user@company.com --monthly-cost-limit 50
+# Set $50/month budget for a user (--budget is shorthand for --monthly-cost-limit)
+ccwb quota set-user user@company.com --budget 50
 
 # Set $10/day budget for a team
-ccwb quota set --group engineering --daily-cost-limit 10
+ccwb quota set-group engineering --daily-budget 10
+
+# Interactive mode (prompts for budget when no flags provided)
+ccwb quota set-user user@company.com
 ```
 
 ### Pricing rates ($/MTok)
