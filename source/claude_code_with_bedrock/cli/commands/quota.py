@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
+import questionary
 from cleo.commands.command import Command
 from cleo.helpers import argument, option
 from rich import box
@@ -261,6 +262,8 @@ class QuotaSetUserCommand(Command):
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
         option("monthly-cost-limit", None, description="Monthly cost limit in USD (e.g., 50)", flag=False),
         option("daily-cost-limit", None, description="Daily cost limit in USD (e.g., 10)", flag=False),
+        option("budget", "b", description="Monthly budget in USD (e.g., 50)", flag=False),
+        option("daily-budget", None, description="Daily budget in USD (e.g., 10)", flag=False),
         option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
@@ -285,6 +288,22 @@ class QuotaSetUserCommand(Command):
             return 1
 
         monthly_limit_str = self.option("monthly-limit")
+
+        # Interactive mode: if no limit flags provided, default to cost budget
+        if not any([self.option("monthly-limit"), self.option("budget"), self.option("monthly-cost-limit")]):
+            budget_str = questionary.text("Monthly budget per user (USD):", default="50").ask()
+            if budget_str:
+                monthly_cost_limit = float(budget_str)
+                daily_budget_str = questionary.text("Daily budget per user (USD, blank to skip):", default="").ask()
+                daily_cost_limit = float(daily_budget_str) if daily_budget_str else None
+                # Use a minimal token limit as placeholder since it's required
+                monthly_limit_str = "1B"
+            else:
+                console.print("[red]--monthly-limit or --budget is required[/red]")
+                return 1
+        else:
+            monthly_cost_limit = None
+            daily_cost_limit = None
 
         if not monthly_limit_str:
             console.print("[red]--monthly-limit is required[/red]")
@@ -322,13 +341,17 @@ class QuotaSetUserCommand(Command):
         if not ok:
             return 1
 
-        # Parse cost limits
-        monthly_cost_limit = _parse_cost_limit(self.option("monthly-cost-limit"), "monthly-cost-limit", console)
-        if monthly_cost_limit is None and self.option("monthly-cost-limit"):
-            return 1
-        daily_cost_limit = _parse_cost_limit(self.option("daily-cost-limit"), "daily-cost-limit", console)
-        if daily_cost_limit is None and self.option("daily-cost-limit"):
-            return 1
+        # Parse cost limits (resolve --budget alias)
+        if monthly_cost_limit is None:
+            budget_val = self.option("budget") or self.option("monthly-cost-limit")
+            monthly_cost_limit = _parse_cost_limit(budget_val, "budget/monthly-cost-limit", console)
+            if monthly_cost_limit is None and budget_val:
+                return 1
+        if daily_cost_limit is None:
+            daily_budget_val = self.option("daily-budget") or self.option("daily-cost-limit")
+            daily_cost_limit = _parse_cost_limit(daily_budget_val, "daily-budget/daily-cost-limit", console)
+            if daily_cost_limit is None and daily_budget_val:
+                return 1
 
         try:
             manager = _get_quota_manager(profile)
@@ -408,6 +431,8 @@ class QuotaSetGroupCommand(Command):
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
         option("monthly-cost-limit", None, description="Monthly cost limit in USD (e.g., 50)", flag=False),
         option("daily-cost-limit", None, description="Daily cost limit in USD (e.g., 10)", flag=False),
+        option("budget", "b", description="Monthly budget in USD (e.g., 50)", flag=False),
+        option("daily-budget", None, description="Daily budget in USD (e.g., 10)", flag=False),
         option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
@@ -463,12 +488,14 @@ class QuotaSetGroupCommand(Command):
         if not ok:
             return 1
 
-        # Parse cost limits
-        monthly_cost_limit = _parse_cost_limit(self.option("monthly-cost-limit"), "monthly-cost-limit", console)
-        if monthly_cost_limit is None and self.option("monthly-cost-limit"):
+        # Parse cost limits (resolve --budget alias)
+        budget_val = self.option("budget") or self.option("monthly-cost-limit")
+        monthly_cost_limit = _parse_cost_limit(budget_val, "budget/monthly-cost-limit", console)
+        if monthly_cost_limit is None and budget_val:
             return 1
-        daily_cost_limit = _parse_cost_limit(self.option("daily-cost-limit"), "daily-cost-limit", console)
-        if daily_cost_limit is None and self.option("daily-cost-limit"):
+        daily_budget_val = self.option("daily-budget") or self.option("daily-cost-limit")
+        daily_cost_limit = _parse_cost_limit(daily_budget_val, "daily-budget/daily-cost-limit", console)
+        if daily_cost_limit is None and daily_budget_val:
             return 1
 
         try:
@@ -544,6 +571,8 @@ class QuotaSetDefaultCommand(Command):
         option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
         option("monthly-cost-limit", None, description="Monthly cost limit in USD (e.g., 50)", flag=False),
         option("daily-cost-limit", None, description="Daily cost limit in USD (e.g., 10)", flag=False),
+        option("budget", "b", description="Monthly budget in USD (e.g., 50)", flag=False),
+        option("daily-budget", None, description="Daily budget in USD (e.g., 10)", flag=False),
         option("enforcement", "e", description="Monthly enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("daily-enforcement", description="Daily enforcement mode: 'alert' (default) or 'block'", flag=False),
         option("disabled", description="Create policy in disabled state", flag=True),
@@ -598,12 +627,14 @@ class QuotaSetDefaultCommand(Command):
         if not ok:
             return 1
 
-        # Parse cost limits
-        monthly_cost_limit = _parse_cost_limit(self.option("monthly-cost-limit"), "monthly-cost-limit", console)
-        if monthly_cost_limit is None and self.option("monthly-cost-limit"):
+        # Parse cost limits (resolve --budget alias)
+        budget_val = self.option("budget") or self.option("monthly-cost-limit")
+        monthly_cost_limit = _parse_cost_limit(budget_val, "budget/monthly-cost-limit", console)
+        if monthly_cost_limit is None and budget_val:
             return 1
-        daily_cost_limit = _parse_cost_limit(self.option("daily-cost-limit"), "daily-cost-limit", console)
-        if daily_cost_limit is None and self.option("daily-cost-limit"):
+        daily_budget_val = self.option("daily-budget") or self.option("daily-cost-limit")
+        daily_cost_limit = _parse_cost_limit(daily_budget_val, "daily-budget/daily-cost-limit", console)
+        if daily_cost_limit is None and daily_budget_val:
             return 1
 
         try:
@@ -960,6 +991,34 @@ class QuotaUsageCommand(Command):
             table.add_column("Limit", justify="right")
             table.add_column("Used %", justify="right")
 
+            # Fetch cost data early to determine display order
+            cost_usd = float(usage_data.get("estimated_cost", 0))
+            daily_cost_usd = float(usage_data.get("daily_cost_usd", 0))
+            cost_limits = self._get_cost_limits(manager, summary["policy_type"], summary["policy_identifier"])
+            monthly_cost_limit = cost_limits.get("monthly_cost_limit", 0)
+            daily_cost_limit = cost_limits.get("daily_cost_limit", 0)
+
+            # If cost budget is set, make it the PRIMARY display (first row)
+            cost_is_primary = monthly_cost_limit > 0
+            if cost_is_primary:
+                cost_pct = (cost_usd / monthly_cost_limit * 100) if monthly_cost_limit > 0 else 0
+                pct_color = "green" if cost_pct < 80 else "yellow" if cost_pct < 90 else "red"
+                table.add_row(
+                    "Budget",
+                    f"${cost_usd:.2f}",
+                    f"${monthly_cost_limit:.2f}",
+                    f"[{pct_color}]{cost_pct:.1f}%[/{pct_color}]",
+                )
+                if daily_cost_limit > 0:
+                    daily_cost_pct = (daily_cost_usd / daily_cost_limit * 100) if daily_cost_limit > 0 else 0
+                    pct_color = "green" if daily_cost_pct < 80 else "yellow" if daily_cost_pct < 90 else "red"
+                    table.add_row(
+                        "Daily Budget",
+                        f"${daily_cost_usd:.2f}",
+                        f"${daily_cost_limit:.2f}",
+                        f"[{pct_color}]{daily_cost_pct:.1f}%[/{pct_color}]",
+                    )
+
             # Monthly tokens
             monthly_pct = summary["monthly_token_pct"]
             pct_color = "green" if monthly_pct < 80 else "yellow" if monthly_pct < 90 else "red"
@@ -981,49 +1040,44 @@ class QuotaUsageCommand(Command):
                     f"[{pct_color}]{daily_pct:.1f}%[/{pct_color}]",
                 )
 
-            # Cost display — only shown when cost data exists in DynamoDB
-            cost_usd = float(usage_data.get("estimated_cost", 0))
-            daily_cost_usd = float(usage_data.get("daily_cost_usd", 0))
-            # Fetch cost limits from policy DynamoDB item
-            cost_limits = self._get_cost_limits(manager, summary["policy_type"], summary["policy_identifier"])
-            monthly_cost_limit = cost_limits.get("monthly_cost_limit", 0)
-            daily_cost_limit = cost_limits.get("daily_cost_limit", 0)
-
-            if cost_usd > 0 or monthly_cost_limit > 0:
-                if monthly_cost_limit > 0:
-                    cost_pct = (cost_usd / monthly_cost_limit * 100) if monthly_cost_limit > 0 else 0
-                    pct_color = "green" if cost_pct < 80 else "yellow" if cost_pct < 90 else "red"
-                    table.add_row(
-                        "Cost",
-                        f"${cost_usd:.2f}",
-                        f"${monthly_cost_limit:.2f}",
-                        f"[{pct_color}]{cost_pct:.1f}%[/{pct_color}]",
-                    )
-                else:
-                    table.add_row(
-                        "Cost",
-                        f"${cost_usd:.2f}",
-                        "—",
-                        "—",
-                    )
-
-                if daily_cost_limit > 0 and daily_cost_usd > 0:
-                    daily_cost_pct = (daily_cost_usd / daily_cost_limit * 100)
-                    pct_color = "green" if daily_cost_pct < 80 else "yellow" if daily_cost_pct < 90 else "red"
-                    table.add_row(
-                        "Daily Cost",
-                        f"${daily_cost_usd:.2f}",
-                        f"${daily_cost_limit:.2f}",
-                        f"[{pct_color}]{daily_cost_pct:.1f}%[/{pct_color}]",
-                    )
+            # Cost display for non-primary mode (no budget set but cost data exists)
+            if not cost_is_primary and (cost_usd > 0):
+                table.add_row(
+                    "Cost",
+                    f"${cost_usd:.2f}",
+                    "—",
+                    "—",
+                )
 
             console.print(table)
+
+            # Cost breakdown section (when cost data exists and budget is set)
+            if cost_is_primary and cost_usd > 0:
+                input_tokens = int(usage_data.get("input_tokens", 0))
+                output_tokens = int(usage_data.get("output_tokens", 0))
+                cache_tokens = int(usage_data.get("cache_tokens", 0))
+
+                # Bedrock rates for Claude Sonnet 4 (per 1K tokens)
+                input_rate = 0.003  # $3/1M input
+                output_rate = 0.015  # $15/1M output
+                cache_rate = 0.00030  # $0.30/1M cache read
+
+                console.print("\n[bold]Cost Breakdown[/bold]")
+                if input_tokens > 0:
+                    input_cost = input_tokens * input_rate / 1000
+                    console.print(f"  Input:      {_format_tokens(input_tokens)} × $3.00/1M = ${input_cost:.4f}")
+                if output_tokens > 0:
+                    output_cost = output_tokens * output_rate / 1000
+                    console.print(f"  Output:     {_format_tokens(output_tokens)} × $15.00/1M = ${output_cost:.4f}")
+                if cache_tokens > 0:
+                    cache_cost = cache_tokens * cache_rate / 1000
+                    console.print(f"  Cache read: {_format_tokens(cache_tokens)} × $0.30/1M = ${cache_cost:.4f}")
 
             # Cost disclaimer
             if cost_usd > 0 or monthly_cost_limit > 0:
                 console.print(
-                    "\n[dim]⚠ Cost estimate based on published Bedrock rates. "
-                    "Use AWS Cost Explorer for billing.[/dim]"
+                    "\n[dim]⚠ Cost estimates based on published Bedrock rates (Claude Sonnet 4). "
+                    "Actual billing may vary. Use AWS Cost Explorer for authoritative figures.[/dim]"
                 )
 
             # Show warning if near/over quota
