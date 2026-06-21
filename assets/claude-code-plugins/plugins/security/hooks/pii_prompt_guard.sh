@@ -190,7 +190,7 @@ done
 # RESULT
 # =============================================================================
 if [[ ${#detected[@]} -gt 0 ]]; then
-  matches=$(IFS=', '; echo "${detected[*]}")
+  matches=$(printf '%s, ' "${detected[@]}" | sed 's/, $//')
   cat >&2 <<EOF
 🚨 PII/SECRETS GUARD: Sensitive data detected — request BLOCKED before reaching the model.
 
