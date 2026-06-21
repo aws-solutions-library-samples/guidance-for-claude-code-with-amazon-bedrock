@@ -42,7 +42,7 @@ PROVIDER_CONFIGS = {
     "okta": {
         "name": "Okta",
         "authorize_endpoint": "/oauth2/{auth_server}/v1/authorize",
-        "token_endpoint": "/oauth2/{auth_server}/v1/token",
+        "token_endpoint": "/oauth2/{auth_server}/v1/token",  # nosec B105
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -74,7 +74,7 @@ PROVIDER_CONFIGS = {
     "google": {
         "name": "Google",
         "authorize_endpoint": "/o/oauth2/v2/auth",
-        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "token_endpoint": "https://oauth2.googleapis.com/token",  # nosec B105
         "scopes": "openid profile email",
         "response_type": "code",
         "response_mode": "query",
@@ -134,7 +134,7 @@ class MultiProviderAuth:
             else:
                 # Org auth server (paid plans) — no auth server ID in path
                 self.provider_config["authorize_endpoint"] = "/oauth2/v1/authorize"
-                self.provider_config["token_endpoint"] = "/oauth2/v1/token"
+                self.provider_config["token_endpoint"] = "/oauth2/v1/token"  # nosec B105
 
         # OAuth callback port — also used for inter-process locking.
         # Precedence: REDIRECT_PORT env var > config.json redirect_port > default 8400
@@ -174,7 +174,7 @@ class MultiProviderAuth:
                 try:
                     test_socket.close()
                 except Exception:
-                    pass
+                    pass  # nosec B110
 
         return None
 
@@ -586,7 +586,7 @@ class MultiProviderAuth:
                 # a meta-less set left by a crash mid-save.
                 idx = 1
                 while keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}") is not None:
-                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}", "EXPIRED")
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}", "EXPIRED")  # nosec B105
                     cleared_monitoring = True
                     idx += 1
                 # Legacy single-entry monitoring token (pre-chunk installs)
@@ -645,7 +645,7 @@ class MultiProviderAuth:
                 if not any(session_dir.iterdir()):
                     session_dir.rmdir()
             except Exception:
-                pass
+                pass  # nosec B110
 
         return cleared_items
 
@@ -748,7 +748,7 @@ class MultiProviderAuth:
                 try:
                     keyring.delete_password("claude-code-with-bedrock", entry)
                 except Exception:
-                    pass
+                    pass  # nosec B110
             raise
 
         # Purge orphaned higher-index chunks left by a previous, larger token so no
@@ -760,7 +760,7 @@ class MultiProviderAuth:
                 keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
                 idx += 1
         except Exception:
-            pass
+            pass  # nosec B110
 
         # Remove a legacy single-entry monitoring token so stale data can't shadow
         # the chunked entries on read.
@@ -768,7 +768,7 @@ class MultiProviderAuth:
             if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
                 keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
         except Exception:
-            pass
+            pass  # nosec B110
 
     def _read_monitoring_keyring_windows(self):
         """Reassemble the monitoring token from Windows keyring chunks.
@@ -957,7 +957,7 @@ class MultiProviderAuth:
                 try:
                     os.unlink(temp_path)
                 except Exception:
-                    pass
+                    pass  # nosec B110
                 raise
         except Exception as e:
             raise Exception(f"Failed to save credentials to file: {str(e)}") from e
@@ -1628,7 +1628,7 @@ class MultiProviderAuth:
                 try:
                     lock_socket.close()
                 except Exception:
-                    pass
+                    pass  # nosec B110
 
             # Get AWS credentials (we need them but won't output them)
             self._debug_print("Exchanging token for AWS credentials...")
@@ -2393,7 +2393,7 @@ class MultiProviderAuth:
                 try:
                     lock_socket.close()
                 except Exception:
-                    pass
+                    pass  # nosec B110
 
             # Check quota before issuing credentials (if configured)
             if self._should_check_quota():

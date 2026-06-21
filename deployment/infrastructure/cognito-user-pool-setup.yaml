@@ -491,6 +491,13 @@ Resources:
   PreTokenGenerationFunction:
     Type: AWS::Lambda::Function
     Condition: InjectCustomClaims
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Cognito trigger Lambda requires internet access for token generation — VPC not needed"
+          - id: W92
+            reason: "Cognito pre-token-generation trigger — invocation rate bounded by auth frequency, reserved concurrency unnecessary"
     Properties:
       Runtime: python3.12
       Handler: index.handler

@@ -188,6 +188,11 @@ Resources:
   # IAM Role for Quota Monitor Lambda
   QuotaMonitorRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "CloudWatch GetMetricData/ListMetrics and CloudTrail LookupEvents require Resource: * by API design"
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -233,6 +238,13 @@ Resources:
   # Lambda function for quota monitoring
   QuotaMonitorFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Lambda invoked by EventBridge schedule, requires internet access for CloudWatch/DynamoDB/SNS — VPC adds complexity without security benefit"
+          - id: W92
+            reason: "Event-driven single invocation every 15 min — reserved concurrency unnecessary"
     Properties:
       FunctionName: claude-code-quota-monitor
       Description: Monitors user token usage and sends alerts when quotas are exceeded

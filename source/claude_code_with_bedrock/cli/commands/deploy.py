@@ -832,7 +832,7 @@ class DeployCommand(Command):
                                 Config.load().save_profile(profile)
                                 console.print(f"[dim]Saved OTel endpoint to profile: {endpoint}[/dim]")
                             except Exception:
-                                pass
+                                pass  # nosec B110
 
                 return result
 
@@ -977,7 +977,7 @@ class DeployCommand(Command):
                         try:
                             os.unlink(packaged_template_path)
                         except Exception:
-                            pass
+                            pass  # nosec B110
 
             elif stack_type == "codebuild":
                 # CodeBuild region is chosen in `ccwb init` (the Windows container

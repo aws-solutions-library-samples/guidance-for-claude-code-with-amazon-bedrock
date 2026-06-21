@@ -24,7 +24,7 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404
 import sys
 import time
 from pathlib import Path

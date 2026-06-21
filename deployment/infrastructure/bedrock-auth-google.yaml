@@ -85,6 +85,11 @@ Resources:
 
   BedrockAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: "List/Get Bedrock actions require Resource: * as they are non-resource-specific API calls"
     Properties:
       Description: Policy for accessing Bedrock services
       PolicyDocument:
@@ -150,6 +155,11 @@ Resources:
   DirectIAMRole:
     Type: AWS::IAM::Role
     Condition: UseDirectIAM
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Explicit role name required for cross-stack reference stability and user-facing configuration"
     Properties:
       RoleName: !Ref FederatedRoleName
       Description: Direct IAM role for Google users accessing Bedrock
@@ -314,6 +324,11 @@ Resources:
   BedrockAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: MonitoringEnabled
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Log group contains non-sensitive Bedrock invocation metadata; KMS encryption adds cost without security benefit here"
     Properties:
       LogGroupName: !Sub '/aws/bedrock/claude-code-${AWS::StackName}'
       RetentionInDays: 30
