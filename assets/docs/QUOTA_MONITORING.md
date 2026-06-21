@@ -37,7 +37,59 @@ During `ccwb init`, quota monitoring is **enabled by default** when monitoring i
 
 Deploy using `poetry run ccwb deploy` (deploys all enabled stacks) or `poetry run ccwb deploy quota` for just the quota stack. The OIDC configuration is automatically passed from your profile settings. For complete deployment instructions, see the [CLI Reference](CLI_REFERENCE.md#deploy---deploy-infrastructure).
 
-## Configuration Settings
+## Cost-Based Enforcement (Recommended)
+
+Set dollar limits instead of (or alongside) token limits. Cost is calculated server-side using per-model Bedrock pricing rates.
+
+### How it works
+
+1. `quota_monitor` queries PromQL by `(user.email, type, model)` every 15 minutes
+2. Each token batch is priced using the actual model: Opus tokens × Opus rate, Sonnet tokens × Sonnet rate
+3. `cost_usd` and `daily_cost_usd` are accumulated in DynamoDB alongside raw token counts
+4. `quota_check` compares against `monthly_cost_limit` / `daily_cost_limit` from the policy
+
+### Setting cost limits
+
+```bash
+# Set $50/month budget for a user (--budget is shorthand for --monthly-cost-limit)
+ccwb quota set-user user@company.com --budget 50
+
+# Set $10/day budget for a team
+ccwb quota set-group engineering --daily-budget 10
+
+# Interactive mode (prompts for budget when no flags provided)
+ccwb quota set-user user@company.com
+```
+
+### Pricing rates ($/MTok)
+
+| Model | Input | Output | Cache Read | Cache Write |
+|-------|-------|--------|------------|-------------|
+| Fable | $10.00 | $50.00 | $1.00 | $12.50 |
+| Opus | $5.00 | $25.00 | $0.50 | $6.25 |
+| Sonnet | $3.00 | $15.00 | $0.30 | $3.75 |
+| Haiku | $1.00 | $5.00 | $0.10 | $1.25 |
+
+Rates are overridable via `BEDROCK_PRICING_RATES_JSON` Lambda env var.
+
+### Handles opusplan correctly
+
+When using `opusplan` (Opus planning + Sonnet execution), each token batch includes the model dimension from OTEL. Opus tokens are priced at Opus rates, Sonnet tokens at Sonnet rates — no blending assumptions.
+
+### Backward compatible
+
+- Cost limits default to 0 (disabled) — existing token-only deployments unaffected
+- Token limits still work independently — both can coexist
+- `cost_usd` field appears in DynamoDB on next `quota_monitor` run (ADD operation, non-breaking)
+
+> ⚠️ Cost estimates use published on-demand Bedrock rates. Actual billing may differ with committed throughput or custom agreements. Use AWS Cost Explorer for billing truth.
+
+> **Why not use the client-side `claude_code.cost.usage` metric?** Claude Code emits a cost estimate natively, but it uses generic Anthropic rates (not Bedrock-specific), resets per session (not accumulated monthly), and cannot be trusted for enforcement (client-controlled). Server-side calculation from raw token counts is tamper-resistant, uses admin-configurable Bedrock rates, and aggregates across all sessions.
+
+> **CoWork support:** Claude Desktop cost enforcement works when the CoWork dashboard stack is deployed with the `model` MetricFilter dimension (included by default). Requires attribution headers configured so `user_email` and `model` dimensions are present in the events.
+
+
+## Token-Based Limits (Legacy)
 
 | Parameter               | Default     | Description                                    |
 | ----------------------- | ----------- | ---------------------------------------------- |

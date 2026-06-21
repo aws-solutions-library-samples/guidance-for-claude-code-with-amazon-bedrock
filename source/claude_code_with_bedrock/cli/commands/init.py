@@ -1085,8 +1085,56 @@ class InitCommand(Command):
                     if enable_quota_monitoring:
                         console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
 
-                    # Monthly token limit
-                    console.print("\n[bold]Monthly Limit[/bold]")
+                    # Limit type selection
+                    limit_type = questionary.select(
+                        "How do you want to limit usage?",
+                        choices=[
+                            questionary.Choice("Cost-based ($ budget per user) [recommended]", value="cost"),
+                            questionary.Choice("Token-based (raw token count per user)", value="token"),
+                        ],
+                        default=config.get("quota", {}).get("limit_type", "cost"),
+                    ).ask()
+                    config["quota"]["limit_type"] = limit_type
+
+                    if limit_type == "cost":
+                        # Cost-based limits
+                        console.print("\n[bold]Monthly Budget[/bold]")
+                        console.print("[dim]Cost is calculated server-side from per-model Bedrock pricing rates.[/dim]")
+
+                        monthly_cost_limit_str = questionary.text(
+                            "Monthly budget per user (USD):",
+                            default=str(config.get("quota", {}).get("monthly_cost_limit", 50)),
+                            validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) > 0)
+                            or "Must be a positive number",
+                        ).ask()
+                        config["quota"]["monthly_cost_limit"] = float(monthly_cost_limit_str) if monthly_cost_limit_str else 50
+
+                        daily_cost_limit_str = questionary.text(
+                            "Daily budget per user (USD, 0 for no daily cap):",
+                            default=str(config.get("quota", {}).get("daily_cost_limit", 0)),
+                            validate=lambda x: (x.replace(".", "", 1).isdigit() and float(x) >= 0)
+                            or "Must be a non-negative number",
+                        ).ask()
+                        config["quota"]["daily_cost_limit"] = float(daily_cost_limit_str) if daily_cost_limit_str else 0
+
+                        console.print(f"  \u2192 Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user")
+                        if config["quota"]["daily_cost_limit"] > 0:
+                            console.print(f"  \u2192 Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user")
+                        console.print("[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]")
+
+                        # Set token limits to 0 (disabled) when using cost mode
+                        config["quota"]["monthly_limit"] = 0
+                        config["quota"]["daily_limit"] = 0
+                        monthly_limit = 0
+
+                    else:
+                        # Token-based limits (existing behavior)
+                        config["quota"]["monthly_cost_limit"] = 0
+                        config["quota"]["daily_cost_limit"] = 0
+
+                    # Monthly token limit (only prompted for token mode)
+                    if limit_type == "token":
+                        console.print("\n[bold]Monthly Limit[/bold]")
                     monthly_limit_millions = questionary.text(
                         "Monthly token limit per user (in millions):",
                         default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
@@ -1169,7 +1217,6 @@ class InitCommand(Command):
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
-                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
