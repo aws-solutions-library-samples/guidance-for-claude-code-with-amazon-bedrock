@@ -1,0 +1,1 @@
+../assets/docs/CLI_REFERENCE.md
