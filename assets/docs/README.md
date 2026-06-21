@@ -51,6 +51,12 @@ Once you have your IdP **provider domain** and **client ID**, follow one of thes
 - **Purpose**: Per-user and per-group token quota enforcement and alerts
 - **Audience**: IT administrators managing usage costs
 
+### Web Search (AgentCore)
+
+- **File**: [WEB_SEARCH.md](./WEB_SEARCH.md)
+- **Purpose**: Enable a hosted web-search tool for Claude Code via an Amazon Bedrock AgentCore gateway (OIDC deployments), including cost, the us-east-1 constraint, and acceptable-use obligations
+- **Audience**: IT administrators enabling web search; OIDC deployments only
+
 ### Cost Estimates
 
 - **File**: [COST_ESTIMATES.md](./COST_ESTIMATES.md)
