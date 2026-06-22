@@ -279,3 +279,70 @@ class TestInstallerMergeLogic:
         assert merged["env"] == {"A": "1", "B": "2", "C": "3"}
         # Non-dict values are overwritten (not merged)
         assert merged["permissions"]["deny"] == ["rm", "sudo"]
+
+
+class TestInstallerSudoOwnership:
+    """Regression tests: running install.sh with sudo must not create root-owned user files."""
+
+    def _get_installer_script(self, profile, settings_target="user"):
+        """Generate an install.sh string for the given profile."""
+        profile.settings_target = settings_target
+        cmd = PackageCommand()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            # create dummy files so the method doesn't fail on missing artefacts
+            (output_dir / "claude-settings").mkdir()
+            if settings_target == "managed":
+                (output_dir / "claude-settings" / "managed-settings.json").write_text("{}")
+            else:
+                (output_dir / "claude-settings" / "settings.json").write_text("{}")
+            installer = cmd._create_installer(output_dir, profile, [], [])
+            return installer.read_text(encoding="utf-8")
+
+    def _make_profile(self):
+        return Profile(
+            name="Test",
+            provider_domain="test.okta.com",
+            client_id="client-id",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+        )
+
+    def test_installer_defines_actual_home_from_sudo_user(self):
+        """install.sh must resolve ACTUAL_HOME from SUDO_USER when present."""
+        script = self._get_installer_script(self._make_profile())
+        assert 'ACTUAL_HOME=$(eval echo "~$SUDO_USER")' in script
+        assert "ACTUAL_USER=$SUDO_USER" in script or 'ACTUAL_USER="$SUDO_USER"' in script
+
+    def test_installer_falls_back_to_home_when_no_sudo(self):
+        """install.sh must fall back to $HOME/$USER when SUDO_USER is not set."""
+        script = self._get_installer_script(self._make_profile())
+        assert 'ACTUAL_HOME="$HOME"' in script
+        assert 'ACTUAL_USER="$USER"' in script
+
+    def test_installer_user_files_use_actual_home(self):
+        """User-space paths (~/claude-code-with-bedrock, ~/.claude, ~/.aws) must use ACTUAL_HOME."""
+        script = self._get_installer_script(self._make_profile())
+        # Must not hard-code ~ for user-space directories
+        assert 'mkdir -p ~/claude-code-with-bedrock' not in script
+        assert 'mkdir -p ~/.claude' not in script
+        assert 'mkdir -p ~/.aws' not in script
+        # Must use ACTUAL_HOME variable instead
+        assert '$ACTUAL_HOME/claude-code-with-bedrock' in script
+        assert '$ACTUAL_HOME/.claude' in script
+        assert '$ACTUAL_HOME/.aws' in script
+
+    def test_installer_managed_settings_does_not_exit_if_not_root(self):
+        """Managed settings must not exit 1 when script runs as non-root; use inline sudo instead."""
+        profile = self._make_profile()
+        script = self._get_installer_script(profile, settings_target="managed")
+        # Old bad pattern must be gone
+        assert "Re-run the installer with: sudo ./install.sh" not in script
+        # New inline-sudo pattern must be present
+        assert "sudo mkdir" in script or "sudo tee" in script
+
+    def test_installer_chowns_files_when_sudo_user_set(self):
+        """install.sh must chown user-space files back to ACTUAL_USER after sudo writes."""
+        script = self._get_installer_script(self._make_profile())
+        assert 'chown "$ACTUAL_USER"' in script or 'chown -R "$ACTUAL_USER"' in script
