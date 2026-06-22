@@ -29,7 +29,7 @@ from claude_code_with_bedrock.cli.utils.helpers import (
     find_nearest_codebuild_region,
     get_codebuild_region,
 )
-from claude_code_with_bedrock.config import Config
+from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
 
 # Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
 #   login.microsoftonline.com/{tenant-id}/v2.0
@@ -46,6 +46,91 @@ def _extract_azure_tenant_id(domain: str) -> str:
     """
     match = _AZURE_GUID_PATTERN.search(domain)
     return match.group(0) if match else domain
+
+
+# Provider types whose JWT the AgentCore Web Search gateway has been validated
+# against. The gateway authorizer is provider-agnostic, but the CLI only offers
+# web search for the providers we have tested end to end.
+WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure")
+
+
+def get_websearch_region(profile) -> str:
+    """Region the web search gateway stack deploys into (defaults to us-east-1)."""
+    return getattr(profile, "websearch_region", None) or WEBSEARCH_SUPPORTED_REGIONS[0]
+
+
+def websearch_preflight(profile) -> tuple[bool, str | None]:
+    """Validate that web search can be deployed for this profile.
+
+    Returns (ok, error_message). When ok is False, the caller must NOT deploy
+    the gateway stack and should surface error_message. Mirrors the per-provider
+    guards used elsewhere in deploy (e.g. quota requires OIDC/IDC).
+    """
+    provider = getattr(profile, "provider_type", None)
+    if provider not in WEBSEARCH_SUPPORTED_PROVIDERS:
+        return False, (
+            f"Web search is only supported for provider types "
+            f"{', '.join(WEBSEARCH_SUPPORTED_PROVIDERS)} (profile provider_type: {provider})."
+        )
+
+    region = get_websearch_region(profile)
+    if region not in WEBSEARCH_SUPPORTED_REGIONS:
+        return False, (
+            f"Web search region '{region}' is not supported. "
+            f"Supported regions: {', '.join(WEBSEARCH_SUPPORTED_REGIONS)}."
+        )
+
+    if provider == "cognito" and not (
+        getattr(profile, "cognito_user_pool_id", None) and getattr(profile, "client_id", None)
+    ):
+        return False, "Cognito web search requires cognito_user_pool_id and client_id in the profile."
+
+    if provider == "azure":
+        has_issuer = getattr(profile, "oidc_issuer_url", None) or getattr(profile, "provider_domain", None)
+        has_audience = getattr(profile, "websearch_jwt_audience", None)
+        if not (has_issuer and has_audience):
+            return False, (
+                "Azure (Entra ID) web search requires the Entra issuer and an audience "
+                "(websearch_jwt_audience, e.g. api://<app-id>). Re-run 'ccwb init' to set it."
+            )
+
+    return True, None
+
+
+def _websearch_discovery_url(profile) -> str:
+    """Build the OIDC discovery URL for the gateway CUSTOM_JWT authorizer."""
+    provider = profile.provider_type
+    if provider == "cognito":
+        pool_id = profile.cognito_user_pool_id
+        pool_region = pool_id.split("_")[0] if pool_id and "_" in pool_id else profile.aws_region
+        return f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/openid-configuration"
+    # azure / Entra ID
+    tenant_id = _extract_azure_tenant_id(profile.oidc_issuer_url or profile.provider_domain or "")
+    return f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
+
+
+def build_websearch_params(profile) -> list[str]:
+    """Build CloudFormation parameter overrides for the web search gateway stack.
+
+    Derives the JWT validation mode and client/audience from the existing IdP
+    config: Cognito validates client_id (AllowedClients), Entra ID validates the
+    token audience (AllowedAudience).
+    """
+    region = get_websearch_region(profile)
+    discovery_url = _websearch_discovery_url(profile)
+    params = [
+        f"WebSearchRegion={region}",
+        f"JwtDiscoveryUrl={discovery_url}",
+    ]
+    if profile.provider_type == "cognito":
+        params += ["JwtValidationMode=client_id", f"JwtAllowedClients={profile.client_id}"]
+    else:  # azure
+        params += ["JwtValidationMode=audience", f"JwtAllowedAudience={profile.websearch_jwt_audience}"]
+
+    denylist = getattr(profile, "websearch_domain_denylist", None) or []
+    if denylist:
+        params.append(f"WebSearchDomainDenylist={','.join(denylist)}")
+    return params
 
 
 class DeployCommand(Command):
@@ -189,10 +274,20 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "websearch":
+                if not getattr(profile, "cowork_websearch_enabled", False):
+                    console.print("[yellow]Web search is not enabled in your configuration.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and enable Claude Cowork web search.")
+                    return 1
+                ok, msg = websearch_preflight(profile)
+                if not ok:
+                    console.print(f"[yellow]{msg}[/yellow]")
+                    return 1
+                stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild, websearch\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -256,6 +351,15 @@ class DeployCommand(Command):
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
+            # Web search gateway — independent stack, only needs the IdP from auth.
+            # Deployed cross-region (us-east-1) where the connector is available.
+            if getattr(profile, "cowork_websearch_enabled", False):
+                ok, msg = websearch_preflight(profile)
+                if ok:
+                    stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
+                else:
+                    console.print(f"[yellow]⚠ Skipping web search gateway: {msg}[/yellow]")
+
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
 
@@ -274,6 +378,10 @@ class DeployCommand(Command):
                 cb_region = get_codebuild_region(profile)
                 if cb_region != profile.aws_region:
                     status_manager = CloudFormationManager(region=cb_region)
+            elif stack_type == "websearch":
+                ws_region = get_websearch_region(profile)
+                if ws_region != profile.aws_region:
+                    status_manager = CloudFormationManager(region=ws_region)
             status = status_manager.get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
@@ -310,6 +418,10 @@ class DeployCommand(Command):
                             cb_region = get_codebuild_region(profile)
                             if cb_region != profile.aws_region:
                                 del_mgr = CloudFormationManager(region=cb_region)
+                        elif stack_type == "websearch":
+                            ws_region = get_websearch_region(profile)
+                            if ws_region != profile.aws_region:
+                                del_mgr = CloudFormationManager(region=ws_region)
                         del_mgr.delete_stack(stack_name)
                         console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
                     except Exception as e:
@@ -1047,6 +1159,27 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "websearch":
+                # Web search deploys into a region where the managed connector is
+                # available (us-east-1 today), which may differ from the main
+                # region. Build a dedicated manager for it (codebuild precedent).
+                ok, msg = websearch_preflight(profile)
+                if not ok:
+                    console.print(f"[red]{msg}[/red]")
+                    return 1
+                ws_region = get_websearch_region(profile)
+                cf = cf_manager if ws_region == profile.aws_region else CloudFormationManager(region=ws_region)
+                template = project_root / "deployment" / "infrastructure" / "bedrock-agentcore-gateway.yaml"
+                stack_name = profile.stack_names.get("websearch", f"{profile.identity_pool_name}-websearch")
+                params = build_websearch_params(profile)
+                return deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    task_description=f"Deploying AgentCore web search gateway in {ws_region}...",
+                    cf=cf,
+                )
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1413,6 +1546,7 @@ class DeployCommand(Command):
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
             "codebuild": "CodeBuild",
+            "websearch": "AgentCore Gateway + Web Search connector",
         }
 
         # Stack types that are being deployed
@@ -1423,14 +1557,18 @@ class DeployCommand(Command):
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
                 # This stack type is not being deployed - check if it exists.
-                # CodeBuild may live in a different region (cross-region builds), so
-                # check it there or a cross-region orphan is never detected.
+                # CodeBuild and websearch may live in a different region, so
+                # check them there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
                 mgr = cf_manager
                 if stack_type == "codebuild":
                     cb_region = get_codebuild_region(profile)
                     if cb_region != profile.aws_region:
                         mgr = CloudFormationManager(region=cb_region)
+                elif stack_type == "websearch":
+                    ws_region = get_websearch_region(profile)
+                    if ws_region != profile.aws_region:
+                        mgr = CloudFormationManager(region=ws_region)
                 status = mgr.get_stack_status(stack_name)
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
