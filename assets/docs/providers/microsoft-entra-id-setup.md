@@ -13,6 +13,7 @@ This guide walks you through setting up Microsoft Entra ID from scratch to work 
 7. [Assign Users to Application](#7-assign-users-to-application)
 8. [Collect Required Information](#8-collect-required-information)
 9. [Test the Setup](#9-test-the-setup)
+10. [(Optional) Web search audience](#10-optional-web-search-audience)
 
 ---
 
@@ -336,6 +337,22 @@ curl https://login.microsoftonline.com/{your-tenant-id}/v2.0/.well-known/openid-
 ```
 
 Should return a JSON response with OIDC configuration.
+
+---
+
+## 10. (Optional) Web search audience
+
+This section applies **only if you enable the optional [AgentCore Gateway web search](../COWORK_3P.md#web-search-via-agentcore-gateway)** for Claude Cowork. It is **not** required for the base SSO setup.
+
+The web search gateway's inbound authorizer validates the id_token's `aud` (audience) claim. By **default, the `aud` of an Entra ID id_token is your application's Client ID**, so in most cases you provide nothing extra — the solution uses the Client ID automatically.
+
+You only need a custom audience value if your app registration is configured to issue tokens for a **custom API identifier**. In that case:
+
+1. In your app registration, go to **Expose an API**.
+2. Note the **Application ID URI** (it looks like `api://<app-id>`). Set one via **Add** if none exists.
+3. When `ccwb init` prompts for the web search token audience (Entra ID only), supply that `api://<app-id>` value. It is stored in the profile as `websearch_jwt_audience` and passed to the gateway as the expected `aud`.
+
+> If you leave the audience empty, the gateway validates against your Client ID (the default Entra `aud`), which is correct for the standard configuration.
 
 ---
 
