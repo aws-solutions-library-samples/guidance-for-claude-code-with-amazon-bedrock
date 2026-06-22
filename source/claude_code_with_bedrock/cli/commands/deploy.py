@@ -1088,11 +1088,23 @@ class DeployCommand(Command):
                 # poll explicitly so a half-provisioned gateway is surfaced (AC1).
                 outputs = get_stack_outputs(stack_name, ws_region)
                 gateway_id = outputs.get("GatewayId", "") if outputs else ""
-                if gateway_id:
-                    ready = self._poll_websearch_target_ready(gateway_id, ws_region, console)
-                    if not ready:
-                        return 1
-                    console.print("[green]✓ Web-search connector target is READY[/green]")
+                if not gateway_id:
+                    # GatewayId is an unconditional template output, so an empty
+                    # value here means the outputs read failed (get_stack_outputs
+                    # swallows errors to {}), NOT a legitimately absent value. We
+                    # cannot verify READY or persist the URL, so this is a deploy
+                    # failure — do not silently exit 0 (Exit Code Contract).
+                    console.print(
+                        "[red]✗ Web-search stack deployed but its outputs could not be read "
+                        f"(no GatewayId in {stack_name}). Cannot verify the connector target "
+                        "reached READY or save the gateway URL. Re-run `ccwb deploy websearch`.[/red]"
+                    )
+                    return 1
+
+                ready = self._poll_websearch_target_ready(gateway_id, ws_region, console)
+                if not ready:
+                    return 1
+                console.print("[green]✓ Web-search connector target is READY[/green]")
 
                 # Persist the gateway URL so package can read it (AC8).
                 self._persist_websearch_gateway_url(profile, outputs, console)

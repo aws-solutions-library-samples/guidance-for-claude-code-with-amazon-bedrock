@@ -246,3 +246,43 @@ class TestWebSearchDeployCapabilities:
         assert ws_manager.deploy_stack.called
         _, kwargs = ws_manager.deploy_stack.call_args
         assert kwargs["capabilities"] == ["CAPABILITY_NAMED_IAM"]
+
+
+class TestWebSearchDeployOutputsUnreadable:
+    """Regression — a successful CFN deploy whose outputs cannot be read must NOT
+    exit 0. GatewayId is an unconditional template output; get_stack_outputs
+    swallows describe-stacks failures to {} (cli/utils/aws.py), so an empty result
+    after CREATE_COMPLETE means a read failure. Without this guard the command
+    skipped the READY poll, persisted no gateway URL, and returned success — a
+    silent half-provisioned deploy (Exit Code Contract, .claude/rules/pr-standards.md;
+    same class as PRs #559/#565). Surfaced by /review + /codex-review.
+    """
+
+    def test_empty_outputs_after_deploy_returns_1_and_skips_poll(self):
+        import io
+
+        from rich.console import Console
+
+        profile = _profile(aws_region="eu-west-1")
+        console = Console(file=io.StringIO())
+
+        ws_manager = Mock()
+        ws_manager.deploy_stack.return_value = Mock(success=True)
+
+        cmd = DeployCommand()
+        with (
+            patch.object(cmd, "_websearch_cf_manager", return_value=ws_manager),
+            patch.object(cmd, "_poll_websearch_target_ready") as poll,
+            patch.object(cmd, "_persist_websearch_gateway_url") as persist,
+            patch(
+                "claude_code_with_bedrock.cli.commands.deploy.get_stack_outputs",
+                return_value={},  # read failure → no GatewayId
+            ),
+        ):
+            rc = cmd._deploy_stack("websearch", profile, console, Mock())
+
+        assert rc == 1, "unreadable outputs after a successful deploy must exit non-zero"
+        # The READY poll cannot run without a gateway id, and we must not claim
+        # success by persisting a URL we never resolved.
+        poll.assert_not_called()
+        persist.assert_not_called()
