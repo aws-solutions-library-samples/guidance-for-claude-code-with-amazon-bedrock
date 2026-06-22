@@ -166,19 +166,22 @@ def build_websearch_params(profile) -> list[str]:
 
 
 def _poll_websearch_target_ready(
-    gateway_id: str, region: str, console, timeout: int = 600, interval: int = 15
+    gateway_id: str, region: str, console, timeout: int = 600, interval: int = 15, session=None
 ) -> bool:
     """Poll the gateway's connector target until READY.
 
     CFN CREATE_COMPLETE precedes the target reaching READY — the connector
     provisions asynchronously. Returns True on READY, False on FAILED or timeout.
+    Uses the provided boto3 session to respect proxy/CA/endpoint config.
     """
     import time
 
     try:
         import boto3
 
-        client = boto3.client("bedrock-agentcore-control", region_name=region)
+        if session is None:
+            session = boto3.Session(region_name=region)
+        client = session.client("bedrock-agentcore-control", region_name=region)
     except Exception as e:
         console.print(f"[yellow]\u26a0 Could not create AgentCore client to poll target: {e}[/yellow]")
         return False
@@ -350,7 +353,7 @@ class DeployCommand(Command):
             elif stack_arg == "websearch":
                 if not getattr(profile, "web_search_enabled", False):
                     console.print("[yellow]Web search is not enabled in your configuration.[/yellow]")
-                    console.print("Run 'poetry run ccwb init' and enable Claude Cowork web search.")
+                    console.print("Run 'poetry run ccwb init' and enable web search.")
                     return 1
                 ok, msg = websearch_preflight(profile)
                 if not ok:
@@ -1254,15 +1257,20 @@ class DeployCommand(Command):
                 )
                 if result == 0:
                     # Persist gateway URL for package.py / credential-process
-                    gateway_url = cf.get_stack_output(stack_name, "GatewayMcpEndpoint")
+                    outputs = cf.get_stack_outputs(stack_name)
+                    gateway_url = outputs.get("GatewayMcpEndpoint")
                     if gateway_url:
                         profile.websearch_gateway_url = gateway_url
-                        Config.save_profile(profile)
+                        config = Config.load()
+                        config.save_profile(profile)
                         console.print(f"[green]✓ Gateway URL saved: {gateway_url}[/green]")
                     # Poll connector target until READY (async provisioning)
-                    gateway_id = cf.get_stack_output(stack_name, "GatewayId")
+                    outputs = cf.get_stack_outputs(stack_name)
+                    gateway_id = outputs.get("GatewayId")
                     if gateway_id:
-                        ready = _poll_websearch_target_ready(gateway_id, ws_region, console)
+                        ready = _poll_websearch_target_ready(
+                            gateway_id, ws_region, console, session=cf.session
+                        )
                         if not ready:
                             console.print(
                                 "[yellow]⚠ Connector target not yet READY. "
