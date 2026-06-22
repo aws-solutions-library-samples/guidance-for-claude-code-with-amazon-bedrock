@@ -163,11 +163,12 @@ class Profile:
         True  # chatAdvancedFileAnalysisEnabled — code execution for file analysis
     )
     cowork_inference_session_lifetime_sec: int | None = None  # inferenceSessionLifetimeSec — re-auth reminder timer
-    # Claude Cowork web search (AgentCore Gateway + managed Web Search connector)
+    # Web search (AgentCore Gateway + managed Web Search connector)
     # Opt-in, default off. Deploys an optional AgentCore Gateway stack whose
-    # inbound CUSTOM_JWT authorizer reuses the existing OIDC IdP, and wires the
-    # gateway into the CoWork MDM config as a managed MCP server (see PR 4).
-    cowork_websearch_enabled: bool = False  # Enable the web search gateway for Claude Cowork
+    # inbound CUSTOM_JWT authorizer reuses the existing OIDC IdP. The gateway
+    # serves both Claude Code (via headersHelper) and Claude Cowork (via MDM).
+    web_search_enabled: bool = False  # Enable the web search gateway
+    websearch_gateway_url: str = ""  # Gateway MCP endpoint URL (populated after deploy)
     websearch_region: str | None = None  # Region for the gateway stack (allow-list; None = default us-east-1)
     websearch_jwt_audience: str | None = None  # Entra ID (audience mode) only: aud the authorizer accepts
     websearch_domain_denylist: list[str] = field(default_factory=list)  # Optional domains to exclude from results
