@@ -335,6 +335,49 @@ Custom keys are merged into the generated MDM configuration after the base keys 
 > **Note:** Values should be strings, including for booleans (`"true"`) and arrays (`"[\"item1\"]"`). This matches how MDM systems deliver configuration — all values are stored as strings in the OS preference store.
 
 
+## Web search via AgentCore Gateway
+
+In addition to a self-managed MCP server (such as the `brave-search` example above, which runs locally via `npx` and a third-party API), the solution can provision a **fully managed, AWS-native web search** through an **Amazon Bedrock AgentCore Gateway** with the managed Web Search connector. Queries are served by Amazon's web index and **never leave AWS** — no third-party search API or outbound search credentials are involved.
+
+When enabled, `ccwb package` (and `ccwb cowork generate`) automatically inject a `managedMcpServers` entry named **`agentcore-websearch`** into the generated MDM config — you do **not** add it by hand.
+
+### Enabling it
+
+1. **`ccwb init`** — answer *yes* to the web search question (web search is opt-in, default off).
+2. **`ccwb deploy websearch`** — deploys the AgentCore Gateway + Web Search connector, reusing your existing identity provider for inbound authorization. The gateway endpoint is saved to your profile.
+3. **`ccwb package`** (or `ccwb cowork generate`) — injects the `agentcore-websearch` MCP server into the `.json` / `.mobileconfig` / `.reg` outputs.
+
+The generated entry looks like this (emitted as a JSON-encoded string, like all array/object MDM values):
+
+```json
+{
+  "name": "agentcore-websearch",
+  "transport": "http",
+  "url": "https://<gateway-id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+  "oauth": {
+    "clientId": "<your-app-client-id>",
+    "authorizationServer": ["<your-oidc-issuer>"],
+    "scope": "openid email profile",
+    "callbackHost": "localhost",
+    "callbackPort": 8400
+  }
+}
+```
+
+### How authentication works
+
+Claude Cowork connects to the gateway over MCP and authenticates with an **OAuth authorization-code flow against the same identity provider** used by the rest of the solution. It reuses your existing `clientId` and the `localhost:<redirect_port>` callback already registered for Claude Code (default port `8400`), so **no secret is stored** in the MDM config and no extra IdP setup is needed for Cognito. The gateway validates the inbound id_token's `aud` claim, which equals the `clientId`.
+
+### Things to know
+
+- **Region:** the managed Web Search connector is currently available in **`us-east-1` only**, so the gateway is deployed there regardless of your other stacks' region.
+- **Data residency:** web search queries (or fragments of user prompts) are processed in `us-east-1`. Review compliance impact for regulated workloads before enabling.
+- **Cost:** approximately **$7 per 1,000 queries**, billed to your AWS account.
+- **Identity providers:** works with the solution's OIDC providers (Amazon Cognito, Microsoft Entra ID, Okta, Auth0, Google, generic OIDC). For **Entra ID**, the default `aud` is the `clientId`; only if your app registration uses a custom API audience do you need to provide it — see [Microsoft Entra ID setup → web search audience](providers/microsoft-entra-id-setup.md).
+
+> **Claude Code & joint documentation.** The equivalent web search capability for the **Claude Code CLI** (injected into `settings.json` via the credential helper) is delivered by a separate contribution and is **not** documented here yet. A single consolidated `WEB_SEARCH.md` covering both surfaces (Claude Code + Cowork) is planned once that work lands. Note: the merged CloudFormation template PR shipped the gateway template only — it did not include a standalone usage doc.
+
+
 ## Verification
 
 After deploying the MDM profile:
