@@ -2431,6 +2431,17 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Resolve the real invoking user — safe whether or not run with sudo.
+# If run as: sudo ./install.sh  →  SUDO_USER is set; use that for home-dir writes.
+# If run as: ./install.sh       →  use $USER / $HOME directly.
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo "~$SUDO_USER")
+else
+    ACTUAL_USER="$USER"
+    ACTUAL_HOME="$HOME"
+fi
+
 echo "======================================"
 echo "Claude Code Authentication Installer"
 echo "======================================"
@@ -2523,20 +2534,25 @@ fi
 # Create directory
 echo
 echo "Installing authentication tools..."
-mkdir -p ~/claude-code-with-bedrock
+mkdir -p "$ACTUAL_HOME/claude-code-with-bedrock"
 
 # Copy appropriate binary
-cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+cp "$CREDENTIAL_BINARY" "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 
 # Copy config
-cp config.json ~/claude-code-with-bedrock/
-chmod +x ~/claude-code-with-bedrock/credential-process
+cp config.json "$ACTUAL_HOME/claude-code-with-bedrock/"
+chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
+
+# Fix ownership when invoked via sudo so files belong to the real user, not root
+if [ -n "$SUDO_USER" ]; then
+    chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
+fi
 
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
     # Without this, Gatekeeper blocks execution with "Apple could not verify..." dialog.
-    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process 2>/dev/null || true
+    xattr -d com.apple.quarantine "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" 2>/dev/null || true
     echo
     echo "⚠️  macOS Keychain Access:"
     echo "   On first use, macOS will ask for permission to access the keychain."
@@ -2548,7 +2564,8 @@ fi
 if [ -d "claude-settings" ]; then
     echo
     echo "Installing Claude Code settings..."
-    mkdir -p ~/.claude
+    mkdir -p "$ACTUAL_HOME/.claude"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude"; fi
 
     # Install managed-settings.json (OS-level enforcement) if present
     if [ -f "claude-settings/managed-settings.json" ]; then
@@ -2561,20 +2578,19 @@ if [ -d "claude-settings" ]; then
             MANAGED_DIR="/etc/claude-code"
         fi
 
-        # Require elevated privileges for managed-settings
+        # Escalate only for the managed-settings write — don't require the whole script to run as root
         if [ "$(id -u)" -ne 0 ]; then
-            echo "ERROR: Managed settings require root/sudo privileges."
-            echo "       Re-run the installer with: sudo ./install.sh"
-            echo "       (Managed settings are written to: $MANAGED_DIR/managed-settings.json)"
-            exit 1
+            echo "  Managed settings require root — running: sudo mkdir / sudo tee"
+            sudo mkdir -p "$MANAGED_DIR"
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/managed-settings.json" | sudo tee "$MANAGED_DIR/managed-settings.json" > /dev/null
+        else
+            mkdir -p "$MANAGED_DIR"
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/managed-settings.json" > "$MANAGED_DIR/managed-settings.json"
         fi
-
-        mkdir -p "$MANAGED_DIR"
-
-        # Replace placeholders and write managed settings
-        sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
-            -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
-            "claude-settings/managed-settings.json" > "$MANAGED_DIR/managed-settings.json"
 
         # Verify placeholders were replaced
         if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' "$MANAGED_DIR/managed-settings.json" 2>/dev/null; then
@@ -2588,18 +2604,19 @@ if [ -d "claude-settings" ]; then
     # Copy user-scope settings.json if present
     if [ -f "claude-settings/settings.json" ]; then
         # Check if settings file already exists
-        if [ -f ~/.claude/settings.json ]; then
+        if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
             echo "Existing Claude Code settings found"
             # Backup existing settings
             BACKUP_NAME="settings.json.backup-$(date +%Y%m%d-%H%M%S)"
-            cp ~/.claude/settings.json ~/.claude/$BACKUP_NAME
-            echo "  Backed up to: ~/.claude/$BACKUP_NAME"
+            cp "$ACTUAL_HOME/.claude/settings.json" "$ACTUAL_HOME/.claude/$BACKUP_NAME"
+            if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/$BACKUP_NAME"; fi
+            echo "  Backed up to: $ACTUAL_HOME/.claude/$BACKUP_NAME"
 
             # Merge new settings into existing (preserves user customizations)
             $PYTHON -c "
 import json, sys
 try:
-    with open('$HOME/.claude/$BACKUP_NAME') as f:
+    with open('$ACTUAL_HOME/.claude/$BACKUP_NAME') as f:
         existing = json.load(f)
 except (json.JSONDecodeError, FileNotFoundError):
     existing = {{}}
@@ -2618,12 +2635,12 @@ def deep_merge(base, override):
     return result
 
 merged = deep_merge(existing, incoming)
-with open('$HOME/.claude/settings.json', 'w') as f:
+with open('$ACTUAL_HOME/.claude/settings.json', 'w') as f:
     json.dump(merged, f, indent=2)
 " 2>/dev/null
 
             if [ $? -eq 0 ]; then
-                echo "OK Claude Code settings merged: ~/.claude/settings.json"
+                echo "OK Claude Code settings merged: $ACTUAL_HOME/.claude/settings.json"
                 echo "   (existing user settings preserved, new Bedrock config added)"
             else
                 # Fallback: overwrite if merge fails
@@ -2637,26 +2654,30 @@ with open('$HOME/.claude/settings.json', 'w') as f:
             fi
         fi
 
-        if [ "$SKIP_SETTINGS" != "true" ] && [ ! -f ~/.claude/settings.json ]; then
+        if [ "$SKIP_SETTINGS" != "true" ] && [ ! -f "$ACTUAL_HOME/.claude/settings.json" ]; then
             # No existing settings — just write directly
-            sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
-                -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
-                "claude-settings/settings.json" > ~/.claude/settings.json
-            echo "OK Claude Code settings configured: ~/.claude/settings.json"
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/settings.json" > "$ACTUAL_HOME/.claude/settings.json"
+            echo "OK Claude Code settings configured: $ACTUAL_HOME/.claude/settings.json"
         fi
 
         # Replace placeholders in the final settings file
-        if [ -f ~/.claude/settings.json ] && [ "$SKIP_SETTINGS" != "true" ]; then
-            sed -i.tmp -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
-                       -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
-                       ~/.claude/settings.json
-            rm -f ~/.claude/settings.json.tmp
+        if [ -f "$ACTUAL_HOME/.claude/settings.json" ] && [ "$SKIP_SETTINGS" != "true" ]; then
+            sed -i.tmp -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                       -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                       "$ACTUAL_HOME/.claude/settings.json"
+            rm -f "$ACTUAL_HOME/.claude/settings.json.tmp"
 
             # Verify placeholders were replaced
-            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' ~/.claude/settings.json 2>/dev/null; then
+            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' "$ACTUAL_HOME/.claude/settings.json" 2>/dev/null; then
                 echo "WARNING: Some path placeholders were not replaced in settings.json"
-                echo "         You may need to edit the file manually: ~/.claude/settings.json"
+                echo "         You may need to edit the file manually: $ACTUAL_HOME/.claude/settings.json"
             fi
+        fi
+
+        if [ -n "$SUDO_USER" ] && [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+            chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/settings.json"
         fi
     fi
 fi
@@ -2665,23 +2686,25 @@ fi
 if [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
-    chmod +x ~/claude-code-with-bedrock/otel-helper
-    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
+    cp "$OTEL_BINARY" "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"
+    chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"; fi
+    xattr -d com.apple.quarantine "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper" 2>/dev/null || true
     echo "✓ OTEL helper installed"
 fi
 
 # Add debug info if OTEL helper was installed
-if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
+if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper" ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
     echo "and include them in metrics. To test the helper, run:"
-    echo "  ~/claude-code-with-bedrock/otel-helper --test"
+    echo "  $ACTUAL_HOME/claude-code-with-bedrock/otel-helper --test"
 fi
 
 # Update AWS config
 echo
 echo "Configuring AWS profiles..."
-mkdir -p ~/.aws
+mkdir -p "$ACTUAL_HOME/.aws"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws"; fi
 
 # Read all profiles from config.json
 PROFILES=$($PYTHON -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
@@ -2714,7 +2737,7 @@ for PROFILE_NAME in $PROFILES; do
     echo "Configuring AWS profile: $PROFILE_NAME"
 
     # Remove old profile if exists
-    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
 
     # Get profile-specific region from config.json
     PROFILE_REGION=$($PYTHON -c "
@@ -2723,26 +2746,27 @@ print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region'
 ")
 
     # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+    cat >> "$ACTUAL_HOME/.aws/config" << EOF
 [profile $PROFILE_NAME]
-credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+credential_process = $ACTUAL_HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
 # Post-install validation
 echo
 echo "Validating installation..."
-if [ -f ~/claude-code-with-bedrock/credential-process ]; then
-    echo "  OK credential-process: ~/claude-code-with-bedrock/credential-process"
+if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" ]; then
+    echo "  OK credential-process: $ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 else
-    echo "  FAIL credential-process not found at: ~/claude-code-with-bedrock/credential-process"
+    echo "  FAIL credential-process not found at: $ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 fi
-if [ -f ~/.claude/settings.json ]; then
-    echo "  OK settings.json: ~/.claude/settings.json"
+if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+    echo "  OK settings.json: $ACTUAL_HOME/.claude/settings.json"
 else
-    echo "  WARN settings.json not found at: ~/.claude/settings.json"
+    echo "  WARN settings.json not found at: $ACTUAL_HOME/.claude/settings.json"
 fi
 
 echo
