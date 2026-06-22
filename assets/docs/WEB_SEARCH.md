@@ -106,6 +106,13 @@ failed or absent, see Troubleshooting below.
 - **Deploy reports the target never reached READY** — The connector provisions
   asynchronously after the CloudFormation stack completes. Re-run `ccwb deploy websearch`
   to re-check; the error message includes the target's status reason.
+- **Google: `403 insufficient_scope` despite a valid login** — Google issues the `iss`
+  (issuer) claim as either `https://accounts.google.com` or the bare `accounts.google.com`,
+  and the gateway matches the issuer strictly. Claude Code's normal browser sign-in uses the
+  authorization-code flow, which emits the `https://` form the gateway expects, so this works
+  out of the box. You'd only hit the bare-issuer form with a manually minted token (e.g.
+  `gcloud auth print-identity-token` or a service-account token) — use a real interactive
+  sign-in instead.
 
 ## Install caveat — preserve your own `mcpServers`
 
