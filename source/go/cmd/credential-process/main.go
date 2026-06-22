@@ -280,11 +280,17 @@ func (a *credentialApp) getMCPAuthHeader() int {
 	token, err := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
 	if (err != nil || token == "") && a.cfg.IsSsoEnabled() && !a.cfg.IsIDC() {
 		// Cached id_token expired/near-expiry. Try the silent refresh_token
-		// exchange (no browser) before giving up — mirrors getMonitoringToken
-		// but stops here: an MCP headersHelper can never drive an interactive
-		// login. Only attempt for OIDC; idc/none have no id_token (Story B).
-		if creds := a.tryRefreshToken(); creds != nil {
-			token, err = storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+		// exchange (no browser) before giving up — but stop here: an MCP
+		// headersHelper can never drive an interactive login. Only attempt for
+		// OIDC; idc/none have no id_token (Story B).
+		//
+		// Use refreshIDTokenOnly (NOT tryRefreshToken): the gateway's CUSTOM_JWT
+		// authorizer only needs the id_token, so a successful refresh must NOT be
+		// thrown away just because the unrelated AWS STS/IAM credential exchange
+		// fails or times out. tryRefreshToken couples the two and would discard a
+		// perfectly valid refreshed id_token on a Cognito/STS hiccup.
+		if fresh := a.refreshIDTokenOnly(); fresh != "" {
+			token, err = fresh, nil
 		}
 	}
 	if err != nil || token == "" {
@@ -744,6 +750,74 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 
 	debugPrint("Refresh token exchange succeeded — credentials renewed without browser")
 	return creds
+}
+
+// refreshIDTokenOnly performs the browserless refresh_token exchange and returns
+// a fresh id_token WITHOUT exchanging it for AWS credentials. It exists for the
+// MCP headersHelper path (--get-mcp-auth-header): the AgentCore CUSTOM_JWT gateway
+// authorizer validates only the id_token, so the header must still be emitted even
+// when the AWS STS/IAM credential exchange would fail or time out — a failure mode
+// unrelated to gateway auth. (tryRefreshToken couples the two and returns nil if
+// cred exchange fails, which would discard a valid refreshed id_token.)
+//
+// It mirrors tryRefreshToken's endpoint/confidential-auth resolution and persists
+// the refreshed monitoring token + rotated refresh_token so the next cache read
+// hits, but never opens a browser. Returns "" on any failure so the caller fails
+// cleanly. Only meaningful for OIDC (idc/none have no id_token — Story B).
+func (a *credentialApp) refreshIDTokenOnly() string {
+	refreshToken := storage.LoadRefreshToken(a.profile, a.cfg.CredentialStorage)
+	if refreshToken == "" {
+		debugPrint("No cached refresh_token, cannot refresh id_token silently")
+		return ""
+	}
+
+	// Resolve token endpoint URL (same logic as tryRefreshToken).
+	var tokenURL string
+	if a.providerType == "generic" {
+		tokenURL = a.cfg.OIDCTokenEndpoint
+	} else {
+		provCfg := provider.ConfigFor(a.providerType, a.cfg.OktaAuthServerID)
+		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
+			tokenURL = provCfg.TokenEndpoint
+		} else {
+			tokenURL = "https://" + a.cfg.ProviderDomain + provCfg.TokenEndpoint
+		}
+	}
+
+	confidential, err := a.resolveConfidentialAuth()
+	if err != nil {
+		debugPrint("Failed to resolve confidential auth for id_token refresh: %v", err)
+		return ""
+	}
+
+	tokenResp, err := oidc.RefreshTokenExchange(tokenURL, refreshToken, a.cfg.ClientID, confidential)
+	if err != nil {
+		debugPrint("Refresh token exchange failed: %v", err)
+		// Token may be revoked/expired — clear it so we don't retry next time.
+		storage.ClearRefreshToken(a.profile)
+		return ""
+	}
+	if tokenResp.IDToken == "" {
+		debugPrint("Refresh response did not contain an id_token")
+		return ""
+	}
+
+	claims, err := jwt.DecodePayload(tokenResp.IDToken)
+	if err != nil {
+		debugPrint("Failed to decode refreshed id_token: %v", err)
+		return ""
+	}
+
+	// Persist the refreshed monitoring token so the next cache read hits, and
+	// rotate the refresh_token (some IdPs rotate on every use). Deliberately no
+	// AWS credential exchange here — see the doc comment above.
+	a.saveMonitoringTokenAndHeaders(tokenResp.IDToken, map[string]interface{}(claims))
+	if tokenResp.RefreshToken != "" {
+		_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, tokenResp.RefreshToken)
+	}
+
+	debugPrint("id_token refreshed without browser (no AWS credential exchange)")
+	return tokenResp.IDToken
 }
 
 // saveMonitoringTokenAndHeaders persists the monitoring token and also writes
