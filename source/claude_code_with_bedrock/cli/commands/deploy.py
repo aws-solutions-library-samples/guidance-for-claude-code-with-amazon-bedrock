@@ -88,12 +88,14 @@ def websearch_preflight(profile) -> tuple[bool, str | None]:
 
     if provider == "azure":
         has_issuer = getattr(profile, "oidc_issuer_url", None) or getattr(profile, "provider_domain", None)
-        has_audience = getattr(profile, "websearch_jwt_audience", None)
-        if not (has_issuer and has_audience):
+        if not (has_issuer and getattr(profile, "client_id", None)):
             return False, (
-                "Azure (Entra ID) web search requires the Entra issuer and an audience "
-                "(websearch_jwt_audience, e.g. api://<app-id>). Re-run 'ccwb init' to set it."
+                "Azure (Entra ID) web search requires the Entra issuer and client_id in the profile. "
+                "Re-run 'ccwb init' to configure SSO."
             )
+        # websearch_jwt_audience is optional: the gateway validates the id_token
+        # 'aud' claim, which defaults to client_id. Only set it when the Entra
+        # app is configured with a custom API audience (e.g. api://<app-id>).
 
     if provider == "generic":
         if not getattr(profile, "oidc_issuer_url", None):
@@ -139,29 +141,29 @@ def _websearch_discovery_url(profile) -> str:
 def build_websearch_params(profile) -> list[str]:
     """Build CloudFormation parameter overrides for the web search gateway stack.
 
-    Derives the JWT validation mode and client/audience from the existing IdP
-    config: Cognito validates client_id (AllowedClients), all other OIDC providers
-    validate the token audience (AllowedAudience).
+    Matches the merged gateway template parameters (DiscoveryUrl, ClientId,
+    DomainExcludeList). The CUSTOM_JWT authorizer validates the inbound
+    id_token's 'aud' claim against ClientId; for an OIDC id_token aud == client_id.
+    The stack is deployed into a Web Search supported region via
+    ``get_websearch_region`` (region is no longer a template parameter).
     """
-    region = get_websearch_region(profile)
     discovery_url = _websearch_discovery_url(profile)
+    # The merged gateway template (PR #607) validates the inbound id_token's
+    # 'aud' claim against a single ClientId parameter (AllowedAudience: [ClientId]).
+    # For an OIDC id_token aud == client_id, so client_id works for every
+    # provider (Cognito, Okta, Auth0, Google, generic). Entra ID may override
+    # with a custom API audience (api://<app-id>) when the app is configured
+    # with one; otherwise the default aud (client_id) is used.
+    expected_audience = profile.client_id
+    if profile.provider_type == "azure" and getattr(profile, "websearch_jwt_audience", None):
+        expected_audience = profile.websearch_jwt_audience
     params = [
-        f"WebSearchRegion={region}",
-        f"JwtDiscoveryUrl={discovery_url}",
+        f"DiscoveryUrl={discovery_url}",
+        f"ClientId={expected_audience}",
     ]
-    if profile.provider_type == "cognito":
-        params += ["JwtValidationMode=client_id", f"JwtAllowedClients={profile.client_id}"]
-    elif profile.provider_type == "azure":
-        # Entra ID uses a dedicated audience (API Application ID URI)
-        params += ["JwtValidationMode=audience", f"JwtAllowedAudience={profile.websearch_jwt_audience}"]
-    else:
-        # Okta, Auth0, Google, generic — audience is the client_id
-        client_id = getattr(profile, "client_id", "") or ""
-        params += ["JwtValidationMode=audience", f"JwtAllowedAudience={client_id}"]
-
     denylist = getattr(profile, "websearch_domain_denylist", None) or []
     if denylist:
-        params.append(f"WebSearchDomainDenylist={','.join(denylist)}")
+        params.append(f"DomainExcludeList={','.join(denylist)}")
     return params
 
 
@@ -1268,9 +1270,7 @@ class DeployCommand(Command):
                     outputs = cf.get_stack_outputs(stack_name)
                     gateway_id = outputs.get("GatewayId")
                     if gateway_id:
-                        ready = _poll_websearch_target_ready(
-                            gateway_id, ws_region, console, session=cf.session
-                        )
+                        ready = _poll_websearch_target_ready(gateway_id, ws_region, console, session=cf.session)
                         if not ready:
                             console.print(
                                 "[yellow]⚠ Connector target not yet READY. "
