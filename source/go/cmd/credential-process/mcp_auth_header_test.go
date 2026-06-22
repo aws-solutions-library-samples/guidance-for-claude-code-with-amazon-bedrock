@@ -213,12 +213,17 @@ func TestGetMCPAuthHeader_RefreshSucceedsWithoutAWSCreds(t *testing.T) {
 }
 
 // TestGetMCPAuthHeader_EnvToken verifies the env-var token shortcut also works,
-// matching getMonitoringToken's CLAUDE_CODE_MONITORING_TOKEN precedence.
+// matching getMonitoringToken's CLAUDE_CODE_MONITORING_TOKEN precedence. The env
+// token must be a valid (non-expired) JWT: GetMonitoringToken drops an expired or
+// unparseable env token (PR #602, jwt.IsTokenExpired) so callers fall through to
+// refresh rather than attaching a stale token — so this test supplies a real JWT
+// with a future exp.
 func TestGetMCPAuthHeader_EnvToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir)
-	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "env-supplied-token")
+	envToken := fakeJWT(t, map[string]interface{}{"exp": time.Now().Unix() + 3600})
+	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", envToken)
 
 	cfg := &config.ProfileConfig{
 		ClientID:          "test-client",
@@ -228,7 +233,15 @@ func TestGetMCPAuthHeader_EnvToken(t *testing.T) {
 	}
 	app := &credentialApp{profile: "test-mcp-auth-env", cfg: cfg, providerType: "okta"}
 
-	if code := app.getMCPAuthHeader(); code != 0 {
-		t.Fatalf("getMCPAuthHeader exit = %d, want 0 with env token", code)
+	out := captureMCPStdout(t, func() int { return app.getMCPAuthHeader() })
+	if out.code != 0 {
+		t.Fatalf("getMCPAuthHeader exit = %d, want 0 with a valid env token", out.code)
+	}
+	var header map[string]string
+	if err := json.Unmarshal([]byte(out.stdout), &header); err != nil {
+		t.Fatalf("emitted header not JSON: %v (raw=%q)", err, out.stdout)
+	}
+	if header["Authorization"] != "Bearer "+envToken {
+		t.Errorf("Authorization = %q, want the env-supplied JWT", header["Authorization"])
 	}
 }
