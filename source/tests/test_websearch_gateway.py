@@ -126,10 +126,11 @@ def test_preflight_blocks_non_oidc_provider():
     assert "OIDC" in msg
 
 
-def test_preflight_blocks_azure_without_audience():
+def test_preflight_ok_for_azure_without_audience():
+    """Audience is optional: Entra defaults to validating aud == client_id."""
     ok, msg = websearch_preflight(_azure_profile(websearch_jwt_audience=None))
-    assert ok is False
-    assert "audience" in msg.lower()
+    assert ok is True
+    assert msg is None
 
 
 def test_preflight_blocks_unsupported_region():
@@ -150,8 +151,7 @@ def test_preflight_blocks_cognito_without_pool():
 def test_discovery_url_cognito_uses_pool_region():
     url = _websearch_discovery_url(_cognito_profile())
     assert url == (
-        "https://cognito-idp.eu-central-1.amazonaws.com/"
-        "eu-central-1_AbCdEf/.well-known/openid-configuration"
+        "https://cognito-idp.eu-central-1.amazonaws.com/" "eu-central-1_AbCdEf/.well-known/openid-configuration"
     )
 
 
@@ -184,29 +184,31 @@ def test_discovery_url_google():
 # --- CFN parameter derivation (Req 5.3, 5.4, 3.7) ---
 
 
-def test_params_cognito_use_client_id_mode():
+def test_params_cognito_uses_client_id_as_audience():
     params = build_websearch_params(_cognito_profile(websearch_region="us-east-1"))
-    assert "JwtValidationMode=client_id" in params
-    assert "JwtAllowedClients=client123" in params
-    assert "WebSearchRegion=us-east-1" in params
-    assert not any(p.startswith("JwtAllowedAudience=") for p in params)
-    assert not any(p.startswith("WebSearchDomainDenylist=") for p in params)
+    assert "ClientId=client123" in params
+    assert any(p.startswith("DiscoveryUrl=") for p in params)
+    assert not any(p.startswith("WebSearchRegion=") for p in params)
+    assert not any(p.startswith("DomainExcludeList=") for p in params)
 
 
-def test_params_azure_use_audience_mode():
+def test_params_azure_custom_audience_overrides_client_id():
     params = build_websearch_params(_azure_profile())
-    assert "JwtValidationMode=audience" in params
-    assert "JwtAllowedAudience=api://appclient123" in params
-    assert not any(p.startswith("JwtAllowedClients=") for p in params)
+    assert "ClientId=api://appclient123" in params
+    assert any(p.startswith("DiscoveryUrl=") for p in params)
 
 
-def test_params_okta_use_audience_mode_with_client_id():
+def test_params_azure_without_audience_falls_back_to_client_id():
+    params = build_websearch_params(_azure_profile(websearch_jwt_audience=None))
+    assert "ClientId=appclient123" in params
+
+
+def test_params_okta_uses_client_id_as_audience():
     profile = _cognito_profile(provider_type="okta", provider_domain="company.okta.com")
     params = build_websearch_params(profile)
-    assert "JwtValidationMode=audience" in params
-    assert "JwtAllowedAudience=client123" in params
+    assert "ClientId=client123" in params
 
 
 def test_params_include_domain_denylist_when_set():
     params = build_websearch_params(_cognito_profile(websearch_domain_denylist=["a.com", "b.com"]))
-    assert "WebSearchDomainDenylist=a.com,b.com" in params
+    assert "DomainExcludeList=a.com,b.com" in params
