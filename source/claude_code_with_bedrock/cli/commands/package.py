@@ -3950,6 +3950,7 @@ Available metrics include:
         """
         from claude_code_with_bedrock.cli.utils.cowork_3p import (
             add_monitoring_config,
+            add_websearch_mcp_config,
             build_mdm_config,
             derive_model_aliases,
             generate_all,
@@ -3979,6 +3980,7 @@ Available metrics include:
                 mdm_config["inferenceSessionLifetimeSec"] = profile.cowork_inference_session_lifetime_sec
 
             add_monitoring_config(mdm_config, profile, console)
+            add_websearch_mcp_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 
         except Exception as e:
