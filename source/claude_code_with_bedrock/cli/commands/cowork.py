@@ -12,6 +12,7 @@ from rich.panel import Panel
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
     add_monitoring_config,
+    add_websearch_mcp_config,
     build_mdm_config,
     derive_model_aliases,
     generate_json,
@@ -124,6 +125,9 @@ class CoworkGenerateCommand(Command):
 
         # Add monitoring OTLP endpoint if available
         add_monitoring_config(mdm_config, profile, console)
+
+        # Add the AgentCore web search gateway as a managed MCP server (if enabled)
+        add_websearch_mcp_config(mdm_config, profile, console)
 
         # Generate requested formats
         generated = []
