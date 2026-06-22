@@ -31,6 +31,7 @@ from .commands.quota import (
     QuotaExportCommand,
     QuotaImportCommand,
     QuotaListCommand,
+    QuotaSetCommand,
     QuotaSetDefaultCommand,
     QuotaSetGroupCommand,
     QuotaSetUserCommand,
@@ -77,6 +78,7 @@ def create_application() -> Application:
 
     # Quota management commands
     application.add(QuotaCommand())
+    application.add(QuotaSetCommand())
     application.add(QuotaSetUserCommand())
     application.add(QuotaSetGroupCommand())
     application.add(QuotaSetDefaultCommand())

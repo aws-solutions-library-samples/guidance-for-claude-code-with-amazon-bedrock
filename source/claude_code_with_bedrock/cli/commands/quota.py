@@ -231,6 +231,7 @@ class QuotaCommand(Command):
         self.line("  quota <subcommand> [options]")
         self.line("")
         self.line("<info>Available subcommands:</info>")
+        self.line("  <comment>quota set</comment>          Set quota (user, group, or default)")
         self.line("  <comment>quota set-user</comment>     Set quota policy for a specific user")
         self.line("  <comment>quota set-group</comment>    Set quota policy for a group")
         self.line("  <comment>quota set-default</comment>  Set the default quota policy")
@@ -244,6 +245,87 @@ class QuotaCommand(Command):
         self.line("")
         self.line("Run <comment>ccwb quota <subcommand> --help</comment> for details on a subcommand.")
         return 0
+
+
+class QuotaSetCommand(Command):
+    """Set quota policy (unified interface).
+
+    Routes to set-user, set-group, or set-default based on arguments:
+      ccwb quota set user@co.com --budget 50          → per-user policy
+      ccwb quota set --group engineering --budget 200 → per-group policy
+      ccwb quota set --default --budget 30            → default policy
+    """
+
+    name = "quota set"
+    description = "Set quota policy for a user, group, or default"
+
+    arguments = [
+        argument("identifier", description="User email or group name (omit for --default)", optional=True),
+    ]
+
+    options = [
+        option("profile", description="Configuration profile", flag=False, default=None),
+        option("group", "g", description="Set policy for a group (identifier is group name)", flag=True),
+        option("default", None, description="Set the default policy for all users", flag=True),
+        option("monthly-limit", "m", description="Monthly token limit (e.g., 300M, 1B)", flag=False),
+        option("daily-limit", "d", description="Daily token limit (e.g., 15M)", flag=False),
+        option("monthly-cost-limit", None, description="Monthly cost limit in USD (e.g., 50)", flag=False),
+        option("daily-cost-limit", None, description="Daily cost limit in USD (e.g., 10)", flag=False),
+        option("budget", "b", description="Monthly budget in USD (e.g., 50)", flag=False),
+        option("daily-budget", None, description="Daily budget in USD (e.g., 10)", flag=False),
+        option("enforcement", "e", description="Enforcement mode: 'alert' (default) or 'block'", flag=False),
+        option("daily-enforcement", None, description="Daily enforcement mode: 'alert' or 'block'", flag=False),
+        option("disabled", None, description="Create policy in disabled state", flag=True),
+    ]
+
+    def handle(self) -> int:
+        """Route to the appropriate set-* subcommand."""
+        identifier = self.argument("identifier")
+        is_group = self.option("group")
+        is_default = self.option("default")
+
+        if is_default and is_group:
+            self.line("<error>Cannot use both --default and --group</error>")
+            return 1
+
+        # Build option args to pass through
+        pass_opts = []
+        for opt_name in (
+            "profile",
+            "monthly-limit",
+            "daily-limit",
+            "monthly-cost-limit",
+            "daily-cost-limit",
+            "budget",
+            "daily-budget",
+            "enforcement",
+            "daily-enforcement",
+        ):
+            val = self.option(opt_name)
+            if val:
+                pass_opts.append(f"--{opt_name}={val}")
+        if self.option("disabled"):
+            pass_opts.append("--disabled")
+
+        opts_str = " ".join(pass_opts)
+
+        if is_default:
+            return self.call("quota set-default", f"set-default {opts_str}")
+        elif is_group:
+            if not identifier:
+                self.line("<error>Group name is required: ccwb quota set --group GROUP_NAME</error>")
+                return 1
+            return self.call("quota set-group", f"set-group {identifier} {opts_str}")
+        else:
+            if not identifier:
+                self.line("<error>Email is required: ccwb quota set user@example.com</error>")
+                self.line("  Or use --group GROUP_NAME or --default")
+                return 1
+            # Validate email format
+            if not _validate_email(identifier):
+                self.line(f"<error>Invalid email: {identifier}. Did you mean --group {identifier}?</error>")
+                return 1
+            return self.call("quota set-user", f"set-user {identifier} {opts_str}")
 
 
 class QuotaSetUserCommand(Command):
