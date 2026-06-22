@@ -99,6 +99,7 @@ class TestIAMPolicyValidity:
     # Valid IAM action prefixes for services used in this project
     VALID_ACTION_PREFIXES = {
         "bedrock",
+        "bedrock-agentcore",
         "cloudtrail",
         "cognito-identity",
         "cognito-idp",
