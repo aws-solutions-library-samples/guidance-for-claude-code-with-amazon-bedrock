@@ -7,7 +7,7 @@ Source contract: websearch-feature/spec.md AC1 / AC3 / AC9.
 
 - AC1: Gateway (CUSTOM_JWT, MCP) + web-search connector target + service role
   with bedrock-agentcore:InvokeWebSearch.
-- AC3: the CUSTOM_JWT authorizer config (discoveryUrl + allowedClients == client_id)
+- AC3: the CUSTOM_JWT authorizer config (discoveryUrl + allowedAudience == client_id)
   is parameterized (values produced per-provider by deploy.py in T4).
 - AC9: the template passes the repo's cfn-lint gate (CI ignore-check list).
 """
@@ -116,7 +116,7 @@ class TestParameters:
 
     def test_client_id_param(self, template):
         params = template.get("Parameters", {})
-        assert "ClientId" in params, "ClientId param required (becomes allowedClients)"
+        assert "ClientId" in params, "ClientId param required (becomes allowedAudience)"
 
     def test_domain_exclude_list_param_optional(self, template):
         # Optional domain filter — present and defaulted so the stack deploys without it.
@@ -144,8 +144,17 @@ class TestGateway:
         assert jwt, "AuthorizerConfiguration must carry a customJWTAuthorizer block"
         # discoveryUrl wired from the DiscoveryUrl param
         assert any("DiscoveryUrl" in s for s in _walk_strings(jwt)), "discoveryUrl must reference DiscoveryUrl param"
-        # allowedClients wired from the ClientId param
-        assert any("ClientId" in s for s in _walk_strings(jwt)), "allowedClients must reference ClientId param"
+        # Audience match (NOT client match): the uniform OIDC id_token carries the
+        # client_id in aud, not in a client_id claim, so the authorizer must match
+        # on AllowedAudience. AllowedClients would 403 the id_token (Phase 0
+        # experiment A; websearch-feature/research/idtoken-experiment.md).
+        aud = jwt.get("AllowedAudience", jwt.get("allowedAudience"))
+        assert aud, "authorizer must match on AllowedAudience (the id_token's aud), not AllowedClients"
+        assert "AllowedClients" not in jwt and "allowedClients" not in jwt, (
+            "AllowedClients matches the client_id claim, which the id_token lacks — would 403"
+        )
+        # allowedAudience wired from the ClientId param
+        assert any("ClientId" in s for s in _walk_strings(aud)), "allowedAudience must reference ClientId param"
 
     def test_gateway_name_uses_stack_name(self, resources):
         # cfn-naming rule: no hardcoded names.

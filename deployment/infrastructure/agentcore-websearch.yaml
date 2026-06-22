@@ -24,9 +24,12 @@ Parameters:
   ClientId:
     Type: String
     Description: >-
-      OIDC client_id. Becomes the gateway's allowedClients entry; the minted
+      OIDC client_id. Becomes the gateway's allowedAudience entry; the minted
       id_token carries aud == client_id (no per-resource audience requested),
-      so the same token validates here as at the quota authorizer.
+      so matching on the audience validates the same uniform id_token across
+      every OIDC provider (Cognito, Okta, Auth0, Azure, Google) with no
+      customer-side IdP config. Matching on allowedClients instead would reject
+      the id_token, whose client identity lives in aud, not a client_id claim.
     MinLength: 1
 
   DomainExcludeList:
@@ -88,7 +91,10 @@ Resources:
       AuthorizerConfiguration:
         CustomJWTAuthorizer:
           DiscoveryUrl: !Ref DiscoveryUrl
-          AllowedClients:
+          # Match on audience, not client. The uniform OIDC id_token carries the
+          # client_id in aud (not in a client_id claim), so AllowedAudience
+          # validates it across every provider; AllowedClients would 403 it.
+          AllowedAudience:
             - !Ref ClientId
       RoleArn: !GetAtt WebSearchGatewayRole.Arn
 
