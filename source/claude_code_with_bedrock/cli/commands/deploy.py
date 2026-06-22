@@ -48,10 +48,10 @@ def _extract_azure_tenant_id(domain: str) -> str:
     return match.group(0) if match else domain
 
 
-# Provider types whose JWT the AgentCore Web Search gateway has been validated
-# against. The gateway authorizer is provider-agnostic, but the CLI only offers
-# web search for the providers we have tested end to end.
-WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure")
+# Provider types supported by the AgentCore Web Search gateway. The CUSTOM_JWT
+# authorizer is provider-agnostic (validates any OIDC id_token), so all OIDC
+# providers work. Non-OIDC (idc, none) have no id_token to validate.
+WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure", "okta", "auth0", "google", "generic")
 
 
 def get_websearch_region(profile) -> str:
@@ -69,8 +69,9 @@ def websearch_preflight(profile) -> tuple[bool, str | None]:
     provider = getattr(profile, "provider_type", None)
     if provider not in WEBSEARCH_SUPPORTED_PROVIDERS:
         return False, (
-            f"Web search is only supported for provider types "
-            f"{', '.join(WEBSEARCH_SUPPORTED_PROVIDERS)} (profile provider_type: {provider})."
+            f"Web search requires an OIDC provider (one of: "
+            f"{', '.join(WEBSEARCH_SUPPORTED_PROVIDERS)}). "
+            f"Current provider_type: '{provider}'."
         )
 
     region = get_websearch_region(profile)
@@ -94,27 +95,53 @@ def websearch_preflight(profile) -> tuple[bool, str | None]:
                 "(websearch_jwt_audience, e.g. api://<app-id>). Re-run 'ccwb init' to set it."
             )
 
+    if provider == "generic":
+        if not getattr(profile, "oidc_issuer_url", None):
+            return False, (
+                "Generic OIDC provider requires oidc_issuer_url to derive the "
+                "web-search gateway discovery URL. Re-run 'ccwb init'."
+            )
+
     return True, None
 
 
 def _websearch_discovery_url(profile) -> str:
-    """Build the OIDC discovery URL for the gateway CUSTOM_JWT authorizer."""
+    """Build the OIDC discovery URL for the gateway CUSTOM_JWT authorizer.
+
+    The gateway's expected issuer must match the id_token's actual `iss` claim,
+    so this derives the issuer per-provider and appends the well-known suffix.
+    """
     provider = profile.provider_type
+    provider_domain = (getattr(profile, "provider_domain", "") or "").rstrip("/")
+
     if provider == "cognito":
         pool_id = profile.cognito_user_pool_id
         pool_region = pool_id.split("_")[0] if pool_id and "_" in pool_id else profile.aws_region
         return f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/openid-configuration"
-    # azure / Entra ID
-    tenant_id = _extract_azure_tenant_id(profile.oidc_issuer_url or profile.provider_domain or "")
-    return f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
+    elif provider == "azure":
+        tenant_id = _extract_azure_tenant_id(getattr(profile, "oidc_issuer_url", None) or provider_domain or "")
+        return f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
+    elif provider == "okta":
+        return f"https://{provider_domain}/oauth2/default/.well-known/openid-configuration"
+    elif provider == "auth0":
+        return f"https://{provider_domain}/.well-known/openid-configuration"
+    elif provider == "google":
+        return "https://accounts.google.com/.well-known/openid-configuration"
+    elif provider == "generic":
+        issuer = (getattr(profile, "oidc_issuer_url", "") or "").rstrip("/")
+        if not issuer.startswith(("http://", "https://")):
+            issuer = f"https://{issuer}"
+        return f"{issuer}/.well-known/openid-configuration"
+    else:
+        raise ValueError(f"Unsupported provider_type '{provider}' for web search.")
 
 
 def build_websearch_params(profile) -> list[str]:
     """Build CloudFormation parameter overrides for the web search gateway stack.
 
     Derives the JWT validation mode and client/audience from the existing IdP
-    config: Cognito validates client_id (AllowedClients), Entra ID validates the
-    token audience (AllowedAudience).
+    config: Cognito validates client_id (AllowedClients), all other OIDC providers
+    validate the token audience (AllowedAudience).
     """
     region = get_websearch_region(profile)
     discovery_url = _websearch_discovery_url(profile)
@@ -124,13 +151,59 @@ def build_websearch_params(profile) -> list[str]:
     ]
     if profile.provider_type == "cognito":
         params += ["JwtValidationMode=client_id", f"JwtAllowedClients={profile.client_id}"]
-    else:  # azure
+    elif profile.provider_type == "azure":
+        # Entra ID uses a dedicated audience (API Application ID URI)
         params += ["JwtValidationMode=audience", f"JwtAllowedAudience={profile.websearch_jwt_audience}"]
+    else:
+        # Okta, Auth0, Google, generic — audience is the client_id
+        client_id = getattr(profile, "client_id", "") or ""
+        params += ["JwtValidationMode=audience", f"JwtAllowedAudience={client_id}"]
 
     denylist = getattr(profile, "websearch_domain_denylist", None) or []
     if denylist:
         params.append(f"WebSearchDomainDenylist={','.join(denylist)}")
     return params
+
+
+def _poll_websearch_target_ready(
+    gateway_id: str, region: str, console, timeout: int = 600, interval: int = 15
+) -> bool:
+    """Poll the gateway's connector target until READY.
+
+    CFN CREATE_COMPLETE precedes the target reaching READY — the connector
+    provisions asynchronously. Returns True on READY, False on FAILED or timeout.
+    """
+    import time
+
+    try:
+        import boto3
+
+        client = boto3.client("bedrock-agentcore-control", region_name=region)
+    except Exception as e:
+        console.print(f"[yellow]\u26a0 Could not create AgentCore client to poll target: {e}[/yellow]")
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = client.list_gateway_targets(gatewayIdentifier=gateway_id, maxResults=1)
+            targets = resp.get("gatewayTargets", [])
+            if targets:
+                status = targets[0].get("status", "")
+                if status == "READY":
+                    console.print("[green]\u2713 Web search connector target is READY[/green]")
+                    return True
+                elif status == "FAILED":
+                    reason = targets[0].get("statusReason", "unknown")
+                    console.print(f"[red]\u2717 Connector target FAILED: {reason}[/red]")
+                    return False
+                console.print(f"[dim]  Connector status: {status}, waiting...[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]  Poll error (retrying): {e}[/yellow]")
+        time.sleep(interval)
+
+    console.print(f"[yellow]\u26a0 Connector target did not reach READY within {timeout}s[/yellow]")
+    return False
 
 
 class DeployCommand(Command):
@@ -275,7 +348,7 @@ class DeployCommand(Command):
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "websearch":
-                if not getattr(profile, "cowork_websearch_enabled", False):
+                if not getattr(profile, "web_search_enabled", False):
                     console.print("[yellow]Web search is not enabled in your configuration.[/yellow]")
                     console.print("Run 'poetry run ccwb init' and enable Claude Cowork web search.")
                     return 1
@@ -353,7 +426,7 @@ class DeployCommand(Command):
 
             # Web search gateway — independent stack, only needs the IdP from auth.
             # Deployed cross-region (us-east-1) where the connector is available.
-            if getattr(profile, "cowork_websearch_enabled", False):
+            if getattr(profile, "web_search_enabled", False):
                 ok, msg = websearch_preflight(profile)
                 if ok:
                     stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
@@ -1172,13 +1245,31 @@ class DeployCommand(Command):
                 template = project_root / "deployment" / "infrastructure" / "bedrock-agentcore-gateway.yaml"
                 stack_name = profile.stack_names.get("websearch", f"{profile.identity_pool_name}-websearch")
                 params = build_websearch_params(profile)
-                return deploy_with_cf(
+                result = deploy_with_cf(
                     template,
                     stack_name,
                     params,
                     task_description=f"Deploying AgentCore web search gateway in {ws_region}...",
                     cf=cf,
                 )
+                if result == 0:
+                    # Persist gateway URL for package.py / credential-process
+                    gateway_url = cf.get_stack_output(stack_name, "GatewayMcpEndpoint")
+                    if gateway_url:
+                        profile.websearch_gateway_url = gateway_url
+                        Config.save_profile(profile)
+                        console.print(f"[green]✓ Gateway URL saved: {gateway_url}[/green]")
+                    # Poll connector target until READY (async provisioning)
+                    gateway_id = cf.get_stack_output(stack_name, "GatewayId")
+                    if gateway_id:
+                        ready = _poll_websearch_target_ready(gateway_id, ws_region, console)
+                        if not ready:
+                            console.print(
+                                "[yellow]⚠ Connector target not yet READY. "
+                                "Re-run 'ccwb deploy websearch' to re-check, or "
+                                "'ccwb destroy websearch' to tear down.[/yellow]"
+                            )
+                return result
 
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")

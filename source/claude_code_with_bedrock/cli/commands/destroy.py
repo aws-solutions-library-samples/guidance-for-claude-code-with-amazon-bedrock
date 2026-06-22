@@ -144,7 +144,7 @@ class DestroyCommand(Command):
                 continue
             if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
                 continue
-            if stack == "websearch" and not getattr(profile, "cowork_websearch_enabled", False):
+            if stack == "websearch" and not getattr(profile, "web_search_enabled", False):
                 continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")

@@ -1,4 +1,4 @@
-# ABOUTME: Tests for the Claude Cowork web search gateway wiring (config + deploy)
+# ABOUTME: Tests for the web search gateway wiring (config + deploy)
 # ABOUTME: Covers Profile backward-compat, provider/region guards, and CFN param derivation
 
 """Unit tests for the AgentCore web search gateway deploy wiring (PR 2)."""
@@ -22,7 +22,7 @@ def _cognito_profile(**overrides) -> Profile:
         "identity_pool_name": "ccwb",
         "provider_type": "cognito",
         "cognito_user_pool_id": "eu-central-1_AbCdEf",
-        "cowork_websearch_enabled": True,
+        "web_search_enabled": True,
     }
     data.update(overrides)
     return Profile.from_dict(data)
@@ -38,7 +38,7 @@ def _azure_profile(**overrides) -> Profile:
         "identity_pool_name": "ccwb",
         "provider_type": "azure",
         "oidc_issuer_url": "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
-        "cowork_websearch_enabled": True,
+        "web_search_enabled": True,
         "websearch_jwt_audience": "api://appclient123",
     }
     data.update(overrides)
@@ -59,7 +59,7 @@ def test_profile_without_websearch_fields_loads_with_defaults():
         "identity_pool_name": "ccwb",
     }
     profile = Profile.from_dict(legacy)
-    assert profile.cowork_websearch_enabled is False
+    assert profile.web_search_enabled is False
     assert profile.websearch_region is None
     assert profile.websearch_jwt_audience is None
     assert profile.websearch_domain_denylist == []
@@ -69,7 +69,7 @@ def test_profile_websearch_roundtrip():
     """to_dict/from_dict preserves the web search fields."""
     profile = _cognito_profile(websearch_region="us-east-1", websearch_domain_denylist=["bad.com"])
     restored = Profile.from_dict(profile.to_dict())
-    assert restored.cowork_websearch_enabled is True
+    assert restored.web_search_enabled is True
     assert restored.websearch_region == "us-east-1"
     assert restored.websearch_domain_denylist == ["bad.com"]
 
@@ -102,10 +102,28 @@ def test_preflight_ok_for_azure_with_audience():
     assert msg is None
 
 
-def test_preflight_blocks_unsupported_provider():
-    ok, msg = websearch_preflight(_cognito_profile(provider_type="okta"))
+def test_preflight_ok_for_okta():
+    profile = _cognito_profile(provider_type="okta", provider_domain="company.okta.com")
+    ok, msg = websearch_preflight(profile)
+    assert ok is True
+
+
+def test_preflight_ok_for_auth0():
+    profile = _cognito_profile(provider_type="auth0", provider_domain="tenant.auth0.com")
+    ok, msg = websearch_preflight(profile)
+    assert ok is True
+
+
+def test_preflight_ok_for_google():
+    profile = _cognito_profile(provider_type="google", provider_domain="accounts.google.com")
+    ok, msg = websearch_preflight(profile)
+    assert ok is True
+
+
+def test_preflight_blocks_non_oidc_provider():
+    ok, msg = websearch_preflight(_cognito_profile(provider_type="idc"))
     assert ok is False
-    assert "okta" in msg and "cognito" in msg
+    assert "OIDC" in msg
 
 
 def test_preflight_blocks_azure_without_audience():
@@ -145,6 +163,24 @@ def test_discovery_url_azure_uses_tenant():
     )
 
 
+def test_discovery_url_okta():
+    profile = _cognito_profile(provider_type="okta", provider_domain="company.okta.com")
+    url = _websearch_discovery_url(profile)
+    assert url == "https://company.okta.com/oauth2/default/.well-known/openid-configuration"
+
+
+def test_discovery_url_auth0():
+    profile = _cognito_profile(provider_type="auth0", provider_domain="tenant.auth0.com")
+    url = _websearch_discovery_url(profile)
+    assert url == "https://tenant.auth0.com/.well-known/openid-configuration"
+
+
+def test_discovery_url_google():
+    profile = _cognito_profile(provider_type="google", provider_domain="accounts.google.com")
+    url = _websearch_discovery_url(profile)
+    assert url == "https://accounts.google.com/.well-known/openid-configuration"
+
+
 # --- CFN parameter derivation (Req 5.3, 5.4, 3.7) ---
 
 
@@ -162,6 +198,13 @@ def test_params_azure_use_audience_mode():
     assert "JwtValidationMode=audience" in params
     assert "JwtAllowedAudience=api://appclient123" in params
     assert not any(p.startswith("JwtAllowedClients=") for p in params)
+
+
+def test_params_okta_use_audience_mode_with_client_id():
+    profile = _cognito_profile(provider_type="okta", provider_domain="company.okta.com")
+    params = build_websearch_params(profile)
+    assert "JwtValidationMode=audience" in params
+    assert "JwtAllowedAudience=client123" in params
 
 
 def test_params_include_domain_denylist_when_set():
