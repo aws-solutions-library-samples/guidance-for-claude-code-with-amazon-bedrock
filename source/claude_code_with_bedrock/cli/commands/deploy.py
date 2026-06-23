@@ -435,7 +435,33 @@ class DeployCommand(Command):
 
             # Deploy based on stack type
             if stack_type == "auth":
-                # Select template based on provider type
+                # IAM Identity Center uses a dedicated template and different parameters
+                if profile.effective_auth_type == "idc":
+                    template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+                    stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+
+                    bedrock_regions = profile.allowed_bedrock_regions
+                    if not bedrock_regions:
+                        bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
+                    idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
+                    params = [
+                        f"FederatedRoleName={idc_role_name}",
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        capabilities=["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying IAM Identity Center auth stack...",
+                    )
+
+                # OIDC providers
                 provider_type = profile.provider_type or "okta"
                 template_map = {
                     "okta": "bedrock-auth-okta.yaml",
@@ -949,7 +975,11 @@ class DeployCommand(Command):
 
                     # Deploy the packaged template
                     result = deploy_with_cf(
-                        packaged_template_path, stack_name, params, task_description="Deploying quota monitoring..."
+                        packaged_template_path,
+                        stack_name,
+                        params,
+                        capabilities=["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying quota monitoring...",
                     )
 
                     # Seed default quota policy on successful deploy
