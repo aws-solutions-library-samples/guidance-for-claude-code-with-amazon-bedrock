@@ -561,17 +561,22 @@ class MultiProviderAuth:
 
         return ",".join(attr_pairs)
 
-    def _fetch_honeycomb_config_from_secrets_manager(self, secret_name="shared/claude-code-for-everyone-otel-config"):
-        """Fetch Honeycomb configuration for authentication from AWS Secrets Manager
+    def _fetch_env_overrides_from_secrets_manager(self, secret_name="shared/claude-code-for-everyone-environment-variables"):
+        """Fetch environment variable overrides from AWS Secrets Manager.
+
+        The secret must be a JSON object whose keys are environment variable names and
+        whose values are the corresponding string values.  All entries are merged into
+        ~/.claude/settings.json["env"], with secret values taking precedence over
+        any defaults computed locally.
 
         Args:
-            secret_name: Name of the secret in Secrets Manager (default: claude-code-otel-config)
+            secret_name: Name of the secret in Secrets Manager
 
         Returns:
-            Dict with 'honeycomb_api_key' and 'honeycomb_dataset_name'
+            dict[str, str] mapping env var names to values
 
         Raises:
-            Exception: If secret cannot be fetched or parsed
+            Exception: If the secret cannot be fetched or parsed
         """
         try:
             import boto3
@@ -588,25 +593,20 @@ class MultiProviderAuth:
             response = secrets_client.get_secret_value(SecretId=secret_name)
             secret_data = json.loads(response["SecretString"])
 
-            # Validate required fields
-            if "honeycomb_api_key" not in secret_data or "honeycomb_dataset_name" not in secret_data:
+            if not isinstance(secret_data, dict):
                 raise ValueError(
-                    f"Secret '{secret_name}' missing required fields. "
-                    f"Expected: honeycomb_api_key, honeycomb_dataset_name. "
-                    f"Found: {list(secret_data.keys())}"
+                    f"Secret '{secret_name}' must be a JSON object mapping env var names to values, "
+                    f"got {type(secret_data).__name__}"
                 )
 
-            self._debug_print(f"Successfully fetched OTEL headers from Secrets Manager")
-            return {
-                "honeycomb_api_key": secret_data["honeycomb_api_key"],
-                "honeycomb_dataset_name": secret_data["honeycomb_dataset_name"]
-            }
+            self._debug_print(f"Successfully fetched env overrides from Secrets Manager ({len(secret_data)} keys)")
+            return {str(k): str(v) for k, v in secret_data.items()}
         except Exception as e:
             error_msg = str(e)
             if "ResourceNotFoundException" in error_msg:
                 raise Exception(
                     f"OTEL configuration secret '{secret_name}' not found in AWS Secrets Manager. "
-                    f"Please create the secret with keys: honeycomb_api_key, honeycomb_dataset_name"
+                    f"Please create the secret as a JSON object mapping environment variable names to values."
                 )
             elif "AccessDeniedException" in error_msg:
                 raise Exception(
@@ -614,7 +614,7 @@ class MultiProviderAuth:
                     f"Please ensure your IAM role has secretsmanager:GetSecretValue permission."
                 )
             else:
-                raise Exception(f"Failed to fetch OTEL headers from Secrets Manager: {error_msg}")
+                raise Exception(f"Failed to fetch env overrides from Secrets Manager: {error_msg}")
 
     def _update_claude_otel_attributes(self, attributes):
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -630,7 +630,12 @@ class MultiProviderAuth:
             json.dump(settings, f, indent=2)
         self._debug_print(f"Updated Claude settings with OTEL attributes: {attributes[:100]}...")
 
-    def _update_claude_otel_headers(self, headers):
+    def _merge_claude_env_settings(self, env_overrides):
+        """Merge env_overrides into ~/.claude/settings.json["env"].
+
+        Existing keys not present in env_overrides are preserved.  Keys present in
+        env_overrides overwrite whatever was previously stored.
+        """
         settings_path = Path.home() / ".claude" / "settings.json"
         if settings_path.exists():
             with open(settings_path, "r") as f:
@@ -639,10 +644,10 @@ class MultiProviderAuth:
             settings = {}
         if "env" not in settings:
             settings["env"] = {}
-        settings["env"]["OTEL_EXPORTER_OTLP_HEADERS"] = headers
+        settings["env"].update(env_overrides)
         with open(settings_path, "w") as f:
             json.dump(settings, f, indent=2)
-        self._debug_print(f"Updated Claude settings with OTEL headers ...")
+        self._debug_print(f"Merged {len(env_overrides)} env var(s) into Claude settings")
 
     def update_claude_otel_settings(self):
         """Update Claude OTEL settings
@@ -669,21 +674,16 @@ class MultiProviderAuth:
             self._debug_print(f"OTEL resource attributes formatted: {otel_attrs[:100]}...")
             self._update_claude_otel_attributes(otel_attrs)
 
-            self._debug_print(f"Fetching Honeycomb config from Secrets Manager...")
+            self._debug_print("Fetching env overrides from Secrets Manager...")
             try:
-                hc_config = self._fetch_honeycomb_config_from_secrets_manager()
-                headers = [
-                    f"x-honeycomb-team={hc_config['honeycomb_api_key']}",
-                    f"x-honeycomb-dataset={hc_config['honeycomb_dataset_name']}",
-                ]
-                headers_str = ",".join(headers)
-                self._update_claude_otel_headers(headers_str)
+                env_overrides = self._fetch_env_overrides_from_secrets_manager()
+                self._merge_claude_env_settings(env_overrides)
 
             except Exception as e:
                 # Secrets Manager errors are non-fatal for OTEL setup
                 error_msg = str(e)
-                self._debug_print(f"Warning: Failed to fetch Honeycomb config from Secrets Manager: {error_msg}")
-                self._debug_print("OTEL attributes were set, but headers could not be updated")
+                self._debug_print(f"Warning: Failed to fetch env overrides from Secrets Manager: {error_msg}")
+                self._debug_print("OTEL attributes were set, but env overrides could not be applied")
 
         except Exception as e:
             # Log the error but don't raise - OTEL setup failure should not block credential operations
