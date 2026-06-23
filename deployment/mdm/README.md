@@ -48,6 +48,21 @@ Generated files are pre-populated with your Bedrock region, profile name, and mo
 4. Configure the policies under "Claude Cowork 3P (Bedrock)"
 5. Assign to Smart Groups
 
+> **Tip: Two-policy pattern (community-validated)**
+>
+> The ADMX contains the configuration *schema* (template) but not customer-specific values.
+> In Workspace ONE, the recommended approach is:
+>
+> 1. **Policy 1 — ADMX template:** Import the ADMX to define the settings schema
+> 2. **Policy 2 — Configuration values:** Deploy a separate ADMX policy (or custom settings payload) with your actual Bedrock region, profile name, model aliases, etc.
+>
+> This separation provides:
+> - Clean user enrollment (values applied on device join)
+> - Clean removal (unenroll removes configuration without leftover registry keys)
+> - Reusability (same template across environments, different value policies per group)
+>
+> This pattern has been validated in production with Omnissa Workspace ONE and eliminates the need for `.reg` files or platform scripts.
+
 ### Active Directory Group Policy
 
 1. Copy `ClaudeCowork3P.admx` to `C:\Windows\PolicyDefinitions\`
