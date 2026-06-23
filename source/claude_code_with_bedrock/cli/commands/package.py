@@ -3408,6 +3408,14 @@ Available metrics include:
                 extra_keys=profile.cowork_3p_extra_keys or None,
             )
 
+            # Beta features (per-feature managed configuration keys)
+            if getattr(profile, "cowork_chat_tab_enabled", False):
+                mdm_config["chatTabEnabled"] = True
+            if getattr(profile, "cowork_chat_advanced_file_analysis", False):
+                mdm_config["chatAdvancedFileAnalysisEnabled"] = True
+            if getattr(profile, "cowork_inference_session_lifetime_sec", None):
+                mdm_config["inferenceSessionLifetimeSec"] = profile.cowork_inference_session_lifetime_sec
+
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 
