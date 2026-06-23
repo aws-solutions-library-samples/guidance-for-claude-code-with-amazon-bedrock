@@ -379,6 +379,72 @@ class InitCommand(Command):
             config["auth_type"] = auth_method
             config["sso_enabled"] = auth_method == "oidc"
 
+        # IAM Identity Center Configuration
+        if not skip_okta and config.get("auth_type") == "idc":
+            console.print("\n[bold blue]IAM Identity Center Configuration[/bold blue]")
+            console.print("─" * 30)
+            console.print()
+            console.print("Configure your IAM Identity Center (SSO) connection.")
+            console.print("Users will authenticate via their SSO portal and receive")
+            console.print("temporary credentials for Bedrock access.\n")
+
+            # IDC start URL
+            idc_start_url = questionary.text(
+                "Enter your IAM Identity Center start URL:",
+                instruction="(e.g., https://company.awsapps.com/start)",
+                default=config.get("idc_start_url", ""),
+                validate=lambda x: bool(x.strip()) or "Start URL cannot be empty",
+            ).ask()
+            if idc_start_url is None:
+                return None
+            config["idc_start_url"] = idc_start_url.strip().rstrip("/")
+
+            # SSO region (auto-suggest from start URL if possible)
+            suggested_region = "us-east-1"
+            import re as _re
+
+            _region_match = _re.search(r"\.(us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d+\.", idc_start_url)
+            if _region_match:
+                suggested_region = _region_match.group(0).strip(".")
+
+            sso_region = questionary.text(
+                "Enter your SSO region (where Identity Center is configured):",
+                default=config.get("sso_region", suggested_region),
+                validate=lambda x: bool(x.strip()) or "SSO region cannot be empty",
+            ).ask()
+            if sso_region is None:
+                return None
+            config["sso_region"] = sso_region.strip()
+
+            # AWS account ID
+            account_id = questionary.text(
+                "Enter the AWS account ID for Bedrock access:",
+                default=config.get("idc_account_id", ""),
+                validate=lambda x: (
+                    (len(x.strip()) == 12 and x.strip().isdigit()) or "Must be a 12-digit AWS account ID"
+                ),
+            ).ask()
+            if account_id is None:
+                return None
+            config["idc_account_id"] = account_id.strip()
+
+            # Permission set name
+            permission_set = questionary.text(
+                "Enter the permission set name (IAM role users will assume):",
+                instruction="(e.g., BedrockDeveloperAccess)",
+                default=config.get("idc_permission_set_name", "BedrockDeveloperAccess"),
+                validate=lambda x: bool(x.strip()) or "Permission set name cannot be empty",
+            ).ask()
+            if permission_set is None:
+                return None
+            config["idc_permission_set_name"] = permission_set.strip()
+
+            console.print("\n[green]✓[/green] IAM Identity Center configured")
+            console.print(f"  Start URL: {config['idc_start_url']}")
+            console.print(f"  Region: {config['sso_region']}")
+            console.print(f"  Account: {config['idc_account_id']}")
+            console.print(f"  Permission Set: {config['idc_permission_set_name']}")
+
         # OIDC Provider Configuration
         if not skip_okta and config.get("sso_enabled", True):
             console.print("\n[bold blue]OIDC Provider Configuration[/bold blue]")
@@ -2459,6 +2525,11 @@ class InitCommand(Command):
             "federation_type": config_data.get("federation_type", "cognito"),
             "max_session_duration": config_data.get("max_session_duration", 28800),
             "sso_enabled": config_data.get("sso_enabled", True),
+            "auth_type": config_data.get("auth_type", "oidc"),
+            "idc_start_url": config_data.get("idc_start_url"),
+            "idc_account_id": config_data.get("idc_account_id"),
+            "idc_permission_set_name": config_data.get("idc_permission_set_name"),
+            "sso_region": config_data.get("sso_region"),
             "azure_auth_mode": config_data.get("azure_auth_mode"),
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
