@@ -282,7 +282,7 @@ func (a *credentialApp) getMCPAuthHeader() int {
 		// Cached id_token expired/near-expiry. Try the silent refresh_token
 		// exchange (no browser) before giving up — but stop here: an MCP
 		// headersHelper can never drive an interactive login. Only attempt for
-		// OIDC; idc/none have no id_token (Story B).
+		// OIDC; idc/none have no id_token.
 		//
 		// Use refreshIDTokenOnly (NOT tryRefreshToken): the gateway's CUSTOM_JWT
 		// authorizer only needs the id_token, so a successful refresh must NOT be
@@ -763,7 +763,7 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 // It mirrors tryRefreshToken's endpoint/confidential-auth resolution and persists
 // the refreshed monitoring token + rotated refresh_token so the next cache read
 // hits, but never opens a browser. Returns "" on any failure so the caller fails
-// cleanly. Only meaningful for OIDC (idc/none have no id_token — Story B).
+// cleanly. Only meaningful for OIDC (idc/none have no id_token).
 func (a *credentialApp) refreshIDTokenOnly() string {
 	refreshToken := storage.LoadRefreshToken(a.profile, a.cfg.CredentialStorage)
 	if refreshToken == "" {
@@ -846,7 +846,6 @@ func (a *credentialApp) saveMonitoringTokenAndHeaders(idToken string, claims map
 		}
 	}
 }
-
 
 func (a *credentialApp) shouldRecheckQuota() bool {
 	if a.cfg.QuotaAPIEndpoint == "" {

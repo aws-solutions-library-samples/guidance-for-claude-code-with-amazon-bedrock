@@ -1,4 +1,4 @@
-# ABOUTME: Tests for the --get-mcp-auth-header mode (AC4, T3) of the credential process.
+# ABOUTME: Tests for the --get-mcp-auth-header mode of the credential process.
 # ABOUTME: Verifies cached-token header output, clean no-browser failure, and Go↔Python output parity.
 """Tests for credential-process --get-mcp-auth-header (Python side + Go parity).
 
@@ -84,6 +84,74 @@ class TestGetMCPAuthHeader:
             header = auth_instance.get_mcp_auth_header()
         line = json.dumps(header, separators=(",", ":"))
         assert line == '{"Authorization":"Bearer tok"}'
+
+    def test_expired_present_token_returns_none_with_hint(self, auth_instance, capsys):
+        """A present-but-expired cached token → None plus an 'expired' stderr hint.
+
+        The Python provider has no refresh_token store, so unlike the Go variant
+        it cannot silently re-mint an expired id_token here. It must still fail
+        cleanly (None), and emit a diagnostic distinguishing expired from absent.
+        """
+        with patch.object(auth_instance, "get_monitoring_token", return_value=None):
+            with patch.object(
+                auth_instance,
+                "_load_monitoring_token_data",
+                return_value={"token": "stale.jwt.value", "expires": 0},
+            ):
+                header = auth_instance.get_mcp_auth_header()
+        assert header is None
+        err = capsys.readouterr().err
+        assert "expired" in err.lower()
+        assert auth_instance.profile in err
+
+    def test_absent_token_returns_none_without_expired_hint(self, auth_instance, capsys):
+        """No cached blob at all → None, and NO 'expired' hint (it was never minted)."""
+        with patch.object(auth_instance, "get_monitoring_token", return_value=None):
+            with patch.object(auth_instance, "_load_monitoring_token_data", return_value=None):
+                header = auth_instance.get_mcp_auth_header()
+        assert header is None
+        assert "expired" not in capsys.readouterr().err.lower()
+
+
+class TestGetMonitoringTokenExpiry:
+    """The expiry boundary that the MCP header path depends on (Daniel #8 gap).
+
+    Exercises the real session-file load + expiry check end-to-end, so the
+    expired-token behaviour is pinned against the actual storage code rather
+    than a mock.
+    """
+
+    def _write_session_token(self, home, profile, token, expires):
+        session_dir = home / ".claude-code-session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / f"{profile}-monitoring.json").write_text(
+            json.dumps({"token": token, "expires": expires}), encoding="utf-8"
+        )
+
+    def test_present_but_expired_token_is_not_returned(self, auth_instance, monkeypatch, tmp_path):
+        """An on-disk token whose `expires` is in the past is treated as absent."""
+        auth_instance.credential_storage = "session"
+        monkeypatch.delenv("CLAUDE_CODE_MONITORING_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        now = int(__import__("time").time())
+        self._write_session_token(tmp_path, auth_instance.profile, "stale.jwt", now - 3600)
+
+        assert auth_instance.get_monitoring_token() is None
+        # ...but the raw blob is still loadable, so the header path can warn.
+        blob = auth_instance._load_monitoring_token_data()
+        assert blob is not None and blob.get("token") == "stale.jwt"
+
+    def test_valid_future_token_is_returned(self, auth_instance, monkeypatch, tmp_path):
+        """A token expiring comfortably in the future is returned verbatim."""
+        auth_instance.credential_storage = "session"
+        monkeypatch.delenv("CLAUDE_CODE_MONITORING_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        now = int(__import__("time").time())
+        self._write_session_token(tmp_path, auth_instance.profile, "fresh.jwt", now + 3600)
+
+        assert auth_instance.get_monitoring_token() == "fresh.jwt"
 
 
 # Resolve the Go credential-process package dir for the parity test.

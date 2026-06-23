@@ -849,16 +849,15 @@ class MultiProviderAuth:
             # Non-fatal error - monitoring is optional
             self._debug_print(f"Warning: Could not save monitoring token: {e}")
 
-    def get_monitoring_token(self):
-        """Retrieve valid monitoring token from configured storage"""
+    def _load_monitoring_token_data(self):
+        """Load the raw monitoring-token blob from configured storage, or None.
+
+        Returns the parsed dict (with "token"/"expires") WITHOUT applying the
+        expiry check, so callers can tell "absent" apart from "present but
+        expired". Does not consult CLAUDE_CODE_MONITORING_TOKEN (that path
+        carries no expiry metadata).
+        """
         try:
-            # First check if it's in environment (from current session)
-            import os
-
-            env_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
-            if env_token:
-                return env_token
-
             if self.credential_storage == "keyring":
                 if platform.system() == "Windows":
                     # Reassemble from chunked entries (with legacy fallback).
@@ -884,6 +883,24 @@ class MultiProviderAuth:
                 with open(token_file, encoding="utf-8") as f:
                     token_data = json.load(f)
 
+            return token_data
+        except Exception:
+            return None
+
+    def get_monitoring_token(self):
+        """Retrieve valid monitoring token from configured storage"""
+        try:
+            # First check if it's in environment (from current session)
+            import os
+
+            env_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+            if env_token:
+                return env_token
+
+            token_data = self._load_monitoring_token_data()
+            if not token_data:
+                return None
+
             # Check expiration
             exp_time = token_data.get("expires", 0)
             now = int(datetime.now(timezone.utc).timestamp())
@@ -903,14 +920,33 @@ class MultiProviderAuth:
         """Return the MCP Authorization header dict from the cached id_token, or None.
 
         {"Authorization": "Bearer <id_token>"} for the AgentCore web-search MCP
-        headersHelper. Reads only the cached/silently-refreshed token via
-        get_monitoring_token() — never opens a browser. Returns None when no
-        valid token is available so the caller fails cleanly (no hang, no prompt).
+        headersHelper. Reads only the cached token via get_monitoring_token() —
+        never opens a browser. Returns None when no valid token is available so
+        the caller fails cleanly (no hang, no prompt).
+
+        NOTE (Go/Python asymmetry): the Go credential-process silently re-mints
+        an expired id_token via a browserless refresh_token exchange
+        (refreshIDTokenOnly) before giving up. The Python provider has no
+        refresh_token store, so it cannot do that here — a present-but-expired
+        token surfaces as None. We emit a one-line stderr hint distinguishing
+        "expired" from "never authenticated" so the failure is diagnosable, then
+        rely on the next full credential-process run (which Claude Code invokes
+        routinely) to re-mint and re-cache the token. Full silent-refresh parity
+        is a larger cross-cutting change tracked separately.
         """
         token = self.get_monitoring_token()
-        if not token:
-            return None
-        return {"Authorization": f"Bearer {token}"}
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+
+        # Distinguish expired-but-present from absent for a useful diagnostic.
+        token_data = self._load_monitoring_token_data()
+        if token_data and token_data.get("token"):
+            print(
+                f"Note: cached token for profile '{self.profile}' is expired; "
+                "re-run the credential process to refresh it.",
+                file=sys.stderr,
+            )
+        return None
 
     def save_to_credentials_file(self, credentials, profile="ClaudeCode"):
         """Save credentials to ~/.aws/credentials file
