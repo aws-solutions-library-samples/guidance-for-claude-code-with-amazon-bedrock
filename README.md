@@ -419,6 +419,27 @@ cognitive-activity taxonomy (Sonnet), and generates a leadership report (Opus). 
 [`source/sampling/`](source/sampling/README.md) — see its README for setup, the 7-step pipeline,
 model-selection rationale, and the `--classify` / `--report-only` flags.
 
+### Dynamic Environment Variable Configuration
+
+The credential provider can push environment variables to all users without requiring a binary redeploy. On every successful authentication, it fetches the secret `shared/claude-code-for-everyone-environment-variables` from AWS Secrets Manager and merges its contents into `~/.claude/settings.json["env"]`. Values from the secret override any defaults already present in that file.
+
+**Secret format**
+
+The secret must be a JSON object whose keys are environment variable names and whose values are strings:
+
+```json
+{
+  "OTEL_EXPORTER_OTLP_HEADERS": "x-honeycomb-team=<api-key>,x-honeycomb-dataset=<dataset>",
+  "ANOTHER_VAR": "some-value"
+}
+```
+
+To add or rotate OTEL headers (or any other env var), update the secret in Secrets Manager — the change propagates to users on their next authentication with no package rebuild required.
+
+**IAM requirements**
+
+The `BedrockAccessPolicy` managed policy (in `deployment/infrastructure/bedrock-auth-okta.yaml`) already grants `secretsmanager:Get*` to any secret tagged `Shared: "true"`. When creating the `shared/claude-code-for-everyone-environment-variables` secret, add that tag so the policy covers it without any CloudFormation changes. If the secret is not found or access is denied, the error is logged but authentication is not blocked.
+
 ## Troubleshooting
 
 ### Clearing Cached Credentials
