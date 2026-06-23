@@ -401,9 +401,7 @@ class InitCommand(Command):
 
             # SSO region (auto-suggest from start URL if possible)
             suggested_region = "us-east-1"
-            import re as _re
-
-            _region_match = _re.search(r"\.(us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d+\.", idc_start_url)
+            _region_match = re.search(r"\.(us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d+\.", idc_start_url)
             if _region_match:
                 suggested_region = _region_match.group(0).strip(".")
 
@@ -768,7 +766,7 @@ class InitCommand(Command):
                 config["client_certificate_key_path"] = client_certificate_key_path
 
             # Credential Storage Method
-            from claude_code_with_bedrock.cli.utils.helpers import is_wsl, is_keyring_available
+            from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
 
             wsl_detected = is_wsl()
             keyring_available = is_keyring_available()
