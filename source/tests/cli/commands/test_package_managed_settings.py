@@ -325,13 +325,13 @@ class TestInstallerSudoOwnership:
         """User-space paths (~/claude-code-with-bedrock, ~/.claude, ~/.aws) must use ACTUAL_HOME."""
         script = self._get_installer_script(self._make_profile())
         # Must not hard-code ~ for user-space directories
-        assert 'mkdir -p ~/claude-code-with-bedrock' not in script
-        assert 'mkdir -p ~/.claude' not in script
-        assert 'mkdir -p ~/.aws' not in script
+        assert "mkdir -p ~/claude-code-with-bedrock" not in script
+        assert "mkdir -p ~/.claude" not in script
+        assert "mkdir -p ~/.aws" not in script
         # Must use ACTUAL_HOME variable instead
-        assert '$ACTUAL_HOME/claude-code-with-bedrock' in script
-        assert '$ACTUAL_HOME/.claude' in script
-        assert '$ACTUAL_HOME/.aws' in script
+        assert "$ACTUAL_HOME/claude-code-with-bedrock" in script
+        assert "$ACTUAL_HOME/.claude" in script
+        assert "$ACTUAL_HOME/.aws" in script
 
     def test_installer_managed_settings_does_not_exit_if_not_root(self):
         """Managed settings must not exit 1 when script runs as non-root; use inline sudo instead."""

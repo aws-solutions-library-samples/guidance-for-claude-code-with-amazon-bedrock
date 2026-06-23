@@ -114,6 +114,7 @@ class Profile:
     idc_start_url: str | None = None  # e.g. https://company.awsapps.com/start
     idc_account_id: str | None = None  # AWS account ID for IDC access
     idc_permission_set_name: str | None = None  # Permission set / role name
+    sso_region: str | None = None  # AWS region where Identity Center is configured
 
     # Confidential client authentication (Azure AD / Entra ID)
     # If neither is set, public client flow is used (current default).

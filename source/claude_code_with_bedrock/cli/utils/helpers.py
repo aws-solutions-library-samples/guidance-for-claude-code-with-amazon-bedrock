@@ -20,7 +20,7 @@ def is_wsl() -> bool:
     try:
         version_info = Path("/proc/version").read_text().lower()
         return "microsoft" in version_info or "wsl" in version_info
-    except (OSError, IOError):
+    except OSError:
         return False
 
 

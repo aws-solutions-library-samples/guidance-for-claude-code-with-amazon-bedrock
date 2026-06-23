@@ -3,10 +3,9 @@
 
 """Tests for WSL detection and keyring availability."""
 
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
 
-from claude_code_with_bedrock.cli.utils.helpers import is_wsl, is_keyring_available
+from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
 
 
 class TestIsWsl:
@@ -24,25 +23,20 @@ class TestIsWsl:
     @patch("claude_code_with_bedrock.cli.utils.helpers.Path")
     def test_wsl2_detected(self, mock_path, mock_system):
         mock_path.return_value.read_text.return_value = (
-            "Linux version 5.15.153.1-microsoft-standard-WSL2 "
-            "(gcc (GCC) 11.2.0, GNU ld (GNU Binutils) 2.37)"
+            "Linux version 5.15.153.1-microsoft-standard-WSL2 (gcc (GCC) 11.2.0, GNU ld (GNU Binutils) 2.37)"
         )
         assert is_wsl() is True
 
     @patch("claude_code_with_bedrock.cli.utils.helpers.platform.system", return_value="Linux")
     @patch("claude_code_with_bedrock.cli.utils.helpers.Path")
     def test_wsl1_detected(self, mock_path, mock_system):
-        mock_path.return_value.read_text.return_value = (
-            "Linux version 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)"
-        )
+        mock_path.return_value.read_text.return_value = "Linux version 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)"
         assert is_wsl() is True
 
     @patch("claude_code_with_bedrock.cli.utils.helpers.platform.system", return_value="Linux")
     @patch("claude_code_with_bedrock.cli.utils.helpers.Path")
     def test_native_linux_returns_false(self, mock_path, mock_system):
-        mock_path.return_value.read_text.return_value = (
-            "Linux version 6.17.0-1017-aws (buildd@lcy02-amd64-116)"
-        )
+        mock_path.return_value.read_text.return_value = "Linux version 6.17.0-1017-aws (buildd@lcy02-amd64-116)"
         assert is_wsl() is False
 
     @patch("claude_code_with_bedrock.cli.utils.helpers.platform.system", return_value="Linux")
@@ -67,7 +61,6 @@ class TestIsKeyringAvailable:
                 wraps=is_keyring_available,
             ):
                 # When keyring import fails, should return False
-                import importlib
                 with patch("builtins.__import__", side_effect=ImportError):
                     assert is_keyring_available() is False
 
@@ -81,6 +74,7 @@ class TestIsKeyringAvailable:
             with patch("claude_code_with_bedrock.cli.utils.helpers.is_wsl", return_value=False):
                 # Simulate FailKeyring detection
                 from keyring.backends.fail import Keyring as FailKeyring
+
                 mock_keyring.get_keyring.return_value = FailKeyring()
                 # This is tricky to test due to import mechanics; covered by integration
                 pass
@@ -95,11 +89,14 @@ class TestIsKeyringAvailable:
         mock_fail_module = MagicMock()
         mock_fail_keyring_class = type("FailKeyring", (), {})
 
-        with patch.dict("sys.modules", {
-            "keyring": mock_keyring,
-            "keyring.backends": MagicMock(),
-            "keyring.backends.fail": mock_fail_module,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "keyring": mock_keyring,
+                "keyring.backends": MagicMock(),
+                "keyring.backends.fail": mock_fail_module,
+            },
+        ):
             mock_fail_module.Keyring = mock_fail_keyring_class
             # backend is not an instance of FailKeyring
             assert is_keyring_available() is True

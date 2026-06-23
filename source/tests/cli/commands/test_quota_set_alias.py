@@ -7,11 +7,10 @@ Addresses #634 comment: users expect 'ccwb quota set user@co.com --budget 50'
 syntax as documented in PR #633, but only set-user/set-group/set-default existed.
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from cleo.testers.application_tester import ApplicationTester
-from cleo.testers.command_tester import CommandTester
 
 from claude_code_with_bedrock.cli import create_application
 
