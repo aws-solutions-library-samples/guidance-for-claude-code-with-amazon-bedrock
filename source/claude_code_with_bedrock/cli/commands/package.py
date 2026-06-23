@@ -2283,9 +2283,7 @@ RUN pyinstaller \
                     config[profile_name]["idc_account_id"] = profile.idc_account_id
                 if getattr(profile, "idc_permission_set_name", None):
                     config[profile_name]["idc_permission_set_name"] = profile.idc_permission_set_name
-                idc_region = (
-                    getattr(profile, "sso_region", None) or getattr(profile, "idc_region", None) or profile.aws_region
-                )
+                idc_region = getattr(profile, "idc_region", None) or profile.aws_region
                 config[profile_name]["idc_region"] = idc_region
         elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
