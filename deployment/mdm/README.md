@@ -42,26 +42,60 @@ Generated files are pre-populated with your Bedrock region, profile name, and mo
 
 ### Omnissa Workspace ONE (VMware UEM)
 
-1. Navigate to **Devices → Profiles & Resources → Profiles → Add → Windows**
-2. Choose **Administrative Templates** payload
-3. Import `ClaudeCowork3P.admx` + `ClaudeCowork3P.adml`
-4. Configure the policies under "Claude Cowork 3P (Bedrock)"
-5. Assign to Smart Groups
+Workspace ONE supports ADMX-based policy deployment via its **Windows ADMX Profiles** feature (available since UEM 24.x+). This uses the Intelligent Hub on each device to apply settings, equivalent to AD Group Policy but without domain membership.
 
-> **Tip: Two-policy pattern (community-validated)**
->
-> The ADMX contains the configuration *schema* (template) but not customer-specific values.
-> In Workspace ONE, the recommended approach is:
->
-> 1. **Policy 1 — ADMX template:** Import the ADMX to define the settings schema
-> 2. **Policy 2 — Configuration values:** Deploy a separate ADMX policy (or custom settings payload) with your actual Bedrock region, profile name, model aliases, etc.
->
-> This separation provides:
-> - Clean user enrollment (values applied on device join)
-> - Clean removal (unenroll removes configuration without leftover registry keys)
-> - Reusability (same template across environments, different value policies per group)
->
-> This pattern has been validated in production with Omnissa Workspace ONE and eliminates the need for `.reg` files or platform scripts.
+#### Step 1: Import the ADMX Template
+
+1. Navigate to **Resources → Profiles & Resources → Profiles**
+2. Click **Add → Add Profile → Windows → Windows ADMX Profile**
+3. Under **ADMX Templates**, upload:
+   - `ClaudeCowork3P.admx`
+   - `en-US/ClaudeCowork3P.adml`
+4. Name the profile (e.g., "Claude Cowork 3P — Template")
+5. Save without configuring values yet
+
+This registers the settings schema in Workspace ONE.
+
+#### Step 2: Create a Configuration Policy
+
+1. Create a **second** Windows ADMX Profile
+2. Name it (e.g., "Claude Cowork 3P — Production Config")
+3. Under the imported "Claude Cowork 3P (Bedrock)" category, configure:
+   - **Inference Provider:** `bedrock` (Enabled)
+   - **Bedrock Region:** your region (e.g., `us-east-1`)
+   - **AWS Profile Name:** your profile name (e.g., `ClaudeCode`)
+   - **Model Aliases:** `["opus","sonnet","haiku"]`
+4. Assign to the appropriate **Smart Group**
+
+#### Why Two Policies?
+
+| Policy | Purpose | Assigned to |
+|--------|---------|-------------|
+| Template (Step 1) | Defines the settings schema | All Windows devices |
+| Configuration (Step 2) | Applies customer-specific values | Target Smart Groups |
+
+This separation provides:
+- **Clean enrollment:** Values applied immediately when devices join the Smart Group
+- **Clean removal:** Unenrolling removes configuration without orphaned registry keys
+- **Multi-environment:** Same template, different config policies per team/region
+- **No .reg files needed:** All settings delivered via policy, no scripts required
+
+> ✅ **Community-validated:** This pattern has been tested in production with Omnissa Workspace ONE and confirmed working end-to-end.
+
+#### Verification
+
+After policy delivery (via Intelligent Hub sync):
+```powershell
+reg query "HKCU\SOFTWARE\Policies\Claude"
+```
+
+Expected output should show your configured values (inferenceProvider, inferenceBedrockRegion, etc.).
+
+#### References
+
+- [Omnissa: Configuring Windows Baselines and Profiles](https://techzone.omnissa.com/resource/configuring-windows-baselines-and-profiles-workspace-one-technical-walkthrough)
+- [Omnissa: Windows ADMX Profiles announcement](https://community.omnissa.com/technical-blog/announcing-windows-administrative-template-admx-profiles-r24/)
+- [Omnissa: Deploying applications to Windows devices](https://techzone.omnissa.com/resource/deploying-workspace-one-uem-applications-windows-devices)
 
 ### Active Directory Group Policy
 
