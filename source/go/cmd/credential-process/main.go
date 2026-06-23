@@ -430,6 +430,7 @@ func (a *credentialApp) run() int {
 					printQuotaBlocked(qr)
 					return 1
 				}
+				printQuotaWarning(qr)
 				_ = storage.SaveQuotaState(a.profile)
 			}
 		}
@@ -449,6 +450,7 @@ func (a *credentialApp) run() int {
 					printQuotaBlocked(qr)
 					return 1
 				}
+				printQuotaWarning(qr)
 				_ = storage.SaveQuotaState(a.profile)
 			}
 		}
@@ -471,6 +473,7 @@ func (a *credentialApp) run() int {
 			printQuotaBlocked(qr)
 			return 1
 		}
+		printQuotaWarning(qr)
 		_ = storage.SaveQuotaState(a.profile)
 	}
 
