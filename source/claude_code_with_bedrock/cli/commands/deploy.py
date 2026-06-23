@@ -524,6 +524,19 @@ class DeployCommand(Command):
 
             result = self._deploy_stack(stack_type, profile, console, cf_manager)
             if result != 0:
+                if stack_type == "websearch":
+                    # Web search is an optional add-on. A failure here must not mark
+                    # the whole platform deploy as failed or abort stacks that follow;
+                    # surface it clearly with remediation and continue. (Running
+                    # 'ccwb deploy websearch' explicitly still returns non-zero.)
+                    console.print(
+                        "[yellow]⚠ Web search gateway deploy failed — this is optional and does not "
+                        "block the rest of the deployment.[/yellow]\n"
+                        "[dim]  Re-run 'ccwb deploy websearch' to retry, or "
+                        "'ccwb destroy websearch' to clean up.[/dim]"
+                    )
+                    console.print("")
+                    continue
                 failed = True
                 console.print(f"[red]Failed to deploy {stack_type} stack[/red]")
                 break

@@ -212,3 +212,38 @@ def test_params_okta_uses_client_id_as_audience():
 def test_params_include_domain_denylist_when_set():
     params = build_websearch_params(_cognito_profile(websearch_domain_denylist=["a.com", "b.com"]))
     assert "DomainExcludeList=a.com,b.com" in params
+
+
+# --- Deploy-all failure handling (Option C): websearch is optional/non-fatal ---
+
+
+def _deploy_all_loop_source() -> str:
+    """The body of the deploy-all loop in deploy.py (source-level contract test)."""
+    import inspect
+
+    from claude_code_with_bedrock.cli.commands import deploy as deploy_mod
+
+    src = inspect.getsource(deploy_mod)
+    start = src.index("for stack_type, description in stacks_to_deploy:")
+    # Stop at the post-loop "if failed:" handling.
+    end = src.index("if failed:", start)
+    return src[start:end]
+
+
+def test_deploy_all_treats_websearch_failure_as_non_fatal():
+    """A failed optional websearch stack must not abort the whole `ccwb deploy` run.
+
+    In the deploy-all loop a non-zero result for the websearch stack should
+    `continue` (warn + remediation) rather than set failed/break, while other
+    stacks remain fatal.
+    """
+    loop = _deploy_all_loop_source()
+    # The websearch branch continues instead of failing the whole run.
+    assert 'if stack_type == "websearch":' in loop
+    ws_branch = loop[loop.index('if stack_type == "websearch":') :]
+    # Within the websearch failure branch, we continue and never set failed = True.
+    continue_idx = ws_branch.index("continue")
+    assert "failed = True" not in ws_branch[:continue_idx]
+    # Non-websearch failures still abort.
+    assert "failed = True" in loop
+    assert "break" in loop
