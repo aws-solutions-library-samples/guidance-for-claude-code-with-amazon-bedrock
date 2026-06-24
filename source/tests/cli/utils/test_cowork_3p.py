@@ -41,11 +41,11 @@ class TestAddMonitoringConfig:
         assert "otlpEndpoint" not in mdm
 
     def test_sidecar_mode_uses_local_proxy(self):
-        """Sidecar mode configures CoWork to send to localhost otel-helper proxy."""
+        """Sidecar mode configures CoWork to send to identity proxy on port 4319."""
         profile = FakeProfile(monitoring_mode="sidecar")
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
-        assert mdm["otlpEndpoint"] == "http://localhost:4318"
+        assert mdm["otlpEndpoint"] == "http://localhost:4319"
         assert mdm["otlpProtocol"] == "http/protobuf"
 
     def test_sidecar_mode_without_cowork_token(self):
@@ -58,32 +58,32 @@ class TestAddMonitoringConfig:
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_stack_output_success(self, mock_get_outputs):
-        """When stack outputs resolve, endpoint is set from CollectorEndpoint."""
+        """When stack outputs resolve, endpoint routes through local proxy."""
         mock_get_outputs.return_value = {"CollectorEndpoint": "https://telemetry.example.com"}
         profile = FakeProfile()
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
-        assert mdm["otlpEndpoint"] == "https://telemetry.example.com"
+        assert mdm["otlpEndpoint"] == "http://localhost:4318"
         assert mdm["otlpProtocol"] == "http/protobuf"
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_stack_failure_falls_back_to_profile(self, mock_get_outputs):
-        """When stack query fails, falls back to profile.otel_collector_endpoint."""
+        """When stack query fails, falls back to profile.otel_collector_endpoint via proxy."""
         mock_get_outputs.side_effect = Exception("stack not found")
         profile = FakeProfile(otel_collector_endpoint="https://fallback.example.com")
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
-        assert mdm["otlpEndpoint"] == "https://fallback.example.com"
+        assert mdm["otlpEndpoint"] == "http://localhost:4318"
         assert mdm["otlpProtocol"] == "http/protobuf"
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_stack_returns_no_endpoint_falls_back_to_profile(self, mock_get_outputs):
-        """When stack outputs exist but CollectorEndpoint is missing, use profile fallback."""
+        """When stack outputs exist but CollectorEndpoint is missing, use profile fallback via proxy."""
         mock_get_outputs.return_value = {"SomeOtherOutput": "value"}
         profile = FakeProfile(otel_collector_endpoint="https://profile-endpoint.example.com")
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
-        assert mdm["otlpEndpoint"] == "https://profile-endpoint.example.com"
+        assert mdm["otlpEndpoint"] == "http://localhost:4318"
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_both_missing_shows_warning(self, mock_get_outputs):
@@ -108,7 +108,7 @@ class TestAddMonitoringConfig:
         mdm = {}
         add_monitoring_config(mdm, profile, self._make_console())
         mock_get_outputs.assert_called_once_with("my-custom-monitoring-stack", "us-east-1")
-        assert mdm["otlpEndpoint"] == "https://custom-stack.example.com"
+        assert mdm["otlpEndpoint"] == "http://localhost:4318"
 
     @patch("claude_code_with_bedrock.cli.utils.cowork_3p.get_stack_outputs")
     def test_cowork_service_token_adds_otlp_headers(self, mock_get_outputs):

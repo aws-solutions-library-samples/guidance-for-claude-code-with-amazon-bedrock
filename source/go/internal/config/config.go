@@ -35,6 +35,10 @@ type ProfileConfig struct {
 	QuotaCheckInterval int    `json:"quota_check_interval"`
 	QuotaCheckTimeout  int    `json:"quota_check_timeout"`
 
+	// Monitoring
+	MonitoringMode        string `json:"monitoring_mode,omitempty"`
+	OtelCollectorEndpoint string `json:"otel_collector_endpoint,omitempty"`
+
 	// Okta Custom Authorization Server id. Absent / empty / "default" all
 	// mean "use the default CAS" -- the Go code normalizes these equivalently.
 	OktaAuthServerID string `json:"okta_auth_server_id"`

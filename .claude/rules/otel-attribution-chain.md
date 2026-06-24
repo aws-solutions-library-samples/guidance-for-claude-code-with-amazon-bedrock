@@ -50,9 +50,26 @@ OIDC token (email, sub, groups)
 
 CoWork uses a different telemetry path than Claude Code:
 - **Auth**: Service token (not user JWT) — ALB must allow unauthenticated for CoWork ingest
+- **Identity**: Per-user headers injected by the local otel-helper proxy (reads JWT cache)
 - **Schema**: Different metric names and resource attributes
 - **Log group**: Separate (`/ecs/cowork-events`) from Claude Code metrics
 - **Testing**: Changes to otel-collector.yaml or dashboards must be tested with BOTH Claude Code and CoWork telemetry payloads
+
+### Proxy routing (per monitoring mode)
+
+| Mode | Proxy Port | Upstream | Identity? |
+|------|-----------|----------|----------|
+| Central | 4318 | Remote ALB | ✅ (proxy injects headers from JWT cache) |
+| Sidecar | 4319 | localhost:4318 (otelcol) | ✅ (proxy injects, otelcol reads from metadata) |
+| IDC | N/A | N/A | ❌ (no JWT, device-level only) |
+
+### Proxy spawn rules
+
+- credential-process calls `ensureProxyRunning()` after every successful auth
+- Port check first (200ms timeout) — if listening, no-op
+- If not listening + endpoint configured → spawn `otel-helper --proxy <upstream> --proxy-port <port>`
+- Detached process (setsid on Unix) — survives credential-process exit
+- Self-healing: if proxy dies, next credential refresh (~1h) restarts it
 
 ## Token Lifecycle
 
