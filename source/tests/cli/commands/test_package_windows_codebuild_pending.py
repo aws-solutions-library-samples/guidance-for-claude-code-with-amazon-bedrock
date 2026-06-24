@@ -74,7 +74,7 @@ def test_windows_only_async_build_is_not_a_failure(mock_config):
     ):
         mock_confirm.return_value.ask.return_value = False
 
-        result = tester.execute("--target-platform windows")
+        result = tester.execute("--target-platform windows --legacy")
 
     assert result == 0, "Windows-only async CodeBuild build must succeed (exit 0)"
     assert "No binaries were successfully built" not in tester.io.fetch_output()
@@ -97,6 +97,8 @@ def test_windows_only_without_codebuild_still_errors(mock_config, mock_profile):
     ):
         mock_confirm.return_value.ask.return_value = False
 
-        result = tester.execute("--target-platform windows")
+        # Use --legacy to force Nuitka path (bypasses Go cross-compilation
+        # which would succeed on CI runners with Go 1.24+ installed).
+        result = tester.execute("--target-platform windows --legacy")
 
     assert result == 1, "With CodeBuild disabled and no binary, package must still error"

@@ -145,7 +145,7 @@ class PackageCommand(Command):
     Build distribution packages for your organization
 
     package
-        {--target-platform=macos : Target platform (macos, linux, all)}
+        {--target-platform=all : Target platform(s), comma-separated (macos-arm64, linux-x64, windows, all)}
     """
 
     name = "package"
@@ -153,7 +153,10 @@ class PackageCommand(Command):
 
     options = [
         option(
-            "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
+            "target-platform",
+            description="Target platform(s): macos-arm64, macos-intel, linux-x64, linux-arm64, windows, all. Comma-separated for multiple.",
+            flag=False,
+            default="all",
         ),
         option(
             "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
