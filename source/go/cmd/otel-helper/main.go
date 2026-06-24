@@ -59,9 +59,10 @@ func main() {
 	testMode := flag.Bool("test", false, "Run in test mode with verbose output")
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
 	versionFlag := flag.Bool("version", false, "Show version")
-	proxyMode := flag.Bool("proxy", false, "Run as SigV4 signing proxy for CoWork OTLP logs")
-	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the signing proxy (default 4318)")
+	proxyMode := flag.Bool("proxy", false, "Run as OTLP proxy for CoWork telemetry (identity injection + optional SigV4)")
+	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the proxy (default 4318)")
 	proxyRegion := flag.String("proxy-region", "", "AWS region for CloudWatch OTLP (default: AWS_REGION env)")
+	proxyUpstream := flag.String("proxy-upstream", "", "Custom upstream URL (e.g., ALB endpoint). Skips SigV4 signing. If empty, defaults to CloudWatch OTLP with SigV4.")
 	flag.Parse()
 
 	if *versionFlag {
@@ -78,9 +79,10 @@ func main() {
 			profile = "ClaudeCode"
 		}
 		os.Exit(startProxy(proxyConfig{
-			port:    *proxyPort,
-			region:  *proxyRegion,
-			profile: profile,
+			port:     *proxyPort,
+			region:   *proxyRegion,
+			profile:  profile,
+			upstream: *proxyUpstream,
 		}))
 	}
 

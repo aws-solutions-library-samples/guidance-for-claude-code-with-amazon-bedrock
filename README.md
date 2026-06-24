@@ -150,23 +150,24 @@ flowchart LR
 
 ### Usage Monitoring
 
-Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as a local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
+Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as an auto-spawned local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
 
 ```mermaid
 flowchart LR
     CC[Claude Code CLI] -->|OTLP| OH1[otel-helper<br/>header mode]
-    CW[Claude Desktop] -->|OTLP| OH2[otel-helper<br/>proxy mode]
+    CW[Claude Desktop] -->|OTLP to proxy| OH2[otel-helper<br/>proxy mode]
     OH1 -->|"user identity + Bearer JWT"| COLL[Collector]
-    OH2 -->|"user identity + X-Cowork-Token"| COLL
+    OH2 -->|"user identity from JWT cache"| COLL
     COLL --> DASH[CloudWatch Dashboards]
 ```
 
 | Surface | How otel-helper is used | Collector mode | Identity in telemetry |
 |---------|------------------------|----------------|----------------------|
 | **Claude Code (CLI)** | Header provider — called once per request, returns JSON headers | Central (ECS/ALB) or Sidecar (local) | User's JWT (email, team, department) |
-| **Claude Desktop (Cowork)** | Local proxy — runs on `localhost:4318`, injects user headers, forwards to collector | Central (ECS/ALB) | Email from IAM ARN (no team/department without OIDC) |
+| **Claude Desktop (Cowork)** | Local proxy — injects user headers from JWT cache, forwards to collector | Central: proxy on `localhost:4318` → ALB | Full JWT claims (email, team, department) |
+| **Claude Desktop (Cowork)** | Local proxy — injects user headers, chains through local otelcol | Sidecar: proxy on `localhost:4319` → otelcol:4318 | Full JWT claims (email, team, department) |
 
-**Local proxy explained:** Claude Desktop doesn't support custom OTLP headers natively. When using a central collector (ECS/ALB), otel-helper runs as a lightweight HTTP proxy on the user's machine. Cowork sends telemetry to `localhost:4318` (configured via MDM), and otel-helper adds user identity headers before forwarding to the remote central collector. This proxy is not needed in sidecar mode, where the local collector reads identity from a cache file directly.
+**Local proxy explained:** Claude Desktop doesn't support custom OTLP headers natively. In both monitoring modes, otel-helper runs as a lightweight identity-injecting proxy on the user's machine. It reads the decoded JWT identity from the local cache (populated by `credential-process` on each credential refresh) and injects `x-user-email`, `x-department`, `x-team-id`, etc. headers into every OTLP request. The proxy is auto-spawned by `credential-process` — no manual startup or daemon configuration required. In central mode it listens on port 4318 (forwarding to the remote ALB); in sidecar mode it listens on port 4319 (forwarding to the local otelcol on 4318 to avoid port conflicts).
 
 **Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
 

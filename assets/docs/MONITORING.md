@@ -56,6 +56,8 @@ poetry run ccwb package --go --target-platform all
 
 End users receive the `otel-helper` binary in their install package. It starts automatically when Claude Code launches and sends metrics to CloudWatch using the same federated credentials.
 
+> **CoWork (Claude Desktop):** In both modes, CoWork telemetry routes through the local otel-helper proxy for per-user identity injection. The proxy is auto-spawned by `credential-process` on each credential refresh. See [CoWork 3P Monitoring](COWORK_3P.md#monitoring) for architecture details.
+
 ## Architecture (Central Collector)
 
 The following describes the Central Collector (ECS Fargate) architecture. The Sidecar Collector uses the same metric format but sends directly from the developer's machine to the CloudWatch OTLP endpoint — no ALB, ECS, or VPC required.
