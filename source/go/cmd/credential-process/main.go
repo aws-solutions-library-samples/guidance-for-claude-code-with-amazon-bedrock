@@ -887,6 +887,9 @@ func printQuotaWarning(qr *quota.Result) {
 	}
 
 	fmt.Fprintln(os.Stderr, "============================================================")
+
+	// Show browser notification for visual feedback (invisible stderr → visible browser)
+	showQuotaBrowserNotification(qr, false)
 }
 
 func formatTokens(n float64) string {
@@ -953,6 +956,9 @@ func printQuotaBlocked(qr *quota.Result) {
 
 	fmt.Fprintln(os.Stderr, "\nTo request an unblock, contact your administrator.")
 	fmt.Fprintln(os.Stderr, "============================================================")
+
+	// Show browser notification for blocked state
+	showQuotaBrowserNotification(qr, true)
 }
 
 func outputJSON(v interface{}) {
