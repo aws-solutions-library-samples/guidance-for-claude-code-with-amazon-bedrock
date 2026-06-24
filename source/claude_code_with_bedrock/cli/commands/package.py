@@ -145,7 +145,7 @@ class PackageCommand(Command):
     Build distribution packages for your organization
 
     package
-        {--target-platform=macos : Target platform (macos, linux, all)}
+        {--target-platform=all : Target platform(s), comma-separated (macos-arm64, linux-x64, windows, all)}
     """
 
     name = "package"
@@ -153,7 +153,10 @@ class PackageCommand(Command):
 
     options = [
         option(
-            "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
+            "target-platform",
+            description="Target platform(s): macos-arm64, macos-intel, linux-x64, linux-arm64, windows, all. Comma-separated for multiple.",
+            flag=False,
+            default="all",
         ),
         option(
             "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
@@ -174,7 +177,12 @@ class PackageCommand(Command):
         ),
         option(
             "go",
-            description="Build binaries using Go cross-compilation (native binaries, no AV false positives)",
+            description="Build using Go (default; kept for backwards compatibility)",
+            flag=True,
+        ),
+        option(
+            "legacy",
+            description="Use legacy PyInstaller/Nuitka build instead of Go (deprecated)",
             flag=True,
         ),
     ]
@@ -210,12 +218,43 @@ class PackageCommand(Command):
         if self.option("regenerate-installers"):
             return self._regenerate_installers(profile, profile_name, console)
 
-        # Go build mode: all platforms always available via cross-compilation
-        use_go = self.option("go")
+        # Go build mode: default unless --legacy is explicitly passed
+        use_legacy = self.option("legacy")
+        use_go = not use_legacy  # Go is now the default
+
+        if self.option("go") and use_legacy:
+            console.print("[yellow]Both --go and --legacy passed; using --legacy.[/yellow]")
+
+        # Check Go availability and version when using Go path
+        if use_go:
+            try:
+                go_result = subprocess.run(["go", "version"], capture_output=True, text=True, check=True)
+                version_str = go_result.stdout.strip().split()[2].lstrip("go")  # e.g. "1.24.2"
+                major_minor = tuple(int(x) for x in version_str.split(".")[:2])
+                if major_minor < (1, 24):
+                    console.print(
+                        f"[yellow]Go {version_str} found but >= 1.24 required. "
+                        f"Falling back to legacy build mode.[/yellow]"
+                    )
+                    console.print("[dim]Update Go: https://go.dev/dl/[/dim]")
+                    use_go = False
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                console.print("[yellow]Go not found. Falling back to legacy build mode.[/yellow]")
+                console.print("[dim]Install Go from https://go.dev/dl/ for faster, more reliable builds.[/dim]")
+                use_go = False
+            except (IndexError, ValueError):
+                pass  # Could not parse version — proceed anyway
 
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
-        if target_platform == "all":  # Default value, prompt user
+
+        # Support comma-separated platforms: --target-platform=linux-x64,macos-arm64,windows
+        if target_platform and target_platform != "all" and "," in target_platform:
+            target_platform = [p.strip() for p in target_platform.split(",")]
+        elif target_platform == "all" and use_go:
+            # With Go, "all" builds all 5 platforms without prompting
+            target_platform = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif target_platform == "all":
             # Build list of available platform choices
             # Note: "macos" is omitted because it's just a smart alias for the current architecture
             # Users should explicitly choose macos-arm64 or macos-intel for clarity
@@ -582,10 +621,12 @@ class PackageCommand(Command):
 
         # Check if any binaries were built (or are pending in CodeBuild)
         # IDC zero-binary mode intentionally skips all binary builds.
+        build_failed = False
         if not built_executables and not windows_codebuild_pending and not is_idc_zero_binary:
-            console.print("\n[red]Error: No binaries were successfully built.[/red]")
-            console.print("Please check the error messages above.")
-            return 1
+            console.print("\n[yellow]Warning: No binaries were successfully built.[/yellow]")
+            console.print("Configuration files will still be generated.")
+            console.print("Fix the issue above and re-run [cyan]ccwb package[/cyan].\n")
+            build_failed = True
 
         if windows_codebuild_pending and not built_executables:
             console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
@@ -702,6 +743,10 @@ class PackageCommand(Command):
             console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
         else:
             console.print("Share the dist folder with your users for installation")
+
+        if build_failed:
+            console.print("\n[yellow]⚠ Package generated without binaries. Fix the build issue and re-run.[/yellow]")
+            return 1
 
         return 0
 
@@ -856,7 +901,9 @@ class PackageCommand(Command):
                 ]
                 result = subprocess.run(cmd, cwd=str(go_src), env=env, capture_output=True, text=True)
                 if result.returncode != 0:
-                    raise RuntimeError(f"Go build failed for {output_name}:\n{result.stderr}")
+                    last_line = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
+                    self.line(f"  <error>Failed: {output_name} — {last_line}</error>")
+                    continue  # Skip this binary, try remaining platforms
 
                 if binary == "credential-process":
                     executables.append((plat, output_path))
