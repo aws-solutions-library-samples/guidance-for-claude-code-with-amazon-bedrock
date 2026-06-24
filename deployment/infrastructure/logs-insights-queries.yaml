@@ -398,12 +398,92 @@ Resources:
         | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
         | parse @message /"user.email":"(?<user_email>[^"]*)"/
         | parse @message /"model":"(?<model>[^"]*)"/
-        | stats 
+        | stats
             sum(tokens) as daily_tokens,
             count() as daily_requests
         by bin(1d) as date
         | sort date desc
         | limit 30
+
+  # ==========================================
+  # Persona Analytics Queries (PBAC)
+  # ==========================================
+  # The `persona` field is emitted by otel-helper (x-persona header) and mapped
+  # to the OTLP `persona` attribute by the collector. Rows with no persona
+  # attribute appear as "(none)" so unmatched users remain visible.
+
+  TokensByPersonaQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Token Usage by Persona
+      LogGroupNames:
+        - !Ref MetricsLogGroup
+      QueryString: |
+        filter @message like /claude_code.token.usage/
+        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+        | parse @message /"persona":"(?<persona>[^"]*)"/
+        | parse @message /"type":"(?<token_type>[^"]*)"/
+        | fields coalesce(persona, "(none)") as persona_name
+        | stats
+            sum(tokens) as total_tokens,
+            count() as request_count
+        by persona_name
+        | sort total_tokens desc
+
+  TokensByPersonaOverTimeQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Token Usage by Persona Over Time (Daily)
+      LogGroupNames:
+        - !Ref MetricsLogGroup
+      QueryString: |
+        filter @message like /claude_code.token.usage/
+        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+        | parse @message /"persona":"(?<persona>[^"]*)"/
+        | fields coalesce(persona, "(none)") as persona_name
+        | stats
+            sum(tokens) as daily_tokens,
+            count() as daily_requests
+        by bin(1d) as date, persona_name
+        | sort date desc, daily_tokens desc
+        | display date, persona_name, daily_tokens, daily_requests
+
+  CostByPersonaQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Cost Analysis by Persona
+      LogGroupNames:
+        - !Ref MetricsLogGroup
+      QueryString: |
+        filter @message like /claude_code.cost.usage/
+        | parse @message /"claude_code.cost.usage":(?<cost>[0-9.]+)/
+        | parse @message /"persona":"(?<persona>[^"]*)"/
+        | fields coalesce(persona, "(none)") as persona_name
+        | stats
+            sum(cost) as total_cost_usd,
+            count() as request_count
+        by persona_name
+        | sort total_cost_usd desc
+
+  TopUsersByPersonaQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: Claude Code - Top Users by Persona
+      LogGroupNames:
+        - !Ref MetricsLogGroup
+      QueryString: |
+        filter @message like /claude_code.token.usage/
+        | parse @message /"claude_code.token.usage":(?<tokens>[0-9.]+)/
+        | parse @message /"persona":"(?<persona>[^"]*)"/
+        | parse @message /"user.email":"(?<user_email>[^"]*)"/
+        | fields coalesce(persona, "(none)") as persona_name
+        | stats
+            sum(tokens) as total_tokens,
+            count() as request_count
+        by persona_name, user_email
+        | sort total_tokens desc
+        | limit 100
+        | display persona_name, user_email, total_tokens, request_count
 
 Outputs:
   QueryListInfo:
@@ -434,6 +514,12 @@ Outputs:
       - Claude Code - Session Deep Dive
       - Claude Code - Metric Field Explorer
       - Claude Code - Daily Usage Summary
+
+      Persona Analytics (PBAC):
+      - Claude Code - Token Usage by Persona
+      - Claude Code - Token Usage by Persona Over Time (Daily)
+      - Claude Code - Cost Analysis by Persona
+      - Claude Code - Top Users by Persona
 
   LogsInsightsConsoleUrl:
     Description: Direct link to CloudWatch Logs Insights

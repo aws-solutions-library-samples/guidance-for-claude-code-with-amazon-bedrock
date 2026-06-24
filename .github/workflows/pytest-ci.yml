@@ -44,6 +44,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The Go<->Python persona parity test (tests/test_persona_parity.py) shells out to
+      # `go test` and is DESIGNED to fail (not skip) when Go is absent, so cross-language
+      # drift can never slip through. Pin Go here so that guarantee is deterministic on
+      # all three OSes instead of relying on a `go` that happens to be on the runner.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: source/go/go.sum
+
       - name: Install Poetry
         run: pip install poetry
 

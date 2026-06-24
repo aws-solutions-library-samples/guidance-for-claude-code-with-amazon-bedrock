@@ -89,7 +89,7 @@ func TestRun_FreshEmptyCache_ServedViaLayer1(t *testing.T) {
 	}
 	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
 	// Empty headers with a far-future token_exp -> still-valid Layer-1 hit.
-	fresh := `{"schema_version":2,"headers":{},"token_exp":9999999999,"cached_at":1000}`
+	fresh := `{"schema_version":3,"headers":{},"token_exp":9999999999,"cached_at":1000}`
 	if err := os.WriteFile(cachePath, []byte(fresh), 0600); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRun_PopulatedExpiredEntry_ServedNotRewritten(t *testing.T) {
 	}
 	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
 	// Populated headers, token_exp in the past.
-	populated := `{"schema_version":2,"headers":{"x-user-email":"real@user.com"},"token_exp":1000,"cached_at":500}`
+	populated := `{"schema_version":3,"headers":{"x-user-email":"real@user.com"},"token_exp":1000,"cached_at":500}`
 	if err := os.WriteFile(cachePath, []byte(populated), 0600); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestRun_CacheHit_ResolvesTokenFromEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
-	cache := `{"schema_version":2,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
+	cache := `{"schema_version":3,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
 	if err := os.WriteFile(cachePath, []byte(cache), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestRun_Layer1_CacheHit_NoToken_OmitsBearerGracefully(t *testing.T) {
 		t.Fatal(err)
 	}
 	cachePath := filepath.Join(cacheDir, "ClaudeCode-otel-headers.json")
-	cache := `{"schema_version":2,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
+	cache := `{"schema_version":3,"headers":{"x-user-email":"cached@user.com"},"token_exp":9999999999,"cached_at":1000}`
 	if err := os.WriteFile(cachePath, []byte(cache), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ build/
 
 # Python cache
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -15,11 +16,13 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+.poetry-bootstrap/
 
 
 # IDE
 .vscode/
 .idea/
+.kiro
 
 # OS
 Thumbs.db
@@ -65,6 +68,9 @@ guidance-submission/
 tests/
 !source/tests/
 !source/tests/**
+# ...but the broad re-include above must not drag compiled caches back in.
+source/tests/**/__pycache__/
+source/tests/**/*.pyc
 assets/docs/planning
 
 .pytest_cache/

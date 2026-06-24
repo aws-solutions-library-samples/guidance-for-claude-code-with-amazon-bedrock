@@ -1,0 +1,439 @@
+# ABOUTME: Tests for persona serialization into config.json by package.py _create_config.
+# ABOUTME: Asserts the §4.2 field projection, role_arn passthrough, and backward compat.
+
+"""Tests for ``PackageCommand._create_config`` persona serialization (spec §4.2)."""
+
+import json
+from pathlib import Path
+
+from claude_code_with_bedrock.cli.commands.package import PackageCommand
+from claude_code_with_bedrock.config import Profile
+
+
+def _profile(**overrides) -> Profile:
+    kwargs = {
+        "name": "ClaudeCode",
+        "provider_domain": "company.okta.com",
+        "client_id": "client-123",
+        "credential_storage": "keyring",
+        "aws_region": "us-east-1",
+        "identity_pool_name": "pool",
+        "federation_type": "direct",
+        "federated_role_arn": "arn:aws:iam::111122223333:role/base",
+    }
+    kwargs.update(overrides)
+    return Profile(**kwargs)
+
+
+def _write_config(tmp_path: Path, profile: Profile) -> dict:
+    cmd = PackageCommand()
+    cmd._create_config(
+        output_dir=tmp_path,
+        profile=profile,
+        federation_identifier=profile.federated_role_arn or "arn:aws:iam::111122223333:role/base",
+        federation_type="direct",
+        profile_name=profile.name,
+    )
+    with open(tmp_path / "config.json", encoding="utf-8") as f:
+        return json.load(f)
+
+
+PERSONAS = [
+    {
+        "name": "engineering",
+        "display_name": "Engineering",
+        "group": "eng-team",
+        "allowed_models": ["anthropic.*"],
+        "denied_models": [],
+        "monthly_token_limit": 300_000_000,
+        "daily_token_limit": None,
+        "enforcement_mode": "block",
+        "budget_amount_usd": None,
+        "cost_tags": {"Team": "Engineering"},
+        "role_arn": "arn:aws:iam::111122223333:role/persona-eng",
+    },
+    {
+        "name": "sales",
+        "display_name": "Sales",
+        "group": "sales-team",
+        "allowed_models": ["anthropic.*haiku*"],
+        "denied_models": ["anthropic.*sonnet*", "anthropic.*opus*"],
+        "monthly_token_limit": 10_000_000,
+        "enforcement_mode": "block",
+        "cost_tags": {"Team": "Sales"},
+        "role_arn": "arn:aws:iam::111122223333:role/persona-sales",
+    },
+]
+
+
+class TestPersonaSerialization:
+    def test_personas_written_with_role_arn(self, tmp_path):
+        profile = _profile(personas=PERSONAS, groups_claim_name="groups", fallback_persona="engineering")
+        config = _write_config(tmp_path, profile)["ClaudeCode"]
+
+        assert "personas" in config
+        assert [p["name"] for p in config["personas"]] == ["engineering", "sales"]
+        assert config["personas"][0]["role_arn"] == "arn:aws:iam::111122223333:role/persona-eng"
+        assert config["personas"][1]["role_arn"] == "arn:aws:iam::111122223333:role/persona-sales"
+
+    def test_top_level_persona_fields(self, tmp_path):
+        profile = _profile(personas=PERSONAS, groups_claim_name="cognito:groups", fallback_persona="engineering")
+        config = _write_config(tmp_path, profile)["ClaudeCode"]
+
+        assert config["groups_claim_name"] == "cognito:groups"
+        assert config["fallback_persona"] == "engineering"
+
+    def test_serialization_projects_only_42_fields(self, tmp_path):
+        """Only the spec §4.2 fields the Go PersonaConfig consumes are emitted."""
+        profile = _profile(personas=PERSONAS)
+        eng = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+
+        allowed = {
+            "name",
+            "display_name",
+            "group",
+            "allowed_models",
+            "denied_models",
+            "role_arn",
+            "monthly_token_limit",
+            "enforcement_mode",
+            "cost_tags",
+            "inference_profile_arns",
+        }
+        assert set(eng).issubset(allowed)
+        # Python-only fields must NOT leak into config.json (Go has no such tags).
+        assert "daily_token_limit" not in eng
+        assert "budget_amount_usd" not in eng
+
+    def test_empty_optional_fields_omitted(self, tmp_path):
+        """allowed_models=[] / denied_models=[] are falsy → omitted (omitempty parity)."""
+        profile = _profile(personas=PERSONAS)
+        eng = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+
+        # engineering has denied_models == [] → omitted; allowed_models non-empty → present
+        assert "denied_models" not in eng
+        assert eng["allowed_models"] == ["anthropic.*"]
+
+    def test_required_fields_always_present(self, tmp_path):
+        """name/group/role_arn are always emitted even when empty."""
+        minimal = [{"name": "min", "group": "min-team"}]  # no role_arn yet
+        profile = _profile(personas=minimal)
+        persona = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+
+        assert persona["name"] == "min"
+        assert persona["group"] == "min-team"
+        assert persona["role_arn"] == ""
+
+    def test_fallback_omitted_when_none(self, tmp_path):
+        profile = _profile(personas=PERSONAS, fallback_persona=None)
+        config = _write_config(tmp_path, profile)["ClaudeCode"]
+
+        assert "fallback_persona" not in config
+        # groups_claim_name still emitted alongside personas
+        assert config["groups_claim_name"] == "groups"
+
+
+class TestBackwardCompat:
+    def test_no_personas_key_when_unconfigured(self, tmp_path):
+        """A profile with no personas must not add any persona keys (legacy path)."""
+        profile = _profile()  # personas defaults to []
+        config = _write_config(tmp_path, profile)["ClaudeCode"]
+
+        assert "personas" not in config
+        assert "groups_claim_name" not in config
+        assert "fallback_persona" not in config
+
+    def test_legacy_federated_role_arn_still_written(self, tmp_path):
+        """The existing direct-federation field is unaffected by the persona block."""
+        profile = _profile()
+        config = _write_config(tmp_path, profile)["ClaudeCode"]
+
+        assert config["federated_role_arn"] == "arn:aws:iam::111122223333:role/base"
+        assert config["federation_type"] == "direct"
+
+    def test_personas_not_serialized_under_cognito_federation(self, tmp_path):
+        """L3: personas are direct-IAM only — serializing them under Cognito is dead data.
+
+        Even if a profile somehow carries personas, _create_config invoked for a
+        Cognito-federation package must NOT emit persona keys (the Go helper ignores
+        personas unless FederationType=='direct', and deploy skips persona provisioning
+        under Cognito per FR-2.7).
+        """
+        profile = _profile(federation_type="cognito", personas=PERSONAS)
+        cmd = PackageCommand()
+        cmd._create_config(
+            output_dir=tmp_path,
+            profile=profile,
+            federation_identifier="pool",
+            federation_type="cognito",
+            profile_name=profile.name,
+        )
+        with open(tmp_path / "config.json", encoding="utf-8") as f:
+            config = json.load(f)["ClaudeCode"]
+
+        assert "personas" not in config
+        assert "groups_claim_name" not in config
+        assert "fallback_persona" not in config
+
+
+class TestInferenceProfileArnSerialization:
+    """FR-5.1: per-tier inference-profile ARNs round-trip into config.json."""
+
+    def test_inference_profile_arns_serialized_when_present(self, tmp_path):
+        personas = [
+            {
+                "name": "sales",
+                "group": "sales-team",
+                "role_arn": "arn:aws:iam::111122223333:role/persona-sales",
+                "inference_profile_arns": {
+                    "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                },
+            }
+        ]
+        profile = _profile(personas=personas)
+        sales = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+        assert sales["inference_profile_arns"] == {
+            "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+        }
+
+    def test_inference_profile_arns_omitted_when_absent(self, tmp_path):
+        """A persona without resolved AIP ARNs must not carry the key (omitempty parity)."""
+        personas = [{"name": "eng", "group": "eng-team", "role_arn": "arn:aws:iam::111122223333:role/eng"}]
+        profile = _profile(personas=personas)
+        eng = _write_config(tmp_path, profile)["ClaudeCode"]["personas"][0]
+        assert "inference_profile_arns" not in eng
+
+
+class TestPersonaModelWrapper:
+    """FR-5.1: the per-persona model-routing launch wrappers."""
+
+    def _persona_with_arns(self):
+        return [
+            {
+                "name": "sales",
+                "group": "sales-team",
+                "inference_profile_arns": {
+                    "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                },
+            }
+        ]
+
+    def test_wrapper_emitted_when_persona_has_arns(self, tmp_path):
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        sh = tmp_path / "persona-model.sh"
+        ps1 = tmp_path / "persona-model.ps1"
+        assert sh.exists() and ps1.exists()
+        body = sh.read_text(encoding="utf-8")
+        assert "--get-persona-model" in body
+        assert "--profile ClaudeCode" in body
+        assert "command claude" in body  # avoids infinite recursion
+
+    def test_windows_wrapper_uses_crlf(self, tmp_path):
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        raw = (tmp_path / "persona-model.ps1").read_bytes()
+        assert b"\r\n" in raw
+        # No bare LF that isn't part of a CRLF (windows-platform-guards.md).
+        assert b"\n" not in raw.replace(b"\r\n", b"")
+
+    def test_no_wrapper_without_arns(self, tmp_path):
+        profile = _profile(personas=[{"name": "eng", "group": "eng-team"}])
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        assert not (tmp_path / "persona-model.sh").exists()
+        assert not (tmp_path / "persona-model.ps1").exists()
+
+    def test_no_wrapper_under_cognito(self, tmp_path):
+        profile = _profile(federation_type="cognito", personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        assert not (tmp_path / "persona-model.sh").exists()
+
+    def test_ps1_regex_matches_all_valid_env_var_names(self, tmp_path):
+        """L3: the PowerShell export parser must accept any POSIX-valid env-var name.
+
+        The old regex `^export ([A-Z_]+)=` silently dropped lowercase/digit-bearing
+        names. Extract the regex the generated .ps1 uses and verify it captures the
+        var names the Go helper emits today AND forward-compatible shapes (digits,
+        underscores), while still capturing ARN values containing ':' '/' '.'.
+        """
+        import re
+
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        ps1 = (tmp_path / "persona-model.ps1").read_text(encoding="utf-8")
+
+        m = re.search(r"\$line -match '(\^export[^']+)'", ps1)
+        assert m, "could not find the export-matching regex in persona-model.ps1"
+        # PowerShell and Python share PCRE-ish syntax for this simple pattern.
+        pattern = re.compile(m.group(1))
+
+        arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+        cases = {
+            f"export ANTHROPIC_MODEL={arn}": ("ANTHROPIC_MODEL", arn),
+            f"export ANTHROPIC_DEFAULT_HAIKU_MODEL={arn}": ("ANTHROPIC_DEFAULT_HAIKU_MODEL", arn),
+            # forward-compat shapes the old [A-Z_]+ regex would have dropped:
+            "export ANTHROPIC_MODEL_2=x": ("ANTHROPIC_MODEL_2", "x"),
+            "export _private=y": ("_private", "y"),
+        }
+        for line, (want_key, want_val) in cases.items():
+            got = pattern.match(line)
+            assert got, f"regex failed to match {line!r}"
+            assert got.group(1) == want_key
+            assert got.group(2) == want_val
+        # A leading digit is NOT a valid env-var name and must not match.
+        assert not pattern.match("export 2BAD=z")
+
+    def test_ps1_resolves_claude_on_path_not_hardcoded_cmd(self, tmp_path):
+        """L2: the PowerShell wrapper must launch the real `claude` executable
+        resolved on PATH, not a hardcoded `claude.cmd`.
+
+        An install may expose `claude.exe` or a differently-named shim. The wrapper
+        uses `Get-Command claude -CommandType Application` — which also skips THIS
+        function (the PowerShell analogue of POSIX `command claude`), preventing the
+        function from recursively invoking itself. `claude.cmd` may remain only as a
+        last-resort fallback, never as the sole/primary launch path.
+        """
+        profile = _profile(personas=self._persona_with_arns())
+        PackageCommand()._create_persona_model_wrapper(tmp_path, profile, "ClaudeCode", _Console())
+        ps1 = (tmp_path / "persona-model.ps1").read_text(encoding="utf-8")
+        assert "Get-Command claude -CommandType Application" in ps1, (
+            "PS1 wrapper must PATH-resolve the claude executable (not hardcode claude.cmd)"
+        )
+        # -CommandType Application is what prevents the function recursing into itself
+        # (it excludes Function command types), the analogue of POSIX `command claude`.
+        assert "-CommandType Application" in ps1
+        # claude.cmd may only appear as the else-branch fallback, never as the sole path.
+        assert "& $claudeExe.Source @args" in ps1
+
+
+class TestInstallerCopiesWrapper:
+    """FR-5.1: the generated installers MUST copy persona-model.{sh,ps1} to the
+    install dir the wrapper docs tell users to source from.
+
+    Regression for the gap where ``_create_persona_model_wrapper`` wrote the
+    wrappers into the dist folder but neither install.sh nor install.bat copied
+    them to ``$HOME/claude-code-with-bedrock/`` — so PBAC_README §7's
+    ``source "$HOME/claude-code-with-bedrock/persona-model.sh"`` pointed at a path
+    a standard install never populated, and per-persona model routing was silently
+    inert. These tests fail on the pre-fix installer bodies.
+    """
+
+    def test_install_sh_copies_persona_model_wrapper(self, tmp_path):
+        cmd = PackageCommand()
+        cmd.line = lambda *a, **k: None
+        be = [("macos-arm64", tmp_path / "credential-process-macos-arm64")]
+        (tmp_path / "credential-process-macos-arm64").write_text("x")
+        installer = cmd._create_installer(tmp_path, _profile(personas=PERSONAS), be, None)
+        body = Path(installer).read_text(encoding="utf-8")
+        # Copies the wrapper to the documented install dir, guarded on its presence.
+        assert 'if [ -f "persona-model.sh" ]; then' in body
+        assert "cp persona-model.sh ~/claude-code-with-bedrock/persona-model.sh" in body
+
+    def test_install_sh_is_valid_bash(self, tmp_path):
+        """The rendered installer must pass `bash -n` (the wrapper block uses
+        nested quoting in an echo, an easy place to break syntax)."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("bash"):
+            import pytest
+
+            pytest.skip("bash not available")
+        cmd = PackageCommand()
+        cmd.line = lambda *a, **k: None
+        be = [("macos-arm64", tmp_path / "credential-process-macos-arm64")]
+        (tmp_path / "credential-process-macos-arm64").write_text("x")
+        installer = cmd._create_installer(tmp_path, _profile(personas=PERSONAS), be, None)
+        result = subprocess.run(["bash", "-n", str(installer)], capture_output=True, text=True)
+        assert result.returncode == 0, f"install.sh has a syntax error:\n{result.stderr}"
+
+    def test_install_bat_copies_persona_model_wrapper(self, tmp_path):
+        body = PackageCommand()._create_windows_installer(tmp_path, _profile(personas=PERSONAS))
+        text = Path(body).read_text(encoding="utf-8")
+        assert 'if exist "persona-model.ps1" (' in text
+        assert (
+            'copy /Y "persona-model.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1"'
+            in text
+        )
+
+    def test_regenerate_installers_emits_wrapper(self, tmp_path, monkeypatch):
+        """M1: --regenerate-installers must (re)emit the wrapper, or a regenerated
+        bundle advertises inference_profile_arns in config.json but ships no wrapper.
+
+        We drive the real _regenerate_installers and assert it calls
+        _create_persona_model_wrapper (the method that writes the files, already
+        unit-tested above for content)."""
+        import json as _json
+
+        profile = _profile(
+            personas=[
+                {
+                    "name": "sales",
+                    "group": "sales-team",
+                    "inference_profile_arns": {
+                        "haiku": "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/pool-sales-haiku"
+                    },
+                }
+            ]
+        )
+
+        # Lay down a dist folder with a prebuilt binary so _regenerate_installers proceeds.
+        dist = tmp_path / "dist" / "ClaudeCode" / "2026-01-01-000000"
+        dist.mkdir(parents=True)
+        (dist / "credential-process-macos-arm64").write_text("x")
+        monkeypatch.chdir(tmp_path)
+
+        cmd = PackageCommand()
+        # Stub the interactive prompt and the sibling generators so the test is
+        # hermetic; the assertion is purely that the wrapper generator is invoked.
+        import questionary
+
+        monkeypatch.setattr(questionary, "confirm", lambda *a, **k: type("Q", (), {"ask": lambda self: False})())
+        calls = []
+        monkeypatch.setattr(cmd, "_create_config", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_installer", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_documentation", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "_create_claude_settings", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cmd, "_create_persona_model_wrapper", lambda *a, **k: calls.append(a)
+        )
+
+        rc = cmd._regenerate_installers(profile, "ClaudeCode", _Console())
+        assert rc == 0
+        assert calls, "_regenerate_installers did not call _create_persona_model_wrapper"
+
+
+class TestPersonasRequireGo:
+    """A persona profile must not be packaged with the persona-blind legacy binary.
+
+    The Go credential-process is the ONLY binary that resolves personas and assumes
+    the per-persona role; the legacy (PyInstaller/Nuitka) binary always assumes the
+    base federated_role_arn. Packaging personas without --go would silently ship a
+    bundle where every restricted persona receives the broad base role. ``handle()``
+    gates on ``_personas_require_go`` and aborts; these tests pin that gate so the
+    silent-bypass regression cannot reappear.
+    """
+
+    def test_blocks_direct_personas_without_go(self):
+        profile = _profile(personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=False) is True
+
+    def test_allows_direct_personas_with_go(self):
+        profile = _profile(personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=True) is False
+
+    def test_no_personas_never_blocks(self):
+        profile = _profile()  # personas defaults to []
+        assert PackageCommand._personas_require_go(profile, "direct", use_go=False) is False
+
+    def test_cognito_personas_never_block(self):
+        """Cognito never serializes personas (FR-2.7), so a legacy Cognito build is fine."""
+        profile = _profile(federation_type="cognito", personas=PERSONAS)
+        assert PackageCommand._personas_require_go(profile, "cognito", use_go=False) is False
+
+
+class _Console:
+    """Minimal console stub (the wrapper only calls .print)."""
+
+    def print(self, *args, **kwargs):
+        pass

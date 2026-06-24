@@ -39,7 +39,8 @@ class Profile:
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
-    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    okta_auth_server: str = ""
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
@@ -108,11 +109,43 @@ class Profile:
     inference_profile_sonnet_arn: str | None = None  # Optional inference profile ARN for Sonnet tier
     inference_profile_haiku_arn: str | None = None  # Optional inference profile ARN for Haiku tier
 
+    # Persona-based access control (PBAC) — see .claude/specs/persona-based-access/
+    # Each persona is a dict (canonical shape in spec.md#4.1): name, display_name, group,
+    # allowed_models, denied_models, monthly_token_limit, daily_token_limit,
+    # enforcement_mode, budget_amount_usd, cost_tags. Stored as list[dict] (not a nested
+    # dataclass) to match the existing monitoring_config pattern and round-trip cleanly
+    # through from_dict's field filter.
+    personas: list[dict] = field(default_factory=list)
+    groups_claim_name: str = "groups"  # OIDC claim carrying group membership (e.g. cognito:groups, roles)
+    fallback_persona: str | None = None  # Name of a persona to use when no group matches; None = hard-deny
+    # Optional account-total AWS Budget (FR-6.1), a top-level sibling of personas (spec §4.1).
+    # None = no account-total budget; deploy.py's budgets stack skips cleanly when unset.
+    account_budget_amount_usd: float | None = None
+
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
+
+    @property
+    def effective_auth_type(self) -> str:
+        """Resolve the authentication type for this profile.
+
+        Centralizes the check required by .claude/rules/auth-type-compat.md so callers
+        never assume an ``auth_type`` attribute exists on older configs. Derives the
+        value from the ``sso_enabled`` boolean that every profile carries.
+
+        Note: ``auth_type`` is intentionally NOT a ``Profile`` field today — nothing
+        in the supported config flow sets it, and ``from_dict`` would filter an
+        unknown key anyway, so any "passthrough" of a stored ``auth_type`` would be
+        dead code. If first-class IDC support is added later, add ``auth_type`` as a
+        real dataclass field and branch on it here then.
+
+        Returns:
+            "oidc" when SSO is enabled, else "none".
+        """
+        return "oidc" if self.sso_enabled else "none"
 
     # Legacy field support
     @property
@@ -176,7 +209,8 @@ class Profile:
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
                         okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                        okta_exact = ("okta.com", "oktapreview.com", "okta-emea.com")
+                        if hostname_lower.endswith(okta_domains) or hostname_lower in okta_exact:
                             data["provider_type"] = "okta"
                         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                             data["provider_type"] = "auth0"

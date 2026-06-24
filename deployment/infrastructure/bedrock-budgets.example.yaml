@@ -1,0 +1,201 @@
+# DO NOT EDIT BY HAND — generated fixture for CI cfn-lint (design §2.2 / FR-6).
+# Rendered by source/claude_code_with_bedrock/budgets_template.py::render_budgets_stack
+# from REFERENCE_PERSONAS (persona_defaults.py) with budgets added: engineering=$5000,
+# sales=$500, plus an account-total budget of $10000. The real stack is rendered at
+# `ccwb deploy` time from the configured personas; this committed copy exists only so
+# CI can lint a real rendered Budgets artifact (the sibling of bedrock-personas.example.yaml).
+# Regenerate via test_budgets_template.test_committed_budgets_example_matches_renderer's recipe
+# if budgets_template.render_budgets_stack changes.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude Code persona-based cost governance: per-persona and account AWS
+  Budgets with a dedicated alert SNS topic (persona-based-access FR-6).'
+Resources:
+  BudgetAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName:
+        Fn::Sub: ${AWS::StackName}-budget-alerts
+      DisplayName: Claude Code Persona Budget Alerts
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: ${AWS::StackName}-budget-alerts
+      - Key: Purpose
+        Value: Persona budget notifications
+  BudgetAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+      - Ref: BudgetAlertsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowBudgetsPublish
+          Effect: Allow
+          Principal:
+            Service: budgets.amazonaws.com
+          Action: sns:Publish
+          Resource:
+            Ref: BudgetAlertsTopic
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Fn::Sub: ${AWS::AccountId}
+  EngineeringBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName:
+          Fn::Sub: ${AWS::StackName}-Engineering-budget
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 5000.0
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+          - user:Team$Engineering
+      NotificationsWithSubscribers:
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 50
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 80
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: FORECASTED
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+  SalesBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName:
+          Fn::Sub: ${AWS::StackName}-Sales-budget
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 500.0
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+          - user:Team$Sales
+      NotificationsWithSubscribers:
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 50
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 80
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: FORECASTED
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+  AccountBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName:
+          Fn::Sub: ${AWS::StackName}-account-budget
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 10000.0
+          Unit: USD
+      NotificationsWithSubscribers:
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 50
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 80
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+      - Notification:
+          NotificationType: FORECASTED
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: SNS
+          Address:
+            Ref: BudgetAlertsTopic
+Outputs:
+  BudgetAlertsTopicArn:
+    Description: ARN of the persona budget-alerts SNS topic.
+    Value:
+      Ref: BudgetAlertsTopic
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-BudgetAlertsTopicArn

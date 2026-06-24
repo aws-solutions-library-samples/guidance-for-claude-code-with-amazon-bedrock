@@ -36,6 +36,40 @@ func (c Claims) GetFloat(key string) float64 {
 	return f
 }
 
+// GetStringSlice returns a claim as a []string. It handles the shapes a `groups`
+// (or `roles`, `cognito:groups`, …) claim takes across IdPs:
+//
+//   - a JSON array of strings (`[]interface{}`) -> the string elements, in order
+//     (non-string elements are skipped defensively);
+//   - a scalar string -> a single-element slice (some IdPs emit one group as a
+//     bare string rather than a 1-element array);
+//   - a missing key or any other type -> nil.
+//
+// An array that is present but empty (or contains only non-string elements)
+// returns a non-nil, zero-length slice, distinguishing "the claim was present
+// but listed no groups" from "the claim was absent" (nil). Stdlib only — no new
+// dependencies (cold-start budget, binary-distribution.md).
+func (c Claims) GetStringSlice(key string) []string {
+	v, ok := c[key]
+	if !ok {
+		return nil
+	}
+	switch val := v.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(val))
+		for _, elem := range val {
+			if s, ok := elem.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	case string:
+		return []string{val}
+	default:
+		return nil
+	}
+}
+
 // DecodePayload decodes the payload (second segment) of a JWT without signature verification.
 func DecodePayload(token string) (Claims, error) {
 	parts := strings.SplitN(token, ".", 3)

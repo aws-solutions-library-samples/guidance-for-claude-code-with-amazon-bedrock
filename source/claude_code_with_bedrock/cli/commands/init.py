@@ -30,6 +30,8 @@ from claude_code_with_bedrock.cli.utils.validators import (
     validate_oidc_provider_domain,
 )
 from claude_code_with_bedrock.config import Config, Profile
+from claude_code_with_bedrock.persona_defaults import REFERENCE_PERSONAS
+from claude_code_with_bedrock.persona_validation import validate_personas
 
 
 def validate_identity_pool_name(value: str) -> bool | str:
@@ -63,6 +65,29 @@ def validate_cognito_user_pool_id(value: str) -> bool | str:
     if re.match(r"^[\w-]+_[0-9a-zA-Z]+$", value):
         return True
     return "Invalid User Pool ID format"
+
+
+def _is_positive_number(value: str) -> bool:
+    """Return True if *value* parses as a strictly positive number.
+
+    Used by persona-wizard prompts where a blank entry means "unset"; callers
+    handle the empty-string case before invoking this.
+    """
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _opt_float(value: Any) -> float | None:
+    """Parse an optional numeric wizard answer: blank/None -> None, else float.
+
+    Shared by the persona-budget prompts (per-persona ``budget_amount_usd`` and the
+    account-total ``account_budget_amount_usd``) so a left-blank amount means "unset".
+    """
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 class InitCommand(Command):
@@ -1153,6 +1178,14 @@ class InitCommand(Command):
                     if config["quota"].get("enable_bypass_detection"):
                         console.print("  • Sidecar bypass detection: enabled")
 
+                # Persona-based access control (PBAC).
+                # Personas map an OIDC `groups` claim value to a dedicated Bedrock
+                # IAM role + GROUP quota tier + cost tags. They require per-user JWT
+                # tokens (OIDC) and reuse the quota subsystem, so gate the prompt on
+                # SSO enabled AND quota enabled (quota-requires-oidc.md, spec D6).
+                if config.get("sso_enabled", True) and config.get("quota", {}).get("enabled"):
+                    self._gather_personas(config)
+
             # Save monitoring progress
             progress.save_step("monitoring_complete", config)
 
@@ -1989,6 +2022,218 @@ class InitCommand(Command):
 
         return 0
 
+    @staticmethod
+    def _persona_from_wizard_answers(answers: dict[str, Any]) -> dict[str, Any]:
+        """Build a single persona dict (spec §4.1 shape) from raw wizard answers.
+
+        Pure transform — no prompting — so the parsing rules (comma-splitting of
+        model globs and cost tags, optional integer/limit coercion) are unit
+        tested directly without driving questionary.
+
+        Args:
+            answers: raw strings/values keyed by ``name``, ``display_name``,
+                ``group``, ``allowed_models`` (comma-separated), ``denied_models``
+                (comma-separated), ``monthly_token_limit`` (str/int/""),
+                ``enforcement_mode``, ``budget_amount_usd`` (str/number/""),
+                ``cost_tags`` (``Key=Value,Key2=Value2`` string or dict).
+
+        Returns:
+            A persona dict with normalized types. ``allowed_models``/
+            ``denied_models`` are lists; ``monthly_token_limit`` is an int or
+            ``None``; ``budget_amount_usd`` is a float or ``None``; ``cost_tags``
+            is a dict. ``display_name`` defaults to ``name`` when blank.
+        """
+
+        def _split_csv(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            if not value:
+                return []
+            return [item.strip() for item in str(value).split(",") if item.strip()]
+
+        def _opt_int(value: Any) -> int | None:
+            if value is None or value == "":
+                return None
+            return int(value)
+
+        # _opt_float is now a module-level helper (shared with _gather_personas).
+
+        def _parse_tags(value: Any) -> dict[str, str]:
+            if isinstance(value, dict):
+                return {str(k): str(v) for k, v in value.items()}
+            tags: dict[str, str] = {}
+            if not value:
+                return tags
+            for pair in str(value).split(","):
+                pair = pair.strip()
+                if not pair or "=" not in pair:
+                    continue
+                key, _, val = pair.partition("=")
+                key, val = key.strip(), val.strip()
+                if key:
+                    tags[key] = val
+            return tags
+
+        name = str(answers.get("name", "")).strip()
+        display_name = str(answers.get("display_name", "")).strip() or name
+        return {
+            "name": name,
+            "display_name": display_name,
+            "group": str(answers.get("group", "")).strip(),
+            "allowed_models": _split_csv(answers.get("allowed_models")),
+            "denied_models": _split_csv(answers.get("denied_models")),
+            "monthly_token_limit": _opt_int(answers.get("monthly_token_limit")),
+            "daily_token_limit": _opt_int(answers.get("daily_token_limit")),
+            "enforcement_mode": str(answers.get("enforcement_mode", "block")).strip() or "block",
+            "budget_amount_usd": _opt_float(answers.get("budget_amount_usd")),
+            "cost_tags": _parse_tags(answers.get("cost_tags")),
+        }
+
+    def _gather_personas(self, config: dict[str, Any], _retry: bool = False) -> None:
+        """Interactively collect persona definitions into ``config`` (PBAC).
+
+        ``_retry`` is set only by the validation-error re-prompt below: it skips
+        the "Configure personas now?" opt-in (the operator already chose to
+        re-enter) so a reflexive Enter doesn't silently abandon the attempt — the
+        opt-in's default would otherwise be False, since the retry clears
+        ``config["personas"]`` first.
+
+        Gated by the caller on SSO + quota enabled. Lets the operator opt in,
+        optionally seed from :data:`REFERENCE_PERSONAS`, then add custom personas
+        in a loop. Collects the top-level ``groups_claim_name`` and
+        ``fallback_persona``, runs :func:`validate_personas`, and re-prompts on
+        validation errors. Writes ``config["personas"]`` (list[dict]),
+        ``config["groups_claim_name"]``, and ``config["fallback_persona"]``.
+
+        Storing nothing (or an empty list) leaves downstream deploy/package to
+        treat the profile as non-persona — identical to today's behavior.
+        """
+        console = Console()
+        console.print("\n[bold]Persona-Based Access Control (optional)[/bold]")
+        console.print("Map OIDC group claims to dedicated Bedrock model-access roles,")
+        console.print("per-group token quotas, and cost-allocation tags.")
+        console.print("[dim]Requires your IdP to emit a groups claim (see PBAC_README).[/dim]")
+
+        # On a validation re-prompt the operator already opted in — skip the
+        # confirm so a reflexive Enter (whose default is now False, because the
+        # retry cleared config["personas"]) doesn't silently abandon the attempt.
+        if not _retry:
+            enable_personas = questionary.confirm(
+                "Configure personas now?",
+                default=bool(config.get("personas")),
+            ).ask()
+            if not enable_personas:
+                # Leave any previously-saved persona config untouched; do not clear.
+                return
+
+        groups_claim_name = questionary.text(
+            "OIDC claim name carrying group membership:",
+            default=config.get("groups_claim_name", "groups"),
+            validate=lambda x: bool(x.strip()) or "Claim name cannot be empty",
+        ).ask()
+
+        # Seed from the reference personas (engineering, sales) or start empty.
+        seed_choice = questionary.select(
+            "Start from:",
+            choices=[
+                questionary.Choice("Reference personas (engineering + sales)", value="reference"),
+                questionary.Choice("Empty (define my own)", value="empty"),
+            ],
+            default="reference",
+        ).ask()
+        # Deep-copy the reference seed so edits never mutate the shared constant.
+        personas: list[dict[str, Any]] = (
+            [json.loads(json.dumps(p)) for p in REFERENCE_PERSONAS] if seed_choice == "reference" else []
+        )
+
+        # Custom-persona loop: blank name ends the loop.
+        while questionary.confirm("Add a custom persona?", default=not personas).ask():
+            name = questionary.text(
+                "Persona name (DNS/IAM-safe identifier, blank to finish):",
+                default="",
+            ).ask()
+            if not name or not name.strip():
+                break
+            answers = {
+                "name": name,
+                "display_name": questionary.text("Display name:", default=name).ask(),
+                "group": questionary.text("Group claim value (the value to match in the groups claim):").ask(),
+                "allowed_models": questionary.text(
+                    "Allowed model globs (comma-separated, e.g. anthropic.*):",
+                    default="anthropic.*",
+                ).ask(),
+                "denied_models": questionary.text(
+                    "Denied model globs (comma-separated, blank for none):",
+                    default="",
+                ).ask(),
+                "monthly_token_limit": questionary.text(
+                    "Monthly token limit (blank for none):",
+                    default="",
+                    validate=lambda x: (
+                        x == "" or (x.isdigit() and int(x) > 0) or "Enter a positive integer or leave blank"
+                    ),
+                ).ask(),
+                "enforcement_mode": questionary.select(
+                    "Enforcement mode:",
+                    choices=[
+                        questionary.Choice("block (deny when over limit)", value="block"),
+                        questionary.Choice("alert (warn only)", value="alert"),
+                    ],
+                    default="block",
+                ).ask(),
+                "budget_amount_usd": questionary.text(
+                    "Monthly budget USD (blank for none):",
+                    default="",
+                    validate=lambda x: x == "" or _is_positive_number(x) or "Enter a positive number or leave blank",
+                ).ask(),
+                "cost_tags": questionary.text(
+                    "Cost-allocation tags (Key=Value,Key2=Value2):",
+                    default="",
+                ).ask(),
+            }
+            personas.append(self._persona_from_wizard_answers(answers))
+
+        # Fallback persona: applied when a user's groups match no persona.
+        fallback_choices = [questionary.Choice("None (deny if no persona matches)", value=None)]
+        fallback_choices += [questionary.Choice(p["name"], value=p["name"]) for p in personas]
+        fallback_persona = questionary.select(
+            "Fallback persona when no group matches:",
+            choices=fallback_choices,
+            default=config.get("fallback_persona"),
+        ).ask()
+
+        # Optional account-total AWS Budget (FR-6.1): a single budget across the whole
+        # account, sibling to per-persona budgets. Blank = no account-total budget.
+        existing_account_budget = config.get("account_budget_amount_usd")
+        account_budget_amount_usd = _opt_float(
+            questionary.text(
+                "Account-total monthly budget in USD (blank = none):",
+                default="" if existing_account_budget is None else str(existing_account_budget),
+            ).ask()
+        )
+
+        # Validate; re-prompt (recurse) on errors so the operator can fix them.
+        errors = validate_personas(personas, fallback_persona)
+        if errors:
+            console.print("\n[red]Persona configuration has errors:[/red]")
+            for err in errors:
+                console.print(f"  • {err}")
+            if questionary.confirm("Re-enter persona configuration?", default=True).ask():
+                # Clear ALL partial persona state so the retry starts clean — not just
+                # `personas`. Otherwise the top-level fields keep their prior (possibly
+                # bad) values as the re-prompt defaults.
+                for key in ("personas", "groups_claim_name", "fallback_persona", "account_budget_amount_usd"):
+                    config.pop(key, None)
+                return self._gather_personas(config, _retry=True)
+            console.print("[yellow]Skipping persona configuration.[/yellow]")
+            return
+
+        config["personas"] = personas
+        config["groups_claim_name"] = groups_claim_name.strip()
+        config["fallback_persona"] = fallback_persona
+        config["account_budget_amount_usd"] = account_budget_amount_usd
+        console.print(f"\n[green]✓[/green] Configured {len(personas)} persona(s).")
+
     def _save_configuration(self, config_data: dict[str, Any], profile_name: str) -> None:
         """Save configuration to file.
 
@@ -2086,6 +2331,13 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
+            # Persona-based access control (spec §4.1). Absent in config_data for
+            # non-persona setups → Profile defaults ([] / "groups" / None) apply.
+            "personas": config_data.get("personas", []),
+            "groups_claim_name": config_data.get("groups_claim_name", "groups"),
+            "fallback_persona": config_data.get("fallback_persona"),
+            # Optional account-total budget (FR-6.1); None when not configured.
+            "account_budget_amount_usd": config_data.get("account_budget_amount_usd"),
         }
 
         if existing_profile:

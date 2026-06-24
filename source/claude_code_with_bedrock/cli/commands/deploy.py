@@ -52,7 +52,7 @@ class DeployCommand(Command):
     arguments = [
         argument(
             "stack",
-            description="Specific stack to deploy (auth/networking/monitoring/dashboard/analytics/quota)",
+            description="Specific stack (auth/networking/monitoring/dashboard/analytics/quota/persona/budgets)",
             optional=True,
         )
     ]
@@ -141,7 +141,10 @@ class DeployCommand(Command):
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
                 if getattr(profile, "monitoring_mode", "central") == "sidecar":
-                    console.print("[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]")
+                    console.print(
+                        "[yellow]CoWork dashboard requires central monitoring mode "
+                        "(Cowork cannot export telemetry in sidecar mode).[/yellow]"
+                    )
                     return 1
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
             elif stack_arg == "analytics":
@@ -171,6 +174,25 @@ class DeployCommand(Command):
                         "[yellow]Quota monitoring requires monitoring to be enabled in your configuration.[/yellow]"
                     )
                     return 1
+            elif stack_arg in ("persona", "budgets"):
+                # Persona-based access + per-persona budgets. Both require OIDC
+                # (group claims drive role selection) and at least one persona.
+                if profile.effective_auth_type != "oidc":
+                    console.print(
+                        "[yellow]Persona-based access requires OIDC authentication "
+                        "(group claims) and cannot be deployed for auth type "
+                        f"'{profile.effective_auth_type}'.[/yellow]"
+                    )
+                    console.print("[dim]See quota-requires-oidc.md. Re-run 'ccwb init' with an OIDC provider.[/dim]")
+                    return 1
+                if not getattr(profile, "personas", []):
+                    console.print("[yellow]No personas are configured in this profile.[/yellow]")
+                    console.print("[dim]Re-run 'ccwb init' to define personas.[/dim]")
+                    return 1
+                if stack_arg == "persona":
+                    stacks_to_deploy.append(("persona", "Persona-Based Access Control (IAM roles + policies)"))
+                else:
+                    stacks_to_deploy.append(("budgets", "Per-Persona Cost Budgets"))
             elif stack_arg == "distribution":
                 if profile.enable_distribution:
                     stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
@@ -187,7 +209,8 @@ class DeployCommand(Command):
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, "
+                    "cowork-dashboard, analytics, quota, persona, budgets, codebuild\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -247,6 +270,30 @@ class DeployCommand(Command):
                             "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. "
                             "See issue #454.[/dim]"
                         )
+
+            # Persona-based access control + per-persona budgets.
+            # Gated on OIDC (group claims drive role selection — quota-requires-oidc.md)
+            # and at least one configured persona. Scheduled after auth/quota so the
+            # persona stack can import the auth stack's OIDCProviderArn and seed GROUP
+            # quota policies into the quota table (stack-ordering.md). The Cognito
+            # FederationType skip (no OIDC provider export) happens at deploy time.
+            if getattr(profile, "personas", []):
+                if self._should_schedule_personas(profile):
+                    # Single-line append (matches every other append): the destroy-coverage
+                    # test detects deployable types via a single-line regex, so keep this on
+                    # one line or `persona` becomes invisible to it.
+                    stacks_to_deploy.append(("persona", "Persona-Based Access Control (IAM roles + policies)"))
+                    stacks_to_deploy.append(("budgets", "Per-Persona Cost Budgets"))
+                    # The per-persona dashboard is deployed inline by _deploy_persona_stack
+                    # (after seeding), not as a separate scheduled stack — so the persona
+                    # metric dimension exists before the dashboard references it (FR-7).
+                else:
+                    console.print(
+                        "[yellow]⚠ Skipping persona stacks: persona-based access requires OIDC "
+                        f"authentication (group claims) but auth type is '{profile.effective_auth_type}'.[/yellow]"
+                    )
+                    console.print("[dim]See quota-requires-oidc.md. Re-run 'ccwb init' with an OIDC provider.[/dim]")
+
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -824,6 +871,14 @@ class DeployCommand(Command):
                 # Sidecar bypass detection: opt-in detective control (default off).
                 enable_bypass_detection = getattr(profile, "enable_bypass_detection", False)
 
+                # Persona declared-order for PBAC quota resolution. Empty when no
+                # personas are configured, which keeps the Lambdas in legacy
+                # most-restrictive mode (D3). When set, the quota Lambdas resolve
+                # by the FIRST matching group in this list — matching the
+                # credential helper's persona resolution. Wired to the
+                # PersonaOrder CFN param / PERSONA_ORDER env var (task #19).
+                persona_order = self._compute_persona_order(profile)
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"WarningThreshold80={warning_80}",
@@ -835,6 +890,7 @@ class DeployCommand(Command):
                     f"OidcClientId={oidc_client_id}",
                     f"EnableFinegrainedQuotas={str(enable_finegrained_quotas).lower()}",
                     f"EnableBypassDetection={str(enable_bypass_detection).lower()}",
+                    f"PersonaOrder={persona_order}",
                 ]
 
                 # Package the template using AWS CLI
@@ -891,6 +947,12 @@ class DeployCommand(Command):
                         except Exception:
                             pass
 
+            elif stack_type == "persona":
+                return self._deploy_persona_stack(profile, console, cf_manager, deploy_with_cf)
+
+            elif stack_type == "budgets":
+                return self._deploy_budgets_stack(profile, console, deploy_with_cf)
+
             elif stack_type == "codebuild":
                 # WINDOWS_SERVER_2022_CONTAINER is only available in select regions
                 codebuild_supported_regions = [
@@ -931,7 +993,7 @@ class DeployCommand(Command):
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
             caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -1039,7 +1101,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1068,7 +1130,6 @@ class DeployCommand(Command):
         elif stack_type == "quota":
             template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
             stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
-            dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
             console.print(
                 f"\n[cyan]# Step 1: Package Lambda functions\n"
@@ -1079,7 +1140,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [
@@ -1254,6 +1315,568 @@ class DeployCommand(Command):
             console.print(f"[yellow]Warning: Could not create default quota policy: {str(e)}[/yellow]")
             console.print("[dim]Run 'ccwb quota set-default' manually to configure quota limits[/dim]")
 
+    @staticmethod
+    def _should_schedule_personas(profile) -> bool:
+        """Whether the persona + budgets stacks should be scheduled for deploy.
+
+        Persona-based access is gated on OIDC: group claims drive role selection, so a
+        non-OIDC profile (idc/none) has no group claim to match and the persona stacks
+        would be inert or fail (quota-requires-oidc.md). The caller checks ``personas``
+        is non-empty first; this isolates the auth-type gate so it is unit-testable
+        WITHOUT replaying handle()'s body (the gate is the regression-prone part).
+        """
+        return profile.effective_auth_type == "oidc"
+
+    def _resolve_issuer_host(self, profile) -> str:
+        """Return the OIDC issuer host for the persona trust condition key.
+
+        The persona role's STS trust policy keys on ``<issuer_host>:<groups_claim>``,
+        where ``<issuer_host>`` MUST equal the auth stack's registered OIDC-provider
+        ``Url`` with ONLY the ``https://`` scheme stripped — preserving every
+        provider-specific quirk (issuer-url-format.md):
+          - Auth0:  ``company.auth0.com/``                  (trailing slash REQUIRED — the
+                    provider is registered as ``https://${Auth0Domain}/``)
+          - Azure:  ``login.microsoftonline.com/<tenant>/v2.0`` (no trailing slash)
+          - Okta:   ``company.okta.com``                    (bare domain — the provider is
+                    registered at ``https://${OktaDomain}``, NOT the /oauth2/default issuer)
+          - Google: ``accounts.google.com`` / domain         (bare)
+          - Generic:the configured ``oidc_issuer_url``       (scheme-stripped)
+
+        The condition key MUST equal the IAM OIDC-provider ``Url`` each auth
+        template registers, scheme-stripped:
+          - Okta/Azure/Auth0/Google: the provider is registered from
+            ``provider_domain`` (Auth0 with a trailing slash), which is what
+            ``_resolve_oidc_config`` returns — so we reuse it for those.
+          - Generic OIDC (e.g. Keycloak, PingFederate, **Teleport**): the
+            provider is registered as ``Url: !Ref OidcIssuerUrl`` (fed from
+            ``profile.oidc_issuer_url``, deploy.py generic branch), which is a
+            DISTINCT field from ``provider_domain`` and commonly carries a path
+            (``…/realms/<r>``). ``_resolve_oidc_config`` returns
+            ``provider_domain`` for generic, so reusing it would emit the WRONG
+            condition key and silently hard-deny every generic-provider persona
+            user. We therefore derive generic's host from ``oidc_issuer_url``.
+
+        We strip ONLY the scheme. We MUST NOT ``rstrip('/')`` — that drops Auth0's
+        required trailing slash and hard-denies Auth0 persona users. Regression:
+        see test_deploy_personas (Auth0/Azure/Okta/generic cases).
+        """
+        # Generic OIDC registers the provider from oidc_issuer_url, NOT
+        # provider_domain — match the registered Url exactly (see docstring).
+        if getattr(profile, "provider_type", None) == "generic" and getattr(profile, "oidc_issuer_url", None):
+            issuer_url = profile.oidc_issuer_url
+        else:
+            issuer_url, _client_id = self._resolve_oidc_config(profile)
+        host = issuer_url
+        for scheme in ("https://", "http://"):
+            if host.startswith(scheme):
+                host = host[len(scheme):]
+                break
+        # Strip the scheme only — preserve the trailing slash (Auth0) and path
+        # suffix (Azure /v2.0, generic /realms/<r>) so the condition key matches
+        # the registered OIDC-provider URL exactly.
+        return host
+
+    def _deploy_persona_stack(self, profile, console: Console, cf_manager, deploy_with_cf) -> int:
+        """Render and deploy the persona-based access stack, then seed group policies + AIPs.
+
+        Steps (spec design.md#2.3, decisions D1/D5/D6/D8):
+          1. Gate on OIDC + non-empty personas (defensive; handle() also gates).
+          2. Read ``<AuthStack>-FederationType``; if ``cognito`` -> skip + warn (D5).
+          3. Read ``<AuthStack>-OIDCProviderArn``; if absent -> clear stack-ordering error.
+          4. Render persona YAML and deploy via CloudFormationManager (CAPABILITY_NAMED_IAM).
+          5. Seed one GROUP quota policy per persona (D6).
+          6. Create tagged Application Inference Profiles per persona (idempotent).
+        Returns a process exit code (0 = success).
+        """
+        # Step 1 — gate (defensive: the scheduler already checks this).
+        if profile.effective_auth_type != "oidc" or not getattr(profile, "personas", []):
+            console.print("[dim]Skipping persona stack: requires OIDC auth and at least one persona.[/dim]")
+            return 0
+
+        # Step 1b — validate the persona definitions BEFORE rendering. config.yaml is
+        # hand-editable (spec §4.1), so a bad persona (dup name, missing group, an
+        # enforcement_mode typo that would silently downgrade block→alert, etc.) must
+        # fail loudly here rather than render silently-wrong infra. The init wizard
+        # validates too, but a hand-edited or programmatically-built profile would
+        # otherwise bypass that check.
+        from claude_code_with_bedrock.persona_validation import validate_personas
+
+        persona_errors = validate_personas(profile.personas, getattr(profile, "fallback_persona", None))
+        if persona_errors:
+            console.print("[red]Persona configuration is invalid — fix config.yaml before deploying:[/red]")
+            for err in persona_errors:
+                console.print(f"  [red]•[/red] {err}")
+            return 1
+
+        from claude_code_with_bedrock.persona_template import render_personas_stack
+
+        project_root = Path(__file__).parents[4]
+        auth_stack = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+
+        # Steps 2 & 3 — read auth stack outputs; do not assume they exist.
+        auth_outputs = get_stack_outputs(auth_stack, profile.aws_region) or {}
+
+        federation_type = auth_outputs.get("FederationType", getattr(profile, "federation_type", ""))
+        if federation_type == "cognito":
+            console.print(
+                "[yellow]⚠ Skipping persona provisioning: this deployment uses Cognito federation, "
+                "which has no OIDC provider for the persona role trust policy.[/yellow]"
+            )
+            console.print(
+                "[dim]Persona-based access requires direct IAM federation (spec D5, FR-2.7). "
+                "Personas were not provisioned.[/dim]"
+            )
+            return 0
+
+        if not auth_outputs.get("OIDCProviderArn"):
+            # stack-ordering.md: fail with a clear pointer rather than a CFN ImportValue error.
+            console.print(
+                f"[red]Could not find OIDCProviderArn output on auth stack '{auth_stack}'.[/red]"
+            )
+            console.print("[yellow]Deploy the authentication stack first:[/yellow] [cyan]ccwb deploy auth[/cyan]")
+            return 1
+
+        # Step 4 — render to a build dir (utf-8 per windows-platform-guards.md) and deploy.
+        groups_claim = getattr(profile, "groups_claim_name", "groups") or "groups"
+        issuer_host = self._resolve_issuer_host(profile)
+        if not issuer_host:
+            console.print("[red]Could not resolve the OIDC issuer host for the persona trust policy.[/red]")
+            return 1
+
+        try:
+            rendered = render_personas_stack(profile.personas, groups_claim, issuer_host)
+        except ValueError as e:
+            console.print(f"[red]Failed to render persona stack: {e}[/red]")
+            return 1
+
+        build_dir = project_root / "build" / "personas"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        template_path = build_dir / "bedrock-personas.yaml"
+        template_path.write_text(rendered, encoding="utf-8")
+
+        bedrock_regions = self._persona_bedrock_regions(profile)
+        params = [
+            f"AuthStackName={auth_stack}",
+            f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+        ]
+        # Stack-name default uses the "persona" type verbatim so `ccwb destroy`
+        # (which derives names as "{identity_pool_name}-{stack_type}") tears it
+        # down — keep this in sync with destroy.py's DESTROYABLE_STACKS.
+        stack_name = profile.stack_names.get("persona", f"{profile.identity_pool_name}-persona")
+
+        result = deploy_with_cf(
+            str(template_path),
+            stack_name,
+            params,
+            ["CAPABILITY_NAMED_IAM"],
+            task_description="Deploying persona access stack...",
+        )
+        if result != 0:
+            return result
+
+        # Write each persona's resolved role ARN back into the profile dicts from
+        # the stack's {Stem}RoleArn outputs, so `ccwb package` can serialize
+        # role_arn per spec §4.2 (the credential helper assumes this exact ARN).
+        self._write_back_persona_role_arns(profile, stack_name, console)
+
+        # Steps 5 & 6 — best-effort post-deploy seeding; do not fail the deploy if these hit
+        # transient issues (the stack itself is already up).
+        self._seed_persona_group_policies(profile, console)
+        self._create_persona_inference_profiles(profile, console)
+        # Step 7 — deploy the per-persona observability dashboard last, so the
+        # `persona` metric dimension exists before the dashboard references it
+        # (FR-7). Its own CFN stack; best-effort (won't fail the persona deploy).
+        self._deploy_persona_dashboard(profile, console, deploy_with_cf)
+        return 0
+
+    def _write_back_persona_role_arns(self, profile, persona_stack_name: str, console: Console) -> None:
+        """Populate each persona dict's ``role_arn`` from the persona stack outputs.
+
+        The renderer exports ``{Stem}RoleArn`` per persona where ``Stem`` is the
+        sanitized logical-id stem of the persona name. We reuse the renderer's
+        ``_logical_id`` so the lookup key cannot drift from what was emitted.
+        This mutates ``profile.personas`` in place; ``ccwb package`` reads
+        ``role_arn`` off these dicts (spec §4.2). Best-effort: a missing output is
+        logged but does not fail the deploy (the role still exists in IAM).
+        """
+        try:
+            from claude_code_with_bedrock.persona_template import _logical_id
+
+            outputs = get_stack_outputs(persona_stack_name, profile.aws_region) or {}
+            resolved_any = False
+            for persona in profile.personas:
+                name = persona.get("name")
+                if not name:
+                    continue
+                output_key = f"{_logical_id(name)}RoleArn"
+                role_arn = outputs.get(output_key)
+                if role_arn:
+                    persona["role_arn"] = role_arn
+                    resolved_any = True
+                else:
+                    console.print(
+                        f"[yellow]⚠ No {output_key} output found for persona '{name}'; "
+                        "role_arn will be empty in config.json.[/yellow]"
+                    )
+
+            # Persist so the NEXT command invocation (`ccwb package`) sees the
+            # resolved ARNs — get_profile()/load_profile() return a fresh Profile,
+            # so the in-memory mutation above would otherwise be lost. Best-effort.
+            if resolved_any:
+                try:
+                    from claude_code_with_bedrock.config import Config
+
+                    Config.load().save_profile(profile)
+                except Exception as save_err:
+                    console.print(
+                        f"[yellow]Warning: resolved persona role ARNs but could not persist them "
+                        f"to the profile ({str(save_err)}). Re-run 'ccwb deploy persona' if "
+                        "'ccwb package' shows empty role_arns.[/yellow]"
+                    )
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not read persona role ARNs from stack outputs: {str(e)}[/yellow]")
+
+    def _compute_persona_order(self, profile) -> str:
+        """Comma-separated persona group values in DECLARED order for the quota Lambdas.
+
+        This is the bridge that activates declared-order (PBAC) quota resolution
+        (spec D3): the quota Lambdas read it via the ``PERSONA_ORDER`` env var
+        (CFN ``PersonaOrder`` param) and let the FIRST matching group win,
+        matching the credential helper's persona resolution. Returns an empty
+        string when there are no personas or auth isn't OIDC — which keeps the
+        Lambdas in legacy most-restrictive mode (the existing behavior for
+        non-persona deployments is untouched). Order follows ``profile.personas``
+        exactly; groups are de-duplicated while preserving first-seen order.
+        """
+        if profile.effective_auth_type != "oidc" or not getattr(profile, "personas", []):
+            return ""
+        ordered_groups: list[str] = []
+        for persona in profile.personas:
+            group = persona.get("group")
+            if group and group not in ordered_groups:
+                ordered_groups.append(group)
+        return ",".join(ordered_groups)
+
+    def _persona_bedrock_regions(self, profile) -> list:
+        """Resolve the allowed Bedrock regions for persona roles (mirrors the auth stack)."""
+        bedrock_regions = getattr(profile, "allowed_bedrock_regions", None)
+        if not bedrock_regions:
+            from claude_code_with_bedrock.models import get_all_bedrock_regions
+
+            bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+        return bedrock_regions
+
+    def _seed_persona_group_policies(self, profile, console: Console) -> None:
+        """Seed one GROUP quota policy per persona (spec D6).
+
+        A persona's ``group`` value IS the GROUP-policy identifier the quota
+        Lambdas already resolve (``POLICY#group#<value>``), so we reuse
+        ``QuotaPolicyManager`` verbatim — no new policy type. Requires the quota
+        stack (and its policies table) to exist; if it doesn't, we note it and
+        move on rather than failing the persona deploy.
+        """
+        try:
+            from claude_code_with_bedrock.models import EnforcementMode, PolicyType
+            from claude_code_with_bedrock.quota_policies import PolicyAlreadyExistsError, QuotaPolicyManager
+
+            quota_stack = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
+            quota_outputs = get_stack_outputs(quota_stack, profile.aws_region) or {}
+            table_name = quota_outputs.get("PoliciesTableName")
+            if not table_name:
+                console.print(
+                    "[yellow]⚠ Skipping persona GROUP quota policies: quota policies table not found "
+                    f"(stack '{quota_stack}').[/yellow]"
+                )
+                console.print("[dim]Deploy quota monitoring first to enforce per-persona token limits.[/dim]")
+                return
+
+            manager = QuotaPolicyManager(table_name, profile.aws_region)
+            for persona in profile.personas:
+                group = persona.get("group")
+                if not group:
+                    continue
+                monthly_limit = persona.get("monthly_token_limit") or getattr(
+                    profile, "monthly_token_limit", 225000000
+                )
+                daily_limit = persona.get("daily_token_limit")
+                mode = persona.get("enforcement_mode", "block")
+                enforcement_mode = EnforcementMode.BLOCK if mode == "block" else EnforcementMode.ALERT
+                try:
+                    manager.create_policy(
+                        policy_type=PolicyType.GROUP,
+                        identifier=group,
+                        monthly_token_limit=monthly_limit,
+                        daily_token_limit=daily_limit,
+                        enforcement_mode=enforcement_mode,
+                    )
+                    console.print(
+                        f"[green]Seeded GROUP quota policy for persona "
+                        f"'{persona.get('name', group)}' (group '{group}', monthly: {monthly_limit:,})[/green]"
+                    )
+                except PolicyAlreadyExistsError:
+                    console.print(
+                        f"[dim]GROUP quota policy for group '{group}' already exists (skipping)[/dim]"
+                    )
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not seed persona GROUP quota policies: {str(e)}[/yellow]")
+            console.print("[dim]Run 'ccwb quota set-group' manually to configure per-persona limits.[/dim]")
+
+    def _create_persona_inference_profiles(self, profile, console: Console) -> None:
+        """Create one tagged Application Inference Profile per persona TIER (FR-5.1).
+
+        Each AIP carries the persona's cost-allocation tags so Bedrock usage is
+        attributable per persona, and its ARN is wired into the persona's
+        per-tier model routing (read back into ``persona["inference_profile_arns"]``
+        so ``ccwb package`` serializes it and the credential helper can emit
+        ANTHROPIC_*_MODEL exports). Key properties:
+
+        * **One AIP per ENTITLED tier** (haiku/sonnet/opus the persona may invoke),
+          not one AIP per persona — so each tier routes to its own cost-tagged
+          profile and a restricted persona only gets profiles it can actually use.
+        * **copyFrom a cross-Region (system-defined) inference profile**, NOT a
+          single-Region foundation model. AWS requires a CRIS modelSource to
+          produce a multi-Region AIP; a foundation-model source would pin the AIP
+          to one Region and break Claude Code's CRIS routing.
+        * **Partition-aware** source ARNs (aws / aws-us-gov) — fixes the prior
+          hardcoded ``arn:aws:`` (region-availability.md, NFR-8 GovCloud).
+
+        Idempotent check-then-create by name; ARNs are read back even when the AIP
+        already exists. Any failure here is logged but never fails the deploy (the
+        IAM roles — the access-control core — are already in place).
+        """
+        try:
+            import boto3
+
+            from claude_code_with_bedrock.persona_models import (
+                aip_name,
+                cris_source_arn,
+                entitled_tiers,
+                model_id_is_denied,
+                partition_for_region,
+            )
+
+            client = boto3.client("bedrock", region_name=profile.aws_region)
+            region = profile.aws_region
+            partition = partition_for_region(region)
+            cris_prefix = getattr(profile, "cross_region_profile", None) or "us"
+
+            # Map existing APPLICATION profiles name -> ARN so creation is idempotent
+            # AND we can read back the ARN of a profile that already exists.
+            existing: dict[str, str] = {}
+            try:
+                paginator = client.get_paginator("list_inference_profiles")
+                for page in paginator.paginate(typeEquals="APPLICATION"):
+                    for summary in page.get("inferenceProfileSummaries", []):
+                        nm = summary.get("inferenceProfileName")
+                        if nm:
+                            existing[nm] = summary.get("inferenceProfileArn", "")
+            except Exception:
+                # Listing is best-effort; if it fails we still attempt create and
+                # rely on the per-create try/except to absorb "already exists".
+                pass
+
+            resolved_any = False
+            for persona in profile.personas:
+                name = persona.get("name")
+                if not name:
+                    continue
+                # Probe with the resolved CRIS prefix so a version-pinned deny on the
+                # tier's own model excludes that tier here too (keeps the AIP set in
+                # lockstep with the IAM Deny — no AIP sourced from a denied model).
+                tiers = entitled_tiers(persona, cris_prefix=cris_prefix)
+                if not tiers:
+                    console.print(
+                        f"[dim]Persona '{name}' is entitled to no model tier; skipping inference profiles.[/dim]"
+                    )
+                    continue
+
+                cost_tags = persona.get("cost_tags") or {}
+                base_tags = [{"key": k, "value": v} for k, v in cost_tags.items()]
+                base_tags.append({"key": "Persona", "value": name})
+
+                tier_arns: dict[str, str] = {}
+                for tier in tiers:
+                    aip = aip_name(profile.identity_pool_name, name, tier)
+                    if aip in existing:
+                        if existing[aip]:
+                            tier_arns[tier] = existing[aip]
+                        console.print(f"[dim]Inference profile '{aip}' already exists (reusing)[/dim]")
+                        continue
+
+                    source = cris_source_arn(tier, cris_prefix, region, partition)
+                    if not source:
+                        console.print(
+                            f"[dim]No '{tier}' model available for region prefix '{cris_prefix}'; "
+                            f"skipping that tier for persona '{name}'.[/dim]"
+                        )
+                        continue
+
+                    # Data-residency cross-tier fallback guard: where this tier has no
+                    # model for the prefix, cris_source_arn falls back to another tier's
+                    # model id. If that fallback id is one the persona DENIES, an AIP
+                    # built from it would only ever AccessDenied at runtime (the IAM Deny
+                    # matches the source) — a cosmetic, cost-mislabeled, never-usable
+                    # profile. Skip it rather than create it. The source ARN's model id is
+                    # the segment after "inference-profile/".
+                    source_model_id = source.rsplit("/", 1)[-1]
+                    if model_id_is_denied(source_model_id, persona):
+                        console.print(
+                            f"[dim]Resolved '{tier}' source model '{source_model_id}' for prefix "
+                            f"'{cris_prefix}' is denied by persona '{name}'; skipping that tier "
+                            f"(an AIP from it would be unusable at runtime).[/dim]"
+                        )
+                        continue
+
+                    tags = [*base_tags, {"key": "Tier", "value": tier}]
+                    # Wrapped so an already-exists / access error never aborts the deploy.
+                    try:
+                        resp = client.create_inference_profile(
+                            inferenceProfileName=aip,
+                            description=f"Cost-attribution inference profile for persona {name} ({tier})",
+                            modelSource={"copyFrom": source},
+                            tags=tags,
+                        )
+                        arn = resp.get("inferenceProfileArn", "")
+                        if arn:
+                            tier_arns[tier] = arn
+                        console.print(
+                            f"[green]Created tagged inference profile '{aip}' for persona '{name}' ({tier})[/green]"
+                        )
+                    except Exception as create_err:
+                        console.print(
+                            f"[dim]Inference profile '{aip}' not created "
+                            f"({str(create_err).splitlines()[0]}); continuing.[/dim]"
+                        )
+
+                # Wire the resolved tier ARNs into the persona dict so `ccwb package`
+                # serializes them and the credential helper can route per persona.
+                if tier_arns:
+                    persona["inference_profile_arns"] = tier_arns
+                    resolved_any = True
+
+            # Persist the resolved ARNs so the NEXT command (`ccwb package`) sees
+            # them — load_profile() returns a fresh Profile, so the in-memory
+            # mutation above would otherwise be lost. Best-effort (mirrors the
+            # role-ARN write-back).
+            if resolved_any:
+                try:
+                    from claude_code_with_bedrock.config import Config
+
+                    Config.load().save_profile(profile)
+                except Exception as save_err:
+                    console.print(
+                        f"[yellow]Warning: created persona inference profiles but could not persist their "
+                        f"ARNs to the profile ({str(save_err)}). Re-run 'ccwb deploy persona' if "
+                        "'ccwb package' shows no per-persona model routing.[/yellow]"
+                    )
+
+            # Orphan detection: a persona removed from config.yaml (or a tier it lost)
+            # leaves its tagged inference profile behind (create/teardown only iterate
+            # CURRENT personas+tiers). Surface it rather than auto-delete — billing/cost
+            # resources should not be removed implicitly by a deploy.
+            current_names = {
+                aip_name(profile.identity_pool_name, p.get("name"), tier)
+                for p in profile.personas
+                if p.get("name")
+                for tier in entitled_tiers(p, cris_prefix=cris_prefix)
+            }
+            prefix = f"{profile.identity_pool_name}-"
+            orphans = sorted(n for n in existing if n and n.startswith(prefix) and n not in current_names)
+            for orphan in orphans:
+                console.print(
+                    f"[yellow]⚠ Inference profile '{orphan}' has no matching persona/tier in config "
+                    "(persona removed or tier access changed?). It is NOT auto-deleted — "
+                    "remove it manually if unused:[/yellow]"
+                )
+                console.print(
+                    f"[dim]    aws bedrock delete-inference-profile "
+                    f"--inference-profile-identifier '{orphan}' --region {profile.aws_region}[/dim]"
+                )
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create persona inference profiles: {str(e)}[/yellow]")
+            console.print("[dim]Cost attribution by inference profile is optional; access control is unaffected.[/dim]")
+
+    def _deploy_budgets_stack(self, profile, console: Console, deploy_with_cf) -> int:
+        """Render and deploy the per-persona + account budgets stack (spec FR-6, D7).
+
+        Only personas with a ``budget_amount_usd`` produce a budget; an account
+        total is added when ``account_budget_amount_usd`` is set. Skips cleanly
+        when neither is configured.
+        """
+        if profile.effective_auth_type != "oidc" or not getattr(profile, "personas", []):
+            return 0
+
+        account_budget = getattr(profile, "account_budget_amount_usd", None)
+        any_persona_budget = any(p.get("budget_amount_usd") for p in profile.personas)
+        if not any_persona_budget and not account_budget:
+            console.print("[dim]Skipping budgets stack: no per-persona or account budget configured.[/dim]")
+            return 0
+
+        from claude_code_with_bedrock.budgets_template import render_budgets_stack
+
+        project_root = Path(__file__).parents[4]
+        try:
+            rendered = render_budgets_stack(profile.personas, account_budget)
+        except ValueError as e:
+            console.print(f"[red]Failed to render budgets stack: {e}[/red]")
+            return 1
+
+        build_dir = project_root / "build" / "personas"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        template_path = build_dir / "bedrock-budgets.yaml"
+        template_path.write_text(rendered, encoding="utf-8")
+
+        stack_name = profile.stack_names.get("budgets", f"{profile.identity_pool_name}-budgets")
+        return deploy_with_cf(
+            str(template_path),
+            stack_name,
+            None,
+            ["CAPABILITY_IAM"],
+            task_description="Deploying per-persona budgets...",
+        )
+
+    def _deploy_persona_dashboard(self, profile, console: Console, deploy_with_cf) -> int:
+        """Deploy the per-persona CloudWatch dashboard (spec FR-7 observability).
+
+        Invoked at the tail of ``_deploy_persona_stack`` (after the persona stack +
+        post-deploy seeding) so the ``persona`` metric dimension — emitted by the
+        otel-helper (#14) and mapped by the collector (#26) — exists before this
+        dashboard references it. The dashboard is its own CloudFormation stack named
+        ``{identity_pool_name}-persona-dashboard``; because it is deployed inline by
+        the persona flow rather than as a scheduled stack type, ``ccwb destroy`` does
+        not list it in DESTROYABLE_STACKS, but ``_check_orphaned_stacks`` still
+        surfaces it if it is left behind.
+
+        Uses the committed static template (no render), mirroring the existing
+        ``dashboard`` stack-type branch. Best-effort: if the template file is missing
+        (e.g. a partial checkout) it logs and skips rather than failing the deploy —
+        the dashboard is observability, not access control.
+
+        Returns a process exit code (0 = success or skipped).
+        """
+        project_root = Path(__file__).parents[4]
+        template = project_root / "deployment" / "infrastructure" / "bedrock-personas-dashboard.yaml"
+        if not template.exists():
+            console.print(
+                "[dim]Persona dashboard template not found; skipping dashboard deploy "
+                "(observability only — persona access is unaffected).[/dim]"
+            )
+            return 0
+
+        stack_name = profile.stack_names.get(
+            "persona-dashboard", f"{profile.identity_pool_name}-persona-dashboard"
+        )
+        params = [
+            f"DashboardName={profile.identity_pool_name}-personas",
+            f"MetricsRegion={profile.aws_region}",
+        ]
+        return deploy_with_cf(
+            str(template),
+            stack_name,
+            params,
+            task_description="Deploying per-persona dashboard...",
+        )
+
     def _check_orphaned_stacks(self, stacks_to_deploy, profile, cf_manager, console: Console) -> list:
         """Check for stacks that exist but are disabled in config.
 
@@ -1270,11 +1893,24 @@ class DeployCommand(Command):
             "cowork-dashboard": "CoWork CloudWatch Dashboard",
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
+            "persona": "Persona-Based Access Control",
+            "budgets": "Per-Persona Cost Budgets",
+            "persona-dashboard": "Per-Persona CloudWatch Dashboard",
             "codebuild": "CodeBuild",
         }
 
         # Stack types that are being deployed
         deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
+
+        # The persona dashboard is deployed INLINE by _deploy_persona_stack (it is not
+        # a scheduled stack type), so it never appears in deploying_types even on a
+        # normal persona deploy. Treat it as managed-by-the-persona-flow: it is only a
+        # genuine orphan once the persona stack itself is no longer being deployed
+        # (i.e. personas were removed from config). Without this, every all-stacks
+        # re-deploy with personas configured would spuriously flag the live dashboard
+        # as "disabled in your configuration" and offer to delete it.
+        if "persona" in deploying_types:
+            deploying_types = deploying_types | {"persona-dashboard"}
 
         # Check for orphaned stacks
         orphaned = []

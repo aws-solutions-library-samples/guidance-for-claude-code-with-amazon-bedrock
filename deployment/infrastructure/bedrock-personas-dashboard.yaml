@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Persona-based access control dashboard - per-persona token usage, cost, and top-user leaderboard over OTLP-ingested metrics'
+
+# Persona attribution: otel-helper emits the x-persona header (resolved from the
+# user's groups claim + persona config); the OTLP collector maps x-persona to the
+# `persona` metric label/dimension. These widgets group claude_code.token.usage and
+# claude_code.cost.usage by that `persona` label. Until the collector adds the
+# persona dimension, persona-grouped widgets render empty (no error).
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCodePersonasDashboard
+    Description: Name for the persona CloudWatch dashboard
+
+  MetricsRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where OTLP metrics are ingested
+
+Resources:
+  PersonasDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": { "markdown": "## Persona Overview", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 2, "width": 12, "height": 6,
+              "properties": {
+                "title": "Total Tokens by Persona",
+                "view": "pie",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 2, "width": 12, "height": 6,
+              "properties": {
+                "title": "Estimated Cost by Persona (USD)",
+                "view": "pie",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona)({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 8, "width": 24, "height": 2,
+              "properties": { "markdown": "## Token Usage by Persona", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 10, "width": 12, "height": 6,
+              "properties": {
+                "title": "Token Usage by Persona Over Time",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 10, "width": 12, "height": 6,
+              "properties": {
+                "title": "Daily Tokens by Persona (24h rate)",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona)(increase({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}[1d])))", "step": 3600 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 16, "width": 12, "height": 6,
+              "properties": {
+                "title": "Token Usage by Persona and Type",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona, type)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 16, "width": 12, "height": 6,
+              "properties": {
+                "title": "Active Users by Persona",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count by (persona)(group by (persona, \"user.email\")({\"claude_code.session.count\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": true, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 22, "width": 24, "height": 2,
+              "properties": { "markdown": "## Per-Persona Cost", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 24, "width": 24, "height": 6,
+              "properties": {
+                "title": "Estimated Cost by Persona Over Time (USD)",
+                "view": "line",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(500, sum by (persona)({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 30, "width": 24, "height": 2,
+              "properties": { "markdown": "## Top Users", "background": "transparent" }
+            },
+            {
+              "type": "chart",
+              "x": 0, "y": 32, "width": 12, "height": 6,
+              "properties": {
+                "title": "Top 20 Users by Token Usage",
+                "view": "bar",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(20, sum by (\"user.email\", persona)({\"claude_code.token.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            },
+            {
+              "type": "chart",
+              "x": 12, "y": 32, "width": 12, "height": 6,
+              "properties": {
+                "title": "Top 20 Users by Estimated Cost (USD)",
+                "view": "bar",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [
+                  { "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(20, sum by (\"user.email\", persona)({\"claude_code.cost.usage\", \"@resource.service.name\"=\"claude-code\"}))", "step": 60 }
+                ] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardURL:
+    Description: Direct URL to the persona CloudWatch dashboard
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'

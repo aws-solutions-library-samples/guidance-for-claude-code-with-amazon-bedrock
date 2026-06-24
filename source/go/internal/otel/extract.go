@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"ccwb-go/internal/config"
 	"ccwb-go/internal/jwt"
+	"ccwb-go/internal/persona"
 	"ccwb-go/internal/provider"
 )
 
@@ -22,9 +24,15 @@ type UserInfo struct {
 	Location       string `json:"location"`
 	Role           string `json:"role"`
 	Project        string `json:"project"`
-	AccountUUID    string `json:"account_uuid"`
-	Issuer         string `json:"issuer"`
-	Subject        string `json:"subject"`
+	// Persona is the persona-based-access tier the user resolved to from their
+	// groups claim (spec persona-based-access D4). Empty when no persona matched
+	// (or personas aren't configured) so FormatHeaders omits x-persona — the
+	// otel-helper resolves this independently of the credential-process, from the
+	// same groups claim + persona config, with no cross-binary handshake.
+	Persona     string `json:"persona"`
+	AccountUUID string `json:"account_uuid"`
+	Issuer      string `json:"issuer"`
+	Subject     string `json:"subject"`
 }
 
 // ExtractUserInfo extracts user attributes from JWT claims with fallback chains.
@@ -170,6 +178,41 @@ func ExtractUserInfoWithTagKey(claims jwt.Claims, tagKey string) UserInfo {
 	info.AccountUUID = claims.GetString("aud")
 	info.Issuer = claims.GetString("iss")
 	info.Subject = claims.GetString("sub")
+
+	return info
+}
+
+// ExtractUserInfoWithPersona is ExtractUserInfoWithTagKey plus persona
+// resolution. The otel-helper calls this so the emitted telemetry carries an
+// x-persona dimension for per-persona cost/usage attribution (spec D4). Persona
+// resolution is independent of the credential-process: we resolve from the same
+// `groups` claim and persona config using the shared §4.3 algorithm
+// (persona.Resolve), so there is no fragile cross-binary cache handshake.
+//
+// info.Persona is set to the matched persona's Name, or left empty when no
+// persona matches (or personas aren't configured) — FormatHeaders then omits
+// x-persona, which is the safe default. x-user-email and the rest of the
+// attribution chain are produced exactly as before.
+func ExtractUserInfoWithPersona(
+	claims jwt.Claims,
+	tagKey string,
+	personas []config.PersonaConfig,
+	groupsClaimName string,
+	fallback string,
+) UserInfo {
+	info := ExtractUserInfoWithTagKey(claims, tagKey)
+
+	if len(personas) > 0 {
+		if groupsClaimName == "" {
+			groupsClaimName = "groups"
+		}
+		// Resolve errors are not fatal for telemetry — a nil persona simply means
+		// no x-persona header. The resolver returns (nil, nil) for every
+		// no-match case today, so this is purely defensive.
+		if p, err := persona.Resolve(claims.GetStringSlice(groupsClaimName), personas, fallback); err == nil && p != nil {
+			info.Persona = p.Name
+		}
+	}
 
 	return info
 }
