@@ -34,3 +34,20 @@ When adding a new OIDC provider:
 3. Same hostname patterns and domain matching in both
 
 Example: PR #563 added Google to Go after it was already in Python — this gap should never happen.
+
+## UX Feature Parity
+
+When adding user-facing features (notifications, warnings, interactive flows)
+to either the Python or Go credential-process:
+
+- **Both variants must have the feature** — users may get either binary depending
+  on how they installed (Go via `ccwb package`, Python via pip/legacy)
+- Key UX features that must stay in sync:
+  - Quota warning display (stderr + browser notification)
+  - Quota blocked display (stderr + browser notification)  
+  - Auth flow (OIDC browser, IDC device-auth)
+  - Token refresh (silent vs interactive)
+- If a feature is Python-only or Go-only, add a comment explaining why
+  (e.g., platform constraint) and create a tracking issue
+
+*Issue: PR #658 added browser notifications to Go after gap discovered in #657*
