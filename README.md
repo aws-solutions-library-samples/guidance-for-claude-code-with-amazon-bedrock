@@ -142,7 +142,7 @@ flowchart LR
 The **otel-helper** binary operates in two modes depending on the surface:
 
 - **Header mode** (Claude Code CLI): Called once per OTLP export as a header provider. Returns JSON headers containing user identity (email, team, department) extracted from the cached JWT. Claude Code's OTLP exporter attaches these headers to each request.
-- **Proxy mode** (Claude Desktop): Runs as a local HTTP reverse proxy on `localhost:4318`. Claude Desktop sends OTLP to this local endpoint, and the proxy injects per-user identity headers + SigV4-signs the request before forwarding to the upstream collector.
+- **Proxy mode** (Claude Desktop): Auto-spawned by `credential-process` after each successful auth. Runs as a local identity-injecting proxy that reads the user's decoded JWT from the local cache and injects `x-user-email`, `x-department`, `x-team-id` headers into every OTLP request. In central mode it listens on port 4318 (forwarding to the remote ALB); in sidecar mode it listens on port 4319 (forwarding to the local otelcol on 4318 to avoid port conflicts).
 
 ```mermaid
 flowchart LR
@@ -153,27 +153,24 @@ flowchart LR
 
 ### Usage Monitoring
 
-Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as a local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
+Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as an auto-spawned local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
 
 ```mermaid
 flowchart LR
     CC[Claude Code CLI] -->|OTLP| OH1[otel-helper<br/>header mode]
-    CW[Claude Desktop] -->|OTLP via localhost:4318| OH2[otel-helper<br/>proxy mode]
-    CW -.->|or direct via otlpHeaders| COLL
+    CW[Claude Desktop] -->|OTLP to proxy| OH2[otel-helper<br/>proxy mode]
     OH1 -->|"user identity + Bearer JWT"| COLL[Collector]
-    OH2 -->|"user identity + SigV4/auth"| COLL
+    OH2 -->|"user identity from JWT cache"| COLL
     COLL --> DASH[CloudWatch Dashboards]
 ```
 
 | Surface | otel-helper mode | What it does | Collector mode | Identity in telemetry |
 |---------|-----------------|--------------|----------------|----------------------|
 | **Claude Code (CLI)** | Header mode | Called once per export, returns identity headers as JSON | Central (ECS/ALB) or Sidecar (local) | User's JWT claims (email, team, department) |
-| **Claude Desktop (Cowork)** | Proxy mode | Listens on `localhost:4318`, injects identity headers, SigV4-signs (sidecar) or forwards with auth token (central) | Central (ECS/ALB) or Sidecar (local) | User's JWT claims (email, team, department) |
-| **Claude Desktop (no proxy)** | Not used | Desktop sends directly using native `otlpHeaders` MDM key | Central (ECS/ALB) | None (org-level only) |
+| **Claude Desktop (Cowork)** | Proxy mode | Auto-spawned by credential-process; injects identity headers from JWT cache | Central: proxy on `localhost:4318` → ALB | Full JWT claims (email, team, department) |
+| **Claude Desktop (Cowork)** | Proxy mode | Same as above, chains through local otelcol | Sidecar: proxy on `localhost:4319` → otelcol:4318 | Full JWT claims (email, team, department) |
 
-> **When is the proxy needed?** Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) and [`otlpResourceAttributes`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values set at MDM config time. If your collector only needs **static auth** (e.g. a bearer token), set it directly via `otlpHeaders` — no proxy needed. The proxy is required when you need:
-> - **Per-user identity** in telemetry (the proxy reads the user's decoded JWT claims at runtime — these vary per user and can't be baked into a shared MDM profile)
-> - **SigV4 signing** for sidecar mode (forwarding directly to CloudWatch's `monitoring.{region}.amazonaws.com` endpoint)
+> **Proxy auto-spawn:** The proxy is automatically started by `credential-process` after each successful authentication — no manual startup or daemon configuration required. If the proxy dies, the next credential refresh (~1h) restarts it (self-healing). Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values, but the proxy is required for **per-user identity** (JWT claims vary per user and can't be baked into a shared MDM profile).
 
 **Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
 
