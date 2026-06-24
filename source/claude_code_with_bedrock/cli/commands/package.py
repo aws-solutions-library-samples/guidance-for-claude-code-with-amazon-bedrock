@@ -3409,6 +3409,35 @@ Available metrics include:
                     console.print("[red]ERROR: Monitoring enabled but no OTel endpoint configured.[/red]")
                     console.print("[red]Run 'ccwb deploy' first or set otel_collector_endpoint in the profile.[/red]")
 
+            # If web search is enabled, emit the agentcore-websearch MCP server
+            # block (AC5). The gateway is a remote type:http MCP server; the
+            # Bearer JWT is supplied per-request by the credential binary's
+            # --get-mcp-auth-header mode (T3). Omit the block entirely when the
+            # feature is off or no gateway URL can be resolved.
+            if getattr(profile, "web_search_enabled", False):
+                gateway_url = self._resolve_websearch_gateway_url(profile, console)
+                if gateway_url:
+                    settings.setdefault("mcpServers", {})["agentcore-websearch"] = {
+                        "type": "http",
+                        "url": gateway_url,
+                        # __CREDENTIAL_PROCESS_PATH__ is replaced by the installer
+                        # with the real binary path (same placeholder as the SDK
+                        # credential process above).
+                        "headersHelper": (
+                            f"__CREDENTIAL_PROCESS_PATH__ --get-mcp-auth-header --profile {profile_name}"
+                        ),
+                    }
+                    console.print("[dim]Added agentcore-websearch MCP server to settings[/dim]")
+                else:
+                    console.print(
+                        "[yellow]Warning: web search is enabled but no gateway URL was found "
+                        "in the profile or CloudFormation.[/yellow]"
+                    )
+                    console.print(
+                        "[yellow]Run 'ccwb deploy websearch' first; the agentcore-websearch "
+                        "MCP server was omitted from settings.json.[/yellow]"
+                    )
+
             # Determine output filename based on settings_target
             settings_target = getattr(profile, "settings_target", "user")
             if settings_target == "managed":
@@ -3425,6 +3454,47 @@ Available metrics include:
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")
+
+    # The web-search gateway is always pinned to us-east-1 (managed connector
+    # availability); deploy.py uses the same constant for the region pin.
+    WEBSEARCH_REGION = "us-east-1"
+
+    def _resolve_websearch_gateway_url(self, profile, console) -> str:
+        """Resolve the AgentCore gateway URL, profile-first with CFN fallback (AC8).
+
+        Mirrors the OTel-endpoint discovery precedent: prefer the
+        `agentcore_gateway_url` saved on the profile by `ccwb deploy`, and only
+        fall back to the websearch stack's `GatewayUrl` output (in us-east-1,
+        where the gateway is region-pinned) when the profile field is empty.
+        A discovered URL is saved back to the profile (best-effort) so this is
+        a one-time lookup. Returns "" when neither source yields a URL.
+        """
+        url = (getattr(profile, "agentcore_gateway_url", "") or "").strip()
+        if url:
+            return url
+
+        stack_name = profile.stack_names.get("websearch") if profile.stack_names else None
+        if not stack_name:
+            stack_name = f"{profile.identity_pool_name}-websearch" if profile.identity_pool_name else None
+        if not stack_name:
+            return ""
+
+        outputs = get_stack_outputs(stack_name, self.WEBSEARCH_REGION)
+        url = (outputs.get("GatewayUrl", "") if outputs else "").strip()
+        if not url:
+            return ""
+
+        # Save to the profile so future packaging skips the CFN query.
+        profile.agentcore_gateway_url = url
+        try:
+            from claude_code_with_bedrock.config import Config
+
+            config = Config.load()
+            config.save_profile(profile)
+            console.print(f"[dim]Found gateway URL from stack '{stack_name}', saved to profile[/dim]")
+        except Exception:
+            pass
+        return url
 
     def _generate_cowork_3p_mdm_config(
         self,

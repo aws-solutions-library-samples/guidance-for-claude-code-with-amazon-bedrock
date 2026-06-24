@@ -14,6 +14,7 @@ This guidance enables enterprise deployment of Claude Code and Claude Cowork on 
 - **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop (which features Chat, Cowork and Code)
 - **Model Flexibility**: Choose from Opus, Sonnet, Haiku with model aliases (e.g. `opusplan` for Opus planning + Sonnet execution)
 - **Native Desktop Experience**: Deploy and manage Claude Cowork (Claude Desktop) via MDM (Jamf, Intune, Group Policy)
+- **Web Search (AgentCore)**: Optionally give Claude Code a hosted web-search tool via an Amazon Bedrock AgentCore gateway, authorized by the same OIDC identity — no proxy, no extra IAM grant. See the [Web Search Guide](assets/docs/WEB_SEARCH.md)
 - **Data Residency**: Select your cross-region inference profile (US, EU, AU) to keep data within your compliance boundary
 - **AWS-Native**: Your data, your AWS account, your compliance controls — no Anthropic licensing required
 

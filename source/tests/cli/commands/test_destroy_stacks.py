@@ -60,3 +60,29 @@ class TestDestroyReverseDependencyOrder:
         monitoring_idx = DESTROYABLE_STACKS.index("monitoring")
         for dependent in ("dashboard", "cowork-dashboard", "analytics", "quota"):
             assert DESTROYABLE_STACKS.index(dependent) < monitoring_idx
+
+    def test_websearch_destroyed_before_auth(self):
+        # websearch is a leaf (no dependents) and is torn down before auth.
+        assert DESTROYABLE_STACKS.index("websearch") < DESTROYABLE_STACKS.index("auth")
+
+
+class TestDestroyWebSearch:
+    """Web search teardown must be gated + region-pinned to us-east-1."""
+
+    _SOURCE = (
+        Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "destroy.py"
+    ).read_text(encoding="utf-8")
+
+    def test_websearch_is_destroyable(self):
+        assert "websearch" in DESTROYABLE_STACKS
+
+    def test_websearch_gated_on_enable_flag(self):
+        # Destroy must skip websearch when the feature was never enabled,
+        # mirroring the codebuild/distribution skip guards.
+        assert 'stack == "websearch" and not getattr(profile, "web_search_enabled"' in self._SOURCE
+
+    def test_websearch_region_pinned_to_us_east_1(self):
+        # The gateway lives only in us-east-1; deleting in the profile's region
+        # would silently orphan it (it reports success against a non-existent stack).
+        assert 'elif stack == "websearch":' in self._SOURCE
+        assert 'stack_region = "us-east-1"' in self._SOURCE

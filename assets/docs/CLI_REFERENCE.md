@@ -111,7 +111,7 @@ poetry run ccwb deploy [stack] [options]
 
 **Arguments:**
 
-- `stack` - Specific stack to deploy: auth, networking, monitoring, dashboard, analytics, or quota (optional)
+- `stack` - Specific stack to deploy: auth, networking, monitoring, dashboard, analytics, quota, codebuild, or websearch (optional)
 
 **Options:**
 
@@ -135,6 +135,7 @@ poetry run ccwb deploy [stack] [options]
 5. **analytics** - Kinesis Firehose and Athena SQL query pipeline (central mode only, optional)
 6. **quota** - Per-user token quota monitoring and alerts (optional, requires dashboard)
 7. **codebuild** - AWS CodeBuild for Windows binary builds (optional, only if enabled during init)
+8. **websearch** - Amazon Bedrock AgentCore web-search gateway (optional, OIDC deployments only; always deployed to us-east-1). See [WEB_SEARCH.md](./WEB_SEARCH.md)
 
 > **Note**: In sidecar monitoring mode, the auth and dashboard stacks are deployed. The networking, monitoring, and analytics stacks are skipped because the OpenTelemetry collector runs locally on each developer's machine. Both modes include the same PromQL CloudWatch dashboard with full metric analytics.
 
@@ -149,6 +150,9 @@ poetry run ccwb deploy auth
 
 # Deploy quota monitoring (requires dashboard stack first)
 poetry run ccwb deploy quota
+
+# Deploy the web-search gateway (OIDC only; always us-east-1)
+poetry run ccwb deploy websearch
 
 # Show commands without executing
 poetry run ccwb deploy --show-commands

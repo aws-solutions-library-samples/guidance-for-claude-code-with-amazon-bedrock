@@ -1519,6 +1519,23 @@ class InitCommand(Command):
         else:
             console.print("[green]✓[/green] Settings will be deployed to user-scope path")
 
+        # Web search (AgentCore Gateway) support
+        console.print("\n[bold]Web Search (AgentCore)[/bold]")
+        console.print("Give Claude Code a hosted web-search tool via an Amazon Bedrock AgentCore gateway")
+        console.print("[dim]  • Cost: ~$7 per 1,000 queries (billed to your AWS account)[/dim]")
+        console.print("[dim]  • Region: the gateway is deployed in us-east-1 only (managed connector)[/dim]")
+        enable_web_search = questionary.confirm(
+            "Enable web search?",
+            default=config.get("web_search", {}).get("enabled", False),
+        ).ask()
+
+        if "web_search" not in config:
+            config["web_search"] = {}
+        config["web_search"]["enabled"] = enable_web_search
+
+        if enable_web_search:
+            console.print("[green]✓[/green] Web search gateway will be deployed (us-east-1)")
+
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
@@ -2568,6 +2585,9 @@ class InitCommand(Command):
             "settings_target": "managed"
             if (self._io and self.option("managed"))
             else config_data.get("settings_target", "user"),
+            # bool() coerces a cancelled prompt (questionary returns None on Ctrl-C)
+            # to a real False so the typed Profile field stays a clean bool.
+            "web_search_enabled": bool(config_data.get("web_search", {}).get("enabled", False)),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2929,6 +2949,9 @@ class InitCommand(Command):
             if profile.cowork_service_token:
                 cowork_3p_config["service_token"] = profile.cowork_service_token
             existing_config["cowork_3p"] = cowork_3p_config
+
+            # Web search round-trip so re-init defaults the prompt to its saved value.
+            existing_config["web_search"] = {"enabled": getattr(profile, "web_search_enabled", False)}
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
