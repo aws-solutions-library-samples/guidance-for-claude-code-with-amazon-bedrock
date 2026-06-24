@@ -752,9 +752,23 @@ def run_proxy(target_url: str, port: int = 4318):
     target_url = target_url.rstrip("/")
     logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
 
+    # Warm the header cache at startup so the first CoWork requests already
+    # carry user.email attribution. Without this, early requests would be
+    # unattributed until the periodic refresh (up to 5 minutes).
+    try:
+        startup_headers = build_proxy_user_headers()
+        if "x-user-email" not in startup_headers:
+            logger.warning(
+                "Attribution headers missing x-user-email at startup. "
+                "Dashboard metrics will lack user identity until authentication completes."
+            )
+    except Exception as e:
+        logger.warning(f"Could not warm attribution cache at startup: {e}")
+        startup_headers = {}
+
     # Pre-fetch headers once at startup; refresh on each request so token
     # rotations are picked up without restarting the proxy.
-    _header_cache = {"headers": {}, "fetched_at": 0}
+    _header_cache = {"headers": startup_headers, "fetched_at": time.time() if startup_headers else 0}
     _HEADER_REFRESH_SECONDS = 300
 
     def fresh_user_headers():

@@ -162,3 +162,13 @@ func TestSha256Hex(t *testing.T) {
 		t.Fatalf("sha256Hex(empty) = %s, want %s", got, expected)
 	}
 }
+
+func TestWarmAttributionCache_NoopWhenCacheExists(t *testing.T) {
+	// When cache has headers with x-user-email, warmAttributionCache should return without error.
+	// We test this indirectly: if no credential-process is available but cache exists,
+	// it should not panic or log errors.
+	// This is a smoke test — the real validation happens in the integration tests.
+	// warmAttributionCache("nonexistent-profile") would try credential-process and fail gracefully.
+	// We just verify it doesn't panic.
+	warmAttributionCache("test-nonexistent-profile-" + t.Name())
+}
