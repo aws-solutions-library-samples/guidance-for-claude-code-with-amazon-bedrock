@@ -30,6 +30,31 @@ _CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "c
 _OTEL_HELPER_RUNTIME_DEPS: list[str] = []  # otel_helper uses only stdlib
 _PYINSTALLER_PIN = "pyinstaller==6.*"
 
+# Single source of truth for Go cross-compilation targets, shared by the auth-binary
+# build (_build_go_binaries) and the collector sidecar build (_build_otelcol). Keeping
+# this in one place prevents the two paths from drifting (e.g. one learning about a new
+# arch the other doesn't). Maps a package platform key → (GOOS, GOARCH).
+_GO_PLATFORM_MAP: dict[str, tuple[str, str]] = {
+    "macos-arm64": ("darwin", "arm64"),
+    "macos-intel": ("darwin", "amd64"),
+    "macos": ("darwin", "arm64"),  # generic macos defaults to arm64
+    "linux-x64": ("linux", "amd64"),
+    "linux-arm64": ("linux", "arm64"),
+    "linux": ("linux", "amd64"),  # generic linux defaults to amd64
+    "windows": ("windows", "amd64"),
+}
+
+
+def _go_ldflags(goos: str) -> str:
+    """Return the ldflags for a Go build targeting goos.
+
+    Windows binaries must NOT be stripped: Defender cloud ML (Wacatac.B!ml) flags
+    stripped Go binaries in subprocess/non-interactive contexts. Everywhere else we
+    strip (-s -w) for size. This rule applies identically to credential-process,
+    otel-helper, and the otelcol sidecar — hence one shared helper.
+    """
+    return "" if goos == "windows" else "-s -w"
+
 
 def _find_universal2_python() -> Path | None:
     """Return the first universal2 Python ≥3.10 found in the standard python.org install location, or None."""
@@ -610,6 +635,29 @@ class PackageCommand(Command):
                                 f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]"
                             )
 
+        # Sidecar mode ships a local OTEL Collector (otelcol-{os}-{arch}) for ALL target
+        # platforms. The collector is always OCB/Go cross-compiled regardless of how the
+        # auth binaries were built (--go or PyInstaller), so it runs once here for both
+        # paths — keeping macOS, Linux, and Windows at parity. Without it, a generated
+        # collector-config.yaml points at a collector that doesn't exist. Degrade gracefully:
+        # a failed/skipped collector build (e.g. no Go on the admin machine) must not fail
+        # packaging — only local telemetry forwarding is affected, and the installer warns.
+        #
+        # IDC zero-binary mode is intentionally EXCLUDED: its contract is no build tools on
+        # the admin machine, and OCB needs Go. IDC monitoring routes to the central collector
+        # instead of a local sidecar.
+        if (
+            not is_idc_zero_binary
+            and profile.monitoring_enabled
+            and getattr(profile, "monitoring_mode", "central") == "sidecar"
+        ):
+            console.print("[cyan]Building OTEL Collector sidecar (OCB)...[/cyan]")
+            try:
+                self._build_otelcol(output_dir, platforms_to_build)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not build OTEL Collector sidecar: {e}[/yellow]")
+                console.print("[dim]Sidecar telemetry will not work until the collector is built.[/dim]")
+
         # A Windows build runs asynchronously in CodeBuild and produces no local
         # binary now (_build_executable returns None), so built_executables can be
         # empty even though the build was submitted successfully. Treat that as a
@@ -643,39 +691,29 @@ class PackageCommand(Command):
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
 
         # Generate IDC-specific collector config with static identity
-        if is_idc_zero_binary and profile.monitoring_enabled:
-            idc_config_template = (
-                Path(__file__).resolve().parent.parent.parent.parent / "otel_helper" / "collector-config-idc.yaml"
-            )
-            if idc_config_template.exists():
-                template_content = idc_config_template.read_text(encoding="utf-8")
+        _is_sidecar = getattr(profile, "monitoring_mode", "central") == "sidecar"
+        _is_idc_auth = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
+        _is_oidc_auth = not _is_idc_auth
 
-                # Parse resource attributes safely into a dict
-                attrs = {}
-                if otel_resource_attributes:
-                    for pair in otel_resource_attributes.split(","):
-                        if "=" in pair:
-                            k, v = pair.split("=", 1)
-                            attrs[k.strip()] = v.strip()
-
-                # Replace placeholders with actual values
-                replacements = {
-                    "${REGION}": profile.aws_region or "us-east-1",
-                    "${USER_EMAIL}": idc_user_email or "unknown@example.com",
-                    "${USER_NAME}": (idc_user_email or "unknown").split("@")[0],
-                    "${DEPARTMENT}": attrs.get("department", "default"),
-                    "${TEAM_ID}": attrs.get("team.id", "default"),
-                    "${COST_CENTER}": attrs.get("cost_center", "default"),
-                    "${ORGANIZATION}": attrs.get("organization", "default"),
-                }
-                for placeholder, value in replacements.items():
-                    template_content = template_content.replace(placeholder, value)
-
-                config_output = output_dir / "collector-config.yaml"
-                config_output.write_text(template_content, encoding="utf-8")
-                console.print(f"[dim]Generated IDC collector config with identity: {idc_user_email}[/dim]")
+        if profile.monitoring_enabled and _is_sidecar:
+            if _is_idc_auth:
+                # IDC sidecar: bake static identity into collector config (no otel-helper at runtime).
+                # Applies to both zero-binary (no quota) and IDC+quota paths.
+                self._generate_collector_config(
+                    output_dir=output_dir,
+                    template_name="collector-config-idc.yaml",
+                    region=profile.aws_region or "us-east-1",
+                    idc_user_email=idc_user_email,
+                    otel_resource_attributes=otel_resource_attributes,
+                )
             else:
-                console.print("[yellow]Warning: collector-config-idc.yaml template not found[/yellow]")
+                # OIDC sidecar: otelHeadersHelper injects user identity at runtime via HTTP headers,
+                # so no identity is baked in — substitute only ${REGION}.
+                self._generate_collector_config(
+                    output_dir=output_dir,
+                    template_name="collector-config.yaml",
+                    region=profile.aws_region or "us-east-1",
+                )
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -847,16 +885,6 @@ class PackageCommand(Command):
                 "Go is not installed or not in PATH. Install from https://go.dev/dl/ or run: brew install go"
             )
 
-        platform_map = {
-            "macos-arm64": ("darwin", "arm64"),
-            "macos-intel": ("darwin", "amd64"),
-            "macos": ("darwin", "arm64"),  # Default to arm64 for generic macos
-            "linux-x64": ("linux", "amd64"),
-            "linux-arm64": ("linux", "arm64"),
-            "linux": ("linux", "amd64"),  # Default to amd64 for generic linux
-            "windows": ("windows", "amd64"),
-        }
-
         executables = []
         otel_helpers = []
 
@@ -865,10 +893,10 @@ class PackageCommand(Command):
             binaries_to_build.append("otel-helper")
 
         for plat in platforms:
-            if plat not in platform_map:
+            if plat not in _GO_PLATFORM_MAP:
                 raise ValueError(f"Unsupported platform for Go build: {plat}")
 
-            goos, goarch = platform_map[plat]
+            goos, goarch = _GO_PLATFORM_MAP[plat]
 
             for binary in binaries_to_build:
                 if plat == "windows":
@@ -885,10 +913,9 @@ class PackageCommand(Command):
                 # (99designs/keyring's keychain backend requires cgo).
                 cgo = "1" if goos == "darwin" and binary == "credential-process" else "0"
                 env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": cgo}
-                # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml)
-                # flags stripped Go binaries. The .syso PE version-info files in
-                # cmd/*/ are auto-linked by the Go compiler to help further.
-                ldflags = "" if plat == "windows" else "-s -w"
+                # The .syso PE version-info files in cmd/*/ are auto-linked by the Go
+                # compiler on Windows to further reduce AV false positives.
+                ldflags = _go_ldflags(goos)
                 cmd = [
                     "go",
                     "build",
@@ -912,6 +939,180 @@ class PackageCommand(Command):
 
         self.line(f"  <info>Built {len(executables) + len(otel_helpers)} binaries</info>")
         return {"executables": executables, "otel_helpers": otel_helpers}
+
+    def _generate_collector_config(
+        self,
+        output_dir: Path,
+        template_name: str,
+        region: str,
+        idc_user_email: str | None = None,
+        otel_resource_attributes: str | None = None,
+    ) -> None:
+        """Write collector-config.yaml to output_dir from the named otel_helper template.
+
+        Called for all three sidecar paths:
+          - OIDC sidecar     → collector-config.yaml (runtime header injection)
+          - IDC zero-binary  → collector-config-idc.yaml (static identity baked in)
+          - IDC+quota sidecar → collector-config-idc.yaml (static identity baked in)
+        """
+        console = Console()
+        template_src = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper" / template_name
+        if not template_src.exists():
+            console.print(f"[yellow]Warning: {template_name} template not found[/yellow]")
+            return
+
+        content = template_src.read_text(encoding="utf-8")
+        content = content.replace("${REGION}", region)
+
+        if idc_user_email is not None:
+            attrs: dict[str, str] = {}
+            if otel_resource_attributes:
+                for pair in otel_resource_attributes.split(","):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        attrs[k.strip()] = v.strip()
+            content = content.replace("${USER_EMAIL}", idc_user_email or "unknown@example.com")
+            content = content.replace("${USER_NAME}", (idc_user_email or "unknown").split("@")[0])
+            content = content.replace("${DEPARTMENT}", attrs.get("department", "default"))
+            content = content.replace("${TEAM_ID}", attrs.get("team.id", "default"))
+            content = content.replace("${COST_CENTER}", attrs.get("cost_center", "default"))
+            content = content.replace("${ORGANIZATION}", attrs.get("organization", "default"))
+
+        (output_dir / "collector-config.yaml").write_text(content, encoding="utf-8")
+        label = f"IDC (identity: {idc_user_email})" if idc_user_email is not None else "OIDC"
+        console.print(f"[dim]Generated {label} sidecar collector config[/dim]")
+
+    def _build_otelcol(self, output_dir: Path, platforms_to_build: list[str]) -> None:
+        """Build the minimal OTEL Collector sidecar via OCB for all target platforms.
+
+        Produces otelcol-{os}-{arch} binaries that are shipped IN the package, the same
+        model as credential-process and otel-helper. distribute.py, test.py, status.py and
+        the otel-helper.sh/.ps1 wrappers all expect these bundled binaries to exist.
+
+        Network + Go 1.23+ are required on the PACKAGING (admin) machine only — end users
+        never download the collector. Skips gracefully when Go is missing or too old.
+
+        Restores behavior dropped during the Go rewrite (PR #338), which removed this
+        method and its call site as collateral damage of the build-path restructure.
+        """
+        import re
+        import shutil
+        import urllib.request
+
+        console = Console()
+        host_os = platform.system().lower()
+        host_arch = platform.machine().lower()
+
+        result = subprocess.run(["go", "version"], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[yellow]Go not found — skipping collector build[/yellow]")
+            console.print("[dim]Install Go 1.23+ from https://go.dev/dl/ to build the collector sidecar[/dim]")
+            return
+        go_match = re.search(r"go(\d+)\.(\d+)", result.stdout)
+        if not go_match or (int(go_match.group(1)), int(go_match.group(2))) < (1, 23):
+            console.print("[yellow]Go 1.23+ required — skipping collector build[/yellow]")
+            console.print(f"[dim]Found: {result.stdout.strip()}. Install Go 1.23+ from https://go.dev/dl/[/dim]")
+            return
+
+        OCB_VERSION = "0.120.0"
+        if host_os == "darwin":
+            ocb_os = "darwin"
+        elif host_os == "windows":
+            ocb_os = "windows"
+        else:
+            ocb_os = "linux"
+        ocb_arch = "arm64" if host_arch in ["arm64", "aarch64"] else "amd64"
+        ocb_dir = Path.home() / ".cache" / "ocb"
+        ocb_dir.mkdir(parents=True, exist_ok=True)
+        ocb_suffix = ".exe" if ocb_os == "windows" else ""
+        ocb_path = ocb_dir / f"ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
+
+        if not ocb_path.exists():
+            url = (
+                f"https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/"
+                f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
+            )
+            console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
+            urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            if ocb_os != "windows":
+                ocb_path.chmod(0o755)
+
+        manifest = Path(__file__).parent.parent.parent.parent / "otel_helper" / "ocb-manifest.yaml"
+        if not manifest.exists():
+            raise FileNotFoundError(f"OCB manifest not found: {manifest}")
+
+        # Resolve each platform to (GOOS, GOARCH, output-binary-name). GOOS/GOARCH come
+        # from the shared _GO_PLATFORM_MAP; only the otelcol-specific output name lives
+        # here. "macos-universal" maps to arm64 (no fat binary — sidecar is per-arch).
+        def _otelcol_name(goos: str, goarch: str) -> str:
+            if goos == "windows":
+                return "otelcol-windows.exe"
+            if goos == "darwin":
+                return "otelcol-macos-arm64" if goarch == "arm64" else "otelcol-macos-intel"
+            return "otelcol-linux-arm64" if goarch == "arm64" else "otelcol-linux-x64"
+
+        targets = []
+        seen = set()
+        for plat in platforms_to_build:
+            resolved = _GO_PLATFORM_MAP.get("macos-arm64" if plat == "macos-universal" else plat)
+            if not resolved:
+                continue
+            goos, goarch = resolved
+            binary_name = _otelcol_name(goos, goarch)
+            if binary_name not in seen:
+                targets.append((goos, goarch, binary_name))
+                seen.add(binary_name)
+
+        if not targets:
+            return
+
+        build_dir = output_dir / "_otelcol_build"
+        build_dir.mkdir(exist_ok=True)
+
+        try:
+            manifest_text = manifest.read_text().replace("output_path: ./build/otelcol", f"output_path: {build_dir}")
+            temp_manifest = build_dir / "manifest.yaml"
+            temp_manifest.write_text(manifest_text)
+
+            console.print("[dim]Generating collector source code...[/dim]")
+            result = subprocess.run(
+                [str(ocb_path), "--config", str(temp_manifest), "--skip-compilation"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"OCB source generation failed: {result.stderr}")
+
+            console.print("[dim]Downloading Go modules...[/dim]")
+            dl_result = subprocess.run(
+                ["go", "mod", "download"],
+                capture_output=True,
+                text=True,
+                cwd=build_dir,
+            )
+            if dl_result.returncode != 0:
+                raise RuntimeError(f"go mod download failed: {dl_result.stderr}")
+
+            for goos, goarch, binary_name in targets:
+                console.print(f"[dim]Compiling collector for {goos}/{goarch}...[/dim]")
+                output_binary = (output_dir / binary_name).resolve()
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                ldflags = _go_ldflags(goos)
+                result = subprocess.run(
+                    ["go", "build", "-trimpath", f"-ldflags={ldflags}", "-o", str(output_binary), "."],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    cwd=build_dir,
+                )
+                if result.returncode != 0:
+                    console.print(f"[yellow]Warning: Failed to build {binary_name}: {result.stderr[:200]}[/yellow]")
+                    continue
+                if goos != "windows":
+                    output_binary.chmod(0o755)
+                console.print(f"[green]✓ {binary_name}[/green]")
+        finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for target platform using appropriate tool."""
@@ -2749,6 +2950,41 @@ if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper" ]; then
     echo "  $ACTUAL_HOME/claude-code-with-bedrock/otel-helper --test"
 fi
 
+# Install otelcol sidecar collector (present only in sidecar-mode packages).
+# The collector binary is built via OCB and SHIPPED in the package as
+# otelcol-$BINARY_SUFFIX, the same model as credential-process and otel-helper —
+# end users never download it. It receives OTLP from Claude Code on localhost:4318,
+# injects the user-attribution headers written by otel-helper, and forwards to
+# CloudWatch with SigV4.
+OTELCOL_BINARY="otelcol-$BINARY_SUFFIX"
+if [ -f "collector-config.yaml" ] && [ -f "$OTELCOL_BINARY" ]; then
+    echo
+    echo "Installing OTEL Collector sidecar..."
+
+    OTELCOL_DEST="$ACTUAL_HOME/claude-code-with-bedrock/otelcol"
+    cp "$OTELCOL_BINARY" "$OTELCOL_DEST"
+    chmod +x "$OTELCOL_DEST"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$OTELCOL_DEST"; fi
+    xattr -d com.apple.quarantine "$OTELCOL_DEST" 2>/dev/null || true
+    echo "✓ otelcol installed: $OTELCOL_DEST"
+
+    # Install collector config alongside the binary
+    cp "collector-config.yaml" "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml"; fi
+    echo "✓ Collector config installed"
+
+    # A dedicated <profile>-collector AWS profile is registered in the AWS profiles
+    # section below. otelcol resolves CloudWatch credentials through it via
+    # credential_process. The separate profile is needed because a user's static
+    # ~/.aws/credentials would otherwise shadow credential_process and cannot
+    # auto-refresh (see otel-helper.sh).
+elif [ -f "collector-config.yaml" ] && [ ! -f "$OTELCOL_BINARY" ]; then
+    echo
+    echo "⚠️  Sidecar config present but collector binary '$OTELCOL_BINARY' is missing."
+    echo "   The admin must run 'ccwb package' with Go 1.23+ installed to build the collector."
+    echo "   Telemetry will not be forwarded until the collector is installed."
+fi
+
 # Update AWS config
 echo
 echo "Configuring AWS profiles..."
@@ -2802,6 +3038,20 @@ region = $PROFILE_REGION
 EOF
     if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+
+    # Create a <profile>-collector profile for the otelcol sidecar (sidecar packages only).
+    # otelcol needs CloudWatch write access and resolves it via credential_process. A
+    # dedicated profile is used because a user's static ~/.aws/credentials would shadow
+    # credential_process on the main profile and cannot auto-refresh (see otel-helper.sh).
+    if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml" ]; then
+        sed -i.bak "/\\[profile ${{PROFILE_NAME}}-collector\\]/,/^$/d" "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+        cat >> "$ACTUAL_HOME/.aws/config" << EOF
+[profile ${{PROFILE_NAME}}-collector]
+credential_process = $ACTUAL_HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+region = $PROFILE_REGION
+EOF
+        echo "  ✓ Created AWS profile '${{PROFILE_NAME}}-collector' (otelcol SigV4 auth)"
+    fi
 done
 
 # Post-install validation
@@ -2979,11 +3229,15 @@ if exist "otel-helper.cmd" (
         exit /b 1
     )
 ) else (
-    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.cmd not found in package.
-{'''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.cmd not found in package.
+{
+            '''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
     echo        Re-extract the full package [including .cmd and .ps1 files] and retry.
     pause
-    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - helper not required.'}
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - helper not required."
+        }
 )
 if exist "otel-helper.ps1" (
     copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
@@ -2993,11 +3247,35 @@ if exist "otel-helper.ps1" (
         exit /b 1
     )
 ) else (
-    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.ps1 not found in package.
-{'''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.ps1 not found in package.
+{
+            '''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
     echo        Re-extract the full package and run install.bat again.
     pause
-    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - fallback not required.'}
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - fallback not required."
+        }
+)
+
+REM Install OTEL Collector sidecar (sidecar-mode packages only). otelcol is built
+REM via OCB and SHIPPED in the package as otelcol-windows.exe (same model as the
+REM other binaries) — never downloaded at install time. otel-helper.ps1 launches it
+REM from %USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe under the
+REM <profile>-collector AWS profile created below.
+if exist "collector-config.yaml" (
+    if exist "otelcol-windows.exe" (
+        echo Installing OTEL Collector sidecar...
+        copy /Y "otelcol-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe" >nul
+        copy /Y "collector-config.yaml" "%USERPROFILE%\\claude-code-with-bedrock\\collector-config.yaml" >nul
+        REM Unblock the downloaded binary so SmartScreen doesn't block subprocess launch
+        powershell -NoProfile -Command "Get-ChildItem '%USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe' | Unblock-File" >nul 2>&1
+        echo OK OTEL Collector sidecar installed
+    ) else (
+        echo WARNING: Sidecar config present but otelcol-windows.exe is missing.
+        echo          The admin must run 'ccwb package' with Go 1.23+ to build the collector.
+        echo          Telemetry will not be forwarded until the collector is installed.
+    )
 )
 
 REM Copy configuration
@@ -3083,9 +3361,27 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
                 aws configure set region {profile.aws_region} --profile %%p
             )
             echo   OK Created AWS profile '%%p'
+
+            REM Create a <profile>-collector profile for the otelcol sidecar. Runs only
+            REM inside the HAS_AWS_CLI=1 branch above. otelcol resolves CloudWatch
+            REM credentials via credential_process; a dedicated profile is used because a
+            REM user's static ~/.aws/credentials would shadow credential_process on the
+            REM main profile and cannot auto-refresh (see otel-helper.ps1).
+            if exist "%USERPROFILE%\\claude-code-with-bedrock\\collector-config.yaml" (
+                aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p-collector
+                if defined PROFILE_REGION (
+                    aws configure set region !PROFILE_REGION! --profile %%p-collector
+                ) else (
+                    aws configure set region {profile.aws_region} --profile %%p-collector
+                )
+                echo   OK Created AWS profile '%%p-collector' [otelcol SigV4 auth]
+            )
         )
     ) else (
-        REM No AWS CLI — write directly to ~/.aws/config using PowerShell
+        REM No AWS CLI — write directly to ~/.aws/config using PowerShell.
+        REM Also writes a <profile>-collector profile when a sidecar collector config is
+        REM present, so otelcol can resolve CloudWatch creds via credential_process (the
+        REM main profile's static ~/.aws/credentials would shadow it; see otel-helper.ps1).
         powershell -NoProfile -Command ^
             "$configDir = Join-Path $env:USERPROFILE '.aws';" ^
             "if (-not (Test-Path $configDir)) {{ New-Item -ItemType Directory -Path $configDir -Force | Out-Null }};" ^
@@ -3095,7 +3391,9 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
             "$credProc = ($env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe --profile ' + $profileName) -replace '\\', '/';" ^
             "$section = \"`n[profile $profileName]`nregion = $region`ncredential_process = $credProc`n\";" ^
             "$existing = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }};" ^
-            "if ($existing -notmatch \"\\[profile $profileName\\]\") {{ Add-Content -Path $configFile -Value $section; Write-Host '  OK Created AWS profile ''$profileName''' }} else {{ Write-Host '  OK AWS profile ''$profileName'' already exists' }}"
+            "if ($existing -notmatch \"\\[profile $profileName\\]\") {{ Add-Content -Path $configFile -Value $section; Write-Host '  OK Created AWS profile ''$profileName''' }} else {{ Write-Host '  OK AWS profile ''$profileName'' already exists' }};" ^
+            "$collectorConfig = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\\collector-config.yaml';" ^
+            "if (Test-Path $collectorConfig) {{ $collProfile = $profileName + '-collector'; $collSection = \"`n[profile $collProfile]`nregion = $region`ncredential_process = $credProc`n\"; $existing2 = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }}; if ($existing2 -notmatch \"\\[profile $collProfile\\]\") {{ Add-Content -Path $configFile -Value $collSection; Write-Host '  OK Created AWS profile ''$collProfile'' [otelcol SigV4 auth]' }} }}"
     )
 )
 
@@ -3571,6 +3869,14 @@ Available metrics include:
                         "cost_center=default,organization=default,"
                         "project=default"
                     )
+
+                    # Sidecar mode: Claude Code sends to local otelcol, not directly to the ALB.
+                    # Override whatever endpoint the profile stores (which is the ALB address) so
+                    # users don't have to edit settings.json manually after running ccwb package.
+                    _monitoring_mode = getattr(profile, "monitoring_mode", "central")
+                    if _monitoring_mode == "sidecar":
+                        endpoint = "http://localhost:4318"
+
                     settings["env"].update(
                         {
                             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
@@ -3606,7 +3912,7 @@ Available metrics include:
 
                     is_https = endpoint.startswith("https://")
                     console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
-                    if not is_https:
+                    if not is_https and _monitoring_mode != "sidecar":
                         console.print(
                             "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
                         )
