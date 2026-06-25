@@ -11,6 +11,7 @@ ForgeRock, etc.) through the validator, config round-trip, deploy params, and CF
 from pathlib import Path
 
 import pytest
+import yaml
 
 from claude_code_with_bedrock.config import Profile
 from claude_code_with_bedrock.validators import validate_profile
@@ -20,6 +21,32 @@ REPO_ROOT = SOURCE_ROOT.parents[0]
 DEPLOY_PY = SOURCE_ROOT / "claude_code_with_bedrock" / "cli" / "commands" / "deploy.py"
 INIT_PY = SOURCE_ROOT / "claude_code_with_bedrock" / "cli" / "commands" / "init.py"
 LANDING_TEMPLATE = REPO_ROOT / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
+
+
+# --- CFN-aware YAML loader (handles !Ref, !Sub, !GetAtt, etc.) ---
+
+
+class _CfnLoader(yaml.SafeLoader):
+    pass
+
+
+def _cfn_tag_constructor(loader, tag_suffix, node):
+    """Resolve any !Tag to its scalar/sequence/mapping payload (value only)."""
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return None
+
+
+_CfnLoader.add_multi_constructor("!", _cfn_tag_constructor)
+
+
+def _load_landing_template() -> dict:
+    with open(LANDING_TEMPLATE, encoding="utf-8") as f:
+        return yaml.load(f, Loader=_CfnLoader)
 
 
 class TestGenericDistributionValidator:
@@ -198,3 +225,52 @@ class TestGenericDistributionTemplate:
         assert "!Ref GenericUserInfoEndpoint" in text
         assert "!Ref GenericClientId" in text
         assert "resolve:secretsmanager:${GenericClientSecretArn}" in text
+
+
+class TestLandingPageCustomDomainRecord:
+    """The custom-domain DNS record must be a CNAME, not an A alias.
+
+    Regression: an A alias to the ALB resolves the host to the ALB's IP
+    addresses. OIDC callbacks then carry the resolved IP instead of the
+    configured custom domain, so the IdP rejects them with a
+    "Callback URL mismatch" error. A CNAME keeps the custom domain name in
+    the request, so callback URLs match what is registered at the IdP.
+    """
+
+    def _record_set(self) -> dict:
+        """Return the single Route53::RecordSet resource for the custom domain."""
+        template = _load_landing_template()
+        record_sets = [
+            (name, body)
+            for name, body in template["Resources"].items()
+            if body.get("Type") == "AWS::Route53::RecordSet"
+        ]
+        assert len(record_sets) == 1, f"expected exactly one RecordSet, got {[n for n, _ in record_sets]}"
+        return record_sets[0][1]
+
+    def test_custom_domain_record_is_cname(self):
+        """The record Type is CNAME (not A)."""
+        props = self._record_set()["Properties"]
+        assert props["Type"] == "CNAME", f"expected CNAME, got {props['Type']!r}"
+
+    def test_cname_uses_resource_records_not_alias_target(self):
+        """A CNAME points via ResourceRecords; AliasTarget is A/AAAA-only and invalid here."""
+        props = self._record_set()["Properties"]
+        assert "AliasTarget" not in props, "CNAME records must not use AliasTarget"
+        assert props.get("ResourceRecords"), "CNAME must declare ResourceRecords"
+        assert "TTL" in props, "CNAME ResourceRecords require a TTL"
+
+    def test_cname_points_at_alb_dns_name(self):
+        """The CNAME target is the ALB's DNS name (the !GetAtt value, resolved by the loader)."""
+        props = self._record_set()["Properties"]
+        assert props["ResourceRecords"] == ["DistributionALB.DNSName"]
+
+    def test_record_remains_conditional_on_hosted_zone(self):
+        """DNS is still only created when a Route53 hosted zone is supplied."""
+        template = _load_landing_template()
+        record = next(
+            body
+            for body in template["Resources"].values()
+            if body.get("Type") == "AWS::Route53::RecordSet"
+        )
+        assert record.get("Condition") == "HasRoute53Zone"
