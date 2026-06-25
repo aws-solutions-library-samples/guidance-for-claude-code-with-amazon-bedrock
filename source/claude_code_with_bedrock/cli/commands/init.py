@@ -1516,6 +1516,19 @@ class InitCommand(Command):
         if config["settings_target"] == "managed":
             console.print("[green]✓[/green] Settings will be deployed to OS-level managed path")
             console.print("[dim]  Users will need sudo (Unix) or Administrator (Windows) to install[/dim]")
+
+            # Ask whether to lock model selection in managed settings
+            console.print()
+            saved_lock = config.get("lock_default_model", False)
+            lock_model = questionary.confirm(
+                "Lock default model for all users? (Prevents users from changing model via /model)",
+                default=saved_lock,
+            ).ask()
+            config["lock_default_model"] = lock_model if lock_model is not None else False
+            if not config["lock_default_model"]:
+                console.print("[green]✓[/green] Users can freely select models via /model (CRIS routing still applied)")
+            else:
+                console.print("[yellow]![/yellow] Default model will be enforced for all users via managed-settings")
         else:
             console.print("[green]✓[/green] Settings will be deployed to user-scope path")
 
@@ -2568,6 +2581,7 @@ class InitCommand(Command):
             "settings_target": "managed"
             if (self._io and self.option("managed"))
             else config_data.get("settings_target", "user"),
+            "lock_default_model": config_data.get("lock_default_model", False),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2900,6 +2914,10 @@ class InitCommand(Command):
             # Add selected model if present
             if hasattr(profile, "selected_model") and profile.selected_model:
                 existing_config["aws"]["selected_model"] = profile.selected_model
+
+            # Add lock_default_model if present
+            if hasattr(profile, "lock_default_model"):
+                existing_config["lock_default_model"] = profile.lock_default_model
 
             # Add cross-region profile if present
             if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
