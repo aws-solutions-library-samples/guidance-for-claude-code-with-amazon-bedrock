@@ -43,11 +43,20 @@ def set_env_vars(monkeypatch):
 @pytest.fixture
 def reload_handler(set_env_vars):
     """Reload the handler module after env vars are set."""
-    # Remove cached module to pick up new env vars
+    import importlib.util
+
+    # Remove any cached 'index' module to avoid cross-test pollution
     if "index" in sys.modules:
         del sys.modules["index"]
-    import index
-    return index
+
+    # Load specifically from the bootstrap_server directory
+    spec = importlib.util.spec_from_file_location(
+        "index", os.path.join(_LAMBDA_DIR, "index.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["index"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestLambdaHandler:

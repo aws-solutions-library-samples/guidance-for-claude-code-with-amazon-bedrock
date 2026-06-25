@@ -1146,7 +1146,7 @@ class DeployCommand(Command):
                 if result == 0:
                     outputs = get_stack_outputs(stack_name, profile.aws_region)
                     bootstrap_url = outputs.get("BootstrapUrl", "N/A")
-                    console.print(f"\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
+                    console.print("\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
                     console.print(f"\n[bold]Bootstrap URL:[/bold] {bootstrap_url}")
                     console.print(
                         "\n[dim]Add this URL as 'bootstrapUrl' in your MDM anchor profile.[/dim]"
@@ -1355,9 +1355,9 @@ class DeployCommand(Command):
             template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
             stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
             params = [
-                f"OidcIssuerUrl=<from-oidc-config>",
+                "OidcIssuerUrl=<from-oidc-config>",
                 f"OidcClientId={profile.client_id}",
-                f"OidcJwksEndpoint=<from-oidc-config>",
+                "OidcJwksEndpoint=<from-oidc-config>",
                 f"DefaultInferenceRegion={profile.aws_region}",
                 f"DefaultInferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
                 f"OtlpEndpoint={getattr(profile, 'otel_collector_endpoint', '') or ''}",
