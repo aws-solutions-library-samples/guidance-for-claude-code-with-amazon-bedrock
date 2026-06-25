@@ -8,7 +8,7 @@ import (
 )
 
 func TestStartCallbackServer_ListensOnPort(t *testing.T) {
-	resultCh, srv, err := StartCallbackServer(0, "test-state")
+	resultCh, srv, err := StartCallbackServer(0, "test-state", "https://example.com/authorize")
 	if err != nil {
 		t.Fatalf("StartCallbackServer failed: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestStartCallbackServer_ValidCallback(t *testing.T) {
 	port := 19876 // Use a high port to avoid conflicts
 	state := "test-state-abc123"
 
-	resultCh, srv, err := StartCallbackServer(port, state)
+	resultCh, srv, err := StartCallbackServer(port, state, "https://example.com/authorize")
 	if err != nil {
 		t.Fatalf("StartCallbackServer failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestStartCallbackServer_InvalidState(t *testing.T) {
 	port := 19877
 	state := "correct-state"
 
-	resultCh, srv, err := StartCallbackServer(port, state)
+	resultCh, srv, err := StartCallbackServer(port, state, "https://example.com/authorize")
 	if err != nil {
 		t.Fatalf("StartCallbackServer failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestStartCallbackServer_MissingCode(t *testing.T) {
 	port := 19878
 	state := "my-state"
 
-	resultCh, srv, err := StartCallbackServer(port, state)
+	resultCh, srv, err := StartCallbackServer(port, state, "https://example.com/authorize")
 	if err != nil {
 		t.Fatalf("StartCallbackServer failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestStartCallbackServer_ErrorCallback(t *testing.T) {
 	port := 19879
 	state := "my-state"
 
-	resultCh, srv, err := StartCallbackServer(port, state)
+	resultCh, srv, err := StartCallbackServer(port, state, "https://example.com/authorize")
 	if err != nil {
 		t.Fatalf("StartCallbackServer failed: %v", err)
 	}
@@ -150,6 +150,36 @@ func TestStartCallbackServer_ErrorCallback(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for callback result")
+	}
+}
+
+func TestStartCallbackServer_LandingPage(t *testing.T) {
+	port := 19880
+	state := "my-state"
+	authURL := "https://idp.example.com/oauth2/authorize?client_id=abc"
+
+	_, srv, err := StartCallbackServer(port, state, authURL)
+	if err != nil {
+		t.Fatalf("StartCallbackServer failed: %v", err)
+	}
+	defer srv.Close()
+
+	// Request the landing page
+	url := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("HTTP GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify content type is HTML
+	ct := resp.Header.Get("Content-Type")
+	if ct != "text/html" {
+		t.Errorf("Expected text/html, got %s", ct)
 	}
 }
 
