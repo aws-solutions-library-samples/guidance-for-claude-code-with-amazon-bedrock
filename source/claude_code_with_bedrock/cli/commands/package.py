@@ -2804,28 +2804,6 @@ EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
-# Generate a 'claude-bedrock' launcher wrapper.
-# It signs in (a no-op when the session is still valid) so the verification URL
-# is shown live in the user's terminal, THEN launches Claude Code. This avoids
-# the "run claude → silent hang" trap for IDC: the interactive sign-in can't be
-# surfaced through Claude Code's own credential refresh, so we front-run it here
-# where stdout/stderr go straight to the terminal.
-CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
-LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
-FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
-cat > "$LAUNCHER" << EOF
-#!/bin/bash
-# Launch Claude Code with Bedrock authentication.
-# Signs in first (no-op if already signed in), then runs claude.
-PROFILE="\\${{AWS_PROFILE:-$FIRST_PROFILE}}"
-"$CRED_PROC" --login --profile "\\$PROFILE" || exit 1
-export AWS_PROFILE="\\$PROFILE"
-exec claude "\\$@"
-EOF
-chmod +x "$LAUNCHER"
-if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$LAUNCHER"; fi
-echo "  ✓ Created launcher: $LAUNCHER"
-
 # Post-install validation
 echo
 echo "Validating installation..."
@@ -2839,6 +2817,34 @@ if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
 else
     echo "  WARN settings.json not found at: $ACTUAL_HOME/.claude/settings.json"
 fi
+"""
+
+        # IDC auth needs a launcher wrapper that signs in before launching Claude.
+        # OIDC auth handles sign-in transparently, so no launcher is needed.
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
+        if _is_idc:
+            installer_content += """
+# Generate a 'claude-bedrock' launcher wrapper.
+# It signs in (a no-op when the session is still valid) so the verification URL
+# is shown live in the user's terminal, THEN launches Claude Code. This avoids
+# the "run claude \u2192 silent hang" trap for IDC: the interactive sign-in can't be
+# surfaced through Claude Code's own credential refresh, so we front-run it here
+# where stdout/stderr go straight to the terminal.
+CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
+LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
+FIRST_PROFILE=$(echo $PROFILES | awk '{print $1}')
+cat > "$LAUNCHER" << EOF
+#!/bin/bash
+# Launch Claude Code with Bedrock authentication.
+# Signs in first (no-op if already signed in), then runs claude.
+PROFILE="\\${AWS_PROFILE:-$FIRST_PROFILE}"
+"$CRED_PROC" --login --profile "\\$PROFILE" || exit 1
+export AWS_PROFILE="\\$PROFILE"
+exec claude "\\$@"
+EOF
+chmod +x "$LAUNCHER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$LAUNCHER"; fi
+echo "  \u2713 Created launcher: $LAUNCHER"
 
 echo
 echo "======================================"
@@ -2856,13 +2862,35 @@ echo
 echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
 echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
 echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
-echo "    retrying — easy to miss. The launcher avoids that."
+echo "    retrying \u2014 easy to miss. The launcher avoids that."
 echo
 echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
 echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
 echo
 echo "To use a non-default profile, set AWS_PROFILE before launching:"
 echo "  AWS_PROFILE=<profile-name> $LAUNCHER"
+echo
+"""
+        else:
+            installer_content += """
+echo
+echo "======================================"
+echo "Installation complete!"
+echo "======================================"
+echo
+echo "Available profiles:"
+for PROFILE_NAME in $PROFILES; do
+    echo "  - $PROFILE_NAME"
+done
+echo
+echo ">>> Start Claude Code:"
+echo "      claude"
+echo
+echo "    Authentication is handled automatically via your configured credential"
+echo "    process. Simply run 'claude' to start."
+echo
+echo "To use a non-default profile, set AWS_PROFILE before launching:"
+echo "  AWS_PROFILE=<profile-name> claude"
 echo
 """
 
@@ -3071,6 +3099,12 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
     )
 )
 
+"""
+
+        # IDC auth needs a launcher wrapper; OIDC auth handles sign-in transparently.
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
+        if _is_idc:
+            installer_content += """
 REM Generate a 'claude-bedrock.cmd' launcher.
 REM It signs in first (no-op if the session is still valid) so the verification
 REM URL is shown live in the user's console, THEN launches Claude Code. This
@@ -3116,6 +3150,30 @@ echo.
 echo To use a non-default profile, set AWS_PROFILE before launching:
 echo   set AWS_PROFILE=^<profile-name^>
 echo   %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo.
+pause
+"""
+        else:
+            installer_content += """
+echo.
+echo ======================================
+echo Installation complete!
+echo ======================================
+echo.
+echo Available profiles:
+for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"') do (
+    echo   - %%p
+)
+echo.
+echo ^>^>^> Start Claude Code:
+echo       claude
+echo.
+echo     Authentication is handled automatically via your configured credential
+echo     process. Simply run 'claude' to start.
+echo.
+echo To use a non-default profile, set AWS_PROFILE before launching:
+echo   set AWS_PROFILE=^<profile-name^>
+echo   claude
 echo.
 pause
 """
