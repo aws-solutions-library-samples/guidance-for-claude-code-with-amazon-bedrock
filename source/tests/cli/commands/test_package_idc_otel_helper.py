@@ -29,19 +29,19 @@ from claude_code_with_bedrock.config import Profile
 
 
 def _base(**overrides) -> Profile:
-    kwargs = dict(
-        name="test",
-        provider_domain="test.okta.com",
-        client_id="test-client-id",
-        credential_storage="session",
-        aws_region="us-east-1",
-        identity_pool_name="test-pool",
-        allowed_bedrock_regions=["us-east-1", "us-west-2"],
-        cross_region_profile="us",
-        monitoring_enabled=True,
-        otel_collector_endpoint="https://collector.example.com",
-        stack_names={"monitoring": "test-pool-otel-collector"},
-    )
+    kwargs = {
+        "name": "test",
+        "provider_domain": "test.okta.com",
+        "client_id": "test-client-id",
+        "credential_storage": "session",
+        "aws_region": "us-east-1",
+        "identity_pool_name": "test-pool",
+        "allowed_bedrock_regions": ["us-east-1", "us-west-2"],
+        "cross_region_profile": "us",
+        "monitoring_enabled": True,
+        "otel_collector_endpoint": "https://collector.example.com",
+        "stack_names": {"monitoring": "test-pool-otel-collector"},
+    }
     kwargs.update(overrides)
     return Profile(**kwargs)
 
