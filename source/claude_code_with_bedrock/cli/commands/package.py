@@ -2804,6 +2804,28 @@ EOF
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
 done
 
+# Generate a 'claude-bedrock' launcher wrapper.
+# It signs in (a no-op when the session is still valid) so the verification URL
+# is shown live in the user's terminal, THEN launches Claude Code. This avoids
+# the "run claude → silent hang" trap for IDC: the interactive sign-in can't be
+# surfaced through Claude Code's own credential refresh, so we front-run it here
+# where stdout/stderr go straight to the terminal.
+CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
+LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
+FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
+cat > "$LAUNCHER" << EOF
+#!/bin/bash
+# Launch Claude Code with Bedrock authentication.
+# Signs in first (no-op if already signed in), then runs claude.
+PROFILE="\\${{AWS_PROFILE:-$FIRST_PROFILE}}"
+"$CRED_PROC" --login --profile "\\$PROFILE" || exit 1
+export AWS_PROFILE="\\$PROFILE"
+exec claude "\\$@"
+EOF
+chmod +x "$LAUNCHER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$LAUNCHER"; fi
+echo "  ✓ Created launcher: $LAUNCHER"
+
 # Post-install validation
 echo
 echo "Validating installation..."
@@ -2828,16 +2850,19 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo "To use Claude Code authentication:"
-echo "  export AWS_PROFILE=<profile-name>"
-echo "  aws sts get-caller-identity"
+echo ">>> Start Claude Code with the launcher, NOT 'claude' directly:"
+echo "      $LAUNCHER"
 echo
-echo "Example:"
-FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
-echo "  export AWS_PROFILE=$FIRST_PROFILE"
-echo "  aws sts get-caller-identity"
+echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
+echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
+echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
+echo "    retrying — easy to miss. The launcher avoids that."
 echo
-echo "Note: Authentication will automatically open your browser when needed."
+echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
+echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
+echo
+echo "To use a non-default profile, set AWS_PROFILE before launching:"
+echo "  AWS_PROFILE=<profile-name> $LAUNCHER"
 echo
 """
 
@@ -2854,6 +2879,14 @@ echo
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
+
+        # When monitoring is enabled, Claude Code's otelHeadersHelper points at
+        # otel-helper.cmd (which falls back to otel-helper.ps1 if AV blocks the
+        # .exe). Those files are then REQUIRED: a missing .cmd silently breaks all
+        # telemetry export. So the installer must fail loudly if they're absent.
+        # When monitoring is off, the helper isn't referenced, so their absence is
+        # harmless and the copy stays best-effort.
+        _otel_missing_is_fatal = bool(profile.monitoring_enabled)
 
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
@@ -2903,12 +2936,40 @@ if exist "otel-helper-windows.exe" (
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
 )
 
-REM Copy PowerShell OTEL helper (AV-safe alternative to the Go binary)
-if exist "otel-helper.ps1" (
-    copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
-)
+REM Copy the OTEL helper wrapper (.cmd) and its PowerShell fallback (.ps1).
+REM Claude Code's otelHeadersHelper points at otel-helper.cmd, which runs the
+REM fast .exe and falls back to the .ps1 if antivirus blocks the binary. When
+REM monitoring is enabled these files are REQUIRED — a missing .cmd makes Claude
+REM Code fail every telemetry export with "is not recognized as an internal or
+REM external command" and silently drops all metrics, so we fail the install
+REM loudly rather than leave a broken telemetry config.
 if exist "otel-helper.cmd" (
     copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper.cmd
+        pause
+        exit /b 1
+    )
+) else (
+    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.cmd not found in package.
+{'''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
+    echo        Re-extract the full package [including .cmd and .ps1 files] and retry.
+    pause
+    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - helper not required.'}
+)
+if exist "otel-helper.ps1" (
+    copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper.ps1
+        pause
+        exit /b 1
+    )
+) else (
+    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.ps1 not found in package.
+{'''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
+    echo        Re-extract the full package and run install.bat again.
+    pause
+    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - fallback not required.'}
 )
 
 REM Copy configuration
@@ -2938,7 +2999,7 @@ if exist "claude-settings" (
         if not exist "C:\\Program Files\\ClaudeCode" mkdir "C:\\Program Files\\ClaudeCode"
 
         REM Replace placeholders and write managed settings
-        powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\managed-settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content 'C:\\Program Files\\ClaudeCode\\managed-settings.json'"
+        powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\managed-settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content 'C:\\Program Files\\ClaudeCode\\managed-settings.json'"
         echo OK Managed settings installed: C:\\Program Files\\ClaudeCode\\managed-settings.json
         echo    These settings have highest precedence and cannot be overridden by users.
     )
@@ -2950,7 +3011,7 @@ if exist "claude-settings" (
             echo Existing Claude Code settings found - merging...
 
             REM Merge new settings into existing (preserves user customizations)
-            powershell -NoProfile -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            powershell -NoProfile -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             if %errorlevel% equ 0 (
                 echo OK Claude Code settings merged [user settings preserved]
             ) else (
@@ -2964,7 +3025,7 @@ if exist "claude-settings" (
 
         if not "%SKIP_SETTINGS%"=="true" if not exist "%USERPROFILE%\\.claude\\settings.json" (
             REM No existing settings - write directly
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -3010,6 +3071,28 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
     )
 )
 
+REM Generate a 'claude-bedrock.cmd' launcher.
+REM It signs in first (no-op if the session is still valid) so the verification
+REM URL is shown live in the user's console, THEN launches Claude Code. This
+REM avoids the "run claude -> silent hang" trap for IDC, whose interactive
+REM sign-in cannot be surfaced through Claude Code's own credential refresh.
+REM
+REM Written with plain batch 'echo' redirection (NOT PowerShell) so the embedded
+REM quotes survive. In this script %%X%% becomes literal %X% in the .cmd, and
+REM %%* becomes %*, so the launcher's own runtime expansion is deferred.
+echo.
+echo Creating launcher...
+set "LAUNCHER=%USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd"
+set "CRED_PROC=%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe"
+set "FIRST_PROFILE="
+for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do set "FIRST_PROFILE=%%p"
+> "%LAUNCHER%" echo @echo off
+>> "%LAUNCHER%" echo if "%%AWS_PROFILE%%"=="" set AWS_PROFILE=!FIRST_PROFILE!
+>> "%LAUNCHER%" echo "%CRED_PROC%" --login --profile %%AWS_PROFILE%%
+>> "%LAUNCHER%" echo if errorlevel 1 exit /b 1
+>> "%LAUNCHER%" echo claude %%*
+echo   OK Created launcher: %LAUNCHER%
+
 echo.
 echo ======================================
 echo Installation complete!
@@ -3020,17 +3103,19 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
     echo   - %%p
 )
 echo.
-echo To use Claude Code authentication:
+echo ^>^>^> Start Claude Code with the launcher, NOT 'claude' directly:
+echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo.
+echo     The launcher signs you in (shows the sign-in URL in your terminal when
+echo     needed) and then starts Claude Code. If you run 'claude' directly without
+echo     an active sign-in, it can briefly flash a sign-in error and then keep
+echo     retrying - easy to miss. The launcher avoids that.
+echo.
+echo Tip: add that folder to your PATH so you can just run 'claude-bedrock'.
+echo.
+echo To use a non-default profile, set AWS_PROFILE before launching:
 echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
-echo.
-echo Example:
-for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
-)
-echo.
-echo Note: Authentication will automatically open your browser when needed.
+echo   %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
 echo.
 pause
 """
@@ -3246,8 +3331,49 @@ Available metrics include:
             if not include_coauthored_by:
                 settings["includeCoAuthoredBy"] = False
 
-            # Add awsAuthRefresh for session-based credential storage
-            if profile.credential_storage == "session":
+            # For IDC, disable the EC2 instance-metadata credential provider. If a
+            # credential refresh ever fails, the AWS SDK credential chain would
+            # otherwise fall through to the instance role on EC2 — silently running
+            # Claude Code as the wrong identity (breaking cost attribution and quota,
+            # and masking the failure). With IMDS disabled, a refresh failure surfaces
+            # as a clear credentials error instead. IDC identity comes solely from the
+            # credential-process binary, so nothing legitimately needs IMDS here.
+            if profile.effective_auth_type == "idc":
+                settings["env"]["AWS_EC2_METADATA_DISABLED"] = "true"
+
+            # Credential refresh on expiry. AWS_CREDENTIAL_PROCESS (set above) is
+            # ignored by Claude Code once a hook below is set, and on its own it is
+            # resolved only at startup — so a long session would retry stale
+            # credentials (and on EC2 the SDK chain falls back to the instance role —
+            # wrong identity). Claude Code offers two hooks, which behave differently
+            # and (verified empirically) are COMPLEMENTARY when both are set:
+            #
+            #   awsCredentialExport — output captured SILENTLY as credential JSON; the
+            #                         primary resolver, re-invoked automatically ~5 min
+            #                         before the Expiration we emit (Claude Code
+            #                         >= 2.1.176; flat credential_process JSON accepted
+            #                         >= 2.1.181). Drives the silent hourly STS refresh.
+            #   awsAuthRefresh      — output is DISPLAYED to the user; fires on the FIRST
+            #                         credential failure (not on every retry). This is the
+            #                         only channel that surfaces our sign-in message —
+            #                         awsCredentialExport discards stderr.
+            #
+            # IDC needs BOTH:
+            #   - awsCredentialExport for the silent ~hourly role-credential refresh
+            #     (SSO session still valid -> re-mint via STS, no browser); and
+            #   - awsAuthRefresh so that when there is NO valid SSO session, the binary's
+            #     fail-fast message ("relaunch with claude-bedrock") is shown to the user
+            #     instead of a silent retry loop. The fail-fast guard makes the binary
+            #     exit immediately here, so awsAuthRefresh does NOT hang (the original
+            #     reason it was dropped for IDC). The ~8h SSO-session re-login itself
+            #     still happens out-of-band via the claude-bedrock launcher.
+            #
+            # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
+            # can be interactive (browser), which is exactly what that hook is for.
+            if profile.effective_auth_type == "idc":
+                settings["awsCredentialExport"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
+                settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --login --profile {profile_name}"
+            elif profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add ANTHROPIC_MODEL if user selected a model during init.
@@ -3401,11 +3527,23 @@ Available metrics include:
                         }
                     )
 
-                    # Add the helper executable for generating OTEL headers with user attributes
-                    # IDC path uses static identity in collector config — no helper needed.
-                    # Use a placeholder that will be replaced by the installer script based on platform
+                    # Add the helper executable for generating per-user OTEL headers.
+                    # The placeholder is replaced by the installer with the platform path.
+                    #
+                    # When IS this needed?
+                    #   - OIDC: always — the helper extracts user attributes from the JWT.
+                    #   - IDC with the credential-process binary (e.g. quota enabled): the
+                    #     binary resolves the user's email from the IAM ARN session name and
+                    #     caches it (writeOtelCacheFromIDC / writeOtelCacheFromSTS); the helper
+                    #     serves that cache as x-user-email so the collector attributes metrics
+                    #     PER USER. Without the helper, IDC dashboards collapse to a single
+                    #     static identity.
+                    #   - IDC zero-binary (no credential-process): there's no binary to compute
+                    #     identity at runtime, so attribution comes from the static identity
+                    #     baked into the collector config — no helper to wire here.
                     _is_idc = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
-                    if not _is_idc:
+                    _idc_zero_binary = _is_idc and not bool(getattr(profile, "quota_api_endpoint", None))
+                    if not _idc_zero_binary:
                         settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
                     is_https = endpoint.startswith("https://")

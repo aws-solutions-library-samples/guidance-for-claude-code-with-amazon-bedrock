@@ -98,6 +98,21 @@ func run(testMode bool) int {
 	// resolved below (env var, then credential-process). credential-process
 	// is the correct fallback here — it owns token refresh, keyring storage,
 	// and serve-past-expiry, none of which a direct monitoring.json read does.
+	//
+	// In test mode we still CONSULT the cache (so --test reflects what the
+	// production path would emit) but render it via the test formatter rather
+	// than printing the JSON contract. This matters for IDC, where there is no
+	// JWT: the cache (written by credential-process from the IAM ARN) is the
+	// ONLY source of attribution, so skipping it here made --test always show
+	// empty headers even when attribution was working.
+	if testMode {
+		if headers, err := otel.ReadCachedHeaders(profile); err == nil && len(headers) > 0 {
+			debugPrint("Using cached OTEL headers (test mode)")
+			printTestOutput(userInfoFromHeaders(headers), headers)
+			return 0
+		}
+		debugPrint("No cached OTEL headers; falling through to token-based extraction (test mode)")
+	}
 	if !testMode {
 		headers, err := otel.ReadCachedHeaders(profile)
 		if err == nil && headers != nil {
@@ -188,6 +203,28 @@ func run(testMode bool) int {
 	}
 
 	return 0
+}
+
+// userInfoFromHeaders reconstructs a UserInfo from cached x-* headers so the
+// test-mode formatter can display the attributes. It is the inverse of
+// otel.FormatHeaders for the fields that round-trip through headers (the cache
+// stores headers, not the full UserInfo, so JWT-only fields like account_uuid /
+// issuer / subject are not represented and remain empty — that's expected, since
+// a cache hit is the IDC path which has no JWT).
+func userInfoFromHeaders(h map[string]string) otel.UserInfo {
+	return otel.UserInfo{
+		Email:          h["x-user-email"],
+		UserID:         h["x-user-id"],
+		Username:       h["x-user-name"],
+		Department:     h["x-department"],
+		Team:           h["x-team-id"],
+		CostCenter:     h["x-cost-center"],
+		OrganizationID: h["x-organization"],
+		Location:       h["x-location"],
+		Role:           h["x-role"],
+		Manager:        h["x-manager"],
+		Project:        h["x-project"],
+	}
 }
 
 // emitEmptyHeaders satisfies Claude Code's otelHeadersHelper contract when no
