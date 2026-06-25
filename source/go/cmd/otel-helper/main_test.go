@@ -420,3 +420,69 @@ func TestRun_Layer1_CacheHit_NoToken_OmitsBearerGracefully(t *testing.T) {
 		t.Error("cache file must not contain 'authorization' after a no-token cache hit")
 	}
 }
+
+// TestUserInfoFromHeaders verifies the inverse of otel.FormatHeaders used by
+// test-mode rendering: cached x-* headers map back to the right UserInfo fields.
+func TestUserInfoFromHeaders(t *testing.T) {
+	info := userInfoFromHeaders(map[string]string{
+		"x-user-email":   "alice@example.com",
+		"x-user-id":      "u-123",
+		"x-user-name":    "alice",
+		"x-department":   "eng",
+		"x-team-id":      "team-a",
+		"x-cost-center":  "cc-9",
+		"x-organization": "org-1",
+		"x-location":     "us",
+		"x-role":         "dev",
+		"x-manager":      "bob",
+		"x-project":      "proj-x",
+	})
+	if info.Email != "alice@example.com" {
+		t.Errorf("Email = %q, want alice@example.com", info.Email)
+	}
+	if info.Department != "eng" || info.Team != "team-a" || info.Project != "proj-x" {
+		t.Errorf("field mapping mismatch: %+v", info)
+	}
+}
+
+// TestRun_TestMode_ServesCachedHeaders is the regression test for IDC --test.
+// IDC has no JWT, so attribution lives ONLY in the cache (written by
+// credential-process from the IAM ARN). Test mode previously skipped the Layer-1
+// cache read entirely and went straight to the (nonexistent) JWT path, so
+// `otel-helper --test` always printed empty headers even when attribution was
+// working. This asserts test mode now surfaces the cached x-user-email.
+func TestRun_TestMode_ServesCachedHeaders(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("AWS_PROFILE", "idc-test")
+	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "")
+
+	cacheDir := filepath.Join(tmpDir, ".claude-code-session")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// schema_version 2 + future exp so Layer 1 treats it as a valid hit.
+	entry := `{"schema_version":2,"headers":{"x-user-email":"qnamzn+developer@amazon.com"},"token_exp":9999999999,"cached_at":1782315885}`
+	if err := os.WriteFile(filepath.Join(cacheDir, "idc-test-otel-headers.json"), []byte(entry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	code := run(true)
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("run(testMode) = %d, want 0", code)
+	}
+
+	var buf [8192]byte
+	n, _ := r.Read(buf[:])
+	out := string(buf[:n])
+	if !strings.Contains(out, "qnamzn+developer@amazon.com") {
+		t.Errorf("test-mode output must surface the cached email; got:\n%s", out)
+	}
+}
