@@ -206,10 +206,17 @@ class TestLambdaHandler:
     def test_no_otel_when_endpoint_empty(self, mock_validate, reload_handler, monkeypatch):
         """Should not include OTEL fields when endpoint is empty."""
         monkeypatch.setenv("OTLP_ENDPOINT", "")
-        # Reload to pick up new env var
+        # Reload to pick up new env var using explicit path (avoids module collision)
+        import importlib.util
+
         if "index" in sys.modules:
             del sys.modules["index"]
-        import index as handler
+        spec = importlib.util.spec_from_file_location(
+            "index", os.path.join(_LAMBDA_DIR, "index.py")
+        )
+        handler = importlib.util.module_from_spec(spec)
+        sys.modules["index"] = handler
+        spec.loader.exec_module(handler)
 
         mock_validate_new = MagicMock(return_value={
             "sub": "user123",
