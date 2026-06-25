@@ -42,6 +42,8 @@ Generated files are pre-populated with your Bedrock region, profile name, and mo
 
 ### Omnissa Workspace ONE (VMware UEM)
 
+> This section is specific to Omnissa Workspace ONE. For other MDM platforms (Microsoft Intune, Jamf, Kandji), use their native ADMX import or custom settings profile mechanisms — the ADMX template files are the same.
+
 Workspace ONE supports ADMX-based policy deployment via its **Windows ADMX Profiles** feature (available since UEM 24.x+). This uses the Intelligent Hub on each device to apply settings, equivalent to AD Group Policy but without domain membership.
 
 #### Step 1: Import the ADMX Template
