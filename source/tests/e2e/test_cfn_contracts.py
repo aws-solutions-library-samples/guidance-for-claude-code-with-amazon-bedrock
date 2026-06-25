@@ -341,3 +341,45 @@ class TestCoWorkLogGroupContract:
         created = self._log_group_names(_load_template("otel-collector.yaml"))
         missing = dash_groups - created
         assert not missing, f"cowork-dashboard filters target log groups nobody creates: {missing}"
+
+
+class TestOtelCollectorAlbIdleTimeout:
+    """The OTEL collector ALB must raise its idle timeout above the AWS default
+    of 60s.
+
+    Claude Code reuses a pooled keep-alive connection for OTLP metric exports,
+    which only happen after activity. At the 60s default the ALB reaps the
+    connection during idle gaps between turns, so the next export reuses a dead
+    socket and logs a benign-but-noisy "socket hang up". Raising the idle
+    timeout keeps the connection alive across normal in-session pauses.
+    """
+
+    def _load_balancer(self) -> dict:
+        otel = _load_template("otel-collector.yaml")
+        lbs = [
+            body
+            for body in otel["Resources"].values()
+            if body.get("Type") == "AWS::ElasticLoadBalancingV2::LoadBalancer"
+        ]
+        assert len(lbs) == 1, f"expected exactly one ALB, found {len(lbs)}"
+        return lbs[0]
+
+    def _idle_timeout(self) -> int:
+        attrs = self._load_balancer()["Properties"].get("LoadBalancerAttributes", [])
+        for attr in attrs:
+            if attr.get("Key") == "idle_timeout.timeout_seconds":
+                return int(attr["Value"])
+        raise AssertionError("idle_timeout.timeout_seconds not set on the collector ALB")
+
+    def test_idle_timeout_is_set(self):
+        # Raises AssertionError if the attribute is missing.
+        self._idle_timeout()
+
+    def test_idle_timeout_above_default(self):
+        """Must exceed the 60s AWS default (that default is what causes the
+        socket-hang-up reaping)."""
+        assert self._idle_timeout() > 60
+
+    def test_idle_timeout_within_alb_max(self):
+        """ALB idle timeout is capped at 4000s by the service."""
+        assert 1 <= self._idle_timeout() <= 4000
