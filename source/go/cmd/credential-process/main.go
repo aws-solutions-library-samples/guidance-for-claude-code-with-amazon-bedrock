@@ -771,17 +771,13 @@ func (a *credentialApp) refreshIDTokenOnly() string {
 		return ""
 	}
 
-	// Resolve token endpoint URL (same logic as tryRefreshToken).
+	// Resolve token endpoint URL — use shared builder from #666 to avoid
+	// Azure /v2.0 doubling and keep parity with tryRefreshToken.
 	var tokenURL string
 	if a.providerType == "generic" {
 		tokenURL = a.cfg.OIDCTokenEndpoint
 	} else {
-		provCfg := provider.ConfigFor(a.providerType, a.cfg.OktaAuthServerID)
-		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
-			tokenURL = provCfg.TokenEndpoint
-		} else {
-			tokenURL = "https://" + a.cfg.ProviderDomain + provCfg.TokenEndpoint
-		}
+		tokenURL = provider.TokenEndpointURL(a.providerType, a.cfg.OktaAuthServerID, a.cfg.ProviderDomain)
 	}
 
 	confidential, err := a.resolveConfidentialAuth()
