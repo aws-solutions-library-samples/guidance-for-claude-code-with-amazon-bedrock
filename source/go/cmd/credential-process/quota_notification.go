@@ -88,22 +88,28 @@ func showQuotaBrowserNotification(qr *quota.Result, isBlocked bool) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// isHeadless returns true if the environment appears to be headless (no GUI).
+// isHeadless returns true if the environment appears to have no usable local
+// browser — i.e. we should show a copy-to-another-device prompt rather than try
+// to open a browser. Used by both the quota browser-notification flow and the
+// IDC device-authorization flow.
 func isHeadless() bool {
-	// SSH session — no local display
-	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
+	// An explicit $BROWSER means the user has told us how to open a browser
+	// (e.g. WSL forwarding to the Windows host) — honor it.
+	if os.Getenv("BROWSER") != "" {
+		return false
+	}
+	// SSH session — no local display, on any OS.
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CLIENT") != "" {
 		return true
 	}
-
-	// Linux/Unix: check for display server
-	if runtime.GOOS == "linux" {
-		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
-			return true
-		}
+	switch runtime.GOOS {
+	case "windows", "darwin":
+		// Assume a desktop browser unless in an SSH session (handled above).
+		return false
+	default:
+		// Linux/BSD: a GUI session exposes DISPLAY (X11) or WAYLAND_DISPLAY.
+		return os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == ""
 	}
-
-	// Windows and macOS always have a GUI available (if logged in)
-	return false
 }
 
 func openBrowser(url string) {

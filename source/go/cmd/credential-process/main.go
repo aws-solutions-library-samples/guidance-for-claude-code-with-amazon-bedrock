@@ -50,6 +50,7 @@ func main() {
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
+	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -102,6 +103,22 @@ func main() {
 	}
 	if *checkExpiration {
 		os.Exit(app.checkExpiration())
+	}
+	if *login {
+		// Interactive sign-in only (no credential JSON on stdout). For IDC this
+		// runs device authorization and caches the SSO token so subsequent
+		// non-interactive runs (e.g. Claude Code) reuse it silently — the
+		// recommended first step on headless/SSH hosts.
+		if cfg.IsIDC() {
+			os.Exit(app.runIDCLogin())
+		}
+		fmt.Fprintln(os.Stderr, "--login is only supported for IAM Identity Center (auth_type=idc) profiles.")
+		if cfg.IsSsoEnabled() {
+			fmt.Fprintln(os.Stderr, "OIDC profiles authenticate automatically via the browser on first use; no separate login step is needed.")
+		} else {
+			fmt.Fprintln(os.Stderr, "This profile uses the ambient AWS credential chain; no sign-in step is needed.")
+		}
+		os.Exit(1)
 	}
 
 	// Auth dispatch: IDC > legacy passthrough > OIDC
