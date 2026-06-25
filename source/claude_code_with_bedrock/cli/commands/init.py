@@ -1473,7 +1473,6 @@ class InitCommand(Command):
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
 
-
             # Generate CoWork service token for ALB auth bypass (central mode only).
             # CoWork can't do OIDC, so this static token in X-Cowork-Token header
             # bypasses JWT validation on the ALB listener.
@@ -2567,7 +2566,9 @@ class InitCommand(Command):
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
             "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
-            "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get("chat_advanced_file_analysis", True),
+            "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
+                "chat_advanced_file_analysis", True
+            ),
             "settings_target": "managed"
             if (self._io and self.option("managed"))
             else config_data.get("settings_target", "user"),
