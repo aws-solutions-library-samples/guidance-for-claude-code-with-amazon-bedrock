@@ -43,6 +43,9 @@ def package_dir(tmp_path):
         "otel-helper-windows.exe",
     ]:
         (pkg / platform).write_bytes(b"\x00" * 100)
+    # Windows otel-helper launcher + AV-resilient fallback (required by install.bat)
+    (pkg / "otel-helper.ps1").write_text("# otel-helper.ps1")
+    (pkg / "otel-helper.cmd").write_text("@echo off\nREM otel-helper.cmd")
     return pkg
 
 
@@ -189,6 +192,14 @@ class TestCreateArchive:
             assert "claude-code-package/install.sh" in names
             assert "claude-code-package/credential-process-macos-arm64" in names
 
+    def test_zip_contains_windows_otel_helper_scripts(self, cmd, package_dir):
+        """otel-helper.cmd/.ps1 are required by install.bat and must ship in the zip."""
+        archive = cmd._create_archive(package_dir)
+        with zipfile.ZipFile(archive, "r") as zf:
+            names = zf.namelist()
+            assert "claude-code-package/otel-helper.ps1" in names
+            assert "claude-code-package/otel-helper.cmd" in names
+
     def test_zip_includes_settings_dir(self, cmd, package_dir):
         settings = package_dir / "claude-settings"
         settings.mkdir()
@@ -243,6 +254,9 @@ class TestCreatePerOsArchives:
             names = zf.namelist()
             assert "claude-code-package/install.bat" in names
             assert "claude-code-package/ccwb-install.ps1" in names
+            # AV-resilient otel-helper launcher + fallback (required by install.bat)
+            assert "claude-code-package/otel-helper.ps1" in names
+            assert "claude-code-package/otel-helper.cmd" in names
 
     def test_skips_platform_without_binary(self, cmd, tmp_path):
         """Only Linux x64 binary present → only 1 archive."""
