@@ -641,18 +641,15 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 
 	debugPrint("Found cached refresh_token, attempting token exchange...")
 
-	// Resolve token endpoint URL
+	// Resolve token endpoint URL. Generic providers supply an absolute URL
+	// directly; named providers go through the shared builder that normalizes
+	// the domain (e.g. strips Azure's trailing /v2.0) so this refresh path and
+	// the authorization-code flow always produce the same URL.
 	var tokenURL string
 	if a.providerType == "generic" {
 		tokenURL = a.cfg.OIDCTokenEndpoint
 	} else {
-		provCfg := provider.ConfigFor(a.providerType, a.cfg.OktaAuthServerID)
-		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
-			tokenURL = provCfg.TokenEndpoint
-		} else {
-			domain := a.cfg.ProviderDomain
-			tokenURL = "https://" + domain + provCfg.TokenEndpoint
-		}
+		tokenURL = provider.TokenEndpointURL(a.providerType, a.cfg.OktaAuthServerID, a.cfg.ProviderDomain)
 	}
 
 	// Resolve confidential client auth (Azure secret/cert)
@@ -757,7 +754,24 @@ func (a *credentialApp) shouldRecheckQuota() bool {
 func (a *credentialApp) performQuotaRecheck() bool {
 	token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
 	if token == "" {
-		return true // no token to check with — allow (fail-open for missing token)
+		// Cached id_token aged past the 10-min buffer in GetMonitoringToken.
+		// This path is OIDC-only (IDC/passthrough have separate entrypoints),
+		// so the quota API expects a JWT — a SigV4 call would 401. Mirror the
+		// getMonitoringToken() handler: try a silent refresh_token exchange to
+		// mint a fresh id_token before giving up, so an over-quota user is still
+		// warned/blocked on the cache-hit fast path instead of silently passing.
+		if creds := a.tryRefreshToken(); creds != nil {
+			token, _ = storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+		}
+	}
+	if token == "" {
+		// No cached token and no usable refresh_token (revoked/absent). The only
+		// remaining recovery is a browser flow, which must NOT fire on the
+		// cache-hit fast path (runs on every AWS API call). Fail open, but leave
+		// the quota-state timestamp unset so the next invocation retries once a
+		// fresh token is available.
+		debugPrint("Quota recheck skipped: no cached id_token and no usable refresh_token")
+		return true
 	}
 	qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"ccwb-go/internal/browser"
@@ -86,17 +85,13 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 		authURL = generic.AuthorizeURL + "?" + params.Encode()
 		tokenURL = generic.TokenURL
 	} else {
-		domain := providerDomain
-		if providerType == "azure" && strings.HasSuffix(domain, "/v2.0") {
-			domain = domain[:len(domain)-5]
-		}
-		baseURL := "https://" + domain
+		// Normalize once (e.g. strip Azure's trailing /v2.0) so the authorize
+		// and token URLs are built from the same base. TokenEndpointURL applies
+		// the identical normalization, keeping this flow and the refresh_token
+		// exchange in lockstep.
+		baseURL := "https://" + provider.NormalizeDomain(providerType, providerDomain)
 		authURL = baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
-		if strings.HasPrefix(provCfg.TokenEndpoint, "https://") {
-			tokenURL = provCfg.TokenEndpoint
-		} else {
-			tokenURL = baseURL + provCfg.TokenEndpoint
-		}
+		tokenURL = provider.TokenEndpointURL(providerType, oktaAuthServerID, providerDomain)
 	}
 
 	// Start callback server
