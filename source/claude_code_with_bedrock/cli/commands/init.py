@@ -2578,6 +2578,10 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
+            "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
+            "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
+                "chat_advanced_file_analysis", True
+            ),
             "settings_target": "managed"
             if (self._io and self.option("managed"))
             else config_data.get("settings_target", "user"),
@@ -2946,6 +2950,10 @@ class InitCommand(Command):
                 cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
             if profile.cowork_service_token:
                 cowork_3p_config["service_token"] = profile.cowork_service_token
+            if profile.cowork_chat_tab_enabled:
+                cowork_3p_config["chat_tab_enabled"] = True
+            if profile.cowork_chat_advanced_file_analysis:
+                cowork_3p_config["chat_advanced_file_analysis"] = True
             existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present

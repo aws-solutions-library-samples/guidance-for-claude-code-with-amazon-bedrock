@@ -153,6 +153,13 @@ class Profile:
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
     cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
 
+    # Cowork beta features (managed configuration keys)
+    cowork_chat_tab_enabled: bool = True  # chatTabEnabled — enables the Chat tab
+    cowork_chat_advanced_file_analysis: bool = (
+        True  # chatAdvancedFileAnalysisEnabled — code execution for file analysis
+    )
+    cowork_inference_session_lifetime_sec: int | None = None  # inferenceSessionLifetimeSec — re-auth reminder timer
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
