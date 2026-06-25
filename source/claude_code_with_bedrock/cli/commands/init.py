@@ -1017,6 +1017,24 @@ class InitCommand(Command):
                         return None
                     config["monitoring"]["vpc_config"] = vpc_config
 
+                    # ALB scheme: internet-facing (default) or internal (private network)
+                    existing_alb_scheme = config["monitoring"].get("alb_scheme", "internet-facing")
+                    alb_scheme = questionary.select(
+                        "Load balancer network exposure:",
+                        choices=[
+                            questionary.Choice(
+                                "Internet-facing (default — accessible from public internet)",
+                                value="internet-facing",
+                            ),
+                            questionary.Choice(
+                                "Internal (private — only accessible via VPN/Direct Connect/internal network)",
+                                value="internal",
+                            ),
+                        ],
+                        default=existing_alb_scheme,
+                    ).ask()
+                    config["monitoring"]["alb_scheme"] = alb_scheme
+
                     # Optional: Configure HTTPS with custom domain
                     console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
 
