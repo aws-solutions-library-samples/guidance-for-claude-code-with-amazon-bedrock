@@ -17,12 +17,9 @@ For IDC zero-binary:
   - output should contain collector-config.yaml (IDC template)
 """
 
+import inspect
 import json
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
@@ -155,7 +152,7 @@ class TestOIDCSidecarManifest:
         """collector-config.yaml must have the region substituted (no ${REGION} placeholders)."""
         profile = _make_oidc_sidecar_profile()
         _run_config_phase(profile, tmp_path)
-        content = (tmp_path / "collector-config.yaml").read_text()
+        content = (tmp_path / "collector-config.yaml").read_text(encoding="utf-8")
         assert "${REGION}" not in content
         assert "us-east-1" in content
 
@@ -170,7 +167,7 @@ class TestOIDCSidecarManifest:
 
         installer = tmp_path / "install.sh"
         assert installer.exists(), "install.sh not generated"
-        content = installer.read_text()
+        content = installer.read_text(encoding="utf-8")
         assert "otelcol" in content, (
             "Installer does not reference otelcol — sidecar collector will not be installed."
         )
@@ -185,7 +182,7 @@ class TestOIDCSidecarManifest:
 
         installer = tmp_path / "install.sh"
         assert installer.exists()
-        content = installer.read_text()
+        content = installer.read_text(encoding="utf-8")
         assert "credential-process" in content, (
             "Installer does not reference credential-process binary."
         )
@@ -197,7 +194,7 @@ class TestOIDCSidecarManifest:
 
         settings_path = tmp_path / "claude-settings" / "settings.json"
         assert settings_path.exists()
-        settings = json.loads(settings_path.read_text())
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
         assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
 
 
@@ -237,7 +234,7 @@ class TestOIDCCentralManifest:
 
         installer = tmp_path / "install.sh"
         assert installer.exists()
-        content = installer.read_text()
+        content = installer.read_text(encoding="utf-8")
         # Central mode installer should NOT try to install a local collector
         assert "credential-process" in content
 
@@ -276,7 +273,7 @@ class TestIDCZeroBinaryManifest:
         """IDC collector config must bake in the user email (no runtime otel-helper)."""
         profile = _make_idc_zero_binary_profile()
         _run_config_phase(profile, tmp_path)
-        content = (tmp_path / "collector-config.yaml").read_text()
+        content = (tmp_path / "collector-config.yaml").read_text(encoding="utf-8")
         assert "test@example.com" in content, (
             "IDC collector-config.yaml does not contain baked-in user email."
         )
