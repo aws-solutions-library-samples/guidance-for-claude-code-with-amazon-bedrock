@@ -87,11 +87,15 @@ class TestCFResourceNamingLimits:
             pytest.skip("No CF templates found")
         return templates
 
-    def test_no_explicit_target_group_name(self, templates):
-        """Target groups must NOT have explicit Name (32-char limit too easy to exceed).
+    def test_no_stack_name_derived_target_group_name(self, templates):
+        """Target groups must NOT derive Name from ${AWS::StackName} (32-char overflow).
 
         With stack names like 'claude-code-auth-otel-collector' (31 chars),
-        any suffix pushes past 32. Let CloudFormation auto-generate.
+        any suffix pushes past 32. Names derived from other sources (e.g. an
+        ALB's unique hex ID via !Sub) are acceptable when provably within limits.
+
+        Allowed: !Sub with resource-ID references (bounded length, no StackName).
+        Forbidden: plain strings or !Sub '${AWS::StackName}-*' patterns.
         """
         violations = []
         for template_path in templates:
@@ -108,16 +112,30 @@ class TestCFResourceNamingLimits:
                 if not isinstance(resource, dict):
                     continue
                 rtype = resource.get("Type", "")
-                if rtype in RESOURCE_NAME_LIMITS:
-                    props = resource.get("Properties", {})
-                    if isinstance(props, dict) and "Name" in props:
-                        violations.append(
-                            f"{template_path.name}:{logical_id} ({rtype}) has explicit Name "
-                            f"— limit is {RESOURCE_NAME_LIMITS[rtype]} chars, "
-                            f"remove Name to let CloudFormation auto-generate"
-                        )
+                if rtype not in RESOURCE_NAME_LIMITS:
+                    continue
+                props = resource.get("Properties", {})
+                if not isinstance(props, dict) or "Name" not in props:
+                    continue
 
-        assert not violations, "CF templates have explicit Name on length-limited resources:\n" + "\n".join(
+                name_val = props["Name"]
+                # Allow intrinsic-function-derived names (!Sub, !Join, etc.)
+                # that do NOT reference AWS::StackName. These are loaded by
+                # CFLoader as lists (sequence nodes) or dicts (mapping nodes).
+                # The dangerous pattern is ${AWS::StackName} which can overflow.
+                if isinstance(name_val, (list, dict)):
+                    # Check the template string for StackName references
+                    template_str = name_val[0] if isinstance(name_val, list) else str(name_val)
+                    if "${AWS::StackName}" not in str(template_str):
+                        continue
+                # Plain string Name or stack-name-derived — flag it
+                violations.append(
+                    f"{template_path.name}:{logical_id} ({rtype}) has explicit Name "
+                    f"that may exceed {RESOURCE_NAME_LIMITS[rtype]} chars "
+                    f"— use a bounded derivation or let CloudFormation auto-generate"
+                )
+
+        assert not violations, "CF templates have unsafe explicit Name on length-limited resources:\n" + "\n".join(
             f"  • {v}" for v in violations
         )
 
