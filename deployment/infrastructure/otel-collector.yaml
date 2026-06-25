@@ -257,6 +257,17 @@ Resources:
       Type: application
       IpAddressType: ipv4
       Scheme: !Ref ALBScheme
+      LoadBalancerAttributes:
+        # Raise the idle timeout above the AWS default of 60s. Claude Code
+        # reuses a pooled keep-alive connection for OTLP metric exports, which
+        # only happen after activity (e.g. a model response). At 60s the ALB
+        # reaps the connection during idle gaps between turns, so the next
+        # export reuses a dead socket and logs a benign but noisy "socket hang
+        # up". 300s covers typical in-session pauses. (Reduces, but cannot fully
+        # eliminate — arbitrarily long idle gaps still reap the connection; the
+        # root cause is client-side connection reuse.)
+        - Key: idle_timeout.timeout_seconds
+          Value: '300'
       SecurityGroups:
         - !Ref ALBSecurityGroup
       Subnets: !Ref SubnetIds
