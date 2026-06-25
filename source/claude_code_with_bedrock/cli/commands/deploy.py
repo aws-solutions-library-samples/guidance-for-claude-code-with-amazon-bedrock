@@ -189,10 +189,25 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "bootstrap":
+                # Bootstrap server for dynamic CoWork configuration delivery
+                cowork_config_mode = getattr(profile, "cowork_config_mode", "static")
+                if cowork_config_mode != "dynamic":
+                    console.print("[yellow]Bootstrap server requires dynamic config mode.[/yellow]")
+                    console.print(
+                        "Run 'poetry run ccwb init' and select 'Dynamic' for CoWork configuration delivery."
+                    )
+                    return 1
+                if profile.effective_auth_type != "oidc":
+                    console.print(
+                        "[yellow]Bootstrap server requires OIDC authentication.[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("bootstrap", "CoWork Bootstrap Server"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild, bootstrap\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -255,6 +270,11 @@ class DeployCommand(Command):
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+
+            # Check if bootstrap server is enabled (dynamic CoWork config delivery)
+            if getattr(profile, "cowork_config_mode", "static") == "dynamic":
+                if profile.effective_auth_type == "oidc":
+                    stacks_to_deploy.append(("bootstrap", "CoWork Bootstrap Server"))
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -1047,6 +1067,93 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "bootstrap":
+                # CoWork Bootstrap Server for dynamic configuration delivery
+                template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
+                stack_name = profile.stack_names.get(
+                    "bootstrap", f"{profile.identity_pool_name}-bootstrap"
+                )
+
+                # Build OIDC issuer URL from provider config
+                oidc_issuer_url = getattr(profile, "oidc_issuer_url", None) or ""
+                if not oidc_issuer_url and profile.provider_type == "okta":
+                    okta_auth_server = getattr(profile, "okta_auth_server", "default")
+                    if okta_auth_server:
+                        oidc_issuer_url = f"https://{profile.provider_domain}/oauth2/{okta_auth_server}"
+                    else:
+                        oidc_issuer_url = f"https://{profile.provider_domain}"
+                elif not oidc_issuer_url and profile.provider_type == "auth0":
+                    oidc_issuer_url = f"https://{profile.provider_domain}/"
+                elif not oidc_issuer_url and profile.provider_type == "azure":
+                    tenant_id = _extract_azure_tenant_id(profile.provider_domain)
+                    oidc_issuer_url = (
+                        f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+                    )
+                elif not oidc_issuer_url and profile.provider_type == "cognito":
+                    # Cognito issuer is the user pool URL
+                    pool_id = getattr(profile, "cognito_user_pool_id", "")
+                    if pool_id:
+                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
+                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+                elif not oidc_issuer_url and profile.provider_type == "google":
+                    oidc_issuer_url = "https://accounts.google.com"
+
+                # Build JWKS endpoint from issuer
+                jwks_endpoint = getattr(profile, "oidc_jwks_uri", None) or ""
+                if not jwks_endpoint and oidc_issuer_url:
+                    # Standard OIDC discovery: issuer + /.well-known/openid-configuration
+                    # Most providers put JWKS at issuer/keys or /protocol/openid-connect/certs
+                    # For simplicity, use well-known pattern
+                    jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
+                    if profile.provider_type == "okta":
+                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/v1/keys"
+                    elif profile.provider_type == "azure":
+                        tenant_id = _extract_azure_tenant_id(profile.provider_domain)
+                        jwks_endpoint = (
+                            f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
+                        )
+                    elif profile.provider_type == "cognito":
+                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
+                    elif profile.provider_type == "google":
+                        jwks_endpoint = "https://www.googleapis.com/oauth2/v3/certs"
+                    elif profile.provider_type == "auth0":
+                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
+
+                # Get OTEL endpoint from monitoring config if available
+                otlp_endpoint = getattr(profile, "otel_collector_endpoint", "") or ""
+
+                # Get inference models
+                inference_models = getattr(profile, "selected_model", "") or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+                params = [
+                    f"OidcIssuerUrl={oidc_issuer_url}",
+                    f"OidcClientId={profile.client_id}",
+                    f"OidcJwksEndpoint={jwks_endpoint}",
+                    f"DefaultInferenceRegion={profile.aws_region}",
+                    f"DefaultInferenceModels={inference_models}",
+                    f"OtlpEndpoint={otlp_endpoint}",
+                ]
+
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    ["CAPABILITY_NAMED_IAM"],
+                    task_description="Deploying CoWork Bootstrap Server...",
+                )
+
+                # Display bootstrap URL on success
+                if result == 0:
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    bootstrap_url = outputs.get("BootstrapUrl", "N/A")
+                    console.print(f"\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
+                    console.print(f"\n[bold]Bootstrap URL:[/bold] {bootstrap_url}")
+                    console.print(
+                        "\n[dim]Add this URL as 'bootstrapUrl' in your MDM anchor profile.[/dim]"
+                    )
+
+                return result
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1242,6 +1349,19 @@ class DeployCommand(Command):
             template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
             stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
             params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
+            print_deploy_cmd(template, stack_name, params)
+
+        elif stack_type == "bootstrap":
+            template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
+            stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
+            params = [
+                f"OidcIssuerUrl=<from-oidc-config>",
+                f"OidcClientId={profile.client_id}",
+                f"OidcJwksEndpoint=<from-oidc-config>",
+                f"DefaultInferenceRegion={profile.aws_region}",
+                f"DefaultInferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+                f"OtlpEndpoint={getattr(profile, 'otel_collector_endpoint', '') or ''}",
+            ]
             print_deploy_cmd(template, stack_name, params)
 
         elif stack_type == "distribution":

@@ -156,6 +156,7 @@ class Profile:
         "helper"  # "helper" (inferenceCredentialHelper) or "profile" (inferenceBedrockProfile)
     )
     cowork_credential_helper_ttl_sec: int = 3500  # inferenceCredentialHelperTtlSec (refresh before 1h STS expiry)
+    cowork_config_mode: str = "static"  # "static" (MDM profile) or "dynamic" (bootstrap server)
 
     # Cowork beta features (managed configuration keys)
     cowork_chat_tab_enabled: bool = True  # chatTabEnabled — enables the Chat tab
