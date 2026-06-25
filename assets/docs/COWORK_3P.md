@@ -123,9 +123,46 @@ For automated deployment at scale, create an MDM profile with the following esse
 | `inferenceBedrockProfile` | Name of the AWS named profile in `~/.aws/config` that Claude Desktop should use for Bedrock calls. The installer configures this profile with `credential_process` pointing at the bundled `credential-process` binary |
 | `inferenceBedrockRegion` | AWS region for Bedrock API calls (e.g., `us-west-2`, `us-east-1`) |
 | `inferenceBedrockAwsDir` | Path to the directory containing AWS config/credentials files (default: `~/.aws`) |
-| `inferenceModels` | JSON array of model aliases available to users (`opus`, `sonnet`, `haiku`). First entry is the default |
+| `inferenceModels` | JSON array of model entries. Supports simple aliases (`["opus", "sonnet", "haiku"]`) or object entries with tier tagging (see below). First entry is the default |
 
 > **Note:** The model aliases used by CoWork 3P (`opus`, `sonnet`, `haiku`) are resolved internally by Claude Desktop and may differ from the CRIS model IDs configured for Claude Code via `ANTHROPIC_MODEL`. The `ccwb cowork generate` command includes all available aliases by default. Use `--models` to customize the list for your organization.
+
+#### Model Entries with Family Tier (v1.13576+)
+
+Claude Desktop supports object entries in `inferenceModels` with `anthropicFamilyTier` and `isFamilyDefault` fields. This lets tier shortcuts (like "opus" and "sonnet" in the model picker) resolve to your specific Bedrock model IDs:
+
+```json
+"inferenceModels": [
+  {
+    "name": "global.anthropic.claude-opus-4-8",
+    "labelOverride": "Claude Opus 4.8",
+    "anthropicFamilyTier": "opus",
+    "isFamilyDefault": true
+  },
+  {
+    "name": "global.anthropic.claude-sonnet-4-6",
+    "labelOverride": "Claude Sonnet 4.6",
+    "anthropicFamilyTier": "sonnet",
+    "isFamilyDefault": true
+  },
+  {
+    "name": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "labelOverride": "Claude Haiku 4.5",
+    "anthropicFamilyTier": "haiku",
+    "isFamilyDefault": true
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | The model ID your provider routes (e.g., CRIS inference profile ID) |
+| `labelOverride` | string | Optional display name in the model picker |
+| `anthropicFamilyTier` | string | Which Claude tier this model stands in for: `opus`, `sonnet`, `haiku`, or `fable` |
+| `isFamilyDefault` | boolean | Whether this is the default model when the tier shortcut is used |
+| `supports1m` | boolean | Whether the model supports 1M token context |
+
+> **When to use object format:** Use it when your Bedrock setup uses specific CRIS inference profile IDs (e.g., `global.anthropic.claude-opus-4-8`) and you want the tier shortcuts in the Claude Desktop model picker to resolve to those exact model IDs. The simple alias format (`["opus", "sonnet", "haiku"]`) still works and lets Claude Desktop handle resolution internally.
 
 ### How Credentials Flow
 

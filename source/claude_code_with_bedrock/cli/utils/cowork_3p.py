@@ -17,6 +17,15 @@ from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 # The ccwb cowork generate --models flag allows admins to override if needed.
 COWORK_DEFAULT_ALIASES = ["opus", "sonnet", "haiku"]
 
+# Mapping from tier alias to anthropicFamilyTier value used by Claude Desktop
+# for tier shortcut resolution (e.g., "opus" shortcut resolves to your configured opus model)
+FAMILY_TIER_MAP = {
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+    "fable": "fable",
+}
+
 
 def derive_model_aliases() -> list[str]:
     """Return the default CoWork 3P model aliases.
@@ -28,6 +37,75 @@ def derive_model_aliases() -> list[str]:
     ANTHROPIC_MODEL.
     """
     return list(COWORK_DEFAULT_ALIASES)
+
+
+def build_inference_models(model_aliases: list[str]) -> list[dict[str, str | bool]]:
+    """Build inferenceModels entries with anthropicFamilyTier and isFamilyDefault.
+
+    Claude Desktop v1.13576+ supports object entries in inferenceModels with:
+    - name: The model ID (e.g., CRIS inference profile ID for Bedrock)
+    - anthropicFamilyTier: The Claude tier this model stands in for (opus/sonnet/haiku)
+    - isFamilyDefault: Whether this is the default model for the tier
+    - labelOverride: Optional display name override
+
+    When using simple string aliases ("opus", "sonnet", "haiku"), Claude Desktop
+    resolves them internally. The object format gives administrators explicit
+    control over which model IDs map to which tier shortcuts.
+
+    For backward compatibility, if aliases are simple tier names (opus/sonnet/haiku),
+    we still use the string format since Claude Desktop handles resolution. Use
+    build_inference_models_explicit() for full CRIS model IDs with tier tagging.
+
+    Args:
+        model_aliases: List of model aliases or CRIS model IDs.
+
+    Returns:
+        List suitable for the inferenceModels MDM key. Returns simple strings
+        for tier aliases, or object entries for explicit model IDs.
+    """
+    # If all entries are simple tier aliases, return as-is for backward compat
+    all_simple = all(alias in FAMILY_TIER_MAP for alias in model_aliases)
+    if all_simple:
+        return model_aliases
+
+    # Otherwise, build object entries with anthropicFamilyTier
+    models = []
+    tier_seen: dict[str, bool] = {}  # Track which tiers have a default set
+    for alias in model_aliases:
+        if alias in FAMILY_TIER_MAP:
+            # Simple alias — keep as string
+            models.append(alias)
+        else:
+            # Looks like a full model ID — try to infer tier from name
+            entry: dict[str, str | bool] = {"name": alias}
+            tier = _infer_tier_from_model_id(alias)
+            if tier:
+                entry["anthropicFamilyTier"] = tier
+                if tier not in tier_seen:
+                    entry["isFamilyDefault"] = True
+                    tier_seen[tier] = True
+            models.append(entry)
+    return models
+
+
+def _infer_tier_from_model_id(model_id: str) -> str | None:
+    """Infer the anthropicFamilyTier from a Bedrock/CRIS model ID.
+
+    Matches patterns like:
+    - global.anthropic.claude-opus-4-8 → opus
+    - us.anthropic.claude-sonnet-4-6-v1:0 → sonnet
+    - anthropic.claude-haiku-4-5-20251001-v1:0 → haiku
+    """
+    model_lower = model_id.lower()
+    if "opus" in model_lower:
+        return "opus"
+    if "sonnet" in model_lower:
+        return "sonnet"
+    if "haiku" in model_lower:
+        return "haiku"
+    if "fable" in model_lower:
+        return "fable"
+    return None
 
 
 def build_mdm_config(
@@ -62,7 +140,7 @@ def build_mdm_config(
         "inferenceProvider": "bedrock",
         "inferenceBedrockRegion": bedrock_region,
         "inferenceBedrockProfile": profile_name,
-        "inferenceModels": model_aliases,
+        "inferenceModels": build_inference_models(model_aliases),
         "isClaudeCodeForDesktopEnabled": True,
         "isDesktopExtensionEnabled": True,
         "isDesktopExtensionDirectoryEnabled": True,
