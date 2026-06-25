@@ -579,6 +579,8 @@ class DistributeCommand(Command):
             "windows": [
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
+                ("otel-helper.ps1", "otel-helper.ps1"),
+                ("otel-helper.cmd", "otel-helper.cmd"),
                 ("otelcol-windows.exe", "otelcol-windows.exe"),
                 ("collector-config.yaml", "collector-config.yaml"),
                 ("install.bat", "install.bat"),
@@ -1433,6 +1435,9 @@ class DistributeCommand(Command):
             "otel-helper-linux-arm64",
             "otel-helper-windows.exe",
             "otel-helper.sh",
+            # Windows otel-helper launcher + AV-resilient fallback (required by install.bat)
+            "otel-helper.ps1",
+            "otel-helper.cmd",
             # OTEL Collector sidecar
             "otelcol-macos-arm64",
             "otelcol-macos-intel",
@@ -1474,7 +1479,7 @@ class DistributeCommand(Command):
     PLATFORM_FILES = {
         "windows": {
             "binaries": ["credential-process-windows.exe", "otel-helper-windows.exe"],
-            "installer": ["install.bat", "ccwb-install.ps1"],
+            "installer": ["install.bat", "ccwb-install.ps1", "otel-helper.ps1", "otel-helper.cmd"],
             "label": "Windows",
         },
         "linux-x64": {
