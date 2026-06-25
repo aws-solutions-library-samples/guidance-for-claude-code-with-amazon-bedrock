@@ -300,3 +300,32 @@ class TestBuildOtelcolTargets:
             "_generate_collector_config missing — collector config tests replicate "
             "production logic inline and will go stale on refactor."
         )
+
+    def test_generate_collector_config_called_in_handle(self):
+        """handle() must invoke _generate_collector_config for sidecar profiles.
+
+        Without this call, sidecar packages would ship without a collector-config.yaml,
+        leaving the local collector unable to start.
+        """
+        import inspect
+
+        src = inspect.getsource(PackageCommand.handle)
+        assert "_generate_collector_config" in src, (
+            "_generate_collector_config call missing from handle() — "
+            "sidecar packages will ship without collector-config.yaml."
+        )
+
+    def test_build_go_binaries_called_in_handle(self):
+        """handle() must invoke _build_go_binaries for Go cross-compilation path.
+
+        This is the primary binary build path for OIDC profiles with use_go=True.
+        If the call site is removed, no credential-process or otel-helper binaries
+        will be built.
+        """
+        import inspect
+
+        src = inspect.getsource(PackageCommand.handle)
+        assert "_build_go_binaries" in src, (
+            "_build_go_binaries call missing from handle() — "
+            "Go cross-compilation path is broken, no binaries will be built."
+        )
