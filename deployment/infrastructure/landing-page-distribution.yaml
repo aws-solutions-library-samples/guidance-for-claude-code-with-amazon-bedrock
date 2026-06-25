@@ -1009,18 +1009,29 @@ Resources:
           Order: 2
           TargetGroupArn: !Ref LambdaTargetGroup
 
-  # Route53 A Record (if custom domain with Route53)
-  DomainARecord:
+  # Route53 record for the custom domain (if custom domain with Route53).
+  # Use a CNAME (not an A alias) so the host resolves through the custom
+  # domain name rather than the ALB's IP addresses. With an A alias, OIDC
+  # callbacks can be sent to/from the resolved IP instead of the configured
+  # custom domain, producing a "Callback URL mismatch" error at the IdP.
+  #
+  # UPGRADE NOTE: earlier versions created an A-alias record named DomainARecord.
+  # Renaming the logical ID here makes CloudFormation create this CNAME before
+  # deleting the old A record, and Route53 rejects a CNAME that coexists with a
+  # same-name A record ("conflicting RRSet"). Existing custom-domain deployments
+  # must therefore delete the old Route53 A record for CustomDomainName (or
+  # delete/recreate the landing-page stack) before applying this update. Fresh
+  # deployments are unaffected. See the PR / docs for the migration steps.
+  CustomDomainRecord:
     Type: AWS::Route53::RecordSet
     Condition: HasRoute53Zone
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref CustomDomainName
-      Type: A
-      AliasTarget:
-        HostedZoneId: !GetAtt DistributionALB.CanonicalHostedZoneID
-        DNSName: !GetAtt DistributionALB.DNSName
-        EvaluateTargetHealth: false
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt DistributionALB.DNSName
 
   # Lambda function to update Cognito User Pool Client callback URLs
   CognitoCallbackUpdaterRole:
