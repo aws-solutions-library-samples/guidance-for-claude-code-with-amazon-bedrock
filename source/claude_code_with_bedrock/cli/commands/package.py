@@ -3250,8 +3250,17 @@ Available metrics include:
             if profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
-            # Add ANTHROPIC_MODEL if user selected a model during init
-            if hasattr(profile, "selected_model") and profile.selected_model:
+            # Add ANTHROPIC_MODEL if user selected a model during init.
+            # For managed-settings: only write when lock_default_model is True (admin opt-in).
+            # For user-scope settings: always write (users can override via /model).
+            settings_target = getattr(profile, "settings_target", "user")
+            lock_model = getattr(profile, "lock_default_model", False)
+            should_write_model = (
+                hasattr(profile, "selected_model")
+                and profile.selected_model
+                and (settings_target != "managed" or lock_model)
+            )
+            if should_write_model:
                 from claude_code_with_bedrock.models import get_claude_code_alias, resolve_model_for_tier
 
                 # Use a Claude Code alias (sonnet/opus/opusplan/haiku) so ANTHROPIC_MODEL
