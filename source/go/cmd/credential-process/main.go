@@ -123,11 +123,11 @@ func main() {
 
 	// Auth dispatch: IDC > legacy passthrough > OIDC
 	if cfg.IsIDC() {
-		os.Exit(app.runIDC())
+		exitAfterNotifications(app.runIDC())
 	}
 	if !cfg.IsSsoEnabled() {
 		// Legacy passthrough: no IDC fields, just ambient credential chain.
-		os.Exit(app.runPassthrough())
+		exitAfterNotifications(app.runPassthrough())
 	}
 
 	// OIDC path — resolve provider type and redirect port
@@ -159,7 +159,18 @@ func main() {
 		// Fall through to normal auth flow
 	}
 
-	os.Exit(app.run())
+	exitAfterNotifications(app.run())
+}
+
+// exitAfterNotifications waits for any pending quota browser notification to be
+// fetched (or time out) before terminating. Credentials are already written to
+// stdout by the time run()/runIDC()/runPassthrough() return, so this only holds
+// the process open long enough for the browser to connect — it never delays the
+// AWS SDK. Without it, os.Exit kills the notification server goroutine before
+// the browser connects (ERR_CONNECTION_REFUSED).
+func exitAfterNotifications(code int) {
+	waitForQuotaNotification()
+	os.Exit(code)
 }
 
 type credentialApp struct {
