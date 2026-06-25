@@ -3229,11 +3229,15 @@ if exist "otel-helper.cmd" (
         exit /b 1
     )
 ) else (
-    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.cmd not found in package.
-{'''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.cmd not found in package.
+{
+            '''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
     echo        Re-extract the full package [including .cmd and .ps1 files] and retry.
     pause
-    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - helper not required.'}
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - helper not required."
+        }
 )
 if exist "otel-helper.ps1" (
     copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
@@ -3243,11 +3247,15 @@ if exist "otel-helper.ps1" (
         exit /b 1
     )
 ) else (
-    echo {'ERROR' if _otel_missing_is_fatal else 'INFO'}: otel-helper.ps1 not found in package.
-{'''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.ps1 not found in package.
+{
+            '''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
     echo        Re-extract the full package and run install.bat again.
     pause
-    exit /b 1''' if _otel_missing_is_fatal else '    REM Monitoring disabled - fallback not required.'}
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - fallback not required."
+        }
 )
 
 REM Install OTEL Collector sidecar (sidecar-mode packages only). otelcol is built

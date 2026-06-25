@@ -8,8 +8,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
 
@@ -165,9 +163,9 @@ class TestInstallerOtelcolBlock:
             (output_dir / "claude-settings").mkdir()
             built_executables = [("macos-arm64", output_dir / "credential-process-macos-arm64")]
             (output_dir / "credential-process-macos-arm64").touch()
-            return command._create_installer(
-                output_dir, profile, built_executables, built_otel_helpers=[]
-            ).read_text(encoding="utf-8")
+            return command._create_installer(output_dir, profile, built_executables, built_otel_helpers=[]).read_text(
+                encoding="utf-8"
+            )
 
     def test_installer_copies_bundled_otelcol(self):
         """Installer must reference the shipped otelcol-$BINARY_SUFFIX binary, not download it."""
@@ -221,7 +219,7 @@ class TestBuildOtelcolTargets:
 
     def test_shared_platform_map_used_by_both_builds(self):
         """_GO_PLATFORM_MAP and _go_ldflags exist and are the single source of truth."""
-        from claude_code_with_bedrock.cli.commands.package import _GO_PLATFORM_MAP, _go_ldflags
+        from claude_code_with_bedrock.cli.commands.package import _GO_PLATFORM_MAP
 
         assert _GO_PLATFORM_MAP["macos-arm64"] == ("darwin", "arm64")
         assert _GO_PLATFORM_MAP["linux-x64"] == ("linux", "amd64")
@@ -251,15 +249,13 @@ class TestBuildOtelcolTargets:
         If _build_otelcol is deleted or its call is removed, this test fails.
         """
         import inspect
+
         src = inspect.getsource(PackageCommand.handle)
         # The call must be present and guarded by monitoring_mode == "sidecar"
         assert "_build_otelcol" in src, (
-            "_build_otelcol call missing from handle() — was it deleted again? "
-            "See PR #338 regression."
+            "_build_otelcol call missing from handle() — was it deleted again? See PR #338 regression."
         )
-        assert "sidecar" in src, (
-            "sidecar guard missing from handle() — otelcol would be built for all profiles"
-        )
+        assert "sidecar" in src, "sidecar guard missing from handle() — otelcol would be built for all profiles"
 
     def test_build_otelcol_uses_go_platform_map(self):
         """_build_otelcol must use _GO_PLATFORM_MAP, not a local copy.
@@ -268,6 +264,7 @@ class TestBuildOtelcolTargets:
         Both must share the same source of truth.
         """
         import inspect
+
         src = inspect.getsource(PackageCommand._build_otelcol)
         assert "_GO_PLATFORM_MAP" in src, (
             "_build_otelcol has its own local platform map — use the shared _GO_PLATFORM_MAP"
@@ -279,10 +276,9 @@ class TestBuildOtelcolTargets:
         Inlining ldflags would silently strip Windows binaries (Wacatac.B!ml AV trigger).
         """
         import inspect
+
         src = inspect.getsource(PackageCommand._build_otelcol)
-        assert "_go_ldflags" in src, (
-            "_build_otelcol does not call _go_ldflags() — Windows otelcol would be stripped"
-        )
+        assert "_go_ldflags" in src, "_build_otelcol does not call _go_ldflags() — Windows otelcol would be stripped"
 
     def test_build_otelcol_supports_windows_ocb(self):
         """_build_otelcol must download a Windows OCB binary when packaging on Windows.
@@ -291,6 +287,7 @@ class TestBuildOtelcolTargets:
         binary and silently failing the sidecar build on Windows admin machines.
         """
         import inspect
+
         src = inspect.getsource(PackageCommand._build_otelcol)
         assert '"windows"' in src, (
             "_build_otelcol has no Windows OCB branch — packaging sidecar from a Windows "
