@@ -53,7 +53,7 @@ import (
 // an exclusive local lock around the refresh means exactly one process rotates;
 // the rest wait, then read the now-valid cached token (no second rotation).
 // Distinct from the OIDC redirect port (default 8400) so the two never collide.
-const idcRefreshLockPort = 8401
+const idcRefreshLockPort = 8402
 
 // idcSettings holds the validated IDC parameters and SSO clients needed by
 // both the full credential flow (runIDC) and the login-only flow (runIDCLogin).

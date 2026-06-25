@@ -16,6 +16,7 @@ writes are syntactically valid shell.
 
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -62,6 +63,7 @@ class TestBashInstallerLauncher:
         assert "exec claude" in content
         assert "|| exit 1" in content
 
+    @pytest.mark.skipif(sys.platform == 'win32', reason='bash heredoc validation not meaningful on Windows')
     def test_installer_is_valid_bash(self):
         if shutil.which("bash") is None:
             pytest.skip("bash not available")
@@ -71,6 +73,7 @@ class TestBashInstallerLauncher:
             result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
             assert result.returncode == 0, f"install.sh has bash syntax errors: {result.stderr}"
 
+    @pytest.mark.skipif(sys.platform == 'win32', reason='bash heredoc validation not meaningful on Windows')
     def test_generated_launcher_is_valid_bash(self):
         """Execute just the heredoc that writes the launcher, then syntax-check
         the launcher it produces — this is where escaping bugs would surface."""
