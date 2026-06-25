@@ -281,9 +281,18 @@ Resources:
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      # Name omitted intentionally — CloudFormation auto-generates a unique name
-      # that respects the 32-char limit. Previously used !Sub '${AWS::StackName}-tg'
-      # which failed when stack names exceeded 29 characters (issue #86).
+      # Name is derived from the ALB's unique hex ID (last segment of its ARN).
+      # When the LoadBalancer is replaced its unique ID changes, so this name
+      # changes too — CloudFormation replaces the target group alongside the LB.
+      # Without this coupling, CF tries to attach the old TG to the new LB while
+      # the old LB still owns it, producing:
+      #   "target group cannot be associated with more than one load balancer"
+      # Using the ALB ID keeps the name within the 32-char limit: "tg-" (3) +
+      # 16-char hex ID = 19 chars max. (issue #86 used !Sub '${AWS::StackName}-tg'
+      # which exceeded the limit for long stack names; this approach avoids that.)
+      Name: !Sub
+        - 'tg-${AlbId}'
+        - AlbId: !Select [3, !Split ['/', !Ref LoadBalancer]]
       Port: 4318
       Protocol: HTTP
       TargetType: ip
