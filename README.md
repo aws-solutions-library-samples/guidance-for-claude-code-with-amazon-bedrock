@@ -167,10 +167,13 @@ flowchart LR
 | Surface | otel-helper mode | What it does | Collector mode | Identity in telemetry |
 |---------|-----------------|--------------|----------------|----------------------|
 | **Claude Code (CLI)** | Header mode | Called once per export, returns identity headers as JSON | Central (ECS/ALB) or Sidecar (local) | User's JWT claims (email, team, department) |
-| **Claude Desktop (Cowork)** | Proxy mode | Auto-spawned by credential-process; injects identity headers from JWT cache | Central: proxy on `localhost:4318` → ALB | Full JWT claims (email, team, department) |
-| **Claude Desktop (Cowork)** | Proxy mode | Same as above, chains through local otelcol | Sidecar: proxy on `localhost:4319` → otelcol:4318 | Full JWT claims (email, team, department) |
+| **Claude Desktop (Cowork)** | Proxy mode | Auto-spawned by credential-process; injects identity headers from JWT cache | Central or Sidecar | Full JWT claims (email, team, department) |
+| **Claude Desktop (bootstrap server)** | Not used | Bootstrap server delivers per-user `otlpHeaders` at sign-in | Central (ECS/ALB) | Per-user (from OIDC token) |
 
-> **Proxy auto-spawn:** The proxy is automatically started by `credential-process` after each successful authentication — no manual startup or daemon configuration required. If the proxy dies, the next credential refresh (~1h) restarts it (self-healing). Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values, but the proxy is required for **per-user identity** (JWT claims vary per user and can't be baked into a shared MDM profile).
+> **When is the proxy needed?** The proxy is **not needed** if you use the [Bootstrap Server](assets/docs/BOOTSTRAP_SERVER.md) (OIDC only) — it delivers per-user `otlpHeaders` at sign-in. Similarly, Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values set via MDM. The proxy is only required when:
+> - **No bootstrap server** and you need per-user identity (the proxy reads JWT claims at runtime)
+> - **IDC deployments** (bootstrap server is OIDC-only)
+> - **SigV4 signing** for sidecar mode (forwarding to CloudWatch's OTLP endpoint directly)
 
 **Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
 
