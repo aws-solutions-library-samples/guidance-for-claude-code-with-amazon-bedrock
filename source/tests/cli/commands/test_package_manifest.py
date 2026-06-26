@@ -17,13 +17,11 @@ For IDC zero-binary:
   - output should contain collector-config.yaml (IDC template)
 """
 
-import inspect
 import json
 from unittest.mock import MagicMock
 
 from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: profile factories
@@ -144,8 +142,7 @@ class TestOIDCSidecarManifest:
         profile = _make_oidc_sidecar_profile()
         _run_config_phase(profile, tmp_path)
         assert (tmp_path / "collector-config.yaml").exists(), (
-            "collector-config.yaml missing from OIDC sidecar package — "
-            "local collector will have no configuration."
+            "collector-config.yaml missing from OIDC sidecar package — local collector will have no configuration."
         )
 
     def test_collector_config_has_region(self, tmp_path):
@@ -168,9 +165,7 @@ class TestOIDCSidecarManifest:
         installer = tmp_path / "install.sh"
         assert installer.exists(), "install.sh not generated"
         content = installer.read_text(encoding="utf-8")
-        assert "otelcol" in content, (
-            "Installer does not reference otelcol — sidecar collector will not be installed."
-        )
+        assert "otelcol" in content, "Installer does not reference otelcol — sidecar collector will not be installed."
 
     def test_installer_references_credential_process(self, tmp_path):
         """Installer must reference credential-process binary."""
@@ -183,9 +178,7 @@ class TestOIDCSidecarManifest:
         installer = tmp_path / "install.sh"
         assert installer.exists()
         content = installer.read_text(encoding="utf-8")
-        assert "credential-process" in content, (
-            "Installer does not reference credential-process binary."
-        )
+        assert "credential-process" in content, "Installer does not reference credential-process binary."
 
     def test_claude_settings_has_otel_endpoint(self, tmp_path):
         """Claude settings must configure OTEL endpoint for sidecar (localhost:4318)."""
@@ -220,9 +213,7 @@ class TestOIDCCentralManifest:
         profile = _make_oidc_central_profile()
         _run_config_phase(profile, tmp_path)
         otelcol_files = list(tmp_path.glob("otelcol-*"))
-        assert len(otelcol_files) == 0, (
-            f"Unexpected otelcol binaries in central mode package: {otelcol_files}"
-        )
+        assert len(otelcol_files) == 0, f"Unexpected otelcol binaries in central mode package: {otelcol_files}"
 
     def test_installer_still_valid(self, tmp_path):
         """Central mode must still produce a usable installer."""
@@ -254,12 +245,8 @@ class TestIDCZeroBinaryManifest:
         # No credential-process-* or otel-helper-* files should exist
         cred_binaries = list(tmp_path.glob("credential-process-*"))
         otel_binaries = list(tmp_path.glob("otel-helper-*"))
-        assert len(cred_binaries) == 0, (
-            f"credential-process binaries found in IDC zero-binary package: {cred_binaries}"
-        )
-        assert len(otel_binaries) == 0, (
-            f"otel-helper binaries found in IDC zero-binary package: {otel_binaries}"
-        )
+        assert len(cred_binaries) == 0, f"credential-process binaries found in IDC zero-binary package: {cred_binaries}"
+        assert len(otel_binaries) == 0, f"otel-helper binaries found in IDC zero-binary package: {otel_binaries}"
 
     def test_collector_config_present_with_idc_template(self, tmp_path):
         """IDC zero-binary sidecar MUST produce collector-config.yaml with static identity."""
@@ -274,12 +261,9 @@ class TestIDCZeroBinaryManifest:
         profile = _make_idc_zero_binary_profile()
         _run_config_phase(profile, tmp_path)
         content = (tmp_path / "collector-config.yaml").read_text(encoding="utf-8")
-        assert "test@example.com" in content, (
-            "IDC collector-config.yaml does not contain baked-in user email."
-        )
+        assert "test@example.com" in content, "IDC collector-config.yaml does not contain baked-in user email."
         assert "${USER_EMAIL}" not in content, (
-            "IDC collector-config.yaml still has ${USER_EMAIL} placeholder — "
-            "identity was not substituted."
+            "IDC collector-config.yaml still has ${USER_EMAIL} placeholder — identity was not substituted."
         )
 
     def test_no_otelcol_binaries(self, tmp_path):
@@ -311,8 +295,7 @@ class TestPackageWiringCompleteness:
 
         src = inspect.getsource(PackageCommand.handle)
         assert "_build_go_binaries" in src, (
-            "_build_go_binaries call missing from handle() — "
-            "Go cross-compilation is broken."
+            "_build_go_binaries call missing from handle() — Go cross-compilation is broken."
         )
 
     def test_handle_calls_build_otelcol(self):
@@ -321,8 +304,7 @@ class TestPackageWiringCompleteness:
 
         src = inspect.getsource(PackageCommand.handle)
         assert "_build_otelcol" in src, (
-            "_build_otelcol call missing from handle() — "
-            "sidecar packages will not include the collector binary."
+            "_build_otelcol call missing from handle() — sidecar packages will not include the collector binary."
         )
 
     def test_handle_calls_generate_collector_config(self):
@@ -341,8 +323,7 @@ class TestPackageWiringCompleteness:
 
         src = inspect.getsource(PackageCommand.handle)
         assert "is_idc_zero_binary" in src, (
-            "IDC zero-binary guard missing from handle() — "
-            "would attempt to build binaries on machines without Go."
+            "IDC zero-binary guard missing from handle() — would attempt to build binaries on machines without Go."
         )
 
     def test_sidecar_guard_on_otelcol_build(self):
@@ -353,6 +334,5 @@ class TestPackageWiringCompleteness:
         # Verify both the call and the sidecar guard exist
         assert "_build_otelcol" in src
         assert "sidecar" in src, (
-            "No sidecar guard around _build_otelcol — "
-            "collector would be built unnecessarily for central mode."
+            "No sidecar guard around _build_otelcol — collector would be built unnecessarily for central mode."
         )
