@@ -1509,10 +1509,10 @@ class InitCommand(Command):
                 else:
                     console.print("[dim]CoWork service token already configured[/dim]")
 
-            # CoWork configuration delivery mode (OIDC only)
+            # Claude Desktop configuration delivery mode (OIDC only)
             if config.get("auth_type", "oidc") == "oidc":
-                console.print("\n[bold]CoWork Configuration Delivery[/bold]")
-                console.print("How should CoWork clients receive their configuration?")
+                console.print("\n[bold]Claude Desktop Configuration Delivery[/bold]")
+                console.print("How should Claude Desktop clients receive their configuration?")
                 console.print("  • Static: MDM profile with inline config (default)")
                 console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
 
@@ -1526,7 +1526,7 @@ class InitCommand(Command):
                 ]
                 saved_config_mode = config.get("cowork", {}).get("config_mode", "static")
                 config_mode = questionary.select(
-                    "CoWork configuration delivery:",
+                    "Claude Desktop configuration delivery:",
                     choices=config_mode_choices,
                     default=saved_config_mode,
                 ).ask()
@@ -3011,7 +3011,7 @@ class InitCommand(Command):
                 cowork_3p_config["chat_advanced_file_analysis"] = True
             existing_config["cowork_3p"] = cowork_3p_config
 
-            # Add CoWork dynamic config mode
+            # Add Claude Desktop dynamic config mode
             if profile.cowork_config_mode and profile.cowork_config_mode != "static":
                 if "cowork" not in existing_config:
                     existing_config["cowork"] = {}

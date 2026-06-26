@@ -190,7 +190,7 @@ class DeployCommand(Command):
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "bootstrap":
-                # Bootstrap server for dynamic CoWork configuration delivery
+                # Bootstrap server for dynamic Claude Desktop configuration delivery
                 cowork_config_mode = getattr(profile, "cowork_config_mode", "static")
                 if cowork_config_mode != "dynamic":
                     console.print("[yellow]Bootstrap server requires dynamic config mode.[/yellow]")
@@ -203,7 +203,7 @@ class DeployCommand(Command):
                         "[yellow]Bootstrap server requires OIDC authentication.[/yellow]"
                     )
                     return 1
-                stacks_to_deploy.append(("bootstrap", "CoWork Bootstrap Server"))
+                stacks_to_deploy.append(("bootstrap", "Claude Desktop Bootstrap Server"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
@@ -271,10 +271,10 @@ class DeployCommand(Command):
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
-            # Check if bootstrap server is enabled (dynamic CoWork config delivery)
+            # Check if bootstrap server is enabled (dynamic Claude Desktop config delivery)
             if getattr(profile, "cowork_config_mode", "static") == "dynamic":
                 if profile.effective_auth_type == "oidc":
-                    stacks_to_deploy.append(("bootstrap", "CoWork Bootstrap Server"))
+                    stacks_to_deploy.append(("bootstrap", "Claude Desktop Bootstrap Server"))
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -1068,7 +1068,7 @@ class DeployCommand(Command):
                 )
 
             elif stack_type == "bootstrap":
-                # CoWork Bootstrap Server for dynamic configuration delivery
+                # Claude Desktop Bootstrap Server for dynamic configuration delivery
                 template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
                 stack_name = profile.stack_names.get(
                     "bootstrap", f"{profile.identity_pool_name}-bootstrap"
@@ -1139,7 +1139,7 @@ class DeployCommand(Command):
                     stack_name,
                     params,
                     ["CAPABILITY_NAMED_IAM"],
-                    task_description="Deploying CoWork Bootstrap Server...",
+                    task_description="Deploying Claude Desktop Bootstrap Server...",
                 )
 
                 # Display bootstrap URL on success

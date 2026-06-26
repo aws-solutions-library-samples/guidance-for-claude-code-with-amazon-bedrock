@@ -1,10 +1,10 @@
-# ABOUTME: CloudFormation template for the CoWork Bootstrap Server
+# ABOUTME: CloudFormation template for the Claude Desktop Bootstrap Server
 # ABOUTME: Deploys an API Gateway HTTP API + Lambda that validates OIDC tokens
-# ABOUTME: and returns per-user configuration for Claude Desktop (CoWork) at sign-in
+# ABOUTME: and returns per-user configuration for Claude Desktop at sign-in
 
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  CoWork Bootstrap Server — delivers per-user configuration dynamically at sign-in
+  Claude Desktop Bootstrap Server — delivers per-user configuration dynamically at sign-in
   as an alternative to static MDM profiles. Validates OIDC Bearer tokens and returns
   configuration JSON including inference provider, region, models, and OTEL settings.
 
@@ -97,7 +97,7 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}-api"
       ProtocolType: HTTP
-      Description: "CoWork Bootstrap Server API"
+      Description: "Claude Desktop Bootstrap Server API"
       CorsConfiguration:
         AllowOrigins:
           - "*"

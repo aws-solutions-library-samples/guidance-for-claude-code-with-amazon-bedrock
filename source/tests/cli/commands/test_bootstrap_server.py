@@ -1,4 +1,4 @@
-# ABOUTME: Unit tests for the CoWork Bootstrap Server Lambda handler
+# ABOUTME: Unit tests for the Claude Desktop Bootstrap Server Lambda handler
 # ABOUTME: Tests token validation, response format, error handling, and config generation
 
 """Tests for the bootstrap_server Lambda handler."""

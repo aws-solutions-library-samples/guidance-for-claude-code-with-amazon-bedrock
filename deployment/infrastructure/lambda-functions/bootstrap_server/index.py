@@ -1,12 +1,12 @@
-# ABOUTME: Lambda handler for the CoWork Bootstrap Server
+# ABOUTME: Lambda handler for the Claude Desktop Bootstrap Server
 # ABOUTME: Validates OIDC Bearer tokens (JWT) against JWKS and returns per-user
-# ABOUTME: configuration JSON for Claude Desktop (CoWork) dynamic provisioning
+# ABOUTME: configuration JSON for Claude Desktop dynamic provisioning
 
-"""CoWork Bootstrap Server Lambda handler.
+"""Claude Desktop Bootstrap Server Lambda handler.
 
 Validates incoming JWT Bearer tokens against the configured OIDC provider's JWKS
 endpoint, extracts user identity, and returns personalized configuration for
-Claude Desktop (CoWork) clients.
+Claude Desktop clients.
 """
 
 import json
@@ -127,7 +127,7 @@ def _build_config_response(claims: dict) -> dict:
         claims: Decoded JWT claims
 
     Returns:
-        Configuration dict for the CoWork client
+        Configuration dict for the Claude Desktop client
     """
     user_sub = claims.get("sub", "unknown")
     user_email = claims.get("email", claims.get("preferred_username", user_sub))
