@@ -268,9 +268,5 @@ class TestLandingPageCustomDomainRecord:
     def test_record_remains_conditional_on_hosted_zone(self):
         """DNS is still only created when a Route53 hosted zone is supplied."""
         template = _load_landing_template()
-        record = next(
-            body
-            for body in template["Resources"].values()
-            if body.get("Type") == "AWS::Route53::RecordSet"
-        )
+        record = next(body for body in template["Resources"].values() if body.get("Type") == "AWS::Route53::RecordSet")
         assert record.get("Condition") == "HasRoute53Zone"
