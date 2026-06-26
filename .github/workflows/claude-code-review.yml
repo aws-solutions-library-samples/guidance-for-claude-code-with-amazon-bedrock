@@ -22,6 +22,7 @@ jobs:
         (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -34,7 +35,6 @@ jobs:
           use_bedrock: "true"
           claude_args: |
             --model global.anthropic.claude-sonnet-4-6
-          timeout_minutes: "15"
           prompt: |
             Review this PR with a focus on RELIABILITY and AVOIDING REGRESSIONS.
 
