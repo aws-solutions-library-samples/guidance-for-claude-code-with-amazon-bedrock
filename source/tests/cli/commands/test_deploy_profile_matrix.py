@@ -19,7 +19,6 @@ import pytest
 from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
 from claude_code_with_bedrock.config import Profile
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -226,9 +225,7 @@ class TestDeployProfileMatrix:
         profile = _base_profile(**overrides)
         actual = set(_stack_types(command, profile))
         assert actual == expected_stacks, (
-            f"Stack mismatch for {overrides}:\n"
-            f"  Expected: {sorted(expected_stacks)}\n"
-            f"  Actual:   {sorted(actual)}"
+            f"Stack mismatch for {overrides}:\n  Expected: {sorted(expected_stacks)}\n  Actual:   {sorted(actual)}"
         )
 
 
