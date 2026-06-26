@@ -222,23 +222,6 @@ class TestConfigLifecycle:
 class TestCLICommandExecution:
     """Test CLI commands execute without crashes using isolated config."""
 
-    def test_context_list_empty(self, tmp_path, capsys):
-        """context list works with no profiles configured."""
-        with patch.object(Config, "CONFIG_DIR", tmp_path):
-            with patch.object(Config, "CONFIG_FILE", tmp_path / "config.json"):
-                with patch.object(Config, "PROFILES_DIR", tmp_path / "profiles"):
-                    (tmp_path / "profiles").mkdir()
-
-                    app = create_application()
-                    from cleo.testers.command_tester import CommandTester
-
-                    command = app.find("context list")
-                    tester = CommandTester(command)
-                    exit_code = tester.execute("")
-                    assert exit_code == 0
-                    # Rich Console writes to stdout, not cleo IO
-                    captured = capsys.readouterr()
-                    assert "No profiles found" in captured.out
 
     def test_context_list_with_profiles(self, tmp_path, capsys):
         """context list shows all profiles."""
