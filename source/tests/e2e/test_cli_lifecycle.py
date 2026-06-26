@@ -222,7 +222,6 @@ class TestConfigLifecycle:
 class TestCLICommandExecution:
     """Test CLI commands execute without crashes using isolated config."""
 
-
     def test_context_list_with_profiles(self, tmp_path, capsys):
         """context list shows all profiles."""
         with patch.object(Config, "CONFIG_DIR", tmp_path):
