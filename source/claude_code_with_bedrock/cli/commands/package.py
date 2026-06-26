@@ -1689,6 +1689,10 @@ RUN pyinstaller \
         if hasattr(profile, "selected_model") and profile.selected_model:
             config["ClaudeCode"]["selected_model"] = profile.selected_model
 
+        # Add quota_api_endpoint if configured
+        if hasattr(profile, "quota_api_endpoint") and profile.quota_api_endpoint:
+            config["ClaudeCode"]["quota_api_endpoint"] = profile.quota_api_endpoint
+
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)

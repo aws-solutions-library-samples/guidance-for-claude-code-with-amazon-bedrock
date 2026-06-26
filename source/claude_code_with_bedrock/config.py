@@ -45,6 +45,9 @@ class Profile:
     warning_threshold_80: int = 240000000  # Warning threshold at 80% (240M default)
     warning_threshold_90: int = 270000000  # Critical threshold at 90% (270M default)
 
+    # USD spend quota check endpoint (e.g. https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota)
+    quota_api_endpoint: str | None = None
+
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
