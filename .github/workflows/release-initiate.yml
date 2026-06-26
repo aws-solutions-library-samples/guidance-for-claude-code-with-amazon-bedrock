@@ -23,6 +23,7 @@ jobs:
   initiate-release:
     name: Create Release Branch and PR
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -217,6 +218,7 @@ jobs:
   close-stale-release-prs:
     name: Close Stale Release PRs
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:
