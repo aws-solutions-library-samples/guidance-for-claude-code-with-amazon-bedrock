@@ -671,9 +671,9 @@ class DeployCommand(Command):
                         params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
 
                     # Add deployment timestamp to force custom resource re-execution
-                    import datetime
+                    from datetime import datetime, timezone
 
-                    deployment_timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    deployment_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
                     params.append(f"DeploymentTimestamp={deployment_timestamp}")
 
                     result = deploy_with_cf(
