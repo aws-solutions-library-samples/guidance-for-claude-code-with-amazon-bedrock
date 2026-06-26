@@ -20,6 +20,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
+from claude_code_with_bedrock.cli.validators import validate_profile_for_packaging
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
@@ -210,6 +211,11 @@ class PackageCommand(Command):
             description="Use legacy PyInstaller/Nuitka build instead of Go (deprecated)",
             flag=True,
         ),
+        option(
+            "skip-validation",
+            description="Skip configuration validation checks",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -238,6 +244,25 @@ class PackageCommand(Command):
         if not profile:
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
+
+        # Run configuration validation (unless skipped)
+        if not self.option("skip-validation"):
+            validation_errors = validate_profile_for_packaging(profile)
+            if validation_errors:
+                has_errors = False
+                for err in validation_errors:
+                    if err.severity == "error":
+                        console.print(f"[red]✗ [{err.field}] {err.message}[/red]")
+                        has_errors = True
+                    else:
+                        console.print(f"[yellow]⚠ [{err.field}] {err.message}[/yellow]")
+                if has_errors:
+                    console.print(
+                        "\n[red]Configuration validation failed. "
+                        "Fix the errors above or re-run with --skip-validation to bypass.[/red]"
+                    )
+                    return 1
+                console.print()  # blank line after warnings
 
         # Regenerate installers from existing binaries (no rebuild needed)
         if self.option("regenerate-installers"):
