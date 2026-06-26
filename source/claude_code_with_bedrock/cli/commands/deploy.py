@@ -122,17 +122,27 @@ class DeployCommand(Command):
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
             elif stack_arg == "networking":
-                if profile.monitoring_enabled:
-                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-                else:
+                if not profile.monitoring_enabled:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+                if getattr(profile, "monitoring_mode", "central") == "sidecar":
+                    console.print(
+                        "[yellow]Networking stack is not used in sidecar monitoring mode "
+                        "(the local OTEL collector needs no VPC/subnets).[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
             elif stack_arg == "monitoring":
-                if profile.monitoring_enabled:
-                    stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
-                else:
+                if not profile.monitoring_enabled:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+                if getattr(profile, "monitoring_mode", "central") == "sidecar":
+                    console.print(
+                        "[yellow]The central OTEL collector stack is not used in sidecar mode "
+                        "(telemetry is sent to CloudWatch by the local collector).[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
             elif stack_arg == "dashboard":
                 if profile.monitoring_enabled:
                     stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
@@ -199,62 +209,7 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order.
-            #
-            # Ordering constraints:
-            # - auth always comes first (produces the IAM role + OIDC provider
-            #   every other stack may reference). Skipped when auth_type == "none"
-            #   (anonymous mode).
-            # - networking must precede any stack that needs VPC/subnet
-            #   outputs: monitoring (OTel ECS ALB) and landing-page
-            #   distribution (distribution ALB).
-            # - distribution comes after networking to satisfy the
-            #   landing-page variant; the presigned-s3 variant doesn't need
-            #   networking but scheduling it here is harmless.
-            # - dashboard / analytics / quota all follow monitoring.
-            # - codebuild is independent and can trail.
-            if profile.effective_auth_type != "none":
-                stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
-
-            # Networking first so any downstream stack can read its outputs.
-            need_networking = profile.monitoring_enabled or profile.enable_distribution
-            if need_networking:
-                vpc_config = profile.monitoring_config or {}
-                if vpc_config.get("create_vpc", True):
-                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-
-            # Distribution (landing-page reads networking outputs; presigned-s3
-            # doesn't, but the scheduling order is a no-op either way).
-            if profile.enable_distribution:
-                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
-
-            # Monitoring and its dependents.
-            if profile.monitoring_enabled:
-                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
-                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
-                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
-                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
-                # Check if analytics is enabled (default to True for backward compatibility)
-                if getattr(profile, "analytics_enabled", True):
-                    stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
-                # Check if quota monitoring is enabled
-                # Quota enforcement requires SSO — the API Gateway JWT authorizer
-                # has no valid issuer URL otherwise. Skip with a warning rather
-                # than letting CloudFormation fail mid-deploy (issue #454).
-                if getattr(profile, "quota_monitoring_enabled", False):
-                    if profile.effective_auth_type in ("oidc", "idc"):
-                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
-                    else:
-                        console.print(
-                            "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
-                            "user authentication (OIDC or IAM Identity Center).[/yellow]"
-                        )
-                        console.print(
-                            "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy quota monitoring.[/dim]"
-                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. See issue #454.[/dim]"
-                        )
-            # Check if CodeBuild is enabled
-            if getattr(profile, "enable_codebuild", False):
-                stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+            stacks_to_deploy = self._select_full_deploy_stacks(profile, console)
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -350,6 +305,92 @@ class DeployCommand(Command):
         self._show_stack_outputs(profile, console, config)
 
         return 0
+
+    def _select_full_deploy_stacks(self, profile, console: Console) -> list:
+        """Return the ordered ``(stack_type, description)`` list for a full ``ccwb deploy``.
+
+        Pure selection logic with no AWS calls so it can be unit-tested. The only
+        side effect is a warning printed via ``console`` when quota is enabled but
+        the auth type cannot support it.
+
+        Ordering constraints:
+        - auth always comes first (produces the IAM role + OIDC provider every
+          other stack may reference). Skipped when auth_type == "none".
+        - networking must precede any stack that reads its VPC/subnet outputs:
+          central monitoring (OTel ECS ALB) and landing-page distribution.
+        - distribution follows networking for the landing-page variant; the
+          presigned-s3 variant doesn't need networking but the order is harmless.
+        - dashboard / analytics / quota all follow monitoring.
+        - codebuild is independent and can trail.
+
+        Monitoring mode is the key gate: sidecar runs a local OTEL collector that
+        ships metrics straight to CloudWatch, so it needs no VPC/ECS/ALB and no
+        Athena pipeline — only the CloudWatch dashboard. The #338 Go-rewrite
+        refactor dropped this gate, so sidecar profiles were deploying the entire
+        central stack (VPC + ECS + ALB + Athena), which fails in accounts that
+        disallow new VPCs.
+        """
+        stacks_to_deploy = []
+
+        if profile.effective_auth_type != "none":
+            stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
+
+        monitoring_mode = getattr(profile, "monitoring_mode", "central")
+        central_monitoring = profile.monitoring_enabled and monitoring_mode == "central"
+
+        # Networking first so any downstream stack can read its outputs.
+        need_networking = central_monitoring or profile.enable_distribution
+        if need_networking:
+            vpc_config = profile.monitoring_config or {}
+            if vpc_config.get("create_vpc", True):
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+
+        # Distribution (landing-page reads networking outputs; presigned-s3
+        # doesn't, but the scheduling order is a no-op either way).
+        if profile.enable_distribution:
+            stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+        # Monitoring and its dependents.
+        if profile.monitoring_enabled:
+            if central_monitoring:
+                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
+                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
+                # Analytics defaults to True for backward compatibility.
+                if getattr(profile, "analytics_enabled", True):
+                    stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+            else:
+                # Sidecar mode: metrics reach CloudWatch via the local collector,
+                # so the only server-side stack is the CloudWatch dashboard
+                # (PromQL). No networking/ECS, no Athena pipeline, and CoWork
+                # cannot export telemetry in this mode.
+                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+
+            # Quota enforcement works in both monitoring modes. It needs the
+            # s3bucket stack for Lambda packaging; central scheduled it above, so
+            # add it here for sidecar before the quota stack. Quota requires OIDC
+            # or IDC (per-user identity); skip with a warning rather than letting
+            # CloudFormation fail mid-deploy (issue #454).
+            if getattr(profile, "quota_monitoring_enabled", False):
+                if profile.effective_auth_type in ("oidc", "idc"):
+                    if not central_monitoring:
+                        stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                else:
+                    console.print(
+                        "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
+                        "user authentication (OIDC or IAM Identity Center).[/yellow]"
+                    )
+                    console.print(
+                        "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy "
+                        "quota monitoring. See issue #454.[/dim]"
+                    )
+
+        if getattr(profile, "enable_codebuild", False):
+            stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+
+        return stacks_to_deploy
 
     def _convert_params_to_boto3(self, params: list) -> list:
         """Convert CLI parameter format to boto3 format.
