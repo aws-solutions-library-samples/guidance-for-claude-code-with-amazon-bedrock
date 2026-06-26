@@ -54,8 +54,18 @@ Claude Desktop configuration delivery:
 | `OidcJwksEndpoint` | JWKS endpoint for signature verification | (auto-derived) |
 | `DefaultInferenceRegion` | AWS region for Bedrock inference | `us-east-1` |
 | `DefaultInferenceModels` | Comma-separated allowed model IDs | Sonnet |
-| `OtlpEndpoint` | OpenTelemetry collector endpoint | (optional) |
+| `OtlpEndpoint` | OpenTelemetry collector endpoint (HTTPS) | (optional) |
 | `InferenceSessionLifetimeSec` | Session lifetime before re-auth | `28800` (8h) |
+
+### OTLP Telemetry Output
+
+When `OtlpEndpoint` is configured, the bootstrap server response includes:
+- **`otlpEndpoint`** — The HTTPS collector URL that Claude Desktop will send traces/metrics to
+- **`otlpHeaders`** — Per-user identity headers injected into every OTLP export:
+  - `x-user-id`: The user's `sub` claim from the OIDC token
+  - `x-user-email`: The user's `email` claim (when available)
+
+This gives CloudWatch dashboards per-user attribution without requiring a local proxy — the headers are delivered at sign-in and applied for the session lifetime.
 
 ### Response Format
 

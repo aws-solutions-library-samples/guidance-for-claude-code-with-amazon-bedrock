@@ -58,6 +58,15 @@ poetry run ccwb cowork generate
 
 This generates MDM configuration files (JSON, macOS .mobileconfig, Windows .reg) using your existing deployment profile. See the [CoWork 3P Guide](assets/docs/COWORK_3P.md) for setup and deployment details.
 
+**Configuration Delivery Methods:**
+
+| Method | Auth Type | Description |
+|--------|-----------|-------------|
+| **Static (MDM)** | OIDC, IDC | Full config baked into MDM profile — inference region, models, OTEL endpoint |
+| **Dynamic (Bootstrap Server)** | OIDC only | Lightweight API validates user's OIDC token and returns per-user config at sign-in |
+
+The bootstrap server enables central config changes without MDM re-deployment and injects per-user OTLP identity headers (`x-user-id`, `x-user-email`) for telemetry attribution. See [Bootstrap Server](assets/docs/BOOTSTRAP_SERVER.md) for details.
+
 ## Architecture Overview
 
 The architecture is modular — start with authentication, then optionally add [monitoring, quota enforcement, analytics, or distribution](#what-gets-deployed) independently as requirements grow. This guidance supports three authentication paths (see [Authentication Modes](#authentication-modes) for details). The recommended path is Direct IAM Federation:

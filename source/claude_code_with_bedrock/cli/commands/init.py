@@ -1509,7 +1509,9 @@ class InitCommand(Command):
                 else:
                     console.print("[dim]CoWork service token already configured[/dim]")
 
-            # Claude Desktop configuration delivery mode (OIDC only)
+            # Claude Desktop configuration delivery mode (OIDC only).
+            # IDC deployments use static MDM profiles — bootstrap server requires
+            # OIDC Bearer tokens for user validation (IDC has no standard JWT flow).
             if config.get("auth_type", "oidc") == "oidc":
                 console.print("\n[bold]Claude Desktop Configuration Delivery[/bold]")
                 console.print("How should Claude Desktop clients receive their configuration?")
