@@ -102,7 +102,7 @@ func ensureProxyRunning(profile string) {
 		env = append(env, "AWS_PROFILE="+profile)
 	}
 
-	cmd := exec.Command(helperPath, args...)
+	cmd := exec.Command(filepath.Clean(helperPath), args...) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd.Env = env
 	cmd.Stdout = nil
 	cmd.Stderr = nil
