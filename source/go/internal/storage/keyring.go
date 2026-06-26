@@ -5,8 +5,8 @@ import (
 	"errors"
 	"runtime"
 
-	"github.com/99designs/keyring"
 	"ccwb-go/internal/federation"
+	"github.com/99designs/keyring"
 )
 
 const serviceName = "claude-code-with-bedrock"
@@ -99,6 +99,26 @@ func ReadClientSecret(profile string) (string, error) {
 		return "", err
 	}
 	return string(item.Data), nil
+}
+
+// SaveClientSecret stores an Azure confidential-client secret in the OS keyring.
+// Key matches what ReadClientSecret and the Python ccwb init wizard use.
+// Pass an empty secret to delete the entry.
+func SaveClientSecret(profile, secret string) error {
+	kr, err := openKeyring()
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		if err := kr.Remove(profile + "-client-secret"); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+			return err
+		}
+		return nil
+	}
+	return kr.Set(keyring.Item{
+		Key:  profile + "-client-secret",
+		Data: []byte(secret),
+	})
 }
 
 // ReadMonitoringTokenFromKeyring reads the monitoring token from keyring.
