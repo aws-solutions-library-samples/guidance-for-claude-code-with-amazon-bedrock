@@ -21,6 +21,7 @@ jobs:
       github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -84,6 +85,7 @@ jobs:
       github.event.pull_request.merged == true &&
       !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:
