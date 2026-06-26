@@ -94,15 +94,21 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 		tokenURL = provider.TokenEndpointURL(providerType, oktaAuthServerID, providerDomain)
 	}
 
-	// Start callback server
-	resultCh, srv, err := StartCallbackServer(redirectPort, state)
+	// Start callback server (serves landing page + handles /callback)
+	resultCh, srv, err := StartCallbackServer(redirectPort, state, authURL)
 	if err != nil {
 		return nil, fmt.Errorf("starting callback server: %w", err)
 	}
 
-	// Open browser
-	if err := browser.OpenURL(authURL); err != nil {
-		fmt.Fprintf(os.Stderr, "Could not open browser. Visit: %s\n", authURL)
+	// Open browser to the local landing page, which explains what's happening
+	// and provides a button to proceed to the IdP. This gives CoWork (GUI) users
+	// context about why a browser window appeared.
+	landingURL := fmt.Sprintf("http://localhost:%d/", redirectPort)
+	if err := browser.OpenURL(landingURL); err != nil {
+		// Fallback: try opening the IdP directly
+		if err2 := browser.OpenURL(authURL); err2 != nil {
+			fmt.Fprintf(os.Stderr, "Could not open browser. Visit: %s\n", landingURL)
+		}
 	}
 
 	// Wait for callback (5 min timeout)
