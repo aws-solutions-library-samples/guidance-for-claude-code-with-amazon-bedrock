@@ -7,6 +7,7 @@ from .builds import BuildsCommand
 from .cowork import CoworkGenerateCommand
 from .deploy import DeployCommand
 from .destroy import DestroyCommand
+from .doctor import DoctorCommand
 from .init import InitCommand
 from .package import PackageCommand
 from .quota import QuotaCommand
@@ -22,5 +23,6 @@ __all__ = [
     "BuildsCommand",
     "DestroyCommand",
     "CoworkGenerateCommand",
+    "DoctorCommand",
     "QuotaCommand",
 ]

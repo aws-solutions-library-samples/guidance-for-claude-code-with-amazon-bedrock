@@ -22,6 +22,7 @@ from .commands.cowork import CoworkGenerateCommand
 from .commands.deploy import DeployCommand
 from .commands.destroy import DestroyCommand
 from .commands.distribute import DistributeCommand
+from .commands.doctor import DoctorCommand
 from .commands.init import InitCommand
 from .commands.package import PackageCommand
 from .commands.package_cb import PackageCbCommand
@@ -61,6 +62,7 @@ def create_application() -> Application:
     application.add(DestroyCommand())
     application.add(CleanupCommand())
     application.add(CoworkGenerateCommand())
+    application.add(DoctorCommand())
     # application.add(TokenCommand())  # Temporarily disabled
 
     # Context management commands
