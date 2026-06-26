@@ -201,3 +201,67 @@ class TestResolveFederation:
         assert identity_pool_id is None
         assert federated_role_arn is None
         mock_stack.assert_not_called()
+
+
+class TestPackageCommandOtelDefaults:
+    """Tests for the default OTEL_RESOURCE_ATTRIBUTES written into settings.json."""
+
+    def _make_monitoring_profile(self):
+        return Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            allowed_bedrock_regions=["us-east-1"],
+            monitoring_enabled=True,
+            stack_names={"monitoring": "test-otel-collector"},
+        )
+
+    def _render_settings(self, otel_resource_attributes=None):
+        """Drive _create_claude_settings with a mocked monitoring stack endpoint."""
+        command = PackageCommand()
+        profile = self._make_monitoring_profile()
+
+        fake_outputs = json.dumps(
+            [{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}]
+        )
+        completed = MagicMock(returncode=0, stdout=fake_outputs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch(
+                "claude_code_with_bedrock.cli.commands.package.subprocess.run",
+                return_value=completed,
+            ):
+                command._create_claude_settings(
+                    output_dir,
+                    profile,
+                    include_coauthored_by=True,
+                    profile_name="test",
+                    otel_resource_attributes=otel_resource_attributes,
+                )
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            with open(settings_path, encoding="utf-8") as f:
+                return json.load(f)
+
+    def test_default_department_is_default_not_engineering(self):
+        """Regression: the default department must be 'default', not 'engineering'.
+
+        'engineering' is not a safe assumption for every deployment, so the
+        baseline OTEL attributes should be neutral and overridable.
+        """
+        settings = self._render_settings()
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert "department=default" in attrs
+        assert "department=engineering" not in attrs
+
+    def test_configured_attributes_override_default(self):
+        """An explicit OTEL_RESOURCE_ATTRIBUTES value takes precedence over the default."""
+        settings = self._render_settings(otel_resource_attributes="department=research,team.id=ml")
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs == "department=research,team.id=ml"
