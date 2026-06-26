@@ -1130,7 +1130,7 @@ func runSetClientSecret(profile string) int {
 	var secret string
 
 	if env := os.Getenv("CCWB_CLIENT_SECRET"); env != "" {
-		secret = env
+		secret = env // pragma: allowlist secret
 	} else {
 		fmt.Fprintf(os.Stderr, "Enter client secret for profile '%s' (press Enter to clear): ", profile)
 		raw, err := term.ReadPassword(int(os.Stdin.Fd()))

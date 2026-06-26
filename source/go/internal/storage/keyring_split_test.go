@@ -5,18 +5,18 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/99designs/keyring"
 	"ccwb-go/internal/federation"
+	"github.com/99designs/keyring"
 )
 
 // mockKeyring is a keyringRW implementation backed by an in-memory map.
 // It records every Set call so tests can assert on upconvert writes, and
 // returns keyring.ErrKeyNotFound for missing keys (matching the real library).
 type mockKeyring struct {
-	store       map[string][]byte
-	setCalls    []keyring.Item
-	failSet     bool
-	failSetKey  string
+	store          map[string][]byte
+	setCalls       []keyring.Item
+	failSet        bool
+	failSetKey     string
 	getErrOverride map[string]error
 }
 
@@ -41,6 +41,14 @@ func (m *mockKeyring) Set(item keyring.Item) error {
 	}
 	m.store[item.Key] = item.Data
 	m.setCalls = append(m.setCalls, item)
+	return nil
+}
+
+func (m *mockKeyring) Remove(key string) error {
+	if _, ok := m.store[key]; !ok {
+		return keyring.ErrKeyNotFound
+	}
+	delete(m.store, key)
 	return nil
 }
 
