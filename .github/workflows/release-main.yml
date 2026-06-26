@@ -16,6 +16,7 @@ jobs:
   release:
     name: Tag and Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     outputs:
@@ -68,6 +69,7 @@ jobs:
     needs: release
     if: always() && needs.release.result != 'failure'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     permissions:
       contents: write
     strategy:

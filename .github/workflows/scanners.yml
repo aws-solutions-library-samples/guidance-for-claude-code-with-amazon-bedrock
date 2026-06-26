@@ -1,12 +1,18 @@
 name: Scanners
 on:
   push:
+    branches: ["main", "beta"]
   pull_request:
+    branches: ["main", "beta"]
   workflow_dispatch:
 permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   secrets-scanner:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
