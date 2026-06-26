@@ -108,20 +108,46 @@ def _infer_tier_from_model_id(model_id: str) -> str | None:
     return None
 
 
+def _credential_process_path(profile_name: str) -> dict[str, str]:
+    """Return platform-specific credential-process paths for inferenceCredentialHelper.
+
+    The installer places the binary at a predictable location per-platform:
+    - macOS/Linux: ~/claude-code-with-bedrock/credential-process
+    - Windows: %USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe
+
+    For MDM deployment we use the tilde (~) shorthand which Claude Desktop
+    resolves to the user's home directory on all platforms.
+    """
+    return {
+        "unix": f"~/claude-code-with-bedrock/credential-process --profile {profile_name}",
+        "windows": f"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile {profile_name}",
+    }
+
+
 def build_mdm_config(
     bedrock_region: str,
     model_aliases: list[str],
     profile_name: str = "ClaudeCode",
     extra_keys: dict[str, str] | None = None,
+    credential_mode: str = "helper",
+    credential_helper_ttl_sec: int = 3500,
 ) -> dict:
     """Build the base CoWork 3P MDM configuration dictionary.
 
-    Uses inferenceBedrockProfile, which points Claude Desktop at an AWS named
-    profile in ~/.aws/config. The installer already configures that profile with
-    credential_process = credential-process --profile <name>, so CoWork reuses
-    the same auth pipeline as Claude Code with zero extra artifacts to ship.
+    Supports two credential modes:
 
-    Ref: https://claude.com/docs/cowork/3p/bedrock
+    - "helper" (default, recommended): Uses inferenceCredentialHelper, which gives
+      Claude Desktop direct control over the credential lifecycle. The app caches
+      the helper's output for `credential_helper_ttl_sec` seconds and automatically
+      re-runs it on expiry — including mid-session silent refresh. This eliminates
+      the stale-credential bug where CoWork requires a restart after token expiry.
+
+    - "profile" (legacy): Uses inferenceBedrockProfile, which delegates credential
+      resolution to the AWS SDK via ~/.aws/config. This works but credential refresh
+      depends on boto3's internal session caching, which doesn't reliably trigger
+      re-authentication in the CoWork process lifecycle.
+
+    Ref: https://claude.com/docs/third-party/claude-desktop/credential-helper
 
     Args:
         bedrock_region: AWS region for Bedrock API calls.
@@ -129,9 +155,10 @@ def build_mdm_config(
         profile_name: AWS named profile (matches ~/.aws/config stanza).
         extra_keys: Optional dictionary of additional MDM keys to merge into the
             configuration. Values should be strings (JSON-encoded for complex types).
-            These are appended after the base keys, allowing administrators to set
-            keys like coworkEgressAllowedHosts, coworkWebSearchEnabled, or
-            managedMcpServers without modifying source code.
+        credential_mode: "helper" or "profile" (default: "helper").
+        credential_helper_ttl_sec: Cache TTL for the credential helper output in
+            seconds (default: 3500, slightly under the 1h STS token lifetime to
+            ensure refresh happens before expiry).
 
     Returns:
         Dictionary of MDM configuration key-value pairs.
@@ -139,7 +166,6 @@ def build_mdm_config(
     config = {
         "inferenceProvider": "bedrock",
         "inferenceBedrockRegion": bedrock_region,
-        "inferenceBedrockProfile": profile_name,
         "inferenceModels": build_inference_models(model_aliases),
         "isClaudeCodeForDesktopEnabled": True,
         "isDesktopExtensionEnabled": True,
@@ -147,6 +173,22 @@ def build_mdm_config(
         "isDesktopExtensionSignatureRequired": True,
         "isLocalDevMcpEnabled": True,
     }
+
+    if credential_mode == "helper":
+        # Direct credential helper — Claude Desktop manages the credential lifecycle.
+        # Uses the same credential-process binary but invoked directly by the app
+        # instead of indirectly via the AWS SDK's credential_process chain.
+        paths = _credential_process_path(profile_name)
+        # Use the Unix path by default; installers for Windows will substitute.
+        # MDM platforms (Jamf, Intune) typically deploy platform-specific configs.
+        config["inferenceCredentialHelper"] = paths["unix"]
+        config["inferenceCredentialHelperTtlSec"] = str(credential_helper_ttl_sec)
+        config["inferenceCredentialHelperSilentRefreshEnabled"] = "true"
+        # Keep the AWS profile as fallback for SDK-level operations (region, etc.)
+        config["inferenceBedrockProfile"] = profile_name
+    else:
+        # Legacy profile mode — rely on AWS SDK credential_process chain.
+        config["inferenceBedrockProfile"] = profile_name
 
     if extra_keys:
         config.update(extra_keys)
@@ -295,13 +337,29 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     All values are stored as REG_SZ strings — booleans, integers, and arrays
     included — matching what Claude Desktop reads from the registry.
 
+    If inferenceCredentialHelper is present and uses a Unix-style path (~/ prefix),
+    it is rewritten to the Windows equivalent (%USERPROFILE%\\ + .exe suffix).
+
     Returns the path to the generated file.
     """
     reg_key = r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude"
 
+    # Create a copy with Windows-specific credential helper path
+    config = dict(mdm_config)
+    helper_key = "inferenceCredentialHelper"
+    if helper_key in config and isinstance(config[helper_key], str) and config[helper_key].startswith("~/"):
+        # Convert ~/claude-code-with-bedrock/credential-process --profile X
+        # to %USERPROFILE%\claude-code-with-bedrock\credential-process.exe --profile X
+        unix_path = config[helper_key]
+        parts = unix_path.split(" ", 1)
+        binary_part = parts[0].replace("~/", "%USERPROFILE%\\").replace("/", "\\")
+        if not binary_part.endswith(".exe"):
+            binary_part += ".exe"
+        config[helper_key] = f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
-    for key, value in _mdm_keys(mdm_config).items():
+    for key, value in _mdm_keys(config).items():
         if isinstance(value, bool):
             string_value = "true" if value else "false"
         elif isinstance(value, (list, dict)):

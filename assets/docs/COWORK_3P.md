@@ -166,13 +166,38 @@ Claude Desktop supports object entries in `inferenceModels` with `anthropicFamil
 
 ### How Credentials Flow
 
+This solution supports two credential modes for CoWork. The **credential helper** mode (default since v2.6.0) is recommended because it gives Claude Desktop direct control over credential lifecycle, eliminating the stale-credential bug that required manual app restarts.
+
+#### Credential Helper Mode (Recommended)
+
 When Claude Cowork starts a session:
+
+1. Claude Desktop reads `inferenceCredentialHelper` from the MDM policy — this points directly at the credential-process binary
+2. Claude Desktop runs the binary and reads temporary AWS credentials from stdout
+3. The output is cached for `inferenceCredentialHelperTtlSec` seconds (default: 3500, just under the 1h STS token lifetime)
+4. When the cache expires, Claude Desktop automatically re-runs the helper — **no restart required**
+5. If credentials are rejected mid-session, Claude Desktop re-runs with `CLAUDE_HELPER_CONTEXT=mid-session-refresh` for seamless recovery (20s timeout)
+
+The credential-process binary handles the `CLAUDE_HELPER_CONTEXT` environment variable:
+- `interactive` → Full browser-based OIDC authentication
+- `mid-session-refresh` → Silent refresh via cached refresh_token (no browser)
+- `background` / `setup-test` → Silent path only, exit non-zero if unavailable
+
+This mode resolves the known issue where CoWork doesn't automatically refresh AWS credentials after token expiry (affecting both IDC and OIDC/Azure AD federated auth users).
+
+Ref: [Claude Desktop Credential Helper documentation](https://claude.com/docs/third-party/claude-desktop/credential-helper)
+
+#### AWS Profile Mode (Legacy)
+
+The legacy flow uses `inferenceBedrockProfile` instead:
 
 1. Claude Desktop reads `inferenceBedrockProfile` from the applied MDM policy (registry on Windows, managed preference on macOS)
 2. It hands that profile name to the AWS SDK, which resolves the corresponding `[profile <name>]` stanza in `~/.aws/config`
 3. The stanza's `credential_process = .../credential-process --profile <name>` entry runs the bundled credential-process binary
 4. The binary authenticates the user via your OIDC provider (Okta, Azure AD, Auth0, etc.) and returns temporary AWS credentials in the standard AWS `credential_process` JSON format
 5. The AWS SDK signs each Bedrock call with those credentials; caching and refresh are handled automatically by the SDK
+
+To use this mode, set `cowork_credential_mode = "profile"` in your deployment profile before running `ccwb cowork generate`.
 
 No wrapper script is required — CoWork reuses the same `credential-process` binary and `~/.aws/config` entry that `install.sh` / `install.bat` already configure for Claude Code CLI.
 
