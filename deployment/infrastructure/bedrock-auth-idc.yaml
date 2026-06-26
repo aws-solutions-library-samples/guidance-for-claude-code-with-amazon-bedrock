@@ -67,7 +67,7 @@ Resources:
                 - 'logs:PutLogEvents'
                 - 'logs:DescribeLogGroups'
                 - 'logs:DescribeLogStreams'
-              Resource: !Sub 'arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/claude-code/*'
+              Resource: !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/claude-code/*'
             - !Ref 'AWS::NoValue'
   
   # IAM role for IAM Identity Center federation
@@ -87,11 +87,11 @@ Resources:
           # Trust policy for SSO-assumed roles (role chaining from Permission Set)
           - Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action: 'sts:AssumeRole'
             Condition:
               ArnLike:
-                'aws:PrincipalArn': !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-reserved/sso.amazonaws.com/*'
+                'aws:PrincipalArn': !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-reserved/sso.amazonaws.com/*'
       ManagedPolicyArns:
         - !Ref BedrockAccessPolicy
       # Optional CloudWatch access for monitoring
