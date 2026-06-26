@@ -1,9 +1,7 @@
 ---
 name: Claude Code — PR Review
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review_comment:
+  issue_comment:
     types: [created]
 
 permissions:
@@ -14,13 +12,11 @@ permissions:
 
 jobs:
   review:
-    # Skip draft PRs, bot PRs, and fork PRs (secrets unavailable)
+    # On-demand only: run when a human comments @claude on a PR (not an issue)
     if: |
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (
-        (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.user.login != 'github-actions[bot]') ||
-        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
-      )
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login != 'github-actions[bot]' &&
+      contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
