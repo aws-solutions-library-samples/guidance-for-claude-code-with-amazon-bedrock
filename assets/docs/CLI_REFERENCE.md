@@ -17,6 +17,7 @@ This document provides a complete reference for all `ccwb` (Claude Code with Bed
     - [`distribute` - Create Distribution URLs](#distribute---create-distribution-urls)
     - [`status` - Check Deployment Status](#status---check-deployment-status)
     - [`cleanup` - Remove Installed Components](#cleanup---remove-installed-components)
+    - [`doctor` - Validate Installation Health](#doctor---validate-installation-health)
   - [Quota Management](#quota-management)
     - [`quota set-user` - Set User Quota](#quota-set-user---set-user-quota)
     - [`quota set-group` - Set Group Quota](#quota-set-group---set-group-quota)
@@ -621,6 +622,35 @@ poetry run ccwb cleanup [options]
 - Clean up after testing
 - Remove failed installations
 - Start fresh with a new configuration
+
+### `doctor` - Validate Installation Health
+
+Runs post-installation health checks on the user's machine and reports PASS/FAIL per check.
+
+```bash
+poetry run ccwb doctor [options]
+```
+
+**Options:**
+
+- `--profile <name>` - Configuration profile to check
+
+**Checks performed:**
+
+| Check | What it validates |
+|-------|-------------------|
+| `credential-process` | Binary exists in install dir |
+| `config.json` | Present, valid JSON, lists profiles |
+| `aws-profile` | `~/.aws/config` references credential-process |
+| `settings.json` | Claude Code settings file exists with env/hooks |
+| `credential-test` | Credential helper responds (graceful timeout) |
+| `otel-helper` | Telemetry binary exists (only FAIL if monitoring configured) |
+
+**Use this to:**
+
+- Validate installation after running the installer
+- Diagnose "telemetry not working" or "auth failing" issues
+- Verify all components are present before contacting support
 
 ## Claude Cowork 3P
 
