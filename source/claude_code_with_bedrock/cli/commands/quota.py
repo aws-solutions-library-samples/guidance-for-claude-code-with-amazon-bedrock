@@ -1233,7 +1233,7 @@ class QuotaUsageCommand(Command):
             table = dynamodb.Table(table_name)
 
             # Get current month
-            current_month = datetime.utcnow().strftime("%Y-%m")
+            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
 
             # Query for user's monthly usage
             response = table.get_item(Key={"pk": f"USER#{email}", "sk": f"MONTH#{current_month}"})
@@ -1492,7 +1492,7 @@ class QuotaExportCommand(Command):
         """Format policies as JSON."""
         export_data = {
             "version": "1.0",
-            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "exported_at": datetime.now(timezone.utc).isoformat() + "Z",
             "policies": policies,
         }
         return json.dumps(export_data, indent=2)
