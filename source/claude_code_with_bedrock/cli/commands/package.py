@@ -1689,9 +1689,12 @@ RUN pyinstaller \
         if hasattr(profile, "selected_model") and profile.selected_model:
             config["ClaudeCode"]["selected_model"] = profile.selected_model
 
-        # Add quota_api_endpoint if configured
+        # Add quota check config if endpoint is configured
         if hasattr(profile, "quota_api_endpoint") and profile.quota_api_endpoint:
             config["ClaudeCode"]["quota_api_endpoint"] = profile.quota_api_endpoint
+            config["ClaudeCode"]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
+            config["ClaudeCode"]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
+            config["ClaudeCode"]["quota_check_timeout"] = getattr(profile, "quota_check_timeout", 5)
 
         config_path = output_dir / "config.json"
         with open(config_path, "w") as f:

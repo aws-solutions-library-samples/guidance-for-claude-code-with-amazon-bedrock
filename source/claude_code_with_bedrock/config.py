@@ -47,6 +47,9 @@ class Profile:
 
     # USD spend quota check endpoint (e.g. https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota)
     quota_api_endpoint: str | None = None
+    quota_fail_mode: str = "open"  # "open" allows access on errors, "closed" blocks
+    quota_check_interval: int = 30  # minutes between quota re-checks
+    quota_check_timeout: int = 5  # seconds before quota API request times out
 
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
