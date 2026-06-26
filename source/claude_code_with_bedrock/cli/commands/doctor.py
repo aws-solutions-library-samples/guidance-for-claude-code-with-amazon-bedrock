@@ -225,6 +225,17 @@ def print_results(checks: list, console: Console = None):
 class DoctorCommand(Command):
     name = "doctor"
     description = "Validate installation health and catch common misconfigurations"
+    help = """Run post-installation health checks on the local machine.
+
+Checks credential-process binary, config.json, AWS profile, Claude Code
+settings, credential helper responsiveness, and otel-helper presence.
+
+Use after running the installer to verify everything is working:
+  <info>poetry run ccwb doctor</info>
+
+To check a specific profile:
+  <info>poetry run ccwb doctor --profile MyProfile</info>
+"""
 
     options = [
         option("profile", description="Configuration profile to check", flag=False),

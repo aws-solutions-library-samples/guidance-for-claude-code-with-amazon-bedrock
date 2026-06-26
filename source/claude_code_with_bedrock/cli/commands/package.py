@@ -786,6 +786,8 @@ class PackageCommand(Command):
             console.print("\n[yellow]⚠ Package generated without binaries. Fix the build issue and re-run.[/yellow]")
             return 1
 
+        console.print("After installation, validate with: [cyan]poetry run ccwb doctor[/cyan]")
+
         return 0
 
     def _check_build_status(self, build_id: str, console: Console) -> int:
