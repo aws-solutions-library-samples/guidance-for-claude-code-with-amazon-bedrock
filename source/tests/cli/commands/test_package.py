@@ -175,3 +175,65 @@ class TestPackageCommandMonitoringFields:
             assert claude_config.get("monitoring_mode") == "central"
             # otel_collector_endpoint is None by default, should not be included
             assert "otel_collector_endpoint" not in claude_config
+
+    def test_config_omits_endpoint_when_dynamic_config_mode(self):
+        """Bootstrap server (dynamic mode) delivers otlpHeaders at sign-in — no proxy needed."""
+        command = PackageCommand()
+
+        profile = Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client-id",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            allowed_bedrock_regions=["us-east-1"],
+            monitoring_enabled=True,
+            monitoring_mode="central",
+            otel_collector_endpoint="https://otel-alb.example.com",
+        )
+        # cowork_config_mode is added by #670; use setattr for forward-compat
+        setattr(profile, "cowork_config_mode", "dynamic")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            config_path = command._create_config(output_dir, profile, "test-identity-pool-id")
+
+            with open(config_path, encoding="utf-8") as f:
+                config = json.load(f)
+
+            claude_config = config["ClaudeCode"]
+            # monitoring_mode is still written (informational)
+            assert claude_config["monitoring_mode"] == "central"
+            # otel_collector_endpoint is NOT written — bootstrap server handles telemetry
+            assert "otel_collector_endpoint" not in claude_config
+
+    def test_config_includes_endpoint_when_static_config_mode(self):
+        """Static mode (default) — proxy needed for per-user identity."""
+        command = PackageCommand()
+
+        profile = Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client-id",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            allowed_bedrock_regions=["us-east-1"],
+            monitoring_enabled=True,
+            monitoring_mode="central",
+            otel_collector_endpoint="https://otel-alb.example.com",
+        )
+        # Explicit static mode — proxy should be enabled
+        setattr(profile, "cowork_config_mode", "static")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            config_path = command._create_config(output_dir, profile, "test-identity-pool-id")
+
+            with open(config_path, encoding="utf-8") as f:
+                config = json.load(f)
+
+            claude_config = config["ClaudeCode"]
+            assert claude_config["monitoring_mode"] == "central"
+            assert claude_config["otel_collector_endpoint"] == "https://otel-alb.example.com"
