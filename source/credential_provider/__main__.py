@@ -1418,14 +1418,20 @@ class MultiProviderAuth:
             if self.credential_storage == "keyring":
                 timestamp_str = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-quota-check")
                 if timestamp_str:
-                    return datetime.fromisoformat(timestamp_str)
+                    dt = datetime.fromisoformat(timestamp_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
             else:
                 session_dir = Path.home() / ".claude-code-session"
                 timestamp_file = session_dir / f"{self.profile}-quota-check.json"
                 if timestamp_file.exists():
                     with open(timestamp_file, encoding="utf-8") as f:
                         data = json.load(f)
-                        return datetime.fromisoformat(data["last_check"])
+                        dt = datetime.fromisoformat(data["last_check"])
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return dt
             return None
         except Exception as e:
             self._debug_print(f"Could not read quota check timestamp: {e}")
@@ -1642,7 +1648,8 @@ class MultiProviderAuth:
                 server = HTTPServer(("127.0.0.1", quota_port), QuotaPageHandler)
                 server.timeout = 5
                 webbrowser.open(f"http://localhost:{quota_port}/quota-status")
-                while not page_served["done"]:
+                deadline = time.monotonic() + 15
+                while not page_served["done"] and time.monotonic() < deadline:
                     server.handle_request()
                 server.server_close()
             except OSError:
