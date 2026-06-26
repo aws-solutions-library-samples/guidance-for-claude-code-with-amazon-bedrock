@@ -1,10 +1,17 @@
 name: Integration Tests (Tier 2)
 on:
+  push:
+    branches: [main, beta]
+    paths:
+      - 'source/**'
+      - 'deployment/**'
+      - '.github/workflows/integration-tests.yml'
   pull_request:
     branches: [main, beta]
     paths:
       - 'source/**'
       - 'deployment/**'
+      - '.github/workflows/integration-tests.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,6 +20,7 @@ permissions:
 jobs:
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ['3.10', '3.12']

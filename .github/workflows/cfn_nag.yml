@@ -1,9 +1,9 @@
 name: cfn_nag
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "beta"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "beta"]
   workflow_dispatch:
 permissions: {}
 jobs:
