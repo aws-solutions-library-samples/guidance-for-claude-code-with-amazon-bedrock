@@ -1813,9 +1813,12 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = (
-                            f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
-                        )
+                        # Partition-aware so the fallback ARN is valid in GovCloud
+                        # (aws-us-gov) and China (aws-cn), not just commercial AWS.
+                        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+                        partition = aws_partition_for_region(region)
+                        secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
