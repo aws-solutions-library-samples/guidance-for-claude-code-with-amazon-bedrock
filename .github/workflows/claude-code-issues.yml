@@ -29,5 +29,6 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           use_bedrock: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
             --model global.anthropic.claude-sonnet-4-6
