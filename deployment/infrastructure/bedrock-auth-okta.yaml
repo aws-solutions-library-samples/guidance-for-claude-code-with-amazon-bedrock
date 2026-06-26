@@ -12,9 +12,19 @@ Parameters:
 
   OktaDomain:
     Type: String
-    Description: Your Okta domain (e.g., company.okta.com)
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*\.okta(-emea)?\.com$'
-    ConstraintDescription: Must be a valid Okta domain
+    Description: >-
+      Your Okta domain — an Okta org domain (e.g., company.okta.com,
+      company.okta-emea.com, company.oktapreview.com, company.okta-gov.com) or an
+      Okta custom URL domain hosted on your own domain (e.g., login.company.com).
+    # Validate as a fully-qualified domain name rather than hard-coding okta.com.
+    # Okta supports custom URL domains (CNAME'd to the org) and government orgs
+    # (okta-gov.com), so the previous '.okta(-emea).com' pattern rejected valid
+    # issuers. This still substitutes safely into https://${OktaDomain}: it forbids
+    # a scheme, path, port, whitespace, or empty labels. (Issue: custom Okta domains.)
+    AllowedPattern: '^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+    ConstraintDescription: >-
+      Must be a valid fully-qualified domain name with no scheme, path, or port
+      (e.g., company.okta.com or login.company.com)
 
   OktaClientId:
     Type: String
