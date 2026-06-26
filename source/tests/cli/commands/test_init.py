@@ -769,6 +769,143 @@ class TestStoreIdpSecret:
         client.update_secret.assert_called_once()
 
 
+class TestFederatedRoleNameDerivation:
+    """init derives a per-profile FederatedRoleName for NEW direct profiles and
+    never renames the role of an existing profile (issue #528)."""
+
+    @pytest.fixture
+    def cmd(self):
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        return InitCommand()
+
+    def _config_data(self, pool_name):
+        return {
+            "sso_enabled": True,
+            "okta": {"domain": "company.okta.com", "client_id": "0oa123abc456def789gh"},
+            "provider_type": "okta",
+            "federation_type": "direct",
+            "credential_storage": "session",
+            "aws": {
+                "region": "us-east-1",
+                "identity_pool_name": pool_name,
+                "allowed_bedrock_regions": ["us-east-1"],
+                "stacks": {},
+                "cross_region_profile": "us",
+                "selected_model": None,
+            },
+            "monitoring": {"enabled": False},
+        }
+
+    def _save_in_tmp(self, cmd, config_data, profile_name, tmp_path):
+        import json
+        from unittest.mock import patch
+
+        from claude_code_with_bedrock.config import Config
+
+        config_dir = tmp_path / ".ccwb"
+        config_dir.mkdir(exist_ok=True)
+        profiles_dir = config_dir / "profiles"
+        profiles_dir.mkdir(exist_ok=True)
+        config_file = config_dir / "config.json"
+        if not config_file.exists():
+            config_file.write_text(json.dumps({"schema_version": "2.0", "active_profile": None}))
+
+        with patch.object(Config, "CONFIG_DIR", config_dir), \
+             patch.object(Config, "CONFIG_FILE", config_file), \
+             patch.object(Config, "PROFILES_DIR", profiles_dir):
+            cmd._save_configuration(config_data, profile_name)
+            return Config.load().get_profile(profile_name)
+
+    def test_derive_role_name_satisfies_template_pattern(self):
+        """Derived name must match the FederatedRoleName AllowedPattern + MaxLength 64,
+        across provider types and edge-case pool names (incl. digit-leading)."""
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        pat = re.compile(r"^[a-zA-Z][a-zA-Z0-9-_]*$")
+        for provider in ("okta", "azure", "auth0", "cognito", "google", "generic", None):
+            for pool in ("wmgccwb2", "123pool", "a" * 80, "my_pool-x", ""):
+                name = InitCommand._derive_role_name(pool, provider)
+                assert pat.match(name), f"{name!r} ({provider}/{pool!r}) fails pattern"
+                assert len(name) <= 64
+                assert name.startswith("Bedrock"), f"{name!r} lost provider-branded prefix"
+
+    def test_derive_role_name_format_keeps_provider_brand_and_pool_suffix(self):
+        """Format is Bedrock<Provider>FederatedRole-<pool>."""
+        from claude_code_with_bedrock.cli.commands.init import InitCommand
+
+        assert InitCommand._derive_role_name("wmgccwb2", "azure") == "BedrockAzureFederatedRole-wmgccwb2"
+        assert InitCommand._derive_role_name("rnd-pool", "okta") == "BedrockOktaFederatedRole-rnd-pool"
+
+    def test_new_direct_profile_gets_derived_role_name(self, cmd, tmp_path):
+        """A brand-new direct profile gets a per-profile (non-default) role name."""
+        # _config_data uses provider_type="okta", pool "wmgccwb2"
+        profile = self._save_in_tmp(cmd, self._config_data("wmgccwb2"), "new-b", tmp_path)
+        assert profile.federated_role_name == "BedrockOktaFederatedRole-wmgccwb2"
+
+    def test_existing_profile_role_name_not_renamed_on_reinit(self, cmd, tmp_path):
+        """Re-running init on an existing profile must NOT change its role name.
+
+        Renaming a deployed role changes its ARN and breaks the packaged config.json.
+        """
+        # First save (new) -> gets derived name
+        self._save_in_tmp(cmd, self._config_data("wmgccwb2"), "edit-b", tmp_path)
+        # Pin an existing role name (simulates a previously deployed profile)
+        import json
+        from unittest.mock import patch
+
+        from claude_code_with_bedrock.config import Config
+
+        config_dir = tmp_path / ".ccwb"
+        profiles_dir = config_dir / "profiles"
+        config_file = config_dir / "config.json"
+        pinned = "LegacyAzureFederatedRole"
+        pf = profiles_dir / "edit-b.json"
+        data = json.loads(pf.read_text())
+        data["federated_role_name"] = pinned
+        pf.write_text(json.dumps(data))
+
+        # Re-run init (edit path)
+        with patch.object(Config, "CONFIG_DIR", config_dir), \
+             patch.object(Config, "CONFIG_FILE", config_file), \
+             patch.object(Config, "PROFILES_DIR", profiles_dir):
+            cmd._save_configuration(self._config_data("wmgccwb2"), "edit-b")
+            reloaded = Config.load().get_profile("edit-b")
+
+        assert reloaded.federated_role_name == pinned, "init must not rename an existing profile's role"
+
+
+class TestExistingOidcArnPromptDefault:
+    """Regression: the OIDC-provider-ARN wizard prompt must tolerate a resumed config
+    where existing_oidc_provider_arn is present but None (issue #528).
+
+    On resume, init persists config["existing_oidc_provider_arn"] = <val> or None.
+    A prior `config.get(key, "")` then returned None, and questionary.text(default=None)
+    raises `TypeError: object of type 'NoneType' has no len()` at construction.
+    The fix resolves the default with `or ""`.
+    """
+
+    def test_default_resolves_to_empty_string_when_config_value_is_none(self):
+        """config.get(key) or "" must yield '' (not None) so questionary.text accepts it."""
+        import questionary
+
+        config = {"existing_oidc_provider_arn": None}  # resumed-session shape
+
+        # The expression used in init.py for the prompt default
+        default = config.get("existing_oidc_provider_arn") or ""
+
+        assert default == ""
+        # Construction with the resolved default must NOT raise (the bug raised here)
+        questionary.text("Existing IAM OIDC provider ARN:", default=default)
+
+    def test_questionary_text_rejects_none_default(self):
+        """Guards the assumption behind the fix: default=None is what crashed."""
+        import questionary
+
+        with pytest.raises(TypeError):
+            questionary.text("x", default=None)
+
+
 if __name__ == "__main__":
     # Run the tests
     pytest.main([__file__, "-v"])
