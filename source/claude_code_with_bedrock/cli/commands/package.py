@@ -7,12 +7,18 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import questionary
 from cleo.commands.command import Command
 from cleo.helpers import option
+
+
+def _is_interactive() -> bool:
+    """Return True when stdin is a TTY and prompts can be displayed."""
+    return sys.stdin.isatty()
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -297,28 +303,39 @@ class PackageCommand(Command):
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
-            selected_platforms = questionary.checkbox(
-                "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
-                choices=platform_choices,
-                validate=lambda x: len(x) > 0 or "You must select at least one platform",
-            ).ask()
+            if _is_interactive():
+                selected_platforms = questionary.checkbox(
+                    "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
+                    choices=platform_choices,
+                    validate=lambda x: len(x) > 0 or "You must select at least one platform",
+                ).ask()
+            else:
+                # Non-interactive: build all available platforms
+                selected_platforms = platform_choices
+                console.print(f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]")
 
             # Use the selected platforms (guaranteed to have at least one due to validation)
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
 
         # Prompt for co-authorship preference (default to No - opt-in approach)
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?",
-            default=False,
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?",
+                default=False,
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         # Prompt for custom OTel resource attributes (only when monitoring is enabled)
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes? (department, team, cost center)",
-                default=False,
-            ).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm(
+                    "Customize telemetry resource attributes? (department, team, cost center)",
+                    default=False,
+                ).ask()
+            else:
+                customize_otel = False
 
             if customize_otel:
                 console.print(
@@ -347,6 +364,24 @@ class PackageCommand(Command):
                 f"[red]Invalid platform: {target_platform}. Valid options: {', '.join(valid_platforms)}[/red]"
             )
             return 1
+
+        # Normalize generic platform tokens to their arch-specific canonical names.
+        # This ensures binary naming is consistent with what distribute and install.sh expect.
+        # See #682 Bug 4: generic 'linux' produces 'credential-process-linux' which
+        # distribute silently drops and install.sh can't find.
+        _PLATFORM_CANONICAL = {
+            "linux": "linux-x64",
+            "macos": "macos-arm64",
+        }
+        if use_go:
+            if isinstance(target_platform, list):
+                target_platform = [_PLATFORM_CANONICAL.get(p, p) for p in target_platform]
+            elif target_platform in _PLATFORM_CANONICAL:
+                canonical = _PLATFORM_CANONICAL[target_platform]
+                console.print(
+                    f"[dim]Normalizing platform '{target_platform}' → '{canonical}' for consistent binary naming[/dim]"
+                )
+                target_platform = canonical
 
         # Get federation identifier — try profile first, fall back to CloudFormation
         federation_type = profile.federation_type
@@ -463,17 +498,22 @@ class PackageCommand(Command):
                 if "@" in session_name:
                     idc_user_email = session_name
                     console.print(f"[dim]Detected user email from IDC: {idc_user_email}[/dim]")
-                else:
+                elif _is_interactive():
                     # Prompt if we can't auto-detect
                     idc_user_email = questionary.text(
                         "User email for OTEL attribution (IDC session name):",
                         default=session_name or "",
                     ).ask()
+                else:
+                    idc_user_email = session_name or ""
             except Exception:
-                idc_user_email = questionary.text(
-                    "User email for OTEL attribution:",
-                    default="",
-                ).ask()
+                if _is_interactive():
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution:",
+                        default="",
+                    ).ask()
+                else:
+                    idc_user_email = ""
 
             if not idc_user_email:
                 console.print("[yellow]Warning: No user email — OTEL attribution will be anonymous[/yellow]")
@@ -2438,13 +2478,19 @@ RUN pyinstaller \
             return 1
 
         # Prompt for co-authorship and OTEL attributes
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?", default=False
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?", default=False
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            else:
+                customize_otel = False
             if customize_otel:
                 department = questionary.text("Department:", default="engineering").ask()
                 team_id = questionary.text("Team ID:", default="default").ask()

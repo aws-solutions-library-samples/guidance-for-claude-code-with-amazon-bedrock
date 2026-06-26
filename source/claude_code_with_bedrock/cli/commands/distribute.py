@@ -217,6 +217,13 @@ class DistributeCommand(Command):
             console.print("\n[green]Auto-selecting only available build[/green]")
             return build_map[choices[0]]
 
+        # Non-interactive: auto-select latest build
+        import sys as _sys
+
+        if not _sys.stdin.isatty():
+            console.print("\n[dim]Non-interactive mode: selecting latest build[/dim]")
+            return build_map[choices[0]]
+
         # Show selection
         console.print()
         selected = questionary.select(
@@ -593,8 +600,11 @@ class DistributeCommand(Command):
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
                 ("credential-process-linux-arm64", "credential-process-linux-arm64"),
+                # Accept generic linux binary (maps to x64 for compat with install.sh)
+                ("credential-process-linux", "credential-process-linux-x64"),
                 ("otel-helper-linux-x64", "otel-helper-linux-x64"),
                 ("otel-helper-linux-arm64", "otel-helper-linux-arm64"),
+                ("otel-helper-linux", "otel-helper-linux-x64"),
                 ("otelcol-linux-x64", "otelcol-linux-x64"),
                 ("otelcol-linux-arm64", "otelcol-linux-arm64"),
                 ("otel-helper.sh", "otel-helper.sh"),
@@ -949,12 +959,18 @@ class DistributeCommand(Command):
 
         if "windows" not in found_platforms:
             console.print("\n[yellow]Warning: Windows support not included in this distribution[/yellow]")
-            from questionary import confirm
+            import sys as _sys
 
-            proceed = confirm("Continue without Windows support?", default=False).ask()
-            if not proceed:
-                console.print("Distribution cancelled.")
-                return 0
+            if _sys.stdin.isatty():
+                from questionary import confirm
+
+                proceed = confirm("Continue without Windows support?", default=False).ask()
+                if not proceed:
+                    console.print("Distribution cancelled.")
+                    return 0
+            else:
+                # Non-interactive: proceed with default (skip Windows)
+                console.print("[dim]Non-interactive mode: proceeding without Windows support[/dim]")
 
         console.print(f"\n[green]Ready to distribute for: {', '.join(found_platforms)}[/green]")
 
