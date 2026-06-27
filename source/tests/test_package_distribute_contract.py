@@ -151,10 +151,7 @@ class TestPackageDistributeContract:
             if expected_binary not in distribute_accepts:
                 missing.append(expected_binary)
 
-        assert not missing, (
-            f"install.sh expects binaries that distribute.py doesn't include!\n"
-            f"Missing: {missing}"
-        )
+        assert not missing, f"install.sh expects binaries that distribute.py doesn't include!\nMissing: {missing}"
 
     def test_otel_helper_naming_matches_credential_process(self):
         """otel-helper binaries must use the same platform suffixes as credential-process.
@@ -194,10 +191,7 @@ class TestPackageDistributeContract:
         distribute_accepts = _get_distribute_accepted_source_names()
 
         # Tokens without a hyphen-separated arch component
-        generic_tokens = [
-            plat for plat in _GO_PLATFORM_MAP
-            if plat in ("linux", "macos", "windows")
-        ]
+        generic_tokens = [plat for plat in _GO_PLATFORM_MAP if plat in ("linux", "macos", "windows")]
 
         dangerous = []
         for token in generic_tokens:
@@ -212,10 +206,7 @@ class TestPackageDistributeContract:
         if dangerous:
             # This is informational — the test documents the risk
             # If normalization is in place, generic tokens never reach the build
-            pytest.skip(
-                f"Generic tokens produce non-standard names (should be normalized before build): "
-                f"{dangerous}"
-            )
+            pytest.skip(f"Generic tokens produce non-standard names (should be normalized before build): {dangerous}")
 
     @pytest.mark.parametrize("platform", list(_GO_PLATFORM_MAP.keys()))
     def test_platform_suffix_is_deterministic(self, platform):
