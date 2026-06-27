@@ -1,24 +1,23 @@
 # ABOUTME: CloudFormation template for the Claude Desktop Bootstrap Server
 # ABOUTME: Deploys an API Gateway HTTP API + Lambda that validates OIDC tokens
-# ABOUTME: and returns per-user configuration for Claude Desktop at sign-in
+# ABOUTME: or IAM (SigV4) auth and returns per-user configuration for Claude Desktop
 
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Claude Desktop Bootstrap Server — delivers per-user configuration dynamically at sign-in
-  as an alternative to static MDM profiles. Validates OIDC Bearer tokens and returns
-  configuration JSON including inference provider, region, models, and OTEL settings.
+  Claude Desktop Bootstrap Server — delivers per-user configuration dynamically at sign-in.
+  Supports OIDC Bearer auth (JWT validation) and IAM auth (SigV4 for IDC users).
+  Returns configuration JSON including inference provider, region, models, and OTEL settings.
 
 Parameters:
   OidcIssuerUrl:
     Type: String
-    Description: "OIDC issuer URL (e.g. https://company.okta.com/oauth2/default)"
-    AllowedPattern: "^https://.*"
-    ConstraintDescription: "Must be a valid HTTPS URL"
+    Description: "OIDC issuer URL (e.g. https://company.okta.com/oauth2/default). Leave empty for IDC-only mode."
+    Default: ""
 
   OidcClientId:
     Type: String
-    Description: "OIDC client ID for token audience validation"
-    MinLength: 1
+    Description: "OIDC client ID for token audience validation. Leave empty for IDC-only mode."
+    Default: ""
 
   OidcJwksEndpoint:
     Type: String
@@ -46,6 +45,10 @@ Parameters:
     Default: 28800
     MinValue: 3600
     MaxValue: 86400
+
+Conditions:
+  HasOidcAuth: !Not [!Equals [!Ref OidcIssuerUrl, ""]]
+  HasIamAuth: !Equals [!Ref OidcIssuerUrl, ""]
 
 Resources:
   BootstrapFunction:
@@ -131,6 +134,25 @@ Resources:
       ApiId: !Ref BootstrapApi
       RouteKey: "GET /config"
       Target: !Sub "integrations/${BootstrapApiIntegration}"
+      # OIDC mode: no API-level auth (Lambda validates Bearer token itself)
+      # IDC mode: AWS_IAM auth (SigV4 — API Gateway validates the signature)
+      AuthorizationType: !If [HasOidcAuth, "NONE", "AWS_IAM"]
+
+  # IAM Managed Policy for IDC callers (only created when using IAM auth).
+  # IDC permission sets must include this policy to call the bootstrap API.
+  BootstrapApiInvokePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: HasIamAuth
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-BootstrapApiInvoke"
+      Description: "Allows invoke on the bootstrap API Gateway (required for IDC/IAM-auth callers)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowBootstrapApiInvoke
+            Effect: Allow
+            Action: "execute-api:Invoke"
+            Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*"
 
   BootstrapApiPermission:
     Type: AWS::Lambda::Permission
@@ -154,3 +176,10 @@ Outputs:
   BootstrapApiId:
     Description: "API Gateway HTTP API ID"
     Value: !Ref BootstrapApi
+
+  BootstrapApiInvokePolicyArn:
+    Condition: HasIamAuth
+    Description: "ARN of the managed policy granting execute-api:Invoke (attach to IDC permission sets)"
+    Value: !Ref BootstrapApiInvokePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-BootstrapApiInvokePolicyArn"

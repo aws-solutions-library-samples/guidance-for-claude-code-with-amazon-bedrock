@@ -230,61 +230,30 @@ def _response(status_code: int, body: dict, extra_headers: dict = None) -> dict:
 def lambda_handler(event, context):
     """Main Lambda handler for the Bootstrap Server.
 
-    Expects:
-        - GET /config with Authorization: Bearer <token> header
+    Supports two authentication modes:
+    1. OIDC (Bearer token): Client sends Authorization: Bearer <jwt>
+       Lambda validates JWT signature against JWKS.
+    2. IAM (SigV4): Client signs request with STS credentials.
+       API Gateway validates SigV4; Lambda extracts identity from request context.
 
     Returns:
         - 200: Configuration JSON on success
-        - 401: Invalid or missing token
+        - 401: Invalid or missing token (OIDC mode)
         - 403: User not authorized
         - 500: Internal server error
     """
     try:
-        # Extract Authorization header
-        headers = event.get("headers", {})
-        auth_header = headers.get("authorization", headers.get("Authorization", ""))
+        # Check if this is an IAM-authenticated request (SigV4)
+        # API Gateway populates requestContext.authorizer.iam for AWS_IAM routes
+        request_context = event.get("requestContext", {})
+        iam_context = request_context.get("authorizer", {}).get("iam", {})
 
-        if not auth_header:
-            return _response(401, {
-                "error": "unauthorized",
-                "message": "Missing Authorization header",
-            })
+        if iam_context:
+            # IAM auth mode (IDC users) — identity comes from SigV4 context
+            return _handle_iam_auth(iam_context)
 
-        # Extract Bearer token
-        if not auth_header.startswith("Bearer "):
-            return _response(401, {
-                "error": "unauthorized",
-                "message": "Invalid authorization scheme — expected Bearer token",
-            })
-
-        token = auth_header[7:]  # Strip "Bearer " prefix
-
-        # Validate token
-        try:
-            claims = _validate_token(token)
-        except ValueError as e:
-            error_msg = str(e)
-            # Distinguish between auth errors
-            if "expired" in error_msg.lower():
-                return _response(401, {
-                    "error": "token_expired",
-                    "message": "Token has expired — please re-authenticate",
-                })
-            elif "issuer" in error_msg.lower() or "audience" in error_msg.lower():
-                return _response(403, {
-                    "error": "forbidden",
-                    "message": f"Token validation failed: {error_msg}",
-                })
-            else:
-                return _response(401, {
-                    "error": "unauthorized",
-                    "message": f"Token validation failed: {error_msg}",
-                })
-
-        # Build and return configuration
-        config = _build_config_response(claims)
-
-        return _response(200, config)
+        # OIDC Bearer token mode
+        return _handle_oidc_auth(event)
 
     except Exception as e:
         # Log the error for CloudWatch but don't leak details to client
@@ -293,3 +262,81 @@ def lambda_handler(event, context):
             "error": "internal_error",
             "message": "An internal error occurred",
         })
+
+
+def _handle_iam_auth(iam_context: dict) -> dict:
+    """Handle IAM-authenticated requests (IDC users with SigV4).
+
+    API Gateway has already validated the SigV4 signature. We extract the
+    user identity from the IAM context (caller ARN).
+
+    IDC ARN format: arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com
+    The session name (last segment after /) is typically the user's email.
+    """
+    user_arn = iam_context.get("userArn", "")
+    account_id = iam_context.get("accountId", "")
+
+    # Extract user identity from ARN session name
+    # IDC format: arn:aws:sts::123456:assumed-role/AWSReservedSSO_PermSet_xxx/user@company.com
+    session_name = user_arn.rsplit("/", 1)[-1] if "/" in user_arn else ""
+    user_email = session_name if "@" in session_name else ""
+    user_sub = session_name or user_arn  # Use session name as sub, fall back to full ARN
+
+    # Build claims-like dict for _build_config_response
+    claims = {
+        "sub": user_sub,
+        "email": user_email,
+        "arn": user_arn,
+        "account_id": account_id,
+    }
+
+    config = _build_config_response(claims)
+    return _response(200, config)
+
+
+def _handle_oidc_auth(event: dict) -> dict:
+    """Handle OIDC Bearer token authentication."""
+    # Extract Authorization header
+    headers = event.get("headers", {})
+    auth_header = headers.get("authorization", headers.get("Authorization", ""))
+
+    if not auth_header:
+        return _response(401, {
+            "error": "unauthorized",
+            "message": "Missing Authorization header",
+        })
+
+    # Extract Bearer token
+    if not auth_header.startswith("Bearer "):
+        return _response(401, {
+            "error": "unauthorized",
+            "message": "Invalid authorization scheme — expected Bearer token",
+        })
+
+    token = auth_header[7:]  # Strip "Bearer " prefix
+
+    # Validate token
+    try:
+        claims = _validate_token(token)
+    except ValueError as e:
+        error_msg = str(e)
+        # Distinguish between auth errors
+        if "expired" in error_msg.lower():
+            return _response(401, {
+                "error": "token_expired",
+                "message": "Token has expired — please re-authenticate",
+            })
+        elif "issuer" in error_msg.lower() or "audience" in error_msg.lower():
+            return _response(403, {
+                "error": "forbidden",
+                "message": f"Token validation failed: {error_msg}",
+            })
+        else:
+            return _response(401, {
+                "error": "unauthorized",
+                "message": f"Token validation failed: {error_msg}",
+            })
+
+    # Build and return configuration
+    config = _build_config_response(claims)
+    return _response(200, config)
