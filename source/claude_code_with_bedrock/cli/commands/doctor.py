@@ -305,6 +305,7 @@ def run_doctor(home: Path = None, live: bool = False) -> list:
         # ─── Check 9 (live only): proxy port health ───────────────────────────
         check = HealthCheck("proxy-health", "OTEL proxy accepting connections")
         import socket
+
         for port in [4318, 4319]:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=1):
@@ -412,11 +413,13 @@ def _print_issue_link(checks: list, console: Console):
             if monitoring.get("bootstrap_endpoint"):
                 issue_body += f"- **Bootstrap endpoint:** {monitoring['bootstrap_endpoint']}\n"
 
-    params = urllib.parse.urlencode({
-        "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",
-        "body": issue_body,
-        "labels": "bug",
-    })
+    params = urllib.parse.urlencode(
+        {
+            "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",
+            "body": issue_body,
+            "labels": "bug",
+        }
+    )
     issue_url = f"https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/new?{params}"
     console.print("\n[dim]Report this issue (pre-filled):[/dim]")
     console.print(f"  {issue_url}")

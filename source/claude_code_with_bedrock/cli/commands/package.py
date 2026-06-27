@@ -70,7 +70,8 @@ def _go_ldflags(goos: str) -> str:
     try:
         ver = subprocess.check_output(
             ["git", "describe", "--tags", "--always", "--dirty"],
-            stderr=subprocess.DEVNULL, text=True,
+            stderr=subprocess.DEVNULL,
+            text=True,
         ).strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         ver = "dev"
@@ -79,7 +80,8 @@ def _go_ldflags(goos: str) -> str:
     try:
         commit = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL, text=True,
+            stderr=subprocess.DEVNULL,
+            text=True,
         ).strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         commit = "unknown"
