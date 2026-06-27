@@ -22,7 +22,6 @@ import urllib.request
 import urllib.parse
 import boto3
 from boto3.dynamodb.conditions import Key
-from decimal import Decimal
 
 # Environment variables
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
@@ -43,6 +42,7 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "")
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME) if TABLE_NAME else None
 secrets_client = boto3.client("secretsmanager")
+s3_client = boto3.client("s3")
 
 # Cached client secret
 _client_secret_cache = None
@@ -306,13 +306,18 @@ def handle_oauth_token(event):
         return json_response(400, {"error": "authorization_pending"})
 
     if status == "approved":
-        # Return the access token and mark as consumed
-        table.update_item(
-            Key={"device_code": device_code},
-            UpdateExpression="SET #s = :status",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":status": "consumed"},
-        )
+        # Return the access token and mark as consumed (atomic to prevent double-issuance)
+        try:
+            table.update_item(
+                Key={"device_code": device_code},
+                UpdateExpression="SET #s = :status",
+                ConditionExpression="#s = :approved",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":status": "consumed", ":approved": "approved"},
+            )
+        except Exception:
+            # Race: another poll already consumed this grant
+            return json_response(400, {"error": "expired_token", "error_description": "Token already issued"})
         return json_response(
             200,
             {
@@ -354,8 +359,8 @@ def handle_plugins(event):
     # Try S3 first (decouples plugin updates from stack deploys)
     if PLUGINS_S3_BUCKET:
         try:
-            s3 = boto3.client("s3")
-            obj = s3.get_object(Bucket=PLUGINS_S3_BUCKET, Key=PLUGINS_S3_KEY)
+
+            obj = s3_client.get_object(Bucket=PLUGINS_S3_BUCKET, Key=PLUGINS_S3_KEY)
             registry = json.loads(obj["Body"].read())
         except Exception:
             pass  # Fall through to env var

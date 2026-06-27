@@ -94,7 +94,7 @@ Resources:
         Enabled: true
       SSESpecification:
         SSEEnabled: true
-      DeletionProtectionEnabled: true
+      DeletionProtectionEnabled: false
 
   # ============================================================
   # WAFv2 WebACL - IP allowlist
@@ -140,7 +140,6 @@ Resources:
   BootstrapLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-bootstrap-lambda-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -187,7 +186,6 @@ Resources:
   AuthorizerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-authorizer-lambda-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
