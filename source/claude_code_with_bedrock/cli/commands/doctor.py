@@ -182,11 +182,19 @@ def run_doctor(home: Path = None, live: bool = False) -> list:
             provider_type = ""
             if explain_data.get("provider"):
                 provider_type = f", provider={explain_data['provider'].get('type', '?')}"
+            monitoring = explain_data.get("monitoring", {})
+            monitoring_str = ""
+            if monitoring.get("enabled"):
+                mon_mode = monitoring.get("mode", "?")
+                delivery = monitoring.get("config_delivery", "static")
+                monitoring_str = f", monitoring={mon_mode}"
+                if delivery == "bootstrap":
+                    monitoring_str += " (bootstrap)"
             quota_str = ""
             if explain_data.get("quota", {}).get("enabled"):
                 quota_str = ", quota=enabled"
             check.pass_(
-                f"mode={mode}{provider_type}{quota_str} (v{ver} @{commit})",
+                f"mode={mode}{provider_type}{monitoring_str}{quota_str} (v{ver} @{commit})",
                 detail=explain_data,
             )
         else:
@@ -396,6 +404,13 @@ def _print_issue_link(checks: list, console: Console):
         issue_body += f"- **Commit:** {explain_check.detail.get('commit', 'unknown')}\n"
         if explain_check.detail.get("provider"):
             issue_body += f"- **Provider:** {explain_check.detail['provider'].get('type', 'unknown')}\n"
+        monitoring = explain_check.detail.get("monitoring", {})
+        if monitoring.get("enabled"):
+            issue_body += f"- **Monitoring:** {monitoring.get('mode', 'unknown')} ({monitoring.get('config_delivery', 'static')})\n"
+            if monitoring.get("endpoint"):
+                issue_body += f"- **OTEL endpoint:** {monitoring['endpoint']}\n"
+            if monitoring.get("bootstrap_endpoint"):
+                issue_body += f"- **Bootstrap endpoint:** {monitoring['bootstrap_endpoint']}\n"
 
     params = urllib.parse.urlencode({
         "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",

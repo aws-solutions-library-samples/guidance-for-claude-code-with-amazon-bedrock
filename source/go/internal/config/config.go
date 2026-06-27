@@ -98,6 +98,15 @@ type ProfileConfig struct {
 	IDCPermissionSetName string `json:"idc_permission_set_name,omitempty"` // IAM role name / permission set
 	IDCRegion            string `json:"idc_region,omitempty"`              // SSO endpoint region (defaults to aws_region)
 
+	// Monitoring
+	MonitoringEnabled      bool   `json:"monitoring_enabled,omitempty"`       // Whether telemetry collection is active
+	MonitoringMode         string `json:"monitoring_mode,omitempty"`          // "central" (ECS Fargate) | "sidecar" (local collector)
+	OtelCollectorEndpoint  string `json:"otel_collector_endpoint,omitempty"` // ALB/collector URL for OTLP export
+
+	// Bootstrap server (dynamic config delivery for CoWork)
+	BootstrapEndpoint      string `json:"bootstrap_endpoint,omitempty"`      // Lambda URL for per-user config at sign-in
+	ConfigDeliveryMode     string `json:"config_delivery_mode,omitempty"`    // "static" | "bootstrap"
+
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
 	OktaClientID string `json:"okta_client_id"`

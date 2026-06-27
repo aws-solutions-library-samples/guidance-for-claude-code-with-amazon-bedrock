@@ -18,15 +18,16 @@ import (
 
 // ExplainOutput is the structured JSON output for --explain.
 type ExplainOutput struct {
-	Version  string        `json:"version"`
-	Commit   string        `json:"commit"`
-	Profile  string        `json:"profile"`
-	Platform PlatformInfo  `json:"platform"`
-	Auth     AuthInfo      `json:"auth"`
-	Provider *ProviderInfo `json:"provider,omitempty"`
-	Quota    QuotaInfo     `json:"quota"`
-	Storage  StorageInfo   `json:"storage"`
-	Paths    PathsInfo     `json:"paths"`
+	Version    string          `json:"version"`
+	Commit     string          `json:"commit"`
+	Profile    string          `json:"profile"`
+	Platform   PlatformInfo    `json:"platform"`
+	Auth       AuthInfo        `json:"auth"`
+	Provider   *ProviderInfo   `json:"provider,omitempty"`
+	Monitoring MonitoringInfo  `json:"monitoring"`
+	Quota      QuotaInfo       `json:"quota"`
+	Storage    StorageInfo     `json:"storage"`
+	Paths      PathsInfo       `json:"paths"`
 }
 
 // PlatformInfo describes the runtime environment.
@@ -55,6 +56,15 @@ type QuotaInfo struct {
 	Endpoint   string `json:"endpoint,omitempty"`
 	FailMode   string `json:"fail_mode,omitempty"`   // "open" | "closed"
 	AuthMethod string `json:"auth_method,omitempty"` // "bearer" | "sigv4"
+}
+
+// MonitoringInfo describes telemetry collection configuration.
+type MonitoringInfo struct {
+	Enabled          bool   `json:"enabled"`
+	Mode             string `json:"mode"`                        // "central" | "sidecar" | "none"
+	Endpoint         string `json:"endpoint,omitempty"`          // OTEL collector endpoint
+	ConfigDelivery   string `json:"config_delivery"`             // "static" | "bootstrap"
+	BootstrapEndpoint string `json:"bootstrap_endpoint,omitempty"` // Lambda URL (if bootstrap)
 }
 
 // StorageInfo describes credential storage configuration.
@@ -147,7 +157,48 @@ func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput
 		}
 	}
 
+	// Resolve monitoring configuration
+	output.Monitoring = resolveMonitoring(cfg)
+
 	return output
+}
+
+// resolveMonitoring returns the monitoring configuration from the profile.
+func resolveMonitoring(cfg *config.ProfileConfig) MonitoringInfo {
+	info := MonitoringInfo{
+		Enabled:        cfg.MonitoringEnabled,
+		Mode:           "none",
+		ConfigDelivery: "static",
+	}
+
+	if !cfg.MonitoringEnabled {
+		return info
+	}
+
+	// Monitoring mode
+	if cfg.MonitoringMode != "" {
+		info.Mode = cfg.MonitoringMode
+	} else {
+		info.Mode = "central" // default
+	}
+
+	// OTEL collector endpoint
+	if cfg.OtelCollectorEndpoint != "" {
+		info.Endpoint = cfg.OtelCollectorEndpoint
+	}
+
+	// Bootstrap server (dynamic config delivery)
+	if cfg.ConfigDeliveryMode != "" {
+		info.ConfigDelivery = cfg.ConfigDeliveryMode
+	}
+	if cfg.BootstrapEndpoint != "" {
+		info.BootstrapEndpoint = cfg.BootstrapEndpoint
+		if info.ConfigDelivery == "static" {
+			info.ConfigDelivery = "bootstrap" // infer from presence of endpoint
+		}
+	}
+
+	return info
 }
 
 // resolveProviderTypeQuiet detects the provider without printing errors.
