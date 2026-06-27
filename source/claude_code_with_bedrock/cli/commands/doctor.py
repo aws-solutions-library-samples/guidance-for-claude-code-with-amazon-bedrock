@@ -219,6 +219,22 @@ def print_results(checks: list, console: Console = None):
         return 0
     else:
         console.print(f"[red]✗ {fails} check(s) failed[/red] ({passes} pass, {warns} warnings)")
+        # Generate pre-filled GitHub issue URL to reduce filing burden
+        failed_checks = [c for c in checks if c.status == "fail"]
+        issue_body = "## ccwb doctor output\n\n"
+        issue_body += "| Check | Status | Details |\n|-------|--------|---------|\n"
+        for c in checks:
+            issue_body += f"| {c.name} | {c.status.upper()} | {c.message} |\n"
+        issue_body += "\n## Environment\n- OS: \n- Python: \n- ccwb version: \n"
+        import urllib.parse
+        params = urllib.parse.urlencode({
+            "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",
+            "body": issue_body,
+            "labels": "bug",
+        })
+        issue_url = f"https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/new?{params}"
+        console.print(f"\n[dim]Report this issue (pre-filled):[/dim]")
+        console.print(f"  {issue_url}")
         return 1
 
 
