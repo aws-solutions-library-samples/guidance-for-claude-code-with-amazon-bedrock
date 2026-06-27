@@ -89,12 +89,13 @@ def _run_binary_json(binary_path: Path, args: list, timeout: int = 10) -> dict |
     return None
 
 
-def run_doctor(home: Path = None, live: bool = False) -> list:
+def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> list:
     """Run all health checks and return list of HealthCheck results.
 
     Args:
         home: Override home directory (for testing).
         live: If True, also perform network-dependent checks (auth, proxy health).
+        profile: If set, check only this profile (passed to --explain/--status).
     """
     checks = []
 
@@ -174,7 +175,10 @@ def run_doctor(home: Path = None, live: bool = False) -> list:
     # ─── Check 5: credential-process --explain (resolved config) ──────────────
     check = HealthCheck("explain", "Resolved auth mode and configuration")
     if binary_path:
-        explain_data = _run_binary_json(binary_path, ["--explain"])
+        explain_args = ["--explain"]
+        if profile:
+            explain_args.extend(["--profile", profile])
+        explain_data = _run_binary_json(binary_path, explain_args)
         if explain_data:
             mode = explain_data.get("auth", {}).get("mode", "unknown")
             ver = explain_data.get("version", "unknown")
@@ -235,7 +239,10 @@ def run_doctor(home: Path = None, live: bool = False) -> list:
     # ─── Check 7: otel-helper --status (proxy health) ─────────────────────────
     check = HealthCheck("otel-status", "Telemetry proxy status")
     if otel_path:
-        status_data = _run_binary_json(otel_path, ["--status"])
+        status_args = ["--status"]
+        if profile:
+            status_args.extend(["--profile", profile])
+        status_data = _run_binary_json(otel_path, status_args)
         if status_data:
             proxy = status_data.get("proxy", {})
             cache = status_data.get("cache", {})
@@ -474,7 +481,8 @@ Machine-readable output (pipe to scripts or support):
         """Execute the doctor command."""
         console = Console()
         live = self.option("live")
-        checks = run_doctor(live=live)
+        profile = self.option("profile")
+        checks = run_doctor(live=live, profile=profile)
 
         if self.option("json"):
             output = {
