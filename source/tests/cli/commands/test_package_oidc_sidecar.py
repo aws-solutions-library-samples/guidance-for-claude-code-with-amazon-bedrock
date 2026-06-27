@@ -229,14 +229,23 @@ class TestBuildOtelcolTargets:
         """Windows binaries must NOT be stripped (Defender Wacatac.B!ml on stripped Go)."""
         from claude_code_with_bedrock.cli.commands.package import _go_ldflags
 
-        assert _go_ldflags("windows") == ""
+        flags = _go_ldflags("windows")
+        assert "-s" not in flags.split()
+        assert "-w" not in flags.split()
+        # Version injection must still be present
+        assert "-X" in flags
 
     def test_non_windows_ldflags_stripped(self):
         """macOS/Linux binaries are stripped (-s -w) for size."""
         from claude_code_with_bedrock.cli.commands.package import _go_ldflags
 
-        assert _go_ldflags("darwin") == "-s -w"
-        assert _go_ldflags("linux") == "-s -w"
+        darwin_flags = _go_ldflags("darwin")
+        linux_flags = _go_ldflags("linux")
+        assert "-s" in darwin_flags and "-w" in darwin_flags
+        assert "-s" in linux_flags and "-w" in linux_flags
+        # Version injection must also be present
+        assert "-X" in darwin_flags
+        assert "-X" in linux_flags
 
     def test_build_otelcol_method_exists(self):
         """_build_otelcol must be restored on PackageCommand (regression for PR #338 removal)."""

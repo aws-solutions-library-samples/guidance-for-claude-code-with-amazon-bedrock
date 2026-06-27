@@ -6,17 +6,15 @@
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from claude_code_with_bedrock.cli.commands.doctor import (
-    run_doctor,
-    HealthCheck,
     _find_binary,
-    _run_binary_json,
+    run_doctor,
 )
 
 
@@ -86,7 +84,9 @@ class TestDoctorHealthChecks:
         # AWS config
         aws_dir = tmp_path / ".aws"
         aws_dir.mkdir()
-        (aws_dir / "config").write_text("[profile ClaudeCode]\ncredential_process = ~/claude-code-with-bedrock/credential-process\n")
+        (aws_dir / "config").write_text(
+            "[profile ClaudeCode]\ncredential_process = ~/claude-code-with-bedrock/credential-process\n"
+        )
 
         # Claude settings
         claude_dir = tmp_path / ".claude"
@@ -94,22 +94,26 @@ class TestDoctorHealthChecks:
         (claude_dir / "settings.json").write_text(json.dumps({"env": {"AWS_PROFILE": "ClaudeCode"}, "hooks": {}}))
 
         # Mock subprocess calls for --explain and --status
-        explain_output = json.dumps({
-            "version": "2.5.0",
-            "commit": "abc1234",
-            "profile": "default",
-            "auth": {"mode": "oidc", "reason": "sso_enabled=true"},
-            "provider": {"type": "okta", "domain": "company.okta.com"},
-            "quota": {"enabled": False},
-            "storage": {"mode": "keyring"},
-            "paths": {},
-            "platform": {"os": "linux", "arch": "amd64"},
-        })
-        status_output = json.dumps({
-            "version": "2.5.0",
-            "proxy": {"listening": False, "port": 4318},
-            "cache": {"has_headers": False},
-        })
+        explain_output = json.dumps(
+            {
+                "version": "2.5.0",
+                "commit": "abc1234",
+                "profile": "default",
+                "auth": {"mode": "oidc", "reason": "sso_enabled=true"},
+                "provider": {"type": "okta", "domain": "company.okta.com"},
+                "quota": {"enabled": False},
+                "storage": {"mode": "keyring"},
+                "paths": {},
+                "platform": {"os": "linux", "arch": "amd64"},
+            }
+        )
+        status_output = json.dumps(
+            {
+                "version": "2.5.0",
+                "proxy": {"listening": False, "port": 4318},
+                "cache": {"has_headers": False},
+            }
+        )
 
         def mock_run(cmd, **kwargs):
             mock_result = MagicMock()
