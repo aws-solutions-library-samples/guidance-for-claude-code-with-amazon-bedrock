@@ -51,6 +51,7 @@ func main() {
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
 	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
+	explain := flag.Bool("explain", false, "Print resolved configuration as JSON and exit (no auth, no network calls)")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -81,6 +82,11 @@ func main() {
 	app := &credentialApp{
 		profile: profile,
 		cfg:     cfg,
+	}
+
+	// --explain: print resolved config as JSON and exit (no auth, no network).
+	if *explain {
+		runExplain(profile, cfg)
 	}
 
 	// Flag dispatch — must run before auth-type branching so IDC users
