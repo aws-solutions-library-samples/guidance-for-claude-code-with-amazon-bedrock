@@ -28,7 +28,7 @@ Parameters:
     Type: String
     Description: IdP JWKS endpoint URL for token verification
 
-    AllowedCidr:
+  AllowedCidr:
     Type: String
     Default: '0.0.0.0/0'
     Description: >-
@@ -81,6 +81,9 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      DeletionProtectionEnabled: true
 
   # ============================================================
   # WAFv2 WebACL - IP allowlist
@@ -135,7 +138,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: DynamoDBAccess
           PolicyDocument:
@@ -171,7 +174,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
 
   # ============================================================
   # Lambda Functions
@@ -200,11 +203,7 @@ Resources:
           INFERENCE_MODELS: !Ref InferenceModels
           PLUGINS_REGISTRY_JSON: !Ref PluginsRegistryJson
           API_BASE_URL: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
-      Code:
-        ZipFile: |
-          # Placeholder - deploy actual code from lambda-functions/bootstrap_device_code/index.py
-          def handler(event, context):
-              return {"statusCode": 200, "body": "placeholder"}
+      Code: ./lambda-functions/bootstrap_device_code/
 
   AuthorizerFunction:
     Type: AWS::Lambda::Function
@@ -222,11 +221,7 @@ Resources:
           OIDC_ISSUER_URL: !Ref OidcIssuerUrl
           OIDC_CLIENT_ID: !Ref OidcClientId
           OIDC_JWKS_ENDPOINT: !Ref OidcJwksEndpoint
-      Code:
-        ZipFile: |
-          # Placeholder - deploy actual code from lambda-functions/bootstrap_device_code/authorizer.py
-          def handler(event, context):
-              return {"principalId": "user", "policyDocument": {"Version": "2012-10-17", "Statement": [{"Action": "execute-api:Invoke", "Effect": "Deny", "Resource": "*"}]}}
+      Code: ./lambda-functions/bootstrap_device_code/
 
   # ============================================================
   # API Gateway REST API

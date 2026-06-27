@@ -226,9 +226,10 @@ def handle_callback(event):
         with urllib.request.urlopen(req, timeout=10) as resp:
             token_response = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
+        print(f"Token exchange error: {e}")
         return html_response(
             500,
-            f"<html><body><h1>Token exchange failed</h1><p>{str(e)}</p></body></html>",
+            "<html><body><h1>Token exchange failed</h1><p>An error occurred during authentication. Please try again.</p></body></html>",
         )
 
     access_token = token_response.get("access_token", "")
@@ -382,4 +383,4 @@ def handler(event, context):
             return json_response(404, {"error": "not_found", "error_description": f"No route for {method} {path}"})
     except Exception as e:
         print(f"Unhandled error: {e}")
-        return json_response(500, {"error": "server_error", "error_description": str(e)})
+        return json_response(500, {"error": "server_error", "error_description": "An internal error occurred"})
