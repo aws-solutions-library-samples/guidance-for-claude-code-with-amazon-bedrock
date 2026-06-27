@@ -14,13 +14,6 @@ from pathlib import Path
 import questionary
 from cleo.commands.command import Command
 from cleo.helpers import option
-
-
-def _is_interactive() -> bool:
-    """Return True when stdin is a TTY and prompts can be displayed."""
-    return sys.stdin.isatty()
-
-
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -32,6 +25,12 @@ from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
 )
+
+
+def _is_interactive() -> bool:
+    """Return True when stdin is a TTY and prompts can be displayed."""
+    return sys.stdin.isatty()
+
 
 # Runtime packages bundled into the credential provider binary.
 _CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "cryptography"]
