@@ -12,7 +12,9 @@ from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
 
 
-def _make_oidc_profile(monitoring_mode="sidecar", monitoring_enabled=True, endpoint="https://alb.example.com"):
+def _make_oidc_profile(
+    monitoring_mode="sidecar", monitoring_enabled=True, endpoint: str | None = "https://alb.example.com"
+):
     return Profile(
         name="test-oidc",
         provider_domain="auth.example.com",
@@ -42,6 +44,25 @@ class TestSidecarEndpointOverride:
             settings_path = output_dir / "claude-settings" / "settings.json"
             settings = json.loads(settings_path.read_text())
             assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
+
+    def test_sidecar_without_saved_endpoint_still_configures_localhost(self):
+        """Regression: real sidecar deploys have NO saved otel_collector_endpoint
+        (there is no central monitoring stack to read one from). Telemetry must
+        still be configured to http://localhost:4318 — the previous code only
+        applied the localhost override *after* resolving a non-empty endpoint, so
+        a None endpoint fell through to the 'no endpoint found' path and telemetry
+        was silently left unconfigured."""
+        command = PackageCommand()
+        profile = _make_oidc_profile(monitoring_mode="sidecar", endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile)
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            settings = json.loads(settings_path.read_text())
+            assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
+            assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
 
     def test_central_mode_preserves_profile_endpoint(self):
         """Central mode must NOT override the ALB endpoint with localhost."""
