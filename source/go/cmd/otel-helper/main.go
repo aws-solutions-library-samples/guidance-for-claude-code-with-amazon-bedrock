@@ -66,7 +66,7 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Printf("otel-helper %s\n", version.Version)
+		fmt.Printf("otel-helper %s (%s)\n", version.Version, version.Commit)
 		os.Exit(0)
 	}
 
