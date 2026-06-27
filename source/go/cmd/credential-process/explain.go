@@ -54,10 +54,15 @@ type ProviderInfo struct {
 
 // QuotaInfo describes quota enforcement configuration.
 type QuotaInfo struct {
-	Enabled    bool   `json:"enabled"`
-	Endpoint   string `json:"endpoint,omitempty"`
-	FailMode   string `json:"fail_mode,omitempty"`   // "open" | "closed"
-	AuthMethod string `json:"auth_method,omitempty"` // "bearer" | "sigv4"
+	Enabled              bool   `json:"enabled"`
+	Endpoint             string `json:"endpoint,omitempty"`
+	FailMode             string `json:"fail_mode"`                         // "open" | "closed"
+	AuthMethod           string `json:"auth_method"`                       // "bearer" | "sigv4"
+	CheckIntervalMin     int    `json:"check_interval_min"`                // Minutes between re-checks
+	CheckTimeoutSec      int    `json:"check_timeout_sec,omitempty"`       // Timeout for quota API call
+	DailyEnforcement     string `json:"daily_enforcement,omitempty"`       // "alert" | "block"
+	MonthlyEnforcement   string `json:"monthly_enforcement,omitempty"`     // "alert" | "block"
+	FineGrained          bool   `json:"fine_grained"`                      // Per-user/group policies in DynamoDB
 }
 
 // MonitoringInfo describes telemetry collection configuration.
@@ -139,22 +144,10 @@ func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput
 			Mode:   "idc",
 			Reason: "auth_type=idc or IDC fields present (idc_start_url)",
 		}
-		output.Quota = QuotaInfo{
-			Enabled:    cfg.QuotaAPIEndpoint != "",
-			Endpoint:   cfg.QuotaAPIEndpoint,
-			FailMode:   resolveQuotaFailMode(cfg),
-			AuthMethod: "sigv4",
-		}
 	case !cfg.IsSsoEnabled():
 		output.Auth = AuthInfo{
 			Mode:   "passthrough",
 			Reason: "sso_enabled=false and no IDC fields — using ambient AWS credential chain",
-		}
-		output.Quota = QuotaInfo{
-			Enabled:    cfg.QuotaAPIEndpoint != "",
-			Endpoint:   cfg.QuotaAPIEndpoint,
-			FailMode:   resolveQuotaFailMode(cfg),
-			AuthMethod: "sigv4",
 		}
 	default:
 		provType := resolveProviderTypeQuiet(cfg)
@@ -172,12 +165,6 @@ func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput
 			Domain: cfg.ProviderDomain,
 			Prompt: prompt,
 		}
-		output.Quota = QuotaInfo{
-			Enabled:    cfg.QuotaAPIEndpoint != "",
-			Endpoint:   cfg.QuotaAPIEndpoint,
-			FailMode:   resolveQuotaFailMode(cfg),
-			AuthMethod: "bearer",
-		}
 	}
 
 	// Resolve monitoring configuration
@@ -188,6 +175,13 @@ func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput
 
 	// Resolve environment detection
 	output.Env = resolveEnv()
+
+	// Resolve quota (same logic for all auth modes, just auth_method differs)
+	quotaAuthMethod := "sigv4"
+	if output.Auth.Mode == "oidc" {
+		quotaAuthMethod = "bearer"
+	}
+	output.Quota = resolveQuota(cfg, quotaAuthMethod)
 
 	return output
 }
@@ -263,6 +257,21 @@ func resolveStorageMode(cfg *config.ProfileConfig) string {
 		return cfg.CredentialStorage
 	}
 	return "keyring" // default
+}
+
+// resolveQuota returns the full quota configuration.
+func resolveQuota(cfg *config.ProfileConfig, authMethod string) QuotaInfo {
+	return QuotaInfo{
+		Enabled:            cfg.QuotaAPIEndpoint != "",
+		Endpoint:           cfg.QuotaAPIEndpoint,
+		FailMode:           resolveQuotaFailMode(cfg),
+		AuthMethod:         authMethod,
+		CheckIntervalMin:   cfg.QuotaCheckInterval,
+		CheckTimeoutSec:    cfg.QuotaCheckTimeout,
+		DailyEnforcement:   cfg.DailyEnforcementMode,
+		MonthlyEnforcement: cfg.MonthlyEnforcementMode,
+		FineGrained:        cfg.EnableFineGrained,
+	}
 }
 
 // resolveQuotaFailMode returns the quota fail mode (default: open).

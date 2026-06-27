@@ -30,10 +30,13 @@ type ProfileConfig struct {
 	MaxSessionDuration int `json:"max_session_duration"`
 
 	// Quota
-	QuotaAPIEndpoint   string `json:"quota_api_endpoint"`
-	QuotaFailMode      string `json:"quota_fail_mode"`
-	QuotaCheckInterval int    `json:"quota_check_interval"`
-	QuotaCheckTimeout  int    `json:"quota_check_timeout"`
+	QuotaAPIEndpoint       string `json:"quota_api_endpoint"`
+	QuotaFailMode          string `json:"quota_fail_mode"`
+	QuotaCheckInterval     int    `json:"quota_check_interval"`
+	QuotaCheckTimeout      int    `json:"quota_check_timeout"`
+	DailyEnforcementMode   string `json:"daily_enforcement_mode,omitempty"`   // "alert" | "block"
+	MonthlyEnforcementMode string `json:"monthly_enforcement_mode,omitempty"` // "alert" | "block"
+	EnableFineGrained      bool   `json:"enable_finegrained_quotas,omitempty"`
 
 	// Okta Custom Authorization Server id. Absent / empty / "default" all
 	// mean "use the default CAS" -- the Go code normalizes these equivalently.

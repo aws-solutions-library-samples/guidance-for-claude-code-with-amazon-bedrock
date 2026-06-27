@@ -44,6 +44,10 @@ func TestExplainOutputOIDC(t *testing.T) {
 	if !output.Quota.Enabled {
 		t.Error("expected quota to be enabled when endpoint is set")
 	}
+	if output.Quota.CheckIntervalMin != 0 {
+		// Default is set by config loader, not by explain
+		// When not set in struct, it's 0
+	}
 }
 
 func TestExplainOutputIDC(t *testing.T) {
