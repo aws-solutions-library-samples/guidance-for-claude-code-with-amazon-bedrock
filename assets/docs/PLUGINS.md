@@ -104,3 +104,20 @@ For a guided walkthrough of these plugins, see the companion workshop:
 - [Claude Code Plugin Reference](https://code.claude.com/docs/en/plugins) — Full plugin authoring guide
 - [Cowork 3P Configuration Reference](https://claude.com/docs/cowork/3p/configuration) — Managed settings schema
 - [COWORK_3P.md](COWORK_3P.md) — This guidance's Cowork 3P deployment guide
+
+## Bootstrap Server Delivery (Dynamic)
+
+For automated plugin delivery to Claude Desktop at sign-in (no manual install), deploy the bootstrap server:
+
+```bash
+ccwb init                      # Select "Dynamic (device-code)" for CoWork delivery
+ccwb deploy --stack bootstrap  # Deploy bootstrap server
+ccwb plugins add --name my-plugin --repo https://github.com/org/plugins.git --path my-plugin
+ccwb plugins sync              # Push registry to server
+```
+
+Desktop receives `organizationPluginsUrl` in the bootstrap response and git-clones plugins automatically. Plugins with `"installationPreference": "required"` install without user confirmation.
+
+**Infrastructure:** API Gateway + Lambda + DynamoDB (device-code grants). Optional WAF IP allowlist. See `deployment/infrastructure/bootstrap-device-code.yaml`.
+
+**IdP callback:** Add the bootstrap callback URL (printed after deploy) to your IdP's redirect URIs. Cognito configures this automatically.
