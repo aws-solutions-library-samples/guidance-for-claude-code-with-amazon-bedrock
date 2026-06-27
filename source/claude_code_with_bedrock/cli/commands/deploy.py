@@ -1136,11 +1136,25 @@ class DeployCommand(Command):
                 # Auto-discover OIDC endpoints
                 oidc_endpoints = _discover_oidc_endpoints(profile)
 
-                # Reuse the distribution IdP secret ARN if available (same client, same secret)
+                # Validate required endpoints were resolved
+                missing = [k for k in ("token_endpoint", "authorization_endpoint", "jwks_uri")
+                           if not oidc_endpoints.get(k)]
+                if missing:
+                    console.print(f"[red]Error: Could not resolve OIDC endpoints: {', '.join(missing)}[/red]")
+                    console.print("[yellow]Ensure your IdP supports .well-known/openid-configuration,")
+                    console.print("or provide endpoints manually in your profile config.[/yellow]")
+                    return 1
+
+                # Validate client secret ARN is available
                 client_secret_arn = (
                     getattr(profile, 'distribution_idp_client_secret_arn', '')
                     or getattr(profile, 'client_secret_arn', '')
                 )
+                if not client_secret_arn:
+                    console.print("[red]Error: No client secret ARN found.[/red]")
+                    console.print("[yellow]Deploy the distribution/landing-page stack first (stores secret in SecretsManager),")
+                    console.print("or set client_secret_arn in your profile config.[/yellow]")
+                    return 1
 
                 params = [
                     f"OidcIssuerUrl={oidc_endpoints['issuer']}",

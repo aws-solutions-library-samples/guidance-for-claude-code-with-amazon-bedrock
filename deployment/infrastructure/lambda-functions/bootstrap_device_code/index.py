@@ -398,6 +398,8 @@ def handler(event, context):
             return handle_bootstrap(event)
         elif path.startswith("/plugins"):
             return handle_plugins(event)
+        elif path == "/health" and method == "GET":
+            return json_response(200, {"status": "ok", "mode": "device-code"})
         else:
             return json_response(404, {"error": "not_found", "error_description": f"No route for {method} {path}"})
     except Exception as e:
