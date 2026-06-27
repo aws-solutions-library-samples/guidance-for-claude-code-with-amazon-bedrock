@@ -4,22 +4,11 @@
 
 ```bash
 poetry run ccwb doctor           # Quick health check
-poetry run ccwb doctor --verbose # Detailed config dump
+poetry run ccwb doctor --verbose # Detailed config dump for support
 poetry run ccwb doctor --json    # Machine-readable output
 ```
 
 If checks fail, the command prints a pre-filled GitHub issue URL — just click and submit.
-
-## Common Issues
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| CloudWatch metrics stuck at 0 | otel-helper not installed or not spawning | Re-run `ccwb package` with Go installed, then re-install |
-| "Cloud authentication" error in Claude Code | Credential refresh expired (IDC) or browser auth failed (OIDC) | Run `credential-process --profile <name>` manually to re-authenticate |
-| Telemetry never reaches dashboard | `otel_collector_endpoint` missing from config | Run `ccwb deploy --stack monitoring` then re-package |
-| `ccwb package` reports "no binaries built" | Go not installed or wrong version | Install Go 1.24+ and re-run |
-| Windows Defender blocks binaries | Unsigned Go executables trigger heuristic detection | Add install directory to exclusions (see [#649](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/649)) |
-| Region mismatch deployment failure | `aws_region` differs from Cognito/IdP region | Re-run `ccwb init` and verify region selection |
 
 ## Debug Logging
 
