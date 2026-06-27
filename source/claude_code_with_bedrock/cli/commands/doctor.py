@@ -259,6 +259,101 @@ def print_results(checks: list, console: Console = None):
         return 1
 
 
+def _collect_environment():
+    """Collect environment info for diagnostics."""
+    import platform
+    home = Path.home()
+    config_path = home / "claude-code-with-bedrock" / "config.json"
+    env = {
+        "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "python": platform.python_version(),
+        "auth_type": "unknown",
+        "monitoring_mode": "none",
+        "profiles": [],
+        "region": "unknown",
+    }
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                cfg = json.load(f)
+            profiles = cfg.get("profiles", cfg)
+            for name, data in profiles.items():
+                if not isinstance(data, dict):
+                    continue
+                env["profiles"].append(name)
+                env["auth_type"] = data.get("auth_type", "oidc")
+                env["monitoring_mode"] = data.get("monitoring_mode", "none")
+                env["region"] = data.get("aws_region", "unknown")
+        except Exception:
+            pass
+    return env
+
+
+def print_verbose_config(console: Console):
+    """Print sanitized configuration details for troubleshooting."""
+    console.print("\n[bold]Configuration Details[/bold] (--verbose)\n")
+    home = Path.home()
+    config_path = home / "claude-code-with-bedrock" / "config.json"
+
+    if not config_path.exists():
+        console.print("[dim]No config.json found — skipping verbose output[/dim]")
+        return
+
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+    except Exception as e:
+        console.print(f"[red]Cannot read config.json: {e}[/red]")
+        return
+
+    profiles = cfg.get("profiles", cfg)
+    for name, data in profiles.items():
+        if not isinstance(data, dict):
+            continue
+        console.print(f"[cyan]Profile: {name}[/cyan]")
+        console.print(f"  Auth type: {data.get('auth_type', 'oidc')}")
+        console.print(f"  Region: {data.get('aws_region', 'not set')}")
+        console.print(f"  Provider: {data.get('provider_type', data.get('provider_domain', 'not set'))}")
+        if data.get("auth_type") == "idc":
+            console.print(f"  IDC Start URL: {data.get('idc_start_url', 'not set')}")
+            console.print(f"  IDC Account: {data.get('idc_account_id', 'not set')}")
+            console.print(f"  IDC Permission Set: {data.get('idc_permission_set_name', 'not set')}")
+        else:
+            domain = data.get("provider_domain", data.get("oidc_issuer_url", "not set"))
+            console.print(f"  Provider domain: {domain}")
+            console.print(f"  Client ID: {data.get('client_id', 'not set')[:8]}..." if data.get('client_id') else "  Client ID: not set")
+        if data.get("monitoring_mode"):
+            console.print(f"  Monitoring: {data.get('monitoring_mode')}")
+        if data.get("otel_collector_endpoint"):
+            console.print(f"  OTEL endpoint: {data.get('otel_collector_endpoint')}")
+        if data.get("quota_api_endpoint"):
+            console.print(f"  Quota API: {data.get('quota_api_endpoint')}")
+        console.print()
+
+    # Check settings.json hooks
+    for settings_name in ["settings.json", "managed-settings.json"]:
+        settings_path = home / ".claude" / settings_name
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text())
+                console.print(f"[cyan]{settings_name}[/cyan]")
+                env = settings.get("env", {})
+                if env.get("AWS_PROFILE"):
+                    console.print(f"  AWS_PROFILE: {env['AWS_PROFILE']}")
+                hooks = settings.get("hooks", {})
+                for hook_name in ["awsCredentialExport", "awsAuthRefresh", "otelHeadersHelper"]:
+                    val = hooks.get(hook_name)
+                    if val:
+                        # Show just the command basename for readability
+                        cmd = val if isinstance(val, str) else str(val)
+                        console.print(f"  {hook_name}: [green]✓[/green] {cmd[:60]}")
+                    else:
+                        console.print(f"  {hook_name}: [dim]not set[/dim]")
+                console.print()
+            except Exception:
+                pass
+
+
 class DoctorCommand(Command):
     name = "doctor"
     description = "Validate installation health and catch common misconfigurations"
@@ -276,10 +371,25 @@ To check a specific profile:
 
     options = [
         option("profile", description="Configuration profile to check", flag=False),
+        option("verbose", "v", description="Show detailed configuration for troubleshooting"),
+        option("json", description="Output results as JSON (for automation)"),
     ]
 
     def handle(self) -> int:
         """Execute the doctor command."""
         console = Console()
         checks = run_doctor()
-        return print_results(checks, console)
+        exit_code = print_results(checks, console)
+
+        if self.option("verbose"):
+            print_verbose_config(console)
+
+        if self.option("json"):
+            import json as json_mod
+            output = {
+                "checks": [{"name": c.name, "status": c.status, "message": c.message, "fix": c.fix} for c in checks],
+                "environment": _collect_environment(),
+            }
+            console.print_json(json_mod.dumps(output))
+
+        return exit_code
