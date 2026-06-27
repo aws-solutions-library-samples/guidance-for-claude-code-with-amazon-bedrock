@@ -123,6 +123,9 @@ class TestOtelHelperPs1Contract:
             timeout=10,
             env={"USERPROFILE": str(Path.home()), "PATH": ""},
         )
+        # Skip if PowerShell itself failed to load (CI runner infrastructure issue)
+        if result.returncode == 4294901760 or "Internal Windows PowerShell error" in result.stderr:
+            pytest.skip("PowerShell runtime failed to load on this runner (infra issue, not code)")
         # Should exit 0 (graceful degradation)
         assert result.returncode == 0, f"ps1 crashed: stderr={result.stderr}"
         # Should produce valid JSON
