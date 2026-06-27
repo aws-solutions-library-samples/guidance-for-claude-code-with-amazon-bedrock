@@ -3772,10 +3772,25 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Try profile first (saved by ccwb deploy), fall back to CloudFormation query
-                endpoint = getattr(profile, "otel_collector_endpoint", None)
+                _monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
-                if not endpoint:
+                # Sidecar mode: Claude Code always sends to the local otelcol on
+                # localhost:4318. There is no central monitoring stack to read a
+                # CollectorEndpoint from, so resolve the endpoint up front and skip
+                # the profile/CloudFormation/prompt resolution below (which only
+                # applies to central mode). Doing this here — rather than as an
+                # override after resolution — is what actually configures telemetry
+                # for sidecar packages: real sidecar deploys have no saved
+                # otel_collector_endpoint, so the old post-resolution override never
+                # ran and telemetry was silently left unconfigured.
+                if _monitoring_mode == "sidecar":
+                    endpoint = "http://localhost:4318"
+                else:
+                    # Central mode: try profile first (saved by ccwb deploy), then
+                    # fall back to CloudFormation query.
+                    endpoint = getattr(profile, "otel_collector_endpoint", None)
+
+                if not endpoint and _monitoring_mode != "sidecar":
                     # Fall back to reading from CloudFormation stack outputs
                     # Try multiple possible stack name patterns
                     possible_stacks = [
@@ -3863,19 +3878,14 @@ Available metrics include:
                         pass
 
                 if endpoint:
-                    # Add monitoring configuration
+                    # Add monitoring configuration. In sidecar mode `endpoint` was
+                    # already resolved to http://localhost:4318 above; in central
+                    # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
                         "department=engineering,team.id=default,"
                         "cost_center=default,organization=default,"
                         "project=default"
                     )
-
-                    # Sidecar mode: Claude Code sends to local otelcol, not directly to the ALB.
-                    # Override whatever endpoint the profile stores (which is the ALB address) so
-                    # users don't have to edit settings.json manually after running ccwb package.
-                    _monitoring_mode = getattr(profile, "monitoring_mode", "central")
-                    if _monitoring_mode == "sidecar":
-                        endpoint = "http://localhost:4318"
 
                     settings["env"].update(
                         {
