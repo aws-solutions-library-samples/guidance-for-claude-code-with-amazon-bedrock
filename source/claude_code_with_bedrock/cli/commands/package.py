@@ -19,6 +19,8 @@ from cleo.helpers import option
 def _is_interactive() -> bool:
     """Return True when stdin is a TTY and prompts can be displayed."""
     return sys.stdin.isatty()
+
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -312,7 +314,9 @@ class PackageCommand(Command):
             else:
                 # Non-interactive: build all available platforms
                 selected_platforms = platform_choices
-                console.print(f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]")
+                console.print(
+                    f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]"
+                )
 
             # Use the selected platforms (guaranteed to have at least one due to validation)
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
