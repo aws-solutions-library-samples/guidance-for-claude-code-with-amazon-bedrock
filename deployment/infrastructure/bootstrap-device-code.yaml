@@ -28,12 +28,13 @@ Parameters:
     Type: String
     Description: IdP JWKS endpoint URL for token verification
 
-  AllowedCidr:
+    AllowedCidr:
     Type: String
-    Default: '0.0.0.0/32'
-    Description: >
-      CIDR range allowed to access the API. Default blocks all traffic.
-      Set to your corporate CIDR (e.g. 10.0.0.0/8) to allow access.
+    Default: '0.0.0.0/0'
+    Description: >-
+      CIDR range allowed to access the API. Default 0.0.0.0/0 allows all traffic
+      (WAF is skipped). Set to a restrictive CIDR (e.g. 203.0.113.0/24) to enable
+      WAF IP allowlisting for enterprise deployments.
 
   InferenceRegion:
     Type: String
@@ -49,6 +50,9 @@ Parameters:
     Type: String
     Default: '{"plugins":[]}'
     Description: JSON string of the organization plugin registry
+
+Conditions:
+  EnableWaf: !Not [!Equals [!Ref AllowedCidr, '0.0.0.0/0']]
 
 Resources:
   # ============================================================
@@ -82,6 +86,7 @@ Resources:
   # WAFv2 WebACL - IP allowlist
   # ============================================================
   AllowedIpSet:
+    Condition: EnableWaf
     Type: AWS::WAFv2::IPSet
     Properties:
       Name: !Sub '${AWS::StackName}-allowed-ips'
@@ -91,6 +96,7 @@ Resources:
         - !Ref AllowedCidr
 
   WebAcl:
+    Condition: EnableWaf
     Type: AWS::WAFv2::WebACL
     Properties:
       Name: !Sub '${AWS::StackName}-waf'
@@ -129,7 +135,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: DynamoDBAccess
           PolicyDocument:
@@ -165,7 +171,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
   # ============================================================
   # Lambda Functions
@@ -241,9 +247,9 @@ Resources:
       Name: DeviceCodeAuthorizer
       Type: REQUEST
       RestApiId: !Ref BootstrapApi
-      AuthorizerUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations'
+      AuthorizerUri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations'
       AuthorizerResultTtlInSeconds: 0
-      IdentitySource: method.request.header.Authorization
+      IdentitySource: ""
 
   # Lambda permissions for API Gateway invocation
   BootstrapHandlerApiPermission:
@@ -252,7 +258,7 @@ Resources:
       FunctionName: !Ref BootstrapHandlerFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
 
   AuthorizerApiPermission:
     Type: AWS::Lambda::Permission
@@ -260,7 +266,7 @@ Resources:
       FunctionName: !Ref AuthorizerFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
 
   # ============================================================
   # API Resources
@@ -370,7 +376,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # POST /device/code
   DeviceCodeMethod:
@@ -384,7 +390,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # GET /verify
   VerifyMethod:
@@ -398,7 +404,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # GET /callback
   CallbackMethod:
@@ -412,7 +418,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # POST /oauth/token
   OAuthTokenMethod:
@@ -426,7 +432,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # GET /bootstrap
   BootstrapMethod:
@@ -440,7 +446,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # GET /plugins
   PluginsMethod:
@@ -454,7 +460,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # GET /plugins/{name}
   PluginsNameMethod:
@@ -468,7 +474,7 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
 
   # ============================================================
   # API Deployment
@@ -496,9 +502,10 @@ Resources:
 
   # WAF Association
   WafAssociation:
+    Condition: EnableWaf
     Type: AWS::WAFv2::WebACLAssociation
     Properties:
-      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${BootstrapApi}/stages/prod'
+      ResourceArn: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${BootstrapApi}/stages/prod'
       WebACLArn: !GetAtt WebAcl.Arn
     DependsOn: ApiStage
 

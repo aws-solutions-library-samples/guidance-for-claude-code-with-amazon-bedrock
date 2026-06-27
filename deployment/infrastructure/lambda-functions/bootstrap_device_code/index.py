@@ -21,6 +21,7 @@ import time
 import urllib.request
 import urllib.parse
 import boto3
+from boto3.dynamodb.conditions import Key
 from decimal import Decimal
 
 # Environment variables
@@ -236,7 +237,7 @@ def handle_callback(event):
     # Find the device code entry by user_code (GSI query)
     result = table.query(
         IndexName="user-code-index",
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("user_code").eq(state),
+        KeyConditionExpression=Key("user_code").eq(state),
     )
 
     items = result.get("Items", [])
