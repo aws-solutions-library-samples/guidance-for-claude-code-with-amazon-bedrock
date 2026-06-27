@@ -519,5 +519,14 @@ Outputs:
     Value: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
 
   CallbackUrl:
-    Description: OAuth callback URL to register with your IdP
+    Description: >-
+      OAuth callback URL to register with your IdP. Add this as an additional
+      redirect URI in your existing app registration (same client_id used for
+      credential-process). Per-IdP instructions:
+        - Cognito: Pass this URL as BootstrapCallbackUrl parameter to cognito-user-pool-setup.yaml
+          (auto-adds to UserPoolClient CallbackURLs, no manual step needed).
+        - Okta: Admin Console > Applications > your app > Sign-in redirect URIs > Add URI.
+        - Azure/Entra: Azure Portal > App Registrations > your app > Authentication > Add redirect URI.
+        - Google: Cloud Console > APIs & Services > Credentials > OAuth client > Authorized redirect URIs.
+        - IAM Identity Center: Not needed — uses AWS SSO-OIDC native device flow.
     Value: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod/callback'

@@ -59,12 +59,22 @@ Parameters:
       populate per-user. Safe to leave 'false' for deployments that don't
       need group-level dashboards.
 
+  BootstrapCallbackUrl:
+    Type: String
+    Default: ''
+    Description: >-
+      Bootstrap server OAuth callback URL (e.g. https://<api-gw>/prod/callback).
+      When non-empty, automatically added to the UserPoolClient's CallbackURLs
+      so the device-code bootstrap flow can complete the OIDC authorization.
+      Populated automatically when the bootstrap stack is deployed alongside Cognito.
+
 Conditions:
   UseFederate: !Not [!Equals [!Ref FederateEnvironment, 'none']]
   NotUseFederate: !Equals [!Ref FederateEnvironment, 'none']
   UseFederateInteg: !Equals [!Ref FederateEnvironment, 'integ']
   UseFederateProd: !Equals [!Ref FederateEnvironment, 'prod']
   InjectCustomClaims: !Equals [!Ref EnableCustomClaimInjection, 'true']
+  HasBootstrapCallback: !Not [!Equals [!Ref BootstrapCallbackUrl, '']]
 
 Resources:
   # Cognito User Pool with settings matching Amazon Federate requirements
@@ -145,7 +155,15 @@ Resources:
         - email
         - profile
       AllowedOAuthFlowsUserPoolClient: true
-      CallbackURLs: !Ref CallbackURLs
+      CallbackURLs: !If
+        - HasBootstrapCallback
+        - !Split
+          - ','
+          - !Sub
+            - '${Existing},${Bootstrap}'
+            - Existing: !Join [',', !Ref CallbackURLs]
+              Bootstrap: !Ref BootstrapCallbackUrl
+        - !Ref CallbackURLs
       LogoutURLs: !Ref LogoutURLs
       # Authentication flows
       ExplicitAuthFlows:
