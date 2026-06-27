@@ -22,9 +22,8 @@ Parameters:
 
   OidcJwksEndpoint:
     Type: String
-    Description: "JWKS endpoint URL for JWT signature verification"
-    AllowedPattern: "^https://.*"
-    ConstraintDescription: "Must be a valid HTTPS URL"
+    Description: "JWKS endpoint URL (optional — auto-discovered from issuer if empty)"
+    Default: ""
 
   DefaultInferenceRegion:
     Type: String
@@ -90,7 +89,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: "sts:AssumeRole"
       ManagedPolicyArns:
-        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 
   BootstrapApi:
     Type: AWS::ApiGatewayV2::Api
@@ -114,6 +113,9 @@ Resources:
       ApiId: !Ref BootstrapApi
       StageName: "$default"
       AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 10
 
   BootstrapApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -136,7 +138,7 @@ Resources:
       FunctionName: !Ref BootstrapFunction
       Action: "lambda:InvokeFunction"
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*"
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*"
 
 Outputs:
   BootstrapUrl:

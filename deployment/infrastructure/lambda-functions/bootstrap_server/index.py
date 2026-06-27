@@ -40,31 +40,65 @@ _jwks_cache = None
 _jwks_cache_time = 0
 JWKS_CACHE_TTL = 3600  # Cache JWKS for 1 hour
 
+# Resolved JWKS endpoint (auto-discovered if not explicitly configured)
+_resolved_jwks_endpoint = None
+
+
+def _resolve_jwks_endpoint():
+    """Resolve JWKS endpoint — use explicit config or discover from issuer."""
+    global _resolved_jwks_endpoint
+    if _resolved_jwks_endpoint:
+        return _resolved_jwks_endpoint
+
+    if OIDC_JWKS_ENDPOINT:
+        _resolved_jwks_endpoint = OIDC_JWKS_ENDPOINT
+        return _resolved_jwks_endpoint
+
+    # Auto-discover from OIDC issuer's well-known configuration
+    if OIDC_ISSUER_URL:
+        discovery_url = OIDC_ISSUER_URL.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            req = urllib.request.Request(discovery_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                oidc_config = json.loads(resp.read())
+                _resolved_jwks_endpoint = oidc_config.get("jwks_uri", "")
+                return _resolved_jwks_endpoint
+        except Exception:
+            pass
+
+    return ""
+
 
 def _get_jwks_client():
     """Get or create a cached PyJWKClient instance."""
     global _jwks_client
     if _jwks_client is None and HAS_PYJWT:
-        _jwks_client = PyJWKClient(OIDC_JWKS_ENDPOINT, cache_keys=True)
+        endpoint = _resolve_jwks_endpoint()
+        if endpoint:
+            _jwks_client = PyJWKClient(endpoint, cache_keys=True)
     return _jwks_client
 
 
 def _fetch_jwks():
-    """Fetch JWKS from the configured endpoint with caching."""
+    """Fetch JWKS from the resolved endpoint with caching."""
     global _jwks_cache, _jwks_cache_time
+
+    endpoint = _resolve_jwks_endpoint()
+    if not endpoint:
+        raise ValueError("No JWKS endpoint configured or discoverable from issuer")
 
     now = time.time()
     if _jwks_cache and (now - _jwks_cache_time) < JWKS_CACHE_TTL:
         return _jwks_cache
 
     try:
-        req = urllib.request.Request(OIDC_JWKS_ENDPOINT)
+        req = urllib.request.Request(endpoint)
         with urllib.request.urlopen(req, timeout=5) as resp:
             _jwks_cache = json.loads(resp.read())
             _jwks_cache_time = now
             return _jwks_cache
     except Exception as e:
-        raise ValueError(f"Failed to fetch JWKS: {str(e)}")
+        raise ValueError(f"Failed to fetch JWKS from {endpoint}: {str(e)}")
 
 
 def _validate_token(token: str) -> dict:
