@@ -21,11 +21,7 @@ port-stealing on Windows unlike POSIX where it only allows TIME_WAIT reuse).
 import socket
 import sys
 import threading
-import time
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 CREDENTIAL_PROVIDER = SOURCE_ROOT / "credential_provider" / "__main__.py"
@@ -42,20 +38,16 @@ class TestOAuthPortLockSafety:
         # Find all SO_REUSEADDR usages
         lines = content.splitlines()
         so_reuse_lines = [
-            (i, l) for i, l in enumerate(lines, 1)
-            if "SO_REUSEADDR" in l and not l.strip().startswith("#")
+            (i, l) for i, l in enumerate(lines, 1) if "SO_REUSEADDR" in l and not l.strip().startswith("#")
         ]
         assert so_reuse_lines, "Expected SO_REUSEADDR usage in credential_provider"
 
         # Each usage should be inside a platform guard (within 5 lines before)
-        for lineno, line in so_reuse_lines:
+        for lineno, _line in so_reuse_lines:
             context_start = max(0, lineno - 6)
             context = "\n".join(lines[context_start:lineno])
             has_guard = (
-                "sys.platform" in context
-                or "platform" in context
-                or "win32" in context
-                or "windows" in context.lower()
+                "sys.platform" in context or "platform" in context or "win32" in context or "windows" in context.lower()
             )
             assert has_guard, (
                 f"SO_REUSEADDR at line {lineno} lacks a Windows platform guard. "
@@ -104,9 +96,7 @@ class TestOAuthPortLockSafety:
             f"Expected exactly 1 successful bind, got {results['success']}. "
             f"Both succeeded = port-stealing race (SO_REUSEADDR on Windows bug)."
         )
-        assert results["failure"] == 1, (
-            f"Expected exactly 1 failed bind, got {results['failure']}."
-        )
+        assert results["failure"] == 1, f"Expected exactly 1 failed bind, got {results['failure']}."
 
     def test_port_lock_before_browser_launch_pattern(self):
         """The credential provider must bind the port BEFORE opening the browser.
@@ -122,7 +112,7 @@ class TestOAuthPortLockSafety:
         browser_seen = False
         violations = []
 
-        for i, line in enumerate(lines, 1):
+        for _i, line in enumerate(lines, 1):
             stripped = line.strip()
             # Track function boundaries
             if stripped.startswith("def ") and ("oauth" in stripped.lower() or "auth" in stripped.lower()):
@@ -152,8 +142,7 @@ class TestOAuthPortLockSafety:
         # The actual check: credential_provider must have bind before browser
         # This is a structural check — the bind() call must exist in the auth flow
         assert ".bind(" in content or "net.Listen" in content, (
-            "credential_provider must bind the OAuth callback port "
-            "(socket.bind or net.Listen) to prevent TOCTOU races"
+            "credential_provider must bind the OAuth callback port (socket.bind or net.Listen) to prevent TOCTOU races"
         )
 
 
