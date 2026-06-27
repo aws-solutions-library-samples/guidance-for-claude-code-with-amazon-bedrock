@@ -125,6 +125,60 @@ def _deploy_bootstrap_lambda_code(
                 console.print("[dim]  Run 'aws lambda update-function-code' manually if needed.[/dim]")
 
 
+def _resolve_oidc_issuer(profile) -> str:
+    """Resolve the OIDC issuer URL from profile configuration.
+
+    Checks explicit oidc_issuer_url first, then builds from provider_domain
+    based on the provider type. Used by bootstrap deploy and dry-run paths.
+    """
+    issuer = getattr(profile, "oidc_issuer_url", None) or ""
+    if issuer:
+        return issuer
+
+    provider_type = getattr(profile, "provider_type", "")
+    domain = getattr(profile, "provider_domain", "")
+
+    if provider_type == "okta":
+        okta_auth_server = getattr(profile, "okta_auth_server", "default")
+        if okta_auth_server:
+            return f"https://{domain}/oauth2/{okta_auth_server}"
+        return f"https://{domain}"
+    elif provider_type == "auth0":
+        return f"https://{domain}/"
+    elif provider_type == "azure":
+        tenant_id = _extract_azure_tenant_id(domain)
+        return f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+    elif provider_type == "cognito":
+        pool_id = getattr(profile, "cognito_user_pool_id", "")
+        if pool_id:
+            pool_region = pool_id.split("_")[0] if "_" in pool_id else getattr(profile, "aws_region", "us-east-1")
+            return f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
+    elif provider_type == "google":
+        return "https://accounts.google.com"
+
+    return ""
+
+
+def _resolve_bootstrap_params(profile) -> list:
+    """Resolve all CFN parameters for the bootstrap server stack.
+
+    Shared between the real deploy path and the dry-run/print path.
+    """
+    oidc_issuer_url = _resolve_oidc_issuer(profile)
+    jwks_endpoint = getattr(profile, "oidc_jwks_uri", None) or ""
+    otlp_endpoint = getattr(profile, "otel_collector_endpoint", "") or ""
+    inference_models = getattr(profile, "selected_model", "") or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+    return [
+        f"OidcIssuerUrl={oidc_issuer_url}",
+        f"OidcClientId={profile.client_id}",
+        f"OidcJwksEndpoint={jwks_endpoint}",
+        f"DefaultInferenceRegion={profile.aws_region}",
+        f"DefaultInferenceModels={inference_models}",
+        f"OtlpEndpoint={otlp_endpoint}",
+    ]
+
+
 class DeployCommand(Command):
     name = "deploy"
     description = "Deploy AWS infrastructure (auth, monitoring, dashboards)"
@@ -1151,48 +1205,7 @@ class DeployCommand(Command):
                     "bootstrap", f"{profile.identity_pool_name}-bootstrap"
                 )
 
-                # Build OIDC issuer URL from provider config
-                oidc_issuer_url = getattr(profile, "oidc_issuer_url", None) or ""
-                if not oidc_issuer_url and profile.provider_type == "okta":
-                    okta_auth_server = getattr(profile, "okta_auth_server", "default")
-                    if okta_auth_server:
-                        oidc_issuer_url = f"https://{profile.provider_domain}/oauth2/{okta_auth_server}"
-                    else:
-                        oidc_issuer_url = f"https://{profile.provider_domain}"
-                elif not oidc_issuer_url and profile.provider_type == "auth0":
-                    oidc_issuer_url = f"https://{profile.provider_domain}/"
-                elif not oidc_issuer_url and profile.provider_type == "azure":
-                    tenant_id = _extract_azure_tenant_id(profile.provider_domain)
-                    oidc_issuer_url = (
-                        f"https://login.microsoftonline.com/{tenant_id}/v2.0"
-                    )
-                elif not oidc_issuer_url and profile.provider_type == "cognito":
-                    # Cognito issuer is the user pool URL
-                    pool_id = getattr(profile, "cognito_user_pool_id", "")
-                    if pool_id:
-                        pool_region = pool_id.split("_")[0] if "_" in pool_id else profile.aws_region
-                        oidc_issuer_url = f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}"
-                elif not oidc_issuer_url and profile.provider_type == "google":
-                    oidc_issuer_url = "https://accounts.google.com"
-
-                # JWKS endpoint — pass explicit URI if configured, otherwise Lambda
-                # auto-discovers via {issuer}/.well-known/openid-configuration
-                jwks_endpoint = getattr(profile, "oidc_jwks_uri", None) or ""
-
-                # Get OTEL endpoint from monitoring config if available
-                otlp_endpoint = getattr(profile, "otel_collector_endpoint", "") or ""
-
-                # Get inference models
-                inference_models = getattr(profile, "selected_model", "") or "us.anthropic.claude-sonnet-4-20250514-v1:0"
-
-                params = [
-                    f"OidcIssuerUrl={oidc_issuer_url}",
-                    f"OidcClientId={profile.client_id}",
-                    f"OidcJwksEndpoint={jwks_endpoint}",
-                    f"DefaultInferenceRegion={profile.aws_region}",
-                    f"DefaultInferenceModels={inference_models}",
-                    f"OtlpEndpoint={otlp_endpoint}",
-                ]
+                params = _resolve_bootstrap_params(profile)
 
                 result = deploy_with_cf(
                     template,
@@ -1424,14 +1437,7 @@ class DeployCommand(Command):
         elif stack_type == "bootstrap":
             template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
             stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
-            params = [
-                "OidcIssuerUrl=<from-oidc-config>",
-                f"OidcClientId={profile.client_id}",
-                "OidcJwksEndpoint=<from-oidc-config>",
-                f"DefaultInferenceRegion={profile.aws_region}",
-                f"DefaultInferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
-                f"OtlpEndpoint={getattr(profile, 'otel_collector_endpoint', '') or ''}",
-            ]
+            params = _resolve_bootstrap_params(profile)
             print_deploy_cmd(template, stack_name, params)
 
         elif stack_type == "distribution":
