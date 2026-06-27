@@ -2,6 +2,7 @@ package config
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -34,20 +35,7 @@ func TestCredentialProcessPathNoExeOnNonWindows(t *testing.T) {
 // the expected install directory name regardless of platform.
 func TestCredentialProcessPathContainsInstallDir(t *testing.T) {
 	path := CredentialProcessPath()
-	if !contains(path, "claude-code-with-bedrock") {
+	if !strings.Contains(path, "claude-code-with-bedrock") {
 		t.Errorf("CredentialProcessPath() = %q; want 'claude-code-with-bedrock' in path", path)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && searchSubstring(s, substr))
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -17,7 +17,6 @@ Bugs prevented:
 """
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -41,24 +40,18 @@ class TestOtelHelperCmdStructure:
     def test_cmd_references_exe_with_relative_path(self):
         """The .cmd must reference otel-helper.exe via %~dp0 (same directory)."""
         content = CMD_FILE.read_text(encoding="utf-8")
-        assert "%~dp0otel-helper.exe" in content, (
-            ".cmd must use %~dp0otel-helper.exe for same-directory resolution"
-        )
+        assert "%~dp0otel-helper.exe" in content, ".cmd must use %~dp0otel-helper.exe for same-directory resolution"
 
     def test_cmd_references_ps1_with_relative_path(self):
         """The .cmd must reference otel-helper.ps1 via %~dp0 (same directory)."""
         content = CMD_FILE.read_text(encoding="utf-8")
-        assert "%~dp0otel-helper.ps1" in content, (
-            ".cmd must use %~dp0otel-helper.ps1 for same-directory resolution"
-        )
+        assert "%~dp0otel-helper.ps1" in content, ".cmd must use %~dp0otel-helper.ps1 for same-directory resolution"
 
     def test_cmd_suppresses_exe_stderr(self):
         """The .cmd must suppress .exe stderr (AV warnings) so Claude Code
         doesn't see noise on stderr when the binary fails."""
         content = CMD_FILE.read_text(encoding="utf-8")
-        assert "2>nul" in content, (
-            ".cmd must redirect exe stderr to nul to suppress AV noise"
-        )
+        assert "2>nul" in content, ".cmd must redirect exe stderr to nul to suppress AV noise"
 
     def test_cmd_passes_args_to_both_exe_and_ps1(self):
         """Both dispatch paths must forward %* to preserve --profile etc."""
@@ -92,9 +85,7 @@ class TestOtelHelperPs1Contract:
     def test_ps1_uses_userprofile_not_home(self):
         """Windows paths must use $env:USERPROFILE, not $HOME or ~."""
         content = PS1_FILE.read_text(encoding="utf-8")
-        assert "$env:USERPROFILE" in content, (
-            ".ps1 must use $env:USERPROFILE for Windows home directory"
-        )
+        assert "$env:USERPROFILE" in content, ".ps1 must use $env:USERPROFILE for Windows home directory"
         # $HOME is acceptable in PowerShell (it resolves correctly), but
         # the install path specifically uses USERPROFILE for parity with .cmd
         lines = content.splitlines()
@@ -118,8 +109,14 @@ class TestOtelHelperPs1Contract:
         output empty headers JSON and exit 0."""
         result = subprocess.run(
             [
-                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", str(PS1_FILE), "-Profile", "NonExistentTestProfile"
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(PS1_FILE),
+                "-Profile",
+                "NonExistentTestProfile",
             ],
             capture_output=True,
             text=True,
@@ -134,6 +131,4 @@ class TestOtelHelperPs1Contract:
         except json.JSONDecodeError:
             pytest.fail(f"ps1 output is not valid JSON: {result.stdout!r}")
         # Should have a headers key (possibly empty)
-        assert "headers" in output or output == {}, (
-            f"Expected headers key or empty object, got: {output}"
-        )
+        assert "headers" in output or output == {}, f"Expected headers key or empty object, got: {output}"

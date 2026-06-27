@@ -66,9 +66,7 @@ class TestInstallBatSyntax:
 
     def test_starts_with_echo_off(self, bat_content):
         """Batch script must start with @echo off."""
-        assert bat_content.strip().startswith("@echo off"), (
-            "install.bat must begin with @echo off"
-        )
+        assert bat_content.strip().startswith("@echo off"), "install.bat must begin with @echo off"
 
     def test_no_unmatched_parentheses_in_if_blocks(self, bat_content):
         """Every opening ( in an if/else block must have a matching )."""
@@ -76,8 +74,7 @@ class TestInstallBatSyntax:
         close_count = bat_content.count(")")
         # Allow small imbalance from REM comments, but flag large mismatches
         assert abs(open_count - close_count) <= 2, (
-            f"Parenthesis mismatch: {open_count} open vs {close_count} close "
-            f"— likely a broken if/else block"
+            f"Parenthesis mismatch: {open_count} open vs {close_count} close — likely a broken if/else block"
         )
 
     def test_userprofile_paths_use_quotes(self, bat_content):
@@ -100,22 +97,17 @@ class TestInstallBatSyntax:
                     # Find the %USERPROFILE% reference and check for surrounding quotes
                     if '"%USERPROFILE%' not in line and '"%~dp0' not in line:
                         violations.append(f"Line {i}: {stripped}")
-        assert not violations, (
-            "Unquoted %USERPROFILE% paths (spaces in username will break):\n"
-            + "\n".join(f"  • {v}" for v in violations)
+        assert not violations, "Unquoted %USERPROFILE% paths (spaces in username will break):\n" + "\n".join(
+            f"  • {v}" for v in violations
         )
 
     def test_copies_credential_process(self, bat_content):
         """install.bat must copy credential-process-windows.exe."""
-        assert "credential-process-windows.exe" in bat_content, (
-            "install.bat must copy the credential process binary"
-        )
+        assert "credential-process-windows.exe" in bat_content, "install.bat must copy the credential process binary"
 
     def test_copies_config_json(self, bat_content):
         """install.bat must copy config.json to the install directory."""
-        assert "config.json" in bat_content, (
-            "install.bat must copy config.json"
-        )
+        assert "config.json" in bat_content, "install.bat must copy config.json"
 
     def test_has_error_handling_after_copy(self, bat_content):
         """Each critical copy must check %errorlevel% for failure."""
@@ -125,7 +117,7 @@ class TestInstallBatSyntax:
         missing_checks = []
         for idx in copy_indices:
             # Look within the next 5 lines for an errorlevel check
-            check_window = lines[idx:idx + 5]
+            check_window = lines[idx : idx + 5]
             has_check = any("errorlevel" in l.lower() for l in check_window)
             if not has_check:
                 missing_checks.append(f"Line {idx + 1}: {lines[idx].strip()}")
@@ -151,14 +143,13 @@ class TestInstallBatSyntax:
             if stripped.startswith("REM") or stripped.startswith("::"):
                 continue
             # Match C:\ or D:\ etc but not inside echo/comment strings
-            if re.search(r'[A-Z]:\\(?!Users\\%)', line) and "echo" not in line.lower():
+            if re.search(r"[A-Z]:\\(?!Users\\%)", line) and "echo" not in line.lower():
                 # Allow well-known system paths
                 if any(p in line for p in allowed_patterns):
                     continue
                 violations.append(f"Line {i}: {stripped}")
-        assert not violations, (
-            "Hardcoded drive letters found (won't work on D:\\ installs):\n"
-            + "\n".join(f"  • {v}" for v in violations[:5])
+        assert not violations, "Hardcoded drive letters found (won't work on D:\\ installs):\n" + "\n".join(
+            f"  • {v}" for v in violations[:5]
         )
 
     def test_no_unix_line_endings_assumption(self, bat_content):
