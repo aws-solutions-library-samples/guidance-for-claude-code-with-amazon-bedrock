@@ -43,37 +43,45 @@ def validate_profile_for_packaging(profile) -> List[ValidationError]:
     allowed_regions = getattr(profile, "allowed_bedrock_regions", None)
     if allowed_regions and getattr(profile, "aws_region", None):
         if profile.aws_region not in allowed_regions:
-            errors.append(ValidationError(
-                "aws_region",
-                f"Region '{profile.aws_region}' not in allowed_bedrock_regions: {allowed_regions}",
-                severity="warning"
-            ))
+            errors.append(
+                ValidationError(
+                    "aws_region",
+                    f"Region '{profile.aws_region}' not in allowed_bedrock_regions: {allowed_regions}",
+                    severity="warning",
+                )
+            )
 
     # Monitoring consistency
     if getattr(profile, "monitoring_enabled", False):
         endpoint = getattr(profile, "otel_collector_endpoint", None)
         config_mode = getattr(profile, "cowork_config_mode", "static")
         if not endpoint and config_mode != "dynamic":
-            errors.append(ValidationError(
-                "otel_collector_endpoint",
-                "Monitoring enabled but no otel_collector_endpoint configured (and not using bootstrap server). "
-                "Run 'ccwb deploy --stack monitoring' first.",
-                severity="warning"
-            ))
+            errors.append(
+                ValidationError(
+                    "otel_collector_endpoint",
+                    "Monitoring enabled but no otel_collector_endpoint configured (and not using bootstrap server). "
+                    "Run 'ccwb deploy --stack monitoring' first.",
+                    severity="warning",
+                )
+            )
 
     # Bootstrap server + IDC conflict
     if getattr(profile, "cowork_config_mode", "static") == "dynamic" and auth_type == "idc":
-        errors.append(ValidationError(
-            "cowork_config_mode",
-            "Bootstrap server (dynamic config) is not supported with IDC auth. Use static MDM profiles."
-        ))
+        errors.append(
+            ValidationError(
+                "cowork_config_mode",
+                "Bootstrap server (dynamic config) is not supported with IDC auth. Use static MDM profiles.",
+            )
+        )
 
     # Quota enforcement requires quota API endpoint
     if getattr(profile, "quota_enforcement_mode", "off") != "off":
         if not getattr(profile, "quota_api_endpoint", None):
-            errors.append(ValidationError(
-                "quota_api_endpoint",
-                f"Quota enforcement mode '{profile.quota_enforcement_mode}' requires quota_api_endpoint"
-            ))
+            errors.append(
+                ValidationError(
+                    "quota_api_endpoint",
+                    f"Quota enforcement mode '{profile.quota_enforcement_mode}' requires quota_api_endpoint",
+                )
+            )
 
     return errors
