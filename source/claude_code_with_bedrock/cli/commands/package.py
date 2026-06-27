@@ -843,6 +843,7 @@ class PackageCommand(Command):
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
+        console.print("After installation, verify with: [cyan]poetry run ccwb doctor[/cyan]")
 
         # Only show distribute command if distribution is enabled
         if profile.enable_distribution:
