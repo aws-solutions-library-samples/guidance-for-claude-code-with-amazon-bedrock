@@ -19,7 +19,6 @@ from claude_code_with_bedrock.config import Config
 DESTROYABLE_STACKS = [
     "bootstrap",
     "codebuild",
-    "bootstrap",
     "analytics",
     "quota",
     "cowork-dashboard",

@@ -9,10 +9,10 @@ Routing logic:
     + signature via PyJWT if available, fallback to claims-only validation).
 """
 
+import base64
 import json
 import os
 import time
-import base64
 import urllib.request
 
 # Environment variables
@@ -77,7 +77,6 @@ def validate_jwt_with_pyjwt(token, jwks):
     """Attempt full JWT validation using PyJWT (if available)."""
     try:
         import jwt
-        from jwt import PyJWKClient
 
         # Build signing keys from JWKS
         signing_keys = []
@@ -183,7 +182,6 @@ def handler(event, context):
     """Lambda authorizer entry point."""
     method_arn = event.get("methodArn", "")
     path = event.get("path", "")
-    resource = event.get("resource", "")
 
     # Extract path from methodArn if path not directly available
     # methodArn format: arn:aws:execute-api:{region}:{account}:{api-id}/{stage}/{method}/{path}

@@ -18,8 +18,9 @@ import os
 import secrets
 import string
 import time
-import urllib.request
 import urllib.parse
+import urllib.request
+
 import boto3
 from boto3.dynamodb.conditions import Key
 
