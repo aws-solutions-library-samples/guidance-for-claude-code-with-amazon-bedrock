@@ -48,6 +48,83 @@ def _extract_azure_tenant_id(domain: str) -> str:
     return match.group(0) if match else domain
 
 
+def _deploy_bootstrap_lambda_code(
+    stack_name: str,
+    region: str,
+    project_root,
+    console=None,
+):
+    """Package and deploy bootstrap Lambda with bundled PyJWT dependencies.
+
+    Installs PyJWT[crypto] into a temp directory, zips with the handler,
+    and updates the Lambda function code via update-function-code.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    import zipfile
+    from pathlib import Path
+
+    lambda_dir = project_root / "deployment" / "infrastructure" / "lambda-functions" / "bootstrap_server"
+    handler_file = lambda_dir / "index.py"
+    requirements_file = lambda_dir / "requirements.txt"
+
+    if not handler_file.exists():
+        if console:
+            console.print("[yellow]Warning: bootstrap Lambda handler not found, skipping code deploy[/yellow]")
+        return
+
+    function_name = f"{stack_name}-bootstrap"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        package_dir = tmp_path / "package"
+        package_dir.mkdir()
+
+        # Install dependencies
+        if requirements_file.exists():
+            subprocess.run(
+                [
+                    "pip", "install",
+                    "-r", str(requirements_file),
+                    "-t", str(package_dir),
+                    "--quiet",
+                    "--platform", "manylinux2014_x86_64",
+                    "--only-binary=:all:",
+                    "--python-version", "3.12",
+                ],
+                check=False,
+                capture_output=True,
+            )
+
+        # Copy handler
+        shutil.copy2(handler_file, package_dir / "index.py")
+
+        # Create zip
+        zip_path = tmp_path / "bootstrap.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in package_dir.rglob("*"):
+                if file.is_file() and "__pycache__" not in str(file):
+                    zf.write(file, file.relative_to(package_dir))
+
+        # Update Lambda function code
+        import boto3
+
+        client = boto3.client("lambda", region_name=region)
+        try:
+            with open(zip_path, "rb") as f:
+                client.update_function_code(
+                    FunctionName=function_name,
+                    ZipFile=f.read(),
+                )
+            if console:
+                console.print(f"[green]✓ Bootstrap Lambda code deployed ({zip_path.stat().st_size // 1024}KB)[/green]")
+        except Exception as e:
+            if console:
+                console.print(f"[yellow]Warning: Could not update Lambda code: {e}[/yellow]")
+                console.print("[dim]  Run 'aws lambda update-function-code' manually if needed.[/dim]")
+
+
 class DeployCommand(Command):
     name = "deploy"
     description = "Deploy AWS infrastructure (auth, monitoring, dashboards)"
@@ -1098,26 +1175,9 @@ class DeployCommand(Command):
                 elif not oidc_issuer_url and profile.provider_type == "google":
                     oidc_issuer_url = "https://accounts.google.com"
 
-                # Build JWKS endpoint from issuer
+                # JWKS endpoint — pass explicit URI if configured, otherwise Lambda
+                # auto-discovers via {issuer}/.well-known/openid-configuration
                 jwks_endpoint = getattr(profile, "oidc_jwks_uri", None) or ""
-                if not jwks_endpoint and oidc_issuer_url:
-                    # Standard OIDC discovery: issuer + /.well-known/openid-configuration
-                    # Most providers put JWKS at issuer/keys or /protocol/openid-connect/certs
-                    # For simplicity, use well-known pattern
-                    jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
-                    if profile.provider_type == "okta":
-                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/v1/keys"
-                    elif profile.provider_type == "azure":
-                        tenant_id = _extract_azure_tenant_id(profile.provider_domain)
-                        jwks_endpoint = (
-                            f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
-                        )
-                    elif profile.provider_type == "cognito":
-                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
-                    elif profile.provider_type == "google":
-                        jwks_endpoint = "https://www.googleapis.com/oauth2/v3/certs"
-                    elif profile.provider_type == "auth0":
-                        jwks_endpoint = oidc_issuer_url.rstrip("/") + "/.well-known/jwks.json"
 
                 # Get OTEL endpoint from monitoring config if available
                 otlp_endpoint = getattr(profile, "otel_collector_endpoint", "") or ""
@@ -1141,6 +1201,16 @@ class DeployCommand(Command):
                     ["CAPABILITY_NAMED_IAM"],
                     task_description="Deploying Claude Desktop Bootstrap Server...",
                 )
+
+                # Deploy Lambda code with bundled dependencies
+                if result == 0:
+                    console.print("[cyan]Packaging bootstrap Lambda with dependencies...[/cyan]")
+                    _deploy_bootstrap_lambda_code(
+                        stack_name=stack_name,
+                        region=profile.aws_region,
+                        project_root=project_root,
+                        console=console,
+                    )
 
                 # Display bootstrap URL on success
                 if result == 0:

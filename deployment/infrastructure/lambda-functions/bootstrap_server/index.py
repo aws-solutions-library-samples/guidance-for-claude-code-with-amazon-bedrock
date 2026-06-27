@@ -15,8 +15,9 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-# Optional: PyJWT with cryptography for RS256 verification
-# Falls back to manual verification if not available in Lambda layer
+# PyJWT with cryptography for RS256/ES256 signature verification.
+# Bundled via requirements.txt at deploy time. The try/except is a safety net
+# in case the function is deployed without dependencies (e.g. inline ZipFile).
 try:
     import jwt
     from jwt import PyJWKClient
