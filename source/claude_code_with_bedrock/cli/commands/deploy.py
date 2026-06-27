@@ -48,6 +48,70 @@ def _extract_azure_tenant_id(domain: str) -> str:
     return match.group(0) if match else domain
 
 
+def _discover_oidc_endpoints(profile) -> dict:
+    """Fetch OIDC discovery document and extract endpoints.
+
+    Builds the issuer URL from profile.provider_type / provider_domain,
+    then fetches /.well-known/openid-configuration. Falls back to manual
+    endpoint construction per provider type when discovery fails.
+    """
+    import json
+    import urllib.request
+
+    # Build issuer URL from provider type
+    provider_type = profile.provider_type or ""
+    provider_domain = profile.provider_domain or ""
+
+    tid = None  # needed for azure fallback
+    if provider_type == "okta":
+        issuer = f"https://{provider_domain}/oauth2/default"
+    elif provider_type == "azure":
+        tid = _extract_azure_tenant_id(provider_domain)
+        issuer = f"https://login.microsoftonline.com/{tid}/v2.0"
+    elif provider_type == "google":
+        issuer = "https://accounts.google.com"
+    elif provider_type == "auth0":
+        issuer = f"https://{provider_domain}/"
+    else:
+        issuer = f"https://{provider_domain}"
+
+    # Try fetching discovery document
+    discovery_url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        req = urllib.request.Request(discovery_url)
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            doc = json.loads(resp.read())
+        return {
+            "issuer": doc.get("issuer", issuer),
+            "authorization_endpoint": doc.get("authorization_endpoint", ""),
+            "token_endpoint": doc.get("token_endpoint", ""),
+            "jwks_uri": doc.get("jwks_uri", ""),
+        }
+    except Exception:
+        # Fallback: construct manually based on provider type
+        if provider_type == "okta":
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": f"{issuer}/v1/authorize",
+                "token_endpoint": f"{issuer}/v1/token",
+                "jwks_uri": f"{issuer}/v1/keys",
+            }
+        elif provider_type == "azure":
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/authorize",
+                "token_endpoint": f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token",
+                "jwks_uri": f"https://login.microsoftonline.com/{tid}/discovery/v2.0/keys",
+            }
+        else:
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": "",
+                "token_endpoint": "",
+                "jwks_uri": "",
+            }
+
+
 class DeployCommand(Command):
     name = "deploy"
     description = "Deploy AWS infrastructure (auth, monitoring, dashboards)"
@@ -189,10 +253,17 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "bootstrap":
+                if not getattr(profile, "cowork_config_mode", "static") == "device-code":
+                    console.print("[yellow]Bootstrap server requires dynamic (device-code) mode.[/yellow]")
+                    console.print("[dim]Run 'ccwb init' and select 'Dynamic' for CoWork configuration.[/dim]")
+                    return 1
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (Device-Code Flow)"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, "
+                    "cowork-dashboard, analytics, quota, codebuild, bootstrap\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -255,6 +326,10 @@ class DeployCommand(Command):
             # Check if CodeBuild is enabled
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+
+            # Check if bootstrap server is enabled (device-code mode)
+            if getattr(profile, "cowork_config_mode", "static") == "device-code":
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (Device-Code Flow)"))
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -1047,6 +1122,53 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "bootstrap":
+                template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
+                stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
+
+                # Auto-discover OIDC endpoints
+                oidc_endpoints = _discover_oidc_endpoints(profile)
+
+                params = [
+                    f"OidcIssuerUrl={oidc_endpoints['issuer']}",
+                    f"OidcClientId={profile.client_id}",
+                    f"OidcClientSecretArn={getattr(profile, 'client_secret_arn', '')}",
+                    f"OidcTokenEndpoint={oidc_endpoints['token_endpoint']}",
+                    f"OidcAuthorizeEndpoint={oidc_endpoints['authorization_endpoint']}",
+                    f"OidcJwksEndpoint={oidc_endpoints['jwks_uri']}",
+                    f"InferenceRegion={profile.aws_region}",
+                    f"InferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+                ]
+
+                # Optional WAF CIDR restriction
+                allowed_cidr = getattr(profile, "bootstrap_allowed_cidr", "0.0.0.0/0")
+                if allowed_cidr != "0.0.0.0/0":
+                    params.append(f"AllowedCidr={allowed_cidr}")
+
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    ["CAPABILITY_NAMED_IAM"],
+                    task_description="Deploying bootstrap server (device-code flow)...",
+                )
+
+                if result == 0:
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    callback_url = outputs.get("CallbackUrl", "")
+                    bootstrap_url = outputs.get("BootstrapUrl", "")
+                    console.print("\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
+                    console.print(f"[bold]Bootstrap URL:[/bold] {bootstrap_url}")
+                    console.print(f"[bold]Callback URL:[/bold] {callback_url}")
+                    console.print(
+                        "\n[yellow]\u26a0\ufe0f  Add this redirect URI to your IdP app registration:[/yellow]"
+                    )
+                    console.print(f"  {callback_url}")
+                    console.print("\n[dim]Set bootstrapUrl in your MDM profile:[/dim]")
+                    console.print(f"  {bootstrap_url}")
+
+                return result
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1261,6 +1383,25 @@ class DeployCommand(Command):
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
+        elif stack_type == "bootstrap":
+            template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
+            stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
+            oidc_endpoints = _discover_oidc_endpoints(profile)
+            params = [
+                f"OidcIssuerUrl={oidc_endpoints['issuer']}",
+                f"OidcClientId={profile.client_id}",
+                f"OidcClientSecretArn={getattr(profile, 'client_secret_arn', '')}",
+                f"OidcTokenEndpoint={oidc_endpoints['token_endpoint']}",
+                f"OidcAuthorizeEndpoint={oidc_endpoints['authorization_endpoint']}",
+                f"OidcJwksEndpoint={oidc_endpoints['jwks_uri']}",
+                f"InferenceRegion={profile.aws_region}",
+                f"InferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+            ]
+            allowed_cidr = getattr(profile, "bootstrap_allowed_cidr", "0.0.0.0/0")
+            if allowed_cidr != "0.0.0.0/0":
+                params.append(f"AllowedCidr={allowed_cidr}")
+            print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
+
         else:
             console.print(f"[yellow]  No command template available for stack type: {stack_type}[/yellow]")
 
@@ -1413,6 +1554,7 @@ class DeployCommand(Command):
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
             "codebuild": "CodeBuild",
+            "bootstrap": "Bootstrap Server",
         }
 
         # Stack types that are being deployed
