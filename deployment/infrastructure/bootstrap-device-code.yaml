@@ -48,11 +48,22 @@ Parameters:
 
   PluginsRegistryJson:
     Type: String
-    Default: '{"plugins":[]}'
-    Description: JSON string of the organization plugin registry
+    Default: ''
+    Description: >-
+      Inline JSON of the plugin registry (fallback). Prefer S3-backed registry
+      via PluginsS3Bucket for easier updates without stack redeployment.
+
+  PluginsS3Bucket:
+    Type: String
+    Default: ''
+    Description: >-
+      S3 bucket name for plugin registry storage. When set, Lambda reads
+      plugins-registry.json from this bucket (updated by ccwb plugins sync).
+      Uses the existing s3bucket stack bucket when available.
 
 Conditions:
   EnableWaf: !Not [!Equals [!Ref AllowedCidr, '0.0.0.0/0']]
+  HasPluginsS3Bucket: !Not [!Equals [!Ref PluginsS3Bucket, '']]
 
 Resources:
   # ============================================================
@@ -161,6 +172,17 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref OidcClientSecretArn
+        - PolicyName: PluginsS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !If
+                  - HasPluginsS3Bucket
+                  - !Sub 'arn:${AWS::Partition}:s3:::${PluginsS3Bucket}/plugins-registry.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::dummy-no-bucket/*'
 
   AuthorizerLambdaRole:
     Type: AWS::IAM::Role
@@ -202,6 +224,8 @@ Resources:
           INFERENCE_REGION: !Ref InferenceRegion
           INFERENCE_MODELS: !Ref InferenceModels
           PLUGINS_REGISTRY_JSON: !Ref PluginsRegistryJson
+          PLUGINS_S3_BUCKET: !Ref PluginsS3Bucket
+          PLUGINS_S3_KEY: plugins-registry.json
           API_BASE_URL: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
       Code: ./lambda-functions/bootstrap_device_code/
 

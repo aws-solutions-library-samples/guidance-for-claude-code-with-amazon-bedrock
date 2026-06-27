@@ -1129,10 +1129,16 @@ class DeployCommand(Command):
                 # Auto-discover OIDC endpoints
                 oidc_endpoints = _discover_oidc_endpoints(profile)
 
+                # Reuse the distribution IdP secret ARN if available (same client, same secret)
+                client_secret_arn = (
+                    getattr(profile, 'distribution_idp_client_secret_arn', '')
+                    or getattr(profile, 'client_secret_arn', '')
+                )
+
                 params = [
                     f"OidcIssuerUrl={oidc_endpoints['issuer']}",
                     f"OidcClientId={profile.client_id}",
-                    f"OidcClientSecretArn={getattr(profile, 'client_secret_arn', '')}",
+                    f"OidcClientSecretArn={client_secret_arn}",
                     f"OidcTokenEndpoint={oidc_endpoints['token_endpoint']}",
                     f"OidcAuthorizeEndpoint={oidc_endpoints['authorization_endpoint']}",
                     f"OidcJwksEndpoint={oidc_endpoints['jwks_uri']}",
@@ -1144,6 +1150,12 @@ class DeployCommand(Command):
                 allowed_cidr = getattr(profile, "bootstrap_allowed_cidr", "0.0.0.0/0")
                 if allowed_cidr != "0.0.0.0/0":
                     params.append(f"AllowedCidr={allowed_cidr}")
+
+                # Use existing s3bucket stack for plugin registry storage
+                s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack, profile.aws_region)
+                if s3_outputs and s3_outputs.get("BucketName"):
+                    params.append(f"PluginsS3Bucket={s3_outputs['BucketName']}")
 
                 result = deploy_with_cf(
                     template,

@@ -34,7 +34,9 @@ OIDC_AUTHORIZE_ENDPOINT = os.environ.get("OIDC_AUTHORIZE_ENDPOINT", "")
 OIDC_JWKS_ENDPOINT = os.environ.get("OIDC_JWKS_ENDPOINT", "")
 INFERENCE_REGION = os.environ.get("INFERENCE_REGION", "us-east-1")
 INFERENCE_MODELS = os.environ.get("INFERENCE_MODELS", "")
-PLUGINS_REGISTRY_JSON = os.environ.get("PLUGINS_REGISTRY_JSON", '{"plugins":[]}')
+PLUGINS_REGISTRY_JSON = os.environ.get("PLUGINS_REGISTRY_JSON", "")
+PLUGINS_S3_BUCKET = os.environ.get("PLUGINS_S3_BUCKET", "")
+PLUGINS_S3_KEY = os.environ.get("PLUGINS_S3_KEY", "plugins-registry.json")
 API_BASE_URL = os.environ.get("API_BASE_URL", "")
 
 # Clients (reused across invocations)
@@ -342,11 +344,28 @@ def handle_bootstrap(event):
 
 
 def handle_plugins(event):
-    """GET /plugins or /plugins/{name} - Return plugin registry."""
-    try:
-        registry = json.loads(PLUGINS_REGISTRY_JSON)
-    except json.JSONDecodeError:
-        registry = {"plugins": []}
+    """GET /plugins or /plugins/{name} - Return plugin registry.
+
+    Reads from S3 if PLUGINS_S3_BUCKET is configured, otherwise falls
+    back to the PLUGINS_REGISTRY_JSON env var. Returns empty array if neither set.
+    """
+    registry = []
+
+    # Try S3 first (decouples plugin updates from stack deploys)
+    if PLUGINS_S3_BUCKET:
+        try:
+            s3 = boto3.client("s3")
+            obj = s3.get_object(Bucket=PLUGINS_S3_BUCKET, Key=PLUGINS_S3_KEY)
+            registry = json.loads(obj["Body"].read())
+        except Exception:
+            pass  # Fall through to env var
+
+    # Fall back to env var
+    if not registry and PLUGINS_REGISTRY_JSON:
+        try:
+            registry = json.loads(PLUGINS_REGISTRY_JSON)
+        except json.JSONDecodeError:
+            registry = []
 
     return json_response(200, registry)
 
