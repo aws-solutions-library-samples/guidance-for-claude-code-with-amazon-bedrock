@@ -1,0 +1,12 @@
+---
+description: When creating a new CLI command, follow the standard registration pattern
+---
+- New commands go in `source/claude_code_with_bedrock/cli/commands/<name>.py`
+- Subclass `cleo.commands.command.Command` with `name`, `description`, and `help` class attributes
+- Register in `cli/commands/__init__.py` (import + add to `__all__`)
+- Register in `cli/__init__.py` `create_application()` (add to command list)
+- Add entry to `assets/docs/CLI_REFERENCE.md` (section + Table of Contents)
+- Add row to README components table if user-facing
+- Use `rich` for formatted output (already a dependency)
+- Include `# ABOUTME:` comments at file top explaining purpose
+- Add tests in `source/tests/cli/commands/test_<name>.py`
