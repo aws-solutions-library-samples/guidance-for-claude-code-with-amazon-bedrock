@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from claude_code_with_bedrock.cli.commands.package import _GO_PLATFORM_MAP
 
-
 # --- Extract the authoritative sets from each component ---
 
 
