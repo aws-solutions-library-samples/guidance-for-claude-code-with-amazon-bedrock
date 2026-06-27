@@ -27,6 +27,8 @@ type ExplainOutput struct {
 	Monitoring MonitoringInfo  `json:"monitoring"`
 	Quota      QuotaInfo       `json:"quota"`
 	Storage    StorageInfo     `json:"storage"`
+	Session    SessionInfo     `json:"session"`
+	Env        EnvInfo         `json:"env"`
 	Paths      PathsInfo       `json:"paths"`
 }
 
@@ -70,6 +72,27 @@ type MonitoringInfo struct {
 // StorageInfo describes credential storage configuration.
 type StorageInfo struct {
 	Mode string `json:"mode"` // "keyring" | "file" | "session"
+}
+
+// SessionInfo describes session parameters that affect credential behavior.
+type SessionInfo struct {
+	MaxDurationSec int    `json:"max_duration_sec,omitempty"` // STS session length
+	RedirectPort   int    `json:"redirect_port"`              // OAuth callback port (default 8400)
+	AzureAuthMode  string `json:"azure_auth_mode,omitempty"`  // "" | "secret" | "certificate"
+	HelperContext  string `json:"helper_context,omitempty"`   // CLAUDE_HELPER_CONTEXT env value
+}
+
+// EnvInfo captures relevant environment variables that override behavior.
+type EnvInfo struct {
+	CCWBProfile       string `json:"ccwb_profile,omitempty"`        // CCWB_PROFILE override
+	AWSProfile        string `json:"aws_profile,omitempty"`         // AWS_PROFILE
+	RedirectPort      string `json:"redirect_port,omitempty"`       // REDIRECT_PORT override
+	DebugEnabled      bool   `json:"debug_enabled"`                 // COGNITO_AUTH_DEBUG=1
+	NoBrowserNotify   bool   `json:"no_browser_notification"`       // CCWB_NO_BROWSER_NOTIFICATION=1
+	IsSSH             bool   `json:"is_ssh"`                        // SSH_CONNECTION detected
+	IsHeadless        bool   `json:"is_headless"`                   // No DISPLAY/WAYLAND_DISPLAY
+	BrowserOverride   string `json:"browser_override,omitempty"`    // $BROWSER env
+	MonitoringToken   bool   `json:"has_monitoring_token"`          // CLAUDE_CODE_MONITORING_TOKEN set
 }
 
 // PathsInfo shows resolved file paths for troubleshooting.
@@ -159,6 +182,12 @@ func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput
 
 	// Resolve monitoring configuration
 	output.Monitoring = resolveMonitoring(cfg)
+
+	// Resolve session parameters
+	output.Session = resolveSession(cfg)
+
+	// Resolve environment detection
+	output.Env = resolveEnv()
 
 	return output
 }
@@ -263,5 +292,63 @@ func resolvePaths(profile string) PathsInfo {
 			info.ConfigFile = filepath.Join(home, "claude-code-with-bedrock", "config.json")
 		}
 	}
+	return info
+}
+
+// resolveSession returns session parameters from the config.
+func resolveSession(cfg *config.ProfileConfig) SessionInfo {
+	info := SessionInfo{
+		RedirectPort: 8400, // default
+	}
+	if cfg.MaxSessionDuration > 0 {
+		info.MaxDurationSec = cfg.MaxSessionDuration
+	}
+	if cfg.RedirectPort > 0 {
+		info.RedirectPort = cfg.RedirectPort
+	}
+	// Env override for redirect port
+	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
+		info.RedirectPort = 0 // will be overridden at runtime
+	}
+	if cfg.AzureAuthMode != "" {
+		info.AzureAuthMode = cfg.AzureAuthMode
+	}
+	// Claude Desktop helper context
+	if ctx := os.Getenv("CLAUDE_HELPER_CONTEXT"); ctx != "" {
+		info.HelperContext = ctx
+	}
+	return info
+}
+
+// resolveEnv captures environment variables that affect runtime behavior.
+func resolveEnv() EnvInfo {
+	info := EnvInfo{}
+
+	// Profile overrides
+	info.CCWBProfile = os.Getenv("CCWB_PROFILE")
+	info.AWSProfile = os.Getenv("AWS_PROFILE")
+	info.RedirectPort = os.Getenv("REDIRECT_PORT")
+
+	// Debug mode
+	debugVal := os.Getenv("COGNITO_AUTH_DEBUG")
+	info.DebugEnabled = debugVal == "1" || debugVal == "true" || debugVal == "yes"
+
+	// Browser notification suppression
+	info.NoBrowserNotify = os.Getenv("CCWB_NO_BROWSER_NOTIFICATION") == "1"
+
+	// SSH detection (affects browser-based auth)
+	info.IsSSH = os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CLIENT") != ""
+
+	// Headless detection (no display server)
+	if runtime.GOOS == "linux" {
+		info.IsHeadless = os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == ""
+	}
+
+	// Browser override
+	info.BrowserOverride = os.Getenv("BROWSER")
+
+	// Monitoring token presence (not the value — sensitive)
+	info.MonitoringToken = os.Getenv("CLAUDE_CODE_MONITORING_TOKEN") != ""
+
 	return info
 }
