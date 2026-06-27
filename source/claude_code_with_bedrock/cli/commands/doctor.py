@@ -225,7 +225,28 @@ def print_results(checks: list, console: Console = None):
         issue_body += "| Check | Status | Details |\n|-------|--------|---------|\n"
         for c in checks:
             issue_body += f"| {c.name} | {c.status.upper()} | {c.message} |\n"
-        issue_body += "\n## Environment\n- OS: \n- Python: \n- ccwb version: \n"
+        # Auto-detect environment for easier diagnosis
+        import platform
+        issue_body += "\n## Environment\n"
+        issue_body += f"- **OS:** {platform.system()} {platform.release()} ({platform.machine()})\n"
+        issue_body += f"- **Python:** {platform.python_version()}\n"
+        # Read auth type and monitoring mode from config.json
+        _home = Path.home()
+        _config_path = _home / "claude-code-with-bedrock" / "config.json"
+        _auth_type = "unknown"
+        _monitoring_mode = "none"
+        if _config_path.exists():
+            try:
+                with open(_config_path) as _cf:
+                    _cfg = json.load(_cf)
+                _profiles = _cfg.get("profiles", _cfg)
+                _first = next((v for k, v in _profiles.items() if isinstance(v, dict)), {})
+                _auth_type = _first.get("auth_type", "oidc")
+                _monitoring_mode = _first.get("monitoring_mode", "none")
+            except Exception:
+                pass
+        issue_body += f"- **Auth type:** {_auth_type}\n"
+        issue_body += f"- **Monitoring mode:** {_monitoring_mode}\n"
         import urllib.parse
         params = urllib.parse.urlencode({
             "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",
