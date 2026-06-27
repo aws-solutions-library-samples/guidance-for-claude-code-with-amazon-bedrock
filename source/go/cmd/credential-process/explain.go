@@ -19,6 +19,7 @@ import (
 // ExplainOutput is the structured JSON output for --explain.
 type ExplainOutput struct {
 	Version  string        `json:"version"`
+	Commit   string        `json:"commit"`
 	Profile  string        `json:"profile"`
 	Platform PlatformInfo  `json:"platform"`
 	Auth     AuthInfo      `json:"auth"`
@@ -86,6 +87,7 @@ func runExplain(profile string, cfg *config.ProfileConfig) {
 func buildExplainOutput(profile string, cfg *config.ProfileConfig) ExplainOutput {
 	output := ExplainOutput{
 		Version: version.Version,
+		Commit:  version.Commit,
 		Profile: profile,
 		Platform: PlatformInfo{
 			OS:   runtime.GOOS,

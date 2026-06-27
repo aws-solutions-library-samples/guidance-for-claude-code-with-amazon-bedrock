@@ -60,8 +60,33 @@ def _go_ldflags(goos: str) -> str:
     stripped Go binaries in subprocess/non-interactive contexts. Everywhere else we
     strip (-s -w) for size. This rule applies identically to credential-process,
     otel-helper, and the otelcol sidecar — hence one shared helper.
+
+    Always injects version and commit via -X flags so --version and --explain
+    report the build origin (critical for beta vs release troubleshooting).
     """
-    return "" if goos == "windows" else "-s -w"
+    import subprocess
+
+    # Resolve version from git tags
+    try:
+        ver = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        ver = "dev"
+
+    # Resolve commit SHA
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        commit = "unknown"
+
+    version_flags = f"-X ccwb-go/internal/version.Version={ver} -X ccwb-go/internal/version.Commit={commit}"
+    strip_flags = "" if goos == "windows" else "-s -w"
+    return f"{strip_flags} {version_flags}".strip()
 
 
 def _find_universal2_python() -> Path | None:

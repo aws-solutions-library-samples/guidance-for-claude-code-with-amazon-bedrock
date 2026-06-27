@@ -57,7 +57,7 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
-		fmt.Printf("credential-process %s\n", version.Version)
+		fmt.Printf("credential-process %s (%s)\n", version.Version, version.Commit)
 		os.Exit(0)
 	}
 
