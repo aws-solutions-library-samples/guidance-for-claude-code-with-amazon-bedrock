@@ -254,9 +254,9 @@ class DeployCommand(Command):
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "bootstrap":
-                if not getattr(profile, "cowork_config_mode", "static") == "device-code":
-                    console.print("[yellow]Bootstrap server requires dynamic (device-code) mode.[/yellow]")
-                    console.print("[dim]Run 'ccwb init' and select 'Dynamic' for CoWork configuration.[/dim]")
+                if getattr(profile, "cowork_config_mode", "static") not in ("device-code", "oidc-bearer"):
+                    console.print("[yellow]Bootstrap server requires dynamic configuration mode.[/yellow]")
+                    console.print("[dim]Run 'ccwb init' and select 'Dynamic with plugins' or 'Dynamic config only'.[/dim]")
                     return 1
                 stacks_to_deploy.append(("bootstrap", "Bootstrap Server (Device-Code Flow)"))
             else:
@@ -327,9 +327,12 @@ class DeployCommand(Command):
             if getattr(profile, "enable_codebuild", False):
                 stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
 
-            # Check if bootstrap server is enabled (device-code mode)
-            if getattr(profile, "cowork_config_mode", "static") == "device-code":
-                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (Device-Code Flow)"))
+            # Check if bootstrap server is enabled (any dynamic mode)
+            cowork_mode = getattr(profile, "cowork_config_mode", "static")
+            if cowork_mode == "device-code":
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (device-code — config + plugins)"))
+            elif cowork_mode == "oidc-bearer":
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (OIDC Bearer — config only)"))
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -1123,7 +1126,11 @@ class DeployCommand(Command):
                 )
 
             elif stack_type == "bootstrap":
-                template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
+                cowork_mode = getattr(profile, "cowork_config_mode", "static")
+                if cowork_mode == "oidc-bearer":
+                    template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
+                else:
+                    template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
                 stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
 
                 # Auto-discover OIDC endpoints

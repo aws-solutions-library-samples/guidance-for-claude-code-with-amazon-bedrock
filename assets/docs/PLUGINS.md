@@ -107,10 +107,17 @@ For a guided walkthrough of these plugins, see the companion workshop:
 
 ## Bootstrap Server Delivery (Dynamic)
 
-For automated plugin delivery to Claude Desktop at sign-in (no manual install), deploy the bootstrap server:
+`ccwb init` offers two dynamic delivery modes:
+
+| Mode | What it delivers | Infrastructure |
+|------|-----------------|----------------|
+| **Dynamic with plugins** (device-code auth) | Config + org plugins | API Gateway + Lambda + DynamoDB |
+| **Dynamic config only** (OIDC Bearer) | Config only, no plugins | API Gateway + Lambda (stateless) |
+
+### Setup (Dynamic with plugins — recommended)
 
 ```bash
-ccwb init                      # Select "Dynamic (device-code)" for CoWork delivery
+ccwb init                      # Select "Dynamic with plugins" for CoWork delivery
 ccwb deploy --stack bootstrap  # Deploy bootstrap server
 ccwb plugins add --name my-plugin --repo https://github.com/org/plugins.git --path my-plugin
 ccwb plugins sync              # Push registry to server
@@ -118,6 +125,13 @@ ccwb plugins sync              # Push registry to server
 
 Desktop receives `organizationPluginsUrl` in the bootstrap response and git-clones plugins automatically. Plugins with `"installationPreference": "required"` install without user confirmation.
 
-**Infrastructure:** API Gateway + Lambda + DynamoDB (device-code grants). Optional WAF IP allowlist. See `deployment/infrastructure/bootstrap-device-code.yaml`.
-
 **IdP callback:** Add the bootstrap callback URL (printed after deploy) to your IdP's redirect URIs. Cognito configures this automatically.
+
+### Setup (Dynamic config only)
+
+```bash
+ccwb init                      # Select "Dynamic config only" for CoWork delivery
+ccwb deploy --stack bootstrap  # Deploy lightweight bootstrap (no DynamoDB)
+```
+
+Desktop receives config (region, models, session lifetime) but no plugins. Simpler infrastructure, no state.
