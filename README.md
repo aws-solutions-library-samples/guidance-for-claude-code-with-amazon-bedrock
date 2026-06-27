@@ -237,6 +237,7 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+- [Troubleshooting](assets/docs/TROUBLESHOOTING.md) - Common issues, `ccwb doctor`, and how to file bugs
 - [Workshop: Claude Code on Amazon Bedrock](https://catalog.workshops.aws/claude-code-on-amazon-bedrock/en-US) - Companion hands-on workshop
 - [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) - Blog post covering deployment patterns and best practices
 
