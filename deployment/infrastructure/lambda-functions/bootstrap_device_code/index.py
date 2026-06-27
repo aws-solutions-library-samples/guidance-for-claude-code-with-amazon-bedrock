@@ -330,10 +330,12 @@ def handle_bootstrap(event):
     models = [m.strip() for m in INFERENCE_MODELS.split(",") if m.strip()]
 
     config = {
-        "mcpServers": {},
+        "inferenceProvider": "bedrock",
+        "inferenceBedrockRegion": INFERENCE_REGION,
+        "inferenceModels": json.dumps(models),
+        "inferenceSessionLifetimeSec": 28800,
         "organizationPluginsUrl": f"{base}/plugins/index.json",
-        "inferenceRegion": INFERENCE_REGION,
-        "allowedModels": models,
+        "expiresAt": int(time.time()) + 3600,
     }
     return json_response(200, config)
 
