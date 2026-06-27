@@ -35,7 +35,10 @@ def set_env_vars(monkeypatch):
     monkeypatch.setenv("OIDC_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("OIDC_JWKS_ENDPOINT", "https://example.okta.com/oauth2/default/v1/keys")
     monkeypatch.setenv("DEFAULT_INFERENCE_REGION", "us-west-2")
-    monkeypatch.setenv("DEFAULT_INFERENCE_MODELS", "us.anthropic.claude-sonnet-4-20250514-v1:0,us.anthropic.claude-opus-4-20250514-v1:0")
+    monkeypatch.setenv(
+        "DEFAULT_INFERENCE_MODELS",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0,us.anthropic.claude-opus-4-20250514-v1:0",
+    )
     monkeypatch.setenv("OTLP_ENDPOINT", "https://otel.example.com/v1/traces")
     monkeypatch.setenv("INFERENCE_SESSION_LIFETIME_SEC", "14400")
 
@@ -50,9 +53,7 @@ def reload_handler(set_env_vars):
         del sys.modules["index"]
 
     # Load specifically from the bootstrap_server directory
-    spec = importlib.util.spec_from_file_location(
-        "index", os.path.join(_LAMBDA_DIR, "index.py")
-    )
+    spec = importlib.util.spec_from_file_location("index", os.path.join(_LAMBDA_DIR, "index.py"))
     module = importlib.util.module_from_spec(spec)
     sys.modules["index"] = module
     spec.loader.exec_module(module)
@@ -211,17 +212,17 @@ class TestLambdaHandler:
 
         if "index" in sys.modules:
             del sys.modules["index"]
-        spec = importlib.util.spec_from_file_location(
-            "index", os.path.join(_LAMBDA_DIR, "index.py")
-        )
+        spec = importlib.util.spec_from_file_location("index", os.path.join(_LAMBDA_DIR, "index.py"))
         handler = importlib.util.module_from_spec(spec)
         sys.modules["index"] = handler
         spec.loader.exec_module(handler)
 
-        mock_validate_new = MagicMock(return_value={
-            "sub": "user123",
-            "email": "user@example.com",
-        })
+        mock_validate_new = MagicMock(
+            return_value={
+                "sub": "user123",
+                "email": "user@example.com",
+            }
+        )
 
         with patch.object(handler, "_validate_token", mock_validate_new):
             event = {"headers": {"authorization": "Bearer valid.token.here"}}

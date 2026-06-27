@@ -1519,12 +1519,8 @@ class InitCommand(Command):
                 console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
 
                 config_mode_choices = [
-                    questionary.Choice(
-                        "Static (default \u2014 MDM profile with inline config)", value="static"
-                    ),
-                    questionary.Choice(
-                        "Dynamic (bootstrap server \u2014 per-user config at sign-in)", value="dynamic"
-                    ),
+                    questionary.Choice("Static (default \u2014 MDM profile with inline config)", value="static"),
+                    questionary.Choice("Dynamic (bootstrap server \u2014 per-user config at sign-in)", value="dynamic"),
                 ]
                 saved_config_mode = config.get("cowork", {}).get("config_mode", "static")
                 config_mode = questionary.select(

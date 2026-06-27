@@ -85,13 +85,18 @@ def _deploy_bootstrap_lambda_code(
         if requirements_file.exists():
             subprocess.run(
                 [
-                    "pip", "install",
-                    "-r", str(requirements_file),
-                    "-t", str(package_dir),
+                    "pip",
+                    "install",
+                    "-r",
+                    str(requirements_file),
+                    "-t",
+                    str(package_dir),
                     "--quiet",
-                    "--platform", "manylinux2014_x86_64",
+                    "--platform",
+                    "manylinux2014_x86_64",
                     "--only-binary=:all:",
-                    "--python-version", "3.12",
+                    "--python-version",
+                    "3.12",
                 ],
                 check=False,
                 capture_output=True,
@@ -325,14 +330,10 @@ class DeployCommand(Command):
                 cowork_config_mode = getattr(profile, "cowork_config_mode", "static")
                 if cowork_config_mode != "dynamic":
                     console.print("[yellow]Bootstrap server requires dynamic config mode.[/yellow]")
-                    console.print(
-                        "Run 'poetry run ccwb init' and select 'Dynamic' for CoWork configuration delivery."
-                    )
+                    console.print("Run 'poetry run ccwb init' and select 'Dynamic' for CoWork configuration delivery.")
                     return 1
                 if profile.effective_auth_type != "oidc":
-                    console.print(
-                        "[yellow]Bootstrap server requires OIDC authentication.[/yellow]"
-                    )
+                    console.print("[yellow]Bootstrap server requires OIDC authentication.[/yellow]")
                     return 1
                 stacks_to_deploy.append(("bootstrap", "Claude Desktop Bootstrap Server"))
             else:
@@ -1201,9 +1202,7 @@ class DeployCommand(Command):
             elif stack_type == "bootstrap":
                 # Claude Desktop Bootstrap Server for dynamic configuration delivery
                 template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
-                stack_name = profile.stack_names.get(
-                    "bootstrap", f"{profile.identity_pool_name}-bootstrap"
-                )
+                stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
 
                 params = _resolve_bootstrap_params(profile)
 
@@ -1231,9 +1230,7 @@ class DeployCommand(Command):
                     bootstrap_url = outputs.get("BootstrapUrl", "N/A")
                     console.print("\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
                     console.print(f"\n[bold]Bootstrap URL:[/bold] {bootstrap_url}")
-                    console.print(
-                        "\n[dim]Add this URL as 'bootstrapUrl' in your MDM anchor profile.[/dim]"
-                    )
+                    console.print("\n[dim]Add this URL as 'bootstrapUrl' in your MDM anchor profile.[/dim]")
 
                 return result
 
