@@ -120,7 +120,7 @@ def run_doctor(home: Path = None, live: bool = False) -> list:
     config_data = None
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config_data = json.load(f)
             profiles = config_data.get("profiles", config_data)
             profile_names = [p for p in profiles if isinstance(profiles.get(p), dict)]
