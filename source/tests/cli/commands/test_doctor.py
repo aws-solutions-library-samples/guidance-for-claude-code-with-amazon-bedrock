@@ -21,6 +21,7 @@ from claude_code_with_bedrock.cli.commands.doctor import (
 class TestDoctorBinaryDetection:
     """Test binary detection across platforms."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only test")
     def test_find_binary_unix(self, tmp_path):
         """Unix: finds binary without extension."""
         (tmp_path / "credential-process").write_text("#!/bin/sh")
