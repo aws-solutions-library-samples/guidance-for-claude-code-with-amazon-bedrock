@@ -4,7 +4,6 @@
 """Configuration validators run at package time to catch misconfigurations early."""
 
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass
@@ -14,7 +13,7 @@ class ValidationError:
     severity: str = "error"  # "error" or "warning"
 
 
-def validate_profile_for_packaging(profile) -> List[ValidationError]:
+def validate_profile_for_packaging(profile) -> list[ValidationError]:
     """Validate a profile is consistent and ready for packaging."""
     errors = []
 

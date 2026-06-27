@@ -5,7 +5,7 @@
 
 from types import SimpleNamespace
 
-from claude_code_with_bedrock.cli.validators import ValidationError, validate_profile_for_packaging
+from claude_code_with_bedrock.cli.validators import validate_profile_for_packaging
 
 
 def _make_profile(**kwargs):
