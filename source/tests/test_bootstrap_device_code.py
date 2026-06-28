@@ -14,11 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 LAMBDA_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "deployment"
-    / "infrastructure"
-    / "lambda-functions"
-    / "bootstrap_device_code"
+    Path(__file__).resolve().parents[2] / "deployment" / "infrastructure" / "lambda-functions" / "bootstrap_device_code"
 )
 
 INDEX_PATH = LAMBDA_DIR / "index.py"
@@ -38,11 +34,12 @@ def _env_vars(monkeypatch):
     monkeypatch.setenv("INFERENCE_REGION", "us-west-2")
     monkeypatch.setenv("INFERENCE_MODELS", "claude-sonnet-4-20250514,claude-haiku-4-20250414")
     monkeypatch.setenv("API_BASE_URL", "https://bootstrap.example.com")
-    monkeypatch.setenv("PLUGINS_REGISTRY_JSON", json.dumps({
-        "plugins": [
-            {"name": "example-org-policy", "version": "1.0.0", "url": "https://example.com/plugin.zip"}
-        ]
-    }))
+    monkeypatch.setenv(
+        "PLUGINS_REGISTRY_JSON",
+        json.dumps(
+            {"plugins": [{"name": "example-org-policy", "version": "1.0.0", "url": "https://example.com/plugin.zip"}]}
+        ),
+    )
 
 
 def _load_module(path: Path, name_suffix: str = "") -> object:

@@ -153,9 +153,11 @@ def validate_token(token):
     if result is not None:
         return result
 
-    # Fallback to claims-only validation
-    print("WARNING: Using claims-only JWT validation (PyJWT not available)")
-    return validate_jwt_claims_only(token)
+    # SECURITY: Fail closed — do not accept tokens without signature verification.
+    # PyJWT must be bundled in the Lambda deployment package (requirements.txt).
+    # If this code path is reached, the Lambda was deployed without dependencies.
+    print("ERROR: PyJWT not available — cannot validate JWT signature. Denying access.")
+    return None
 
 
 def generate_policy(principal_id, effect, resource, context=None):

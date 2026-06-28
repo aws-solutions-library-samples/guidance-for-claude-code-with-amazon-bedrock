@@ -1517,14 +1517,14 @@ class InitCommand(Command):
                 console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
 
                 config_delivery_choices = [
+                    questionary.Choice("Static (default \u2014 MDM profile with inline config)", value="static"),
                     questionary.Choice(
-                        "Static (default \u2014 MDM profile with inline config)", value="static"
+                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)",
+                        value="bootstrap-device-code",
                     ),
                     questionary.Choice(
-                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)", value="bootstrap-device-code"
-                    ),
-                    questionary.Choice(
-                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)", value="bootstrap-oidc-bearer"
+                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)",
+                        value="bootstrap-oidc-bearer",
                     ),
                 ]
                 saved_config_delivery = config.get("cowork", {}).get("config_delivery", "static")
