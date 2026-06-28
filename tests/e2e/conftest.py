@@ -261,14 +261,27 @@ def run_credential_process(
         config_dir.mkdir(exist_ok=True)
         config_file = config_dir / "config.json"
         if not config_file.exists():
-            profile_config = {
-                "auth_type": e2e_profile["auth"]["type"],
-                "region": "us-east-1",
-                "monitoring": e2e_profile.get("monitoring", {"mode": "none"}),
-                "quota": e2e_profile.get("quota", {"enabled": False}),
-            }
-            if e2e_profile["auth"].get("federation"):
-                profile_config["federation"] = e2e_profile["auth"]["federation"]
+            auth_type = e2e_profile["auth"]["type"]
+            if auth_type == "passthrough":
+                # Passthrough mode: sso_enabled=false bypasses OIDC entirely,
+                # uses ambient AWS credentials (env vars, instance profile, etc.)
+                profile_config = {
+                    "sso_enabled": False,
+                    "aws_region": "us-east-1",
+                }
+            else:
+                profile_config = {
+                    "auth_type": auth_type,
+                    "aws_region": "us-east-1",
+                }
+                if auth_type == "oidc":
+                    profile_config["issuer_url"] = (
+                        "https://token.actions.githubusercontent.com"
+                    )
+                    profile_config["client_id"] = "sts.amazonaws.com"
+                    profile_config["provider_type"] = "generic"
+                if e2e_profile["auth"].get("federation"):
+                    profile_config["federation"] = e2e_profile["auth"]["federation"]
             config = {"profiles": {"ClaudeCode": profile_config}}
             config_file.write_text(json.dumps(config, indent=2))
         env["HOME"] = str(fake_home)
