@@ -51,7 +51,7 @@ def _extract_azure_tenant_id(domain: str) -> str:
 # Provider types supported by the AgentCore Web Search gateway. The CUSTOM_JWT
 # authorizer is provider-agnostic (validates any OIDC id_token), so all OIDC
 # providers work. Non-OIDC (idc, none) have no id_token to validate.
-WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure", "okta", "auth0", "google", "generic")
+WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure", "okta", "auth0", "google", "generic", "idc")
 
 
 def get_websearch_region(profile) -> str:

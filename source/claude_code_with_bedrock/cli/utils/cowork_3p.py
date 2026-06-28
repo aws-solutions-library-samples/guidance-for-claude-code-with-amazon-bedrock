@@ -305,6 +305,17 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
     if not getattr(profile, "web_search_enabled", False):
         return
 
+    # IDC uses IAM auth (SigV4) for the gateway — Claude Desktop doesn't support
+    # SigV4 signing for managed MCP servers yet. Skip CoWork injection for IDC;
+    # Claude Code CLI handles IDC web search via the MCP auth header helper.
+    auth_type = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+    if auth_type == "idc":
+        console.print(
+            "[dim]Web search: skipping CoWork config (IDC uses IAM auth; "
+            "Claude Desktop does not yet support SigV4 for MCP servers)[/dim]"
+        )
+        return
+
     url = _resolve_websearch_gateway_url(profile)
     if not url:
         console.print(
