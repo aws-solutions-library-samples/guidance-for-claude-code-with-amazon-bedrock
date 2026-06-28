@@ -163,12 +163,16 @@ def _build_config_response(claims: dict) -> dict:
         config["otlpEndpoint"] = OTLP_ENDPOINT
         config["otlpHeaders"] = otlp_headers
 
-    # Add web search MCP server if gateway is deployed
+    # Add managed web search via native managedMcpServers format (v1.15962.0+).
+    # Uses "custom" provider pointing to our AgentCore Gateway.
     if WEBSEARCH_GATEWAY_URL:
-        config["mcpServers"] = {
-            "web-search": {
-                "url": WEBSEARCH_GATEWAY_URL
-            }
+        config["mcp"] = {
+            "managedServers": [{
+                "name": "Web search",
+                "server": "websearch",
+                "provider": "custom",
+                "customUrl": WEBSEARCH_GATEWAY_URL
+            }]
         }
 
     return config

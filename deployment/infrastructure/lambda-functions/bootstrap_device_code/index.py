@@ -348,12 +348,16 @@ def handle_bootstrap(event):
         "expiresAt": int(time.time()) + 3600,
     }
 
-    # Add web search MCP server if gateway is deployed
+    # Add managed web search via native managedMcpServers format (v1.15962.0+).
+    # Uses "custom" provider pointing to our AgentCore Gateway.
     if WEBSEARCH_GATEWAY_URL:
-        config["mcpServers"] = {
-            "web-search": {
-                "url": WEBSEARCH_GATEWAY_URL
-            }
+        config["mcp"] = {
+            "managedServers": [{
+                "name": "Web search",
+                "server": "websearch",
+                "provider": "custom",
+                "customUrl": WEBSEARCH_GATEWAY_URL
+            }]
         }
 
     return json_response(200, config)
