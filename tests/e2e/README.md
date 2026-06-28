@@ -112,15 +112,16 @@ pytest tests/e2e/ --profile 09-passthrough-linux-none --co
 
 ## Branch Support
 
-This harness runs on **both `beta` and `main`** branches:
+This harness runs on the **`beta` branch only** — beta is the validation gate before promoting to main.
 
-| Branch | Trigger | Behavior |
-|--------|---------|----------|
-| `beta` | Nightly (3 AM UTC, weekdays) + PRs touching `deployment/` or `source/go/` | Full 16-profile matrix |
-| `main` | Nightly (3 AM UTC, weekdays) | Full 16-profile matrix (validates release candidates) |
-| PRs | Automatic on relevant file changes | Smoke only (profile 09 + Windows canary) — fast feedback, no infra cost |
+| Trigger | Branch | Behavior |
+|---------|--------|----------|
+| Nightly (3 AM UTC, weekdays) | `beta` | Full 16-profile matrix |
+| PRs targeting `beta` | `beta` | Smoke only (profile 09 + Windows canary) — fast feedback, no infra cost |
+| Manual dispatch | Any branch | Full matrix or single profile (`-f profile=...`) |
+| `main` | — | No E2E runs. Releases are validated on beta first. |
 
-The workflow file lives on both branches. No branch-specific configuration needed.
+The workflow skips if triggered on `main` by the cron scheduler.
 
 ## CI Setup (One-Time, ~10 minutes)
 
