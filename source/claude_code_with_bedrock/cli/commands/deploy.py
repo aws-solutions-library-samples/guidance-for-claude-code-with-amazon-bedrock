@@ -1128,7 +1128,7 @@ class DeployCommand(Command):
             elif stack_type == "bootstrap":
                 cowork_mode = getattr(profile, "cowork_config_delivery", "static")
                 if cowork_mode == "bootstrap-oidc-bearer":
-                    template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
+                    template = project_root / "deployment" / "infrastructure" / "bootstrap-oidc-bearer.yaml"
                 else:
                     template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
                 stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
