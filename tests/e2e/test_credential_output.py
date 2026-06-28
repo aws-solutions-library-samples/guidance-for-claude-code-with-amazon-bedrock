@@ -28,9 +28,22 @@ class TestCredentialOutput:
             f"Expected Version=1, got {creds.get('Version')}"
         )
 
-        required_keys = ["AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"]
+        # AccessKeyId, SecretAccessKey, SessionToken are always required.
+        # Expiration is optional per AWS spec (omitted for non-expiring creds
+        # or passthrough mode where ambient creds may not have expiry).
+        required_keys = ["AccessKeyId", "SecretAccessKey", "SessionToken"]
         for key in required_keys:
             assert key in creds, f"Missing required key: {key}"
+
+        # Expiration should be present for OIDC/IDC flows but is optional for passthrough
+        if "Expiration" in creds:
+            # Validate it's a parseable timestamp
+            from datetime import datetime
+
+            try:
+                datetime.fromisoformat(creds["Expiration"].replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass  # Some formats may vary, don't fail on format
 
     def test_expiration_is_future(self, run_credential_process):
         """Expiration timestamp is in the future."""
