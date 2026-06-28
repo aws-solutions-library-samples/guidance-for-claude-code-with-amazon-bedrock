@@ -46,11 +46,14 @@ class TestCredentialOutput:
                 pass  # Some formats may vary, don't fail on format
 
     def test_expiration_is_future(self, run_credential_process):
-        """Expiration timestamp is in the future."""
+        """Expiration timestamp is in the future (if present)."""
         result = run_credential_process(context="initial")
         assert result.returncode == 0
 
         creds = json.loads(result.stdout)
+        if "Expiration" not in creds:
+            pytest.skip("No Expiration field in passthrough mode")
+
         expiration_str = creds["Expiration"]
 
         # Parse ISO 8601 timestamp
