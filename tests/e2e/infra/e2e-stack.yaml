@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: E2E Test Infrastructure for CCWB — ephemeral, deployed per CI run
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Unique prefix for this E2E run (e.g., ccwb-e2e-28338703509)
+
+Resources:
+  # -----------------------------------------------------------------------
+  # Quota — DynamoDB table for quota enforcement tests
+  # -----------------------------------------------------------------------
+  QuotaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${StackPrefix}-quota'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+  # -----------------------------------------------------------------------
+  # Config Delivery — API Gateway + Lambda for bootstrap config endpoint
+  # -----------------------------------------------------------------------
+  ConfigLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackPrefix}-config-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ConfigLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackPrefix}-config'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ConfigLambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              """Return a sample bootstrap config for E2E tests."""
+              config = {
+                  "auth_type": "oidc",
+                  "oidc_issuer": "https://token.actions.githubusercontent.com",
+                  "client_id": "sts.amazonaws.com",
+                  "federation": "direct",
+                  "region": "us-east-1",
+                  "monitoring": {"mode": "none"},
+                  "quota": {"enabled": False}
+              }
+              return {
+                  "statusCode": 200,
+                  "headers": {"Content-Type": "application/json"},
+                  "body": json.dumps(config)
+              }
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+  ConfigApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${StackPrefix}-config-api'
+      ProtocolType: HTTP
+      Tags:
+        e2e-run: !Ref StackPrefix
+
+  ConfigApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ConfigApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ConfigLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  ConfigApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ConfigApiGateway
+      RouteKey: 'GET /config'
+      Target: !Sub 'integrations/${ConfigApiIntegration}'
+
+  ConfigApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ConfigApiGateway
+      StageName: '$default'
+      AutoDeploy: true
+
+  ConfigLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConfigLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ConfigApiGateway}/*'
+
+  # -----------------------------------------------------------------------
+  # Monitoring — CloudWatch log group for monitoring pipeline tests
+  # -----------------------------------------------------------------------
+  MonitoringLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ccwb/e2e/${StackPrefix}'
+      RetentionInDays: 1
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+Outputs:
+  QuotaTableName:
+    Value: !Ref QuotaTable
+    Description: DynamoDB table for quota enforcement tests
+
+  BootstrapConfigUrl:
+    Value: !Sub 'https://${ConfigApiGateway}.execute-api.${AWS::Region}.amazonaws.com/config'
+    Description: API Gateway endpoint for bootstrap config tests
+
+  MonitoringNamespace:
+    Value: !Sub 'CCWB/E2E/${StackPrefix}'
+    Description: CloudWatch namespace for monitoring tests
+
+  MonitoringLogGroup:
+    Value: !Sub '/ccwb/e2e/${StackPrefix}'
+    Description: CloudWatch log group for monitoring tests
