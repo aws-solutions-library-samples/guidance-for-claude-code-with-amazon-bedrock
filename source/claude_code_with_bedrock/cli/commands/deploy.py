@@ -1185,6 +1185,11 @@ class DeployCommand(Command):
                 if s3_outputs and s3_outputs.get("BucketName"):
                     params.append(f"PluginsS3Bucket={s3_outputs['BucketName']}")
 
+                # Pass web search gateway URL if deployed
+                ws_url = getattr(profile, "websearch_gateway_url", "")
+                if ws_url:
+                    params.append(f"WebSearchGatewayUrl={ws_url}")
+
                 result = deploy_with_cf(
                     template,
                     stack_name,
