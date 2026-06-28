@@ -30,6 +30,10 @@ env:
   AWS_REGION: us-east-1
   E2E_STACK_PREFIX: ccwb-e2e-${{ github.run_id }}
 
+concurrency:
+  group: e2e-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ---------------------------------------------------------------------------
   # Build binaries for all 3 OS platforms

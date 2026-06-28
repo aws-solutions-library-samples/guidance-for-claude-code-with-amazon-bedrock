@@ -52,6 +52,24 @@ def run_id() -> str:
 
 
 @pytest.fixture(scope="session")
+def isolated_config_dir(tmp_path_factory, e2e_profile, run_id) -> Path:
+    """Create an isolated config directory per profile to prevent cross-profile pollution.
+
+    Each profile gets its own temp dir for config, caches, and keyring data.
+    This allows parallel execution without ~/claude-code-with-bedrock/ collisions.
+    """
+    profile_name = e2e_profile["name"]
+    config_dir = tmp_path_factory.mktemp(f"ccwb-{profile_name}-{run_id}")
+
+    # Create expected subdirectories
+    (config_dir / "cache").mkdir()
+    (config_dir / "tokens").mkdir()
+    (config_dir / "keyring").mkdir()
+
+    return config_dir
+
+
+@pytest.fixture(scope="session")
 def e2e_profile(request) -> Dict[str, Any]:
     """Load E2E profile JSON based on --profile arg or E2E_PROFILE env var."""
     profile_name = request.config.getoption("--profile") or os.environ.get(
@@ -185,7 +203,9 @@ def cloudwatch_client(aws_region):
 
 
 @pytest.fixture(scope="session")
-def run_credential_process(credential_process_binary, e2e_profile):
+def run_credential_process(
+    credential_process_binary, e2e_profile, isolated_config_dir, run_id
+):
     """Factory fixture: invoke credential-process binary with profile env vars."""
 
     def _run(
@@ -195,6 +215,13 @@ def run_credential_process(credential_process_binary, e2e_profile):
         context: str = "initial",
     ) -> subprocess.CompletedProcess:
         env = os.environ.copy()
+
+        # Cross-profile isolation: each profile gets its own config/cache/token dirs
+        env["CCWB_CONFIG_DIR"] = str(isolated_config_dir)
+        env["CCWB_CACHE_DIR"] = str(isolated_config_dir / "cache")
+        env["CCWB_TOKEN_DIR"] = str(isolated_config_dir / "tokens")
+        env["E2E_RUN_ID"] = run_id
+        env["E2E_PROFILE"] = e2e_profile["name"]
 
         # Set profile-derived env vars
         auth = e2e_profile["auth"]
@@ -223,6 +250,9 @@ def run_credential_process(credential_process_binary, e2e_profile):
 
         # Context (initial vs mid-session-refresh)
         env["CCWB_AUTH_CONTEXT"] = context
+
+        if context == "mid-session-refresh":
+            env["CCWB_FORCE_REFRESH"] = "1"
 
         # Override with caller-provided env
         if extra_env:
