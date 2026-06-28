@@ -1465,7 +1465,7 @@ class InitCommand(Command):
                     )
                 config["codebuild"]["region"] = None
 
-                # Claude Desktop MDM configuration
+        # Claude Desktop MDM configuration
         console.print("\n[bold]Claude Desktop Support[/bold]")
         console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
         enable_cowork = questionary.confirm(
