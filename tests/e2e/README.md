@@ -110,23 +110,128 @@ pytest tests/e2e/ --profile 09-passthrough-linux-none --co
 
 3. Commit and push — CI will pick it up automatically.
 
-## CI Setup
+## Branch Support
 
-### GitHub OIDC Trust
+This harness runs on **both `beta` and `main`** branches:
 
-The workflow uses GitHub's OIDC provider to authenticate with AWS (no long-lived secrets):
+| Branch | Trigger | Behavior |
+|--------|---------|----------|
+| `beta` | Nightly (3 AM UTC, weekdays) + PRs touching `deployment/` or `source/go/` | Full 16-profile matrix |
+| `main` | Nightly (3 AM UTC, weekdays) | Full 16-profile matrix (validates release candidates) |
+| PRs | Automatic on relevant file changes | Smoke only (profile 09 + Windows canary) — fast feedback, no infra cost |
 
-1. Create an IAM OIDC identity provider for `token.actions.githubusercontent.com`
-2. Create an IAM role with trust policy for your repo
-3. Set `E2E_AWS_ROLE_ARN` as a repository variable
-4. Create a protected environment called `e2e-testing`
+The workflow file lives on both branches. No branch-specific configuration needed.
 
-### Protected Environment
+## CI Setup (One-Time, ~10 minutes)
 
-The `e2e-testing` environment provides:
-- Deployment protection rules (optional reviewers for manual triggers)
-- Environment-scoped secrets and variables
-- Audit trail of deployments
+### Prerequisites
+
+- AWS account with CloudFormation access
+- Repository admin access (for secrets/environments)
+- `aws` CLI configured locally (for the OIDC trust setup)
+
+### Step 1: Create GitHub OIDC Identity Provider
+
+This allows GitHub Actions to authenticate to AWS without long-lived secrets.
+
+```bash
+# Check if OIDC provider already exists
+aws iam list-open-id-connect-providers | grep token.actions.githubusercontent.com
+
+# If not, create it:
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1 \
+  --client-id-list sts.amazonaws.com
+```
+
+> **Note:** Most AWS accounts already have this provider (used by many GitHub Actions workflows). If it exists, skip this step.
+
+### Step 2: Create the E2E IAM Role
+
+```bash
+# Get your AWS account ID
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+# Create trust policy (replace OWNER/REPO with your fork)
+cat > /tmp/e2e-trust-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:OWNER/REPO:*"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Replace placeholders
+sed -i "s/ACCOUNT_ID/$ACCOUNT_ID/g" /tmp/e2e-trust-policy.json
+sed -i "s|OWNER/REPO|wirjo/guidance-for-claude-code-with-amazon-bedrock|g" /tmp/e2e-trust-policy.json
+
+# Create the role
+aws iam create-role \
+  --role-name ccwb-e2e-github-actions \
+  --assume-role-policy-document file:///tmp/e2e-trust-policy.json
+
+# Attach permissions (CloudFormation + resources the stacks create)
+aws iam attach-role-policy \
+  --role-name ccwb-e2e-github-actions \
+  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+
+# Get the role ARN (you'll need this in Step 3)
+aws iam get-role --role-name ccwb-e2e-github-actions --query Role.Arn --output text
+```
+
+> **Security note:** `PowerUserAccess` is broad. For production, scope down to CloudFormation, DynamoDB, CloudWatch, Lambda, IAM (create/delete roles with path prefix), and S3. The E2E stacks are ephemeral (~20 min lifetime) so blast radius is limited.
+
+### Step 3: Configure GitHub Repository
+
+```bash
+# Set the role ARN as a repository variable
+gh variable set E2E_AWS_ROLE_ARN --body "arn:aws:iam::123456789012:role/ccwb-e2e-github-actions"
+
+# Create the protected environment (provides audit trail + optional reviewers)
+gh api repos/{owner}/{repo}/environments/e2e-testing -X PUT
+```
+
+Or via GitHub UI:
+1. **Settings → Variables → Actions** → New variable: `E2E_AWS_ROLE_ARN` = your role ARN
+2. **Settings → Environments** → New: `e2e-testing` (optionally add reviewers for manual dispatch)
+
+### Step 4: Verify
+
+```bash
+# Trigger a manual run with a single profile (cheapest test)
+gh workflow run e2e-matrix.yml -f profile=09-passthrough-linux-none
+
+# Watch the run
+gh run watch
+```
+
+If the smoke job passes, you're good. The passthrough profile doesn't need any infra, so it validates the workflow mechanics without AWS cost.
+
+### Troubleshooting Setup
+
+| Problem | Fix |
+|---------|-----|
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | Check trust policy — repo name must match exactly (case-sensitive) |
+| `No OpenIDConnect provider found` | Run Step 1 to create the OIDC provider |
+| Workflow not triggering on PRs | Check that PR modifies files under `deployment/` or `source/go/` |
+| `E2E_AWS_ROLE_ARN` not found | Set as **repository variable** (not secret) — secrets aren't visible in fork PRs |
+| Stack creation failed | Check CloudFormation events. Most common: IAM permission boundary blocking role creation |
 
 ## Cost Estimate
 
