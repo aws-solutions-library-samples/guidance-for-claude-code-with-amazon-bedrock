@@ -1521,10 +1521,10 @@ class InitCommand(Command):
                         "Static (default \u2014 MDM profile with inline config)", value="static"
                     ),
                     questionary.Choice(
-                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)", value="device-code"
+                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)", value="bootstrap-device-code"
                     ),
                     questionary.Choice(
-                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)", value="oidc-bearer"
+                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)", value="bootstrap-oidc-bearer"
                     ),
                 ]
                 saved_config_mode = config.get("cowork", {}).get("config_mode", "static")
@@ -1538,7 +1538,7 @@ class InitCommand(Command):
                     config["cowork"] = {}
                 config["cowork"]["config_mode"] = config_mode
 
-                if config_mode in ("device-code", "oidc-bearer"):
+                if config_mode in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
                     console.print(
                         "[green]\u2713[/green] Bootstrap server will be deployed with [cyan]ccwb deploy bootstrap[/cyan]"
                     )

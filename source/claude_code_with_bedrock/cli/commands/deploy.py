@@ -254,7 +254,7 @@ class DeployCommand(Command):
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "bootstrap":
-                if getattr(profile, "cowork_config_mode", "static") not in ("device-code", "oidc-bearer"):
+                if getattr(profile, "cowork_config_mode", "static") not in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
                     console.print("[yellow]Bootstrap server requires dynamic configuration mode.[/yellow]")
                     console.print("[dim]Run 'ccwb init' and select 'Dynamic with plugins' or 'Dynamic config only'.[/dim]")
                     return 1
@@ -329,9 +329,9 @@ class DeployCommand(Command):
 
             # Check if bootstrap server is enabled (any dynamic mode)
             cowork_mode = getattr(profile, "cowork_config_mode", "static")
-            if cowork_mode == "device-code":
+            if cowork_mode == "bootstrap-device-code":
                 stacks_to_deploy.append(("bootstrap", "Bootstrap Server (device-code — config + plugins)"))
-            elif cowork_mode == "oidc-bearer":
+            elif cowork_mode == "bootstrap-oidc-bearer":
                 stacks_to_deploy.append(("bootstrap", "Bootstrap Server (OIDC Bearer — config only)"))
 
         # Initialize CloudFormation manager
@@ -1127,7 +1127,7 @@ class DeployCommand(Command):
 
             elif stack_type == "bootstrap":
                 cowork_mode = getattr(profile, "cowork_config_mode", "static")
-                if cowork_mode == "oidc-bearer":
+                if cowork_mode == "bootstrap-oidc-bearer":
                     template = project_root / "deployment" / "infrastructure" / "bootstrap-server.yaml"
                 else:
                     template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
