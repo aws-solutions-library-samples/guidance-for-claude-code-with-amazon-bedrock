@@ -32,6 +32,7 @@ DEFAULT_INFERENCE_REGION = os.environ.get("DEFAULT_INFERENCE_REGION", "us-east-1
 DEFAULT_INFERENCE_MODELS = os.environ.get("DEFAULT_INFERENCE_MODELS", "")
 OTLP_ENDPOINT = os.environ.get("OTLP_ENDPOINT", "")
 INFERENCE_SESSION_LIFETIME_SEC = int(os.environ.get("INFERENCE_SESSION_LIFETIME_SEC", "28800"))
+WEBSEARCH_GATEWAY_URL = os.environ.get("WEBSEARCH_GATEWAY_URL", "")
 
 # JWKS cache (module-level for Lambda container reuse)
 _jwks_client = None
@@ -161,6 +162,14 @@ def _build_config_response(claims: dict) -> dict:
     if OTLP_ENDPOINT:
         config["otlpEndpoint"] = OTLP_ENDPOINT
         config["otlpHeaders"] = otlp_headers
+
+    # Add web search MCP server if gateway is deployed
+    if WEBSEARCH_GATEWAY_URL:
+        config["mcpServers"] = {
+            "web-search": {
+                "url": WEBSEARCH_GATEWAY_URL
+            }
+        }
 
     return config
 
