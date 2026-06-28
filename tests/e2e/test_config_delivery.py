@@ -12,7 +12,7 @@ import jwt
 import pytest
 import requests
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(30)]
 
 
 @pytest.fixture

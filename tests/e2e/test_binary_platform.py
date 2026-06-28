@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(30)]
 
 
 def _is_windows() -> bool:

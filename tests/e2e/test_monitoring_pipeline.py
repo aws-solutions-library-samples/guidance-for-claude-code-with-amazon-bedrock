@@ -13,7 +13,7 @@ import time
 import pytest
 import requests
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(30)]
 
 
 def _get_monitoring_port(profile: dict) -> int:
@@ -170,6 +170,7 @@ class TestMonitoringPipeline:
                 pytest.skip("OTEL headers cache not found (may not be applicable)")
 
     @pytest.mark.slow
+    @pytest.mark.timeout(120)
     def test_metric_arrives_in_cloudwatch(
         self,
         run_credential_process,
