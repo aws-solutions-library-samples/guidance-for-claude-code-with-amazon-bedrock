@@ -1,0 +1,15 @@
+{
+  "description": "Binary size budgets (bytes). Fail CI if exceeded.",
+  "budgets": {
+    "credential-process-linux-amd64": 26214400,
+    "credential-process-darwin-arm64": 26214400,
+    "credential-process-windows-amd64.exe": 27262976,
+    "otel-helper-linux-amd64": 15728640,
+    "otel-helper-darwin-arm64": 15728640,
+    "otel-helper-windows-amd64.exe": 16777216
+  },
+  "notes": {
+    "credential-process": "25MB base + 1MB headroom. Windows slightly larger due to PE overhead.",
+    "otel-helper": "15MB base + 1MB headroom. Smaller binary, fewer dependencies."
+  }
+}

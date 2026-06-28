@@ -1,3 +1,5 @@
+![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/feat/e2e-matrix-harness/tests/e2e/badge.json)
+
 # E2E Test Harness
 
 Profile-driven end-to-end testing across authentication flows, operating systems, monitoring modes, config delivery mechanisms, and quota enforcement strategies.

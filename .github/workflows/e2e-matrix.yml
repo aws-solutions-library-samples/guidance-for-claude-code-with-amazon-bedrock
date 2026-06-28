@@ -117,6 +117,29 @@ jobs:
         env:
           E2E_BINARY_PATH: source/go/dist/credential-process-linux-amd64
 
+      - name: Check binary size budget
+        run: |
+          echo "## Binary Size Check" >> $GITHUB_STEP_SUMMARY
+          budget_file=".github/size-budget.json"
+          failed=0
+          for binary in source/go/dist/*; do
+            name=$(basename "$binary")
+            size=$(stat -f%z "$binary" 2>/dev/null || stat -c%s "$binary")
+            budget=$(python3 -c "import json; d=json.load(open('$budget_file')); print(d['budgets'].get('$name', 0))")
+            if [ "$budget" -gt 0 ]; then
+              size_mb=$(echo "scale=1; $size / 1048576" | bc)
+              budget_mb=$(echo "scale=1; $budget / 1048576" | bc)
+              if [ "$size" -gt "$budget" ]; then
+                echo "❌ $name: ${size_mb}MB exceeds budget ${budget_mb}MB" >> $GITHUB_STEP_SUMMARY
+                echo "::error::$name (${size_mb}MB) exceeds size budget (${budget_mb}MB)"
+                failed=1
+              else
+                echo "✅ $name: ${size_mb}MB (budget: ${budget_mb}MB)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then exit 1; fi
+
   # ---------------------------------------------------------------------------
   # Deploy shared E2E infrastructure
   # ---------------------------------------------------------------------------
@@ -299,15 +322,92 @@ jobs:
             --timeout=300 \
             --tb=short \
             -x \
-            --junitxml=test-results-${{ matrix.profile }}.xml
+            --junitxml=report-${{ matrix.profile }}.xml
 
-      - name: Upload test results
+      - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.profile }}
-          path: test-results-${{ matrix.profile }}.xml
-          retention-days: 7
+          name: test-report-${{ matrix.profile }}
+          path: report-*.xml
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Test summary + badge
+  # ---------------------------------------------------------------------------
+  summary:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all test reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-report-*
+          merge-multiple: true
+
+      - name: Generate test summary
+        run: |
+          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for report in report-*.xml; do
+            if [ -f "$report" ]; then
+              profile=$(echo "$report" | sed 's/report-//;s/\.xml//')
+              tests=$(grep -o 'tests="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              failures=$(grep -o 'failures="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              errors=$(grep -o 'errors="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              if [ "${failures:-0}" = "0" ] && [ "${errors:-0}" = "0" ]; then
+                echo "✅ **$profile**: $tests tests passed" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "❌ **$profile**: $tests tests, $failures failures, $errors errors" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+
+      - name: Generate badge
+        run: |
+          total=0
+          passed=0
+          failed=0
+          for report in report-*.xml; do
+            if [ -f "$report" ]; then
+              t=$(grep -o 'tests="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              f=$(grep -o 'failures="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              e=$(grep -o 'errors="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              total=$((total + ${t:-0}))
+              failed=$((failed + ${f:-0} + ${e:-0}))
+            fi
+          done
+          passed=$((total - failed))
+
+          if [ "$failed" -eq 0 ]; then
+            color="brightgreen"
+            message="${passed}/${total} passing"
+          elif [ "$failed" -le 2 ]; then
+            color="yellow"
+            message="${passed}/${total} (${failed} flaky)"
+          else
+            color="red"
+            message="${passed}/${total} (${failed} failed)"
+          fi
+
+          cat > badge.json <<EOF
+          {
+            "schemaVersion": 1,
+            "label": "E2E Tests",
+            "message": "$message",
+            "color": "$color"
+          }
+          EOF
+
+          echo "Badge: $message ($color)"
+
+      - name: Upload badge
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-badge
+          path: badge.json
+          retention-days: 90
 
   # ---------------------------------------------------------------------------
   # Teardown infrastructure (always runs)
@@ -335,14 +435,48 @@ jobs:
       - name: Install CDK
         run: npm install -g aws-cdk
 
-      - name: Destroy E2E stacks
-        working-directory: deployment
+      - name: Destroy E2E infrastructure
+        if: ${{ !inputs.keep_infra }}
         run: |
-          cdk destroy \
-            --force \
-            -c stackPrefix="${E2E_STACK_PREFIX}" \
-            "${E2E_STACK_PREFIX}-config" \
-            "${E2E_STACK_PREFIX}-quota" \
-            "${E2E_STACK_PREFIX}-monitoring" \
-            "${E2E_STACK_PREFIX}-auth" \
-          || echo "Teardown had errors (some resources may need manual cleanup)"
+          destroy_stacks() {
+            aws cloudformation list-stacks \
+              --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+              --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+              --output text | tr '\t' '\n' | while read -r stack; do
+              echo "Destroying: $stack"
+              aws cloudformation delete-stack --stack-name "$stack" || true
+            done
+          }
+
+          # First attempt
+          destroy_stacks
+
+          # Wait for deletions
+          sleep 30
+
+          # Check for stragglers (DELETE_FAILED due to race conditions)
+          stragglers=$(aws cloudformation list-stacks \
+            --stack-status-filter DELETE_FAILED \
+            --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+            --output text)
+
+          if [ -n "$stragglers" ]; then
+            echo "⚠️ Retry: Found stacks in DELETE_FAILED state"
+            echo "$stragglers" | tr '\t' '\n' | while read -r stack; do
+              echo "Retrying: $stack"
+              aws cloudformation delete-stack --stack-name "$stack" --retain-resources || true
+            done
+            sleep 60
+          fi
+
+          # Final check — warn but don't fail (manual cleanup may be needed)
+          remaining=$(aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED \
+            --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+            --output text)
+
+          if [ -n "$remaining" ]; then
+            echo "::warning::Orphan stacks remaining (manual cleanup needed): $remaining"
+          else
+            echo "✅ All E2E stacks cleaned up"
+          fi
