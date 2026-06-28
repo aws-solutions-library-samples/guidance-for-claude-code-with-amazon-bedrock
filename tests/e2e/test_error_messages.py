@@ -8,7 +8,10 @@ These are snapshot-style tests: if the error message changes intentionally,
 update the expected substring. Unintentional changes fail the test.
 """
 
+import json
+import os
 import subprocess
+import time
 
 import pytest
 
@@ -22,10 +25,8 @@ class TestErrorMessages:
         self, credential_process_binary, isolated_config_dir
     ):
         """Missing config file produces a clear, actionable error."""
-        env = {
-            "CCWB_CONFIG_DIR": str(isolated_config_dir / "nonexistent"),
-            "PATH": "",
-        }
+        env = os.environ.copy()
+        env["CCWB_CONFIG_DIR"] = str(isolated_config_dir / "nonexistent")
         result = subprocess.run(
             [str(credential_process_binary)],
             capture_output=True,
@@ -55,7 +56,8 @@ class TestErrorMessages:
         config_dir.mkdir(exist_ok=True)
         (config_dir / "config.yaml").write_text("not: [valid: yaml: {{{}}")
 
-        env = {"CCWB_CONFIG_DIR": str(config_dir)}
+        env = os.environ.copy()
+        env["CCWB_CONFIG_DIR"] = str(config_dir)
         result = subprocess.run(
             [str(credential_process_binary)],
             capture_output=True,
@@ -89,7 +91,8 @@ class TestErrorMessages:
             "\n".join(f"{k}: {v}" for k, v in config.items())
         )
 
-        env = {"CCWB_CONFIG_DIR": str(config_dir)}
+        env = os.environ.copy()
+        env["CCWB_CONFIG_DIR"] = str(config_dir)
         result = subprocess.run(
             [str(credential_process_binary)],
             capture_output=True,
@@ -114,9 +117,6 @@ class TestErrorMessages:
         cache_dir = config_dir / "cache"
         cache_dir.mkdir(exist_ok=True)
 
-        import json
-        import time
-
         expired_cache = {
             "access_token": "expired.token.value",
             "expires_at": int(time.time()) - 3600,  # Expired 1 hour ago
@@ -124,10 +124,9 @@ class TestErrorMessages:
         }
         (cache_dir / "token_cache.json").write_text(json.dumps(expired_cache))
 
-        env = {
-            "CCWB_CONFIG_DIR": str(config_dir),
-            "CCWB_CACHE_DIR": str(cache_dir),
-        }
+        env = os.environ.copy()
+        env["CCWB_CONFIG_DIR"] = str(config_dir)
+        env["CCWB_CACHE_DIR"] = str(cache_dir)
         result = subprocess.run(
             [str(credential_process_binary)],
             capture_output=True,

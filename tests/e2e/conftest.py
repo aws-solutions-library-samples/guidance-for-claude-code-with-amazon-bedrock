@@ -5,6 +5,7 @@ Profile-driven testing across auth flows, OS, monitoring modes,
 config delivery, and quota enforcement.
 """
 
+import datetime
 import json
 import os
 import subprocess
@@ -41,6 +42,13 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "flaky_coldstart: May fail due to cold-start latency (auto-reruns)"
+    )
+    config.addinivalue_line(
+        "markers", "timeout: Set test timeout in seconds (requires pytest-timeout)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "flaky: Mark test for automatic reruns on failure (requires pytest-rerunfailures)",
     )
 
 
@@ -136,7 +144,9 @@ def credential_process_binary(e2e_profile) -> Path:
     # Also check E2E_BINARY_PATH env var
     env_path = os.environ.get("E2E_BINARY_PATH")
     if env_path:
-        return Path(env_path)
+        env_binary = Path(env_path)
+        if env_binary.exists():
+            return env_binary
 
     pytest.skip(f"Binary not found for platform {platform}: {binary_name}")
 
@@ -164,7 +174,9 @@ def otel_helper_binary(e2e_profile) -> Path:
 
     env_path = os.environ.get("E2E_OTEL_BINARY_PATH")
     if env_path:
-        return Path(env_path)
+        env_binary = Path(env_path)
+        if env_binary.exists():
+            return env_binary
 
     pytest.skip(f"otel-helper binary not found for platform {platform}")
 
@@ -315,8 +327,6 @@ def query_cloudwatch_metric(cloudwatch_client):
         dimensions: list,
         period: int = 60,
     ) -> float:
-        import datetime
-
         end_time = datetime.datetime.utcnow()
         start_time = end_time - datetime.timedelta(minutes=5)
 

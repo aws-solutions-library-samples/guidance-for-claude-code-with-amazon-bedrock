@@ -128,7 +128,7 @@ jobs:
           failed=0
           for binary in source/go/dist/*; do
             name=$(basename "$binary")
-            size=$(stat -f%z "$binary" 2>/dev/null || stat -c%s "$binary")
+            size=$(stat -c%s "$binary" 2>/dev/null || stat -f%z "$binary")
             budget=$(python3 -c "import json; d=json.load(open('$budget_file')); print(d['budgets'].get('$name', 0))")
             if [ "$budget" -gt 0 ]; then
               size_mb=$(echo "scale=1; $size / 1048576" | bc)
@@ -271,50 +271,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check if specific profile requested
-        if: inputs.profile != '' && inputs.profile != matrix.profile
+      - name: Check if profile should run
+        id: should_run
+        shell: bash
         run: |
-          echo "Skipping ${{ matrix.profile }} — only running ${{ inputs.profile }}"
-          exit 0
-
-      # On PRs, run Linux + Windows canary profiles to catch cross-platform regressions
-      - name: Skip non-canary on PR
-        if: github.event_name == 'pull_request' && matrix.profile != '01-oidc-cognito-linux-central' && matrix.profile != '04-oidc-cognito-windows-central'
-        run: |
-          echo "PR mode: only running canary profiles 01 (Linux) and 04 (Windows)"
-          exit 0
+          skip="false"
+          # Skip if a specific profile was requested and this isn't it
+          if [[ -n "${{ inputs.profile }}" && "${{ inputs.profile }}" != "${{ matrix.profile }}" ]]; then
+            echo "Skipping ${{ matrix.profile }} — only running ${{ inputs.profile }}"
+            skip="true"
+          fi
+          # On PRs, only run canary profiles (01 Linux + 04 Windows)
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ matrix.profile }}" != "01-oidc-cognito-linux-central" && "${{ matrix.profile }}" != "04-oidc-cognito-windows-central" ]]; then
+            echo "PR mode: only running canary profiles 01 (Linux) and 04 (Windows)"
+            skip="true"
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC)
+        if: steps.should_run.outputs.skip != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: actions/setup-python@v5
+        if: steps.should_run.outputs.skip != 'true'
         with:
           python-version: '3.11'
 
       - name: Install test dependencies
+        if: steps.should_run.outputs.skip != 'true'
         run: |
           pip install pytest pytest-timeout pytest-rerunfailures boto3 requests tenacity PyJWT
 
       - name: Download binaries
+        if: steps.should_run.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
           name: binaries-${{ matrix.platform == 'linux-x64' && 'linux-amd64' || matrix.platform == 'windows-x64' && 'windows-amd64' || 'darwin-arm64' }}
           path: source/go/dist/
 
       - name: Make binaries executable
-        if: runner.os != 'Windows'
+        if: steps.should_run.outputs.skip != 'true' && runner.os != 'Windows'
         run: chmod +x source/go/dist/*
 
       - name: Download stack outputs
+        if: steps.should_run.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
           name: stack-outputs
           path: tests/e2e/artifacts/
 
       - name: Run E2E tests
+        if: steps.should_run.outputs.skip != 'true'
         env:
           E2E_PROFILE: ${{ matrix.profile }}
           E2E_STACK_OUTPUTS: tests/e2e/artifacts/stack-outputs.json
@@ -329,7 +339,7 @@ jobs:
             --junitxml=report-${{ matrix.profile }}.xml
 
       - name: Upload test report
-        if: always()
+        if: always() && steps.should_run.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: test-report-${{ matrix.profile }}

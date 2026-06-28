@@ -6,6 +6,7 @@ These are pure functions (no pytest fixtures) — conftest wraps them in fixture
 """
 
 import base64
+import datetime
 import json
 import os
 import platform
@@ -367,8 +368,6 @@ def wait_for_cloudwatch_metric(
     Returns:
         Metric sum value, or None on timeout.
     """
-    import datetime
-
     client = boto3.client("cloudwatch", region_name=region)
 
     wait_time = 5.0
