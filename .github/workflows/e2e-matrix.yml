@@ -139,6 +139,11 @@ jobs:
     timeout-minutes: 20
     environment: e2e-testing
 
+    # Platform focus: Windows and macOS get extra profiles due to historical
+    # issues with keyring chunking (#649), .cmd fallback (#567), install.bat
+    # syntax (#427), CRLF in generated scripts (#428), and macOS Keychain
+    # integration (#349, #664). PRs run both Linux and Windows canary to
+    # catch platform regressions early.
     strategy:
       fail-fast: false
       matrix:
@@ -175,11 +180,23 @@ jobs:
           - profile: '08-idc-windows-sidecar'
             os: windows-latest
             platform: windows-x64
+          - profile: '13-oidc-direct-windows-sidecar-alert'
+            os: windows-latest
+            platform: windows-x64
+          - profile: '14-oidc-cognito-windows-central-block'
+            os: windows-latest
+            platform: windows-x64
           # macOS profiles
           - profile: '06-oidc-direct-macos-sidecar-finegrained'
             os: macos-latest
             platform: macos-arm64
           - profile: '12-oidc-cognito-macos-central-alert'
+            os: macos-latest
+            platform: macos-arm64
+          - profile: '15-oidc-direct-macos-central-block'
+            os: macos-latest
+            platform: macos-arm64
+          - profile: '16-idc-macos-sidecar'
             os: macos-latest
             platform: macos-arm64
 
@@ -194,11 +211,11 @@ jobs:
           echo "Skipping ${{ matrix.profile }} — only running ${{ inputs.profile }}"
           exit 0
 
-      # On PRs, only run canary profile
+      # On PRs, run Linux + Windows canary profiles to catch cross-platform regressions
       - name: Skip non-canary on PR
-        if: github.event_name == 'pull_request' && matrix.profile != '01-oidc-cognito-linux-central'
+        if: github.event_name == 'pull_request' && matrix.profile != '01-oidc-cognito-linux-central' && matrix.profile != '04-oidc-cognito-windows-central'
         run: |
-          echo "PR mode: only running canary profile 01"
+          echo "PR mode: only running canary profiles 01 (Linux) and 04 (Windows)"
           exit 0
 
       - name: Configure AWS credentials (OIDC)

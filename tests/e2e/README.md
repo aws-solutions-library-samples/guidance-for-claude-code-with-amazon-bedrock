@@ -2,6 +2,21 @@
 
 Profile-driven end-to-end testing across authentication flows, operating systems, monitoring modes, config delivery mechanisms, and quota enforcement strategies.
 
+## Platform Focus
+
+Windows and macOS receive extra testing attention due to historical platform-specific issues:
+
+| Issue | Platform | Problem |
+|-------|----------|---------|
+| #427 | Windows | `install.bat` syntax errors (`& was unexpected`) |
+| #428 | Windows | CRLF line endings in generated `.sh` scripts |
+| #349 | macOS | Keychain integration failures |
+| #567 | Windows | `.cmd` fallback not invoking `.ps1` correctly |
+| #649 | Windows | DPAPI keyring retrieval taking 10-17s |
+| #664 | macOS | ARM64 binary detection / Rosetta fallback |
+
+Profiles 13-16 specifically target these platforms with stress scenarios (keyring chunking under load, sidecar monitoring, quota enforcement). The PR canary runs both Linux (profile 01) and Windows (profile 04) to catch regressions before merge.
+
 ## How It Works
 
 Each test scenario is defined by a **profile JSON** file in `tests/e2e/profiles/`. A profile declares:
@@ -139,6 +154,10 @@ Running the full nightly matrix costs approximately **$0.50/month**:
 | 10 | oidc-direct-linux-bootstrap-finegrained | OIDC/Direct | Linux | Central | Bootstrap | Block+FG |
 | 11 | oidc-direct-linux-sidecar-block | OIDC/Direct | Linux | Sidecar | Static | Block |
 | 12 | oidc-cognito-macos-central-alert | OIDC/Cognito | macOS | Central | Static | Alert |
+| 13 | oidc-direct-windows-sidecar-alert | OIDC/Direct | Windows | Sidecar | Static | Alert |
+| 14 | oidc-cognito-windows-central-block | OIDC/Cognito | Windows | Central | Static | Block |
+| 15 | oidc-direct-macos-central-block | OIDC/Direct | macOS | Central | Static | Block |
+| 16 | idc-macos-sidecar | IDC | macOS | Sidecar | Static | — |
 
 ### Dimensions Covered
 
@@ -194,17 +213,21 @@ pytest tests/e2e/ --profile 01-oidc-cognito-linux-central --co
 ```
 tests/e2e/
 ├── conftest.py              # Shared fixtures, CLI args, skip logic
+├── helpers.py               # Shared utility functions (extracted from conftest)
 ├── profiles/                # Profile JSON definitions
 │   ├── 01-oidc-cognito-linux-central.json
 │   ├── 02-oidc-direct-linux-central-block.json
 │   ├── ...
-│   └── 12-oidc-cognito-macos-central-alert.json
+│   ├── 13-oidc-direct-windows-sidecar-alert.json
+│   ├── 14-oidc-cognito-windows-central-block.json
+│   ├── 15-oidc-direct-macos-central-block.json
+│   └── 16-idc-macos-sidecar.json
 ├── test_auth_flow.py        # Authentication tests
 ├── test_credential_output.py # Output format tests
 ├── test_monitoring_pipeline.py # OTLP proxy tests
 ├── test_quota_enforcement.py # Quota tests
 ├── test_config_delivery.py  # Bootstrap config tests
-├── test_binary_platform.py  # Platform-specific tests
+├── test_binary_platform.py  # Platform-specific tests (Windows + macOS)
 ├── artifacts/               # (gitignored) Stack outputs at runtime
 └── README.md                # This file
 ```

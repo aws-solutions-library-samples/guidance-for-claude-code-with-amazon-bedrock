@@ -5,8 +5,6 @@ Verifies quota checking, blocking, alerting, and fine-grained
 policy enforcement via DynamoDB.
 """
 
-import json
-import os
 import uuid
 
 import pytest
@@ -101,9 +99,11 @@ class TestQuotaEnforcement:
 
         # Should have warning on stderr
         stderr_lower = result.stderr.lower()
-        assert "quota" in stderr_lower or "warning" in stderr_lower or "limit" in stderr_lower, (
-            f"Expected quota warning on stderr, got: {result.stderr}"
-        )
+        assert (
+            "quota" in stderr_lower
+            or "warning" in stderr_lower
+            or "limit" in stderr_lower
+        ), f"Expected quota warning on stderr, got: {result.stderr}"
 
     def test_quota_recheck_refreshes_token(
         self, run_credential_process, seed_quota_usage, quota_table, test_user
@@ -185,9 +185,7 @@ class TestQuotaEnforcement:
             f"User under group quota should pass: {result.stderr}"
         )
 
-    def test_quota_fail_open_on_api_error(
-        self, run_credential_process, test_user
-    ):
+    def test_quota_fail_open_on_api_error(self, run_credential_process, test_user):
         """When quota API is unreachable, credential-process still allows (fail-open)."""
         result = run_credential_process(
             context="initial",

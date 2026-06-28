@@ -74,9 +74,7 @@ class TestCredentialOutput:
 
         stderr_lower = result.stderr.lower()
 
-        assert access_key.lower() not in stderr_lower, (
-            "AccessKeyId leaked to stderr"
-        )
+        assert access_key.lower() not in stderr_lower, "AccessKeyId leaked to stderr"
         assert secret_key.lower() not in stderr_lower, (
             "SecretAccessKey leaked to stderr"
         )

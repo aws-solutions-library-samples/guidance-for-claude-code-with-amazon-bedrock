@@ -1,0 +1,10 @@
+{
+  "name": "13-oidc-direct-windows-sidecar-alert",
+  "description": "Windows + Sidecar + Alert quota (tests .cmd/.ps1 otel-helper fallback)",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "windows-x64",
+  "monitoring": {"mode": "sidecar"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "alert", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement", "binary_platform"]
+}

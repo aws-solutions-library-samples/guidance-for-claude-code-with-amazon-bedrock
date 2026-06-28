@@ -21,8 +21,7 @@ class TestAuthFlow:
         result = run_credential_process(context="initial")
 
         assert result.returncode == 0, (
-            f"credential-process exited {result.returncode}\n"
-            f"stderr: {result.stderr}"
+            f"credential-process exited {result.returncode}\nstderr: {result.stderr}"
         )
 
         creds = json.loads(result.stdout)
@@ -47,9 +46,7 @@ class TestAuthFlow:
         assert second.returncode == 0
         second_creds = json.loads(second.stdout)
 
-        assert elapsed_ms < 200, (
-            f"Cache hit took {elapsed_ms:.0f}ms (expected <200ms)"
-        )
+        assert elapsed_ms < 200, f"Cache hit took {elapsed_ms:.0f}ms (expected <200ms)"
         assert first_creds["AccessKeyId"] == second_creds["AccessKeyId"], (
             "Cache miss: different AccessKeyId on second call"
         )

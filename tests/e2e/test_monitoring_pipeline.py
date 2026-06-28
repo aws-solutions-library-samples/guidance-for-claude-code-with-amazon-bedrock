@@ -7,7 +7,6 @@ self-heals, and delivers metrics to CloudWatch.
 
 import json
 import os
-import signal
 import subprocess
 import time
 
@@ -46,7 +45,9 @@ class TestMonitoringPipeline:
             f"OTLP proxy port {port} not listening after auth"
         )
 
-    def test_otlp_post_accepted(self, run_credential_process, wait_for_port, e2e_profile):
+    def test_otlp_post_accepted(
+        self, run_credential_process, wait_for_port, e2e_profile
+    ):
         """POST sample metric to OTLP proxy returns 200."""
         port = _get_monitoring_port(e2e_profile)
 
@@ -59,7 +60,14 @@ class TestMonitoringPipeline:
         sample_metric = {
             "resourceMetrics": [
                 {
-                    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "e2e-test"}}]},
+                    "resource": {
+                        "attributes": [
+                            {
+                                "key": "service.name",
+                                "value": {"stringValue": "e2e-test"},
+                            }
+                        ]
+                    },
                     "scopeMetrics": [
                         {
                             "metrics": [
@@ -69,7 +77,9 @@ class TestMonitoringPipeline:
                                         "dataPoints": [
                                             {
                                                 "asInt": "1",
-                                                "timeUnixNano": str(int(time.time() * 1e9)),
+                                                "timeUnixNano": str(
+                                                    int(time.time() * 1e9)
+                                                ),
                                             }
                                         ]
                                     },
@@ -105,7 +115,7 @@ class TestMonitoringPipeline:
 
         # Find and kill the proxy process
         try:
-            kill_result = subprocess.run(
+            subprocess.run(
                 ["pkill", "-f", "otel-helper"],
                 capture_output=True,
                 timeout=5,
@@ -125,9 +135,7 @@ class TestMonitoringPipeline:
             f"Proxy did not self-heal: port {port} not listening after restart"
         )
 
-    def test_otel_headers_cache_populated(
-        self, run_credential_process, e2e_profile
-    ):
+    def test_otel_headers_cache_populated(self, run_credential_process, e2e_profile):
         """OTEL headers cache file exists and contains x-user-email."""
         result = run_credential_process(context="initial")
         assert result.returncode == 0
@@ -183,7 +191,11 @@ class TestMonitoringPipeline:
         sample_metric = {
             "resourceMetrics": [
                 {
-                    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": test_id}}]},
+                    "resource": {
+                        "attributes": [
+                            {"key": "service.name", "value": {"stringValue": test_id}}
+                        ]
+                    },
                     "scopeMetrics": [
                         {
                             "metrics": [
@@ -193,7 +205,9 @@ class TestMonitoringPipeline:
                                         "dataPoints": [
                                             {
                                                 "asInt": "42",
-                                                "timeUnixNano": str(int(time.time() * 1e9)),
+                                                "timeUnixNano": str(
+                                                    int(time.time() * 1e9)
+                                                ),
                                             }
                                         ]
                                     },

@@ -7,15 +7,17 @@ config delivery, and quota enforcement.
 
 import json
 import os
-import socket
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import boto3
 import pytest
 from tenacity import retry, stop_after_delay, wait_exponential
+
+from . import helpers
 
 # ---------------------------------------------------------------------------
 # pytest CLI options
@@ -40,9 +42,21 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture(scope="session")
+def run_id() -> str:
+    """Unique ID per test session for parallel safety.
+
+    Used in test user emails, DynamoDB partition keys, and any shared state
+    that could collide between concurrent runs.
+    """
+    return uuid.uuid4().hex[:12]
+
+
+@pytest.fixture(scope="session")
 def e2e_profile(request) -> Dict[str, Any]:
     """Load E2E profile JSON based on --profile arg or E2E_PROFILE env var."""
-    profile_name = request.config.getoption("--profile") or os.environ.get("E2E_PROFILE")
+    profile_name = request.config.getoption("--profile") or os.environ.get(
+        "E2E_PROFILE"
+    )
 
     if not profile_name:
         pytest.skip("E2E not configured: set --profile or E2E_PROFILE env var")
@@ -142,7 +156,9 @@ def stack_outputs() -> Dict[str, str]:
 @pytest.fixture(scope="session")
 def aws_region() -> str:
     """Get AWS region from env or default."""
-    return os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+    return os.environ.get(
+        "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    )
 
 
 @pytest.fixture(scope="session")
@@ -232,17 +248,7 @@ def wait_for_port():
     """Factory fixture: TCP connect poll with retry."""
 
     def _wait(port: int, host: str = "127.0.0.1", timeout: float = 10.0) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1.0)
-                sock.connect((host, port))
-                sock.close()
-                return True
-            except (ConnectionRefusedError, OSError, socket.timeout):
-                time.sleep(0.5)
-        return False
+        return helpers.wait_for_port(host=host, port=port, timeout=timeout)
 
     return _wait
 
@@ -339,6 +345,43 @@ def set_group_quota_policy(dynamodb_client):
         )
 
     return _set
+
+
+# ---------------------------------------------------------------------------
+# Quota cleanup fixture (use with request.addfinalizer)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def quota_cleanup(dynamodb_client, aws_region):
+    """Fixture that registers cleanup of quota data after each test.
+
+    Usage in tests:
+        def test_something(quota_cleanup):
+            quota_cleanup("my-table", "test-user-123")
+            # ... test logic ...
+            # cleanup happens automatically after test
+    """
+    cleanup_items = []
+
+    def _register(table_name: str, user: str):
+        cleanup_items.append((table_name, user))
+
+    yield _register
+
+    # Finalizer: clean up all registered quota data
+    for table_name, user in cleanup_items:
+        helpers.cleanup_quota_data(table=table_name, user=user, region=aws_region)
+
+
+@pytest.fixture
+def test_user_email(run_id):
+    """Generate a unique test user email scoped to this run."""
+
+    def _email(prefix: str = "e2e") -> str:
+        return f"{prefix}-{run_id}@test.ccwb.internal"
+
+    return _email
 
 
 # ---------------------------------------------------------------------------
