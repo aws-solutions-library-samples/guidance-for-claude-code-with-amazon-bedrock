@@ -10,7 +10,7 @@ description: Naming conventions and user-facing label clarity for docs, CLI outp
 
 ## User-facing labels (CLI output, doctor checks, issue templates)
 - Use full descriptive labels, not internal field names:
-  - "desktop config mode" not "config_mode"
+  - "desktop config delivery" not "config_delivery"
   - "bootstrap server" not "bootstrap"
   - "OIDC client secret" not "client_secret_arn"
   - "OIDC discovery endpoints" not "oidc_endpoints"

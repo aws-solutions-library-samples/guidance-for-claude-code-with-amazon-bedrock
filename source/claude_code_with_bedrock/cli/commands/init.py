@@ -1516,7 +1516,7 @@ class InitCommand(Command):
                 console.print("  • Static: MDM profile with inline config (default)")
                 console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
 
-                config_mode_choices = [
+                config_delivery_choices = [
                     questionary.Choice(
                         "Static (default \u2014 MDM profile with inline config)", value="static"
                     ),
@@ -1527,18 +1527,18 @@ class InitCommand(Command):
                         "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)", value="bootstrap-oidc-bearer"
                     ),
                 ]
-                saved_config_mode = config.get("cowork", {}).get("config_mode", "static")
-                config_mode = questionary.select(
+                saved_config_delivery = config.get("cowork", {}).get("config_delivery", "static")
+                config_delivery = questionary.select(
                     "CoWork configuration delivery:",
-                    choices=config_mode_choices,
-                    default=saved_config_mode,
+                    choices=config_delivery_choices,
+                    default=saved_config_delivery,
                 ).ask()
 
                 if "cowork" not in config:
                     config["cowork"] = {}
-                config["cowork"]["config_mode"] = config_mode
+                config["cowork"]["config_delivery"] = config_delivery
 
-                if config_mode in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
+                if config_delivery in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
                     console.print(
                         "[green]\u2713[/green] Bootstrap server will be deployed with [cyan]ccwb deploy bootstrap[/cyan]"
                     )
@@ -2635,7 +2635,7 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
-            "cowork_config_mode": config_data.get("cowork", {}).get("config_mode", "static"),
+            "cowork_config_delivery": config_data.get("cowork", {}).get("config_delivery", "static"),
             "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
             "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
                 "chat_advanced_file_analysis", True
@@ -3015,10 +3015,10 @@ class InitCommand(Command):
             existing_config["cowork_3p"] = cowork_3p_config
 
             # Add CoWork dynamic config mode
-            if profile.cowork_config_mode and profile.cowork_config_mode != "static":
+            if profile.cowork_config_delivery and profile.cowork_config_delivery != "static":
                 if "cowork" not in existing_config:
                     existing_config["cowork"] = {}
-                existing_config["cowork"]["config_mode"] = profile.cowork_config_mode
+                existing_config["cowork"]["config_delivery"] = profile.cowork_config_delivery
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
