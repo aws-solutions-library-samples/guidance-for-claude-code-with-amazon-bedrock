@@ -41,6 +41,11 @@ Parameters:
     Description: "OpenTelemetry collector endpoint URL (optional)"
     Default: ""
 
+  WebSearchGatewayUrl:
+    Type: String
+    Description: "AgentCore web search gateway MCP endpoint URL (optional)"
+    Default: ""
+
   InferenceSessionLifetimeSec:
     Type: Number
     Description: "Session lifetime in seconds before re-authentication reminder"
@@ -70,6 +75,7 @@ Resources:
           DEFAULT_INFERENCE_REGION: !Ref DefaultInferenceRegion
           DEFAULT_INFERENCE_MODELS: !Ref DefaultInferenceModels
           OTLP_ENDPOINT: !Ref OtlpEndpoint
+          WEBSEARCH_GATEWAY_URL: !Ref WebSearchGatewayUrl
           INFERENCE_SESSION_LIFETIME_SEC: !Ref InferenceSessionLifetimeSec
       Role: !GetAtt BootstrapFunctionRole.Arn
       Tags:

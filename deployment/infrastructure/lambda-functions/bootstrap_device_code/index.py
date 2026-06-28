@@ -38,6 +38,7 @@ PLUGINS_REGISTRY_JSON = os.environ.get("PLUGINS_REGISTRY_JSON", "")
 PLUGINS_S3_BUCKET = os.environ.get("PLUGINS_S3_BUCKET", "")
 PLUGINS_S3_KEY = os.environ.get("PLUGINS_S3_KEY", "plugins-registry.json")
 API_BASE_URL = os.environ.get("API_BASE_URL", "")
+WEBSEARCH_GATEWAY_URL = os.environ.get("WEBSEARCH_GATEWAY_URL", "")
 
 # Clients (reused across invocations)
 dynamodb = boto3.resource("dynamodb")
@@ -346,6 +347,19 @@ def handle_bootstrap(event):
         "organizationPluginsUrl": f"{base}/plugins/index.json",
         "expiresAt": int(time.time()) + 3600,
     }
+
+    # Add managed web search via native managedMcpServers format (v1.15962.0+).
+    # Uses "custom" provider pointing to our AgentCore Gateway.
+    if WEBSEARCH_GATEWAY_URL:
+        config["mcp"] = {
+            "managedServers": [{
+                "name": "Web search",
+                "server": "websearch",
+                "provider": "custom",
+                "customUrl": WEBSEARCH_GATEWAY_URL
+            }]
+        }
+
     return json_response(200, config)
 
 

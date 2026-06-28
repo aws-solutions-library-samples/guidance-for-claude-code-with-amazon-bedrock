@@ -61,6 +61,11 @@ Parameters:
       plugins-registry.json from this bucket (updated by ccwb plugins sync).
       Uses the existing s3bucket stack bucket when available.
 
+  WebSearchGatewayUrl:
+    Type: String
+    Default: ''
+    Description: AgentCore web search gateway MCP endpoint URL (optional)
+
 Conditions:
   EnableWaf: !Not [!Equals [!Ref AllowedCidr, '0.0.0.0/0']]
   HasPluginsS3Bucket: !Not [!Equals [!Ref PluginsS3Bucket, '']]
@@ -225,6 +230,7 @@ Resources:
           PLUGINS_S3_BUCKET: !Ref PluginsS3Bucket
           PLUGINS_S3_KEY: plugins-registry.json
           API_BASE_URL: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+          WEBSEARCH_GATEWAY_URL: !Ref WebSearchGatewayUrl
       Code: ./lambda-functions/bootstrap_device_code/
 
   AuthorizerFunction:
