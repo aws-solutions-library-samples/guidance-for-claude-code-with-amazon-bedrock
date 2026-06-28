@@ -4,9 +4,11 @@
 """Unit tests for the AgentCore web search gateway deploy wiring (PR 2)."""
 
 from claude_code_with_bedrock.cli.commands.deploy import (
+    VALID_STACKS,
     _websearch_discovery_url,
     build_websearch_params,
     get_websearch_region,
+    validate_websearch_readiness,
     websearch_preflight,
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Profile
@@ -151,15 +153,14 @@ def test_preflight_blocks_cognito_without_pool():
 def test_discovery_url_cognito_uses_pool_region():
     url = _websearch_discovery_url(_cognito_profile())
     assert url == (
-        "https://cognito-idp.eu-central-1.amazonaws.com/" "eu-central-1_AbCdEf/.well-known/openid-configuration"
+        "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_AbCdEf/.well-known/openid-configuration"
     )
 
 
 def test_discovery_url_azure_uses_tenant():
     url = _websearch_discovery_url(_azure_profile())
     assert url == (
-        "https://login.microsoftonline.com/"
-        "11111111-2222-3333-4444-555555555555/v2.0/.well-known/openid-configuration"
+        "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0/.well-known/openid-configuration"
     )
 
 
@@ -247,3 +248,54 @@ def test_deploy_all_treats_websearch_failure_as_non_fatal():
     # Non-websearch failures still abort.
     assert "failed = True" in loop
     assert "break" in loop
+
+
+# --- validate_websearch_readiness (doctor integration) ---
+
+
+def test_validate_readiness_returns_empty_when_disabled():
+    """When web_search_enabled is False, no issues are reported."""
+    profile = _cognito_profile(web_search_enabled=False)
+    assert validate_websearch_readiness(profile) == []
+
+
+def test_validate_readiness_warns_missing_gateway_url():
+    """Enabled but no gateway URL -> warning to deploy."""
+    profile = _cognito_profile(web_search_enabled=True, websearch_gateway_url=None)
+    issues = validate_websearch_readiness(profile)
+    assert len(issues) == 1
+    assert issues[0]["level"] == "warning"
+    assert "websearch_gateway_url" in issues[0]["message"]
+
+
+def test_validate_readiness_no_issues_when_fully_configured():
+    """Enabled + gateway URL set + valid region -> no issues."""
+    profile = _cognito_profile(
+        web_search_enabled=True,
+        websearch_gateway_url="https://abc123.execute-api.us-east-1.amazonaws.com/mcp",
+    )
+    issues = validate_websearch_readiness(profile)
+    assert issues == []
+
+
+def test_validate_readiness_error_on_unsupported_provider():
+    """Unsupported provider -> error."""
+    profile = _cognito_profile(web_search_enabled=True)
+    profile.provider_type = "idc"  # Not OIDC
+    issues = validate_websearch_readiness(profile)
+    assert len(issues) == 1
+    assert issues[0]["level"] == "error"
+
+
+# --- VALID_STACKS constant ---
+
+
+def test_valid_stacks_includes_websearch():
+    """VALID_STACKS must include websearch for deploy argument validation."""
+    assert "websearch" in VALID_STACKS
+
+
+def test_valid_stacks_includes_all_known_stacks():
+    """VALID_STACKS must include all the core stacks."""
+    for stack in ["auth", "monitoring", "dashboard", "distribution", "codebuild", "websearch"]:
+        assert stack in VALID_STACKS, f"Missing stack: {stack}"
