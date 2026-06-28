@@ -293,7 +293,7 @@ Administrators often need to set additional MDM keys beyond the defaults generat
 |-----|---------|
 | `coworkEgressAllowedHosts` | Allow Claude Desktop to access external hosts (required for Web Fetch) |
 | `coworkWebSearchEnabled` | Enable web search capability |
-| `managedMcpServers` | Deploy managed MCP servers (e.g., Brave Search for web search on Bedrock) |
+| `managedMcpServers` | Deploy managed MCP servers (e.g., web search via AgentCore Gateway) |
 | `disabledBuiltinTools` | Lock down specific tools |
 | `allowedWorkspaceFolders` | Restrict workspace access to approved directories |
 
