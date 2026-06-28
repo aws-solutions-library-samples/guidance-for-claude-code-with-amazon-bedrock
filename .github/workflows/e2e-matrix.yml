@@ -2,7 +2,7 @@ name: E2E Matrix Tests
 
 on:
   schedule:
-    # Weekday nightly at 3 AM UTC
+    # Weekday nightly at 3 AM UTC (beta branch only)
     - cron: '0 3 * * 1-5'
 
   workflow_dispatch:
@@ -18,6 +18,8 @@ on:
         default: false
 
   pull_request:
+    branches:
+      - beta
     paths:
       - 'deployment/**'
       - 'source/go/**'
@@ -39,6 +41,8 @@ jobs:
   # Build binaries for all 3 OS platforms
   # ---------------------------------------------------------------------------
   build:
+    # Schedule crons always fire on default branch — skip if not beta
+    if: github.event_name != 'schedule' || github.ref == 'refs/heads/beta'
     strategy:
       matrix:
         include:
