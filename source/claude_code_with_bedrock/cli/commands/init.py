@@ -2352,9 +2352,9 @@ class InitCommand(Command):
                 console.print("• OpenTelemetry collector for metrics aggregation")
                 console.print("• ECS cluster and load balancer for collector")
                 if config.get("analytics", {}).get("enabled", True):
-                    console.print("• Kinesis Firehose for analytics data streaming")
-                    console.print("• S3 bucket for analytics data storage")
-                    console.print("• Glue catalog and Athena tables for analytics")
+                    console.print("• Kinesis Firehose for historical usage data streaming")
+                    console.print("• S3 bucket for historical usage data storage")
+                    console.print("• Glue catalog and Athena tables for historical usage analytics")
             else:
                 console.print("• Local OTEL Collector sidecar (no server infrastructure)")
                 console.print("• CloudWatch PromQL dashboard for metrics visualization")
