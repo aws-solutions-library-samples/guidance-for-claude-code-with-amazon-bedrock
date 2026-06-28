@@ -852,18 +852,19 @@ class InitCommand(Command):
                 config["oidc_thumbprint"] = oidc_thumbprint
 
             # Ask about federation type
-            console.print("\n[cyan]Federation Type Selection[/cyan]")
-            console.print("Direct STS.")
-            console.print("Cognito Identity Pool.\n")
+            console.print("\n[cyan]Federation Type[/cyan]")
+            console.print("How OIDC tokens are exchanged for AWS credentials:")
+            console.print("  • Direct STS \u2014 AssumeRoleWithWebIdentity (simpler, 12h sessions)")
+            console.print("  • Cognito Identity Pool \u2014 legacy, use only for existing deployments\n")
 
             # Use existing federation type as default if available
             existing_federation_type = config.get("federation_type", "direct")
 
             federation_type = questionary.select(
-                "Choose federation type:",
+                "Federation type:",
                 choices=[
-                    questionary.Choice("Direct STS", value="direct"),
-                    questionary.Choice("Cognito Identity Pool", value="cognito"),
+                    questionary.Choice("Direct STS (recommended)", value="direct"),
+                    questionary.Choice("Cognito Identity Pool (legacy)", value="cognito"),
                 ],
                 default=existing_federation_type,
             ).ask()
@@ -979,13 +980,13 @@ class InitCommand(Command):
                     "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
                     "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
                     "  [yellow]-[/yellow] Each machine manages its own collector process\n"
-                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
+                    "  [yellow]-[/yellow] Claude Desktop telemetry not supported (cannot reach localhost collector)\n"
                 )
                 console.print(
                     "[cyan]Central:[/cyan]\n"
                     "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
                     "  [green]+[/green] Single collector for all users — centralized management\n"
-                    "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
+                    "  [green]+[/green] Supports Claude Desktop telemetry\n"
                     "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
                     "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
                     "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
@@ -1464,12 +1465,11 @@ class InitCommand(Command):
                     )
                 config["codebuild"]["region"] = None
 
-        # Claude Cowork 3P MDM configuration
-        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
-        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
-        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
+                # Claude Desktop MDM configuration
+        console.print("\n[bold]Claude Desktop Support[/bold]")
+        console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
         enable_cowork = questionary.confirm(
-            "Generate CoWork 3P MDM configuration during packaging?",
+            "Enable Claude Desktop support?",
             default=config.get("cowork_3p", {}).get("enabled", True),
         ).ask()
 
@@ -1478,7 +1478,7 @@ class InitCommand(Command):
         config["cowork_3p"]["enabled"] = enable_cowork
 
         if enable_cowork:
-            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
+            console.print("[green]✓[/green] Claude Desktop MDM config will be generated during packaging")
 
             # Preserve existing custom MDM keys; advise JSON editing for additions
             existing_extra = config.get("cowork_3p", {}).get("extra_keys", {})
@@ -1502,12 +1502,12 @@ class InitCommand(Command):
 
                     token = str(uuid.uuid4())
                     config["cowork_3p"]["service_token"] = token
-                    console.print("[green]✓[/green] Generated CoWork service token for ALB auth bypass")
+                    console.print("[green]✓[/green] Generated Claude Desktop service token for ALB auth bypass")
                     console.print(
                         "[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]"
                     )
                 else:
-                    console.print("[dim]CoWork service token already configured[/dim]")
+                    console.print("[dim]Claude Desktop service token already configured[/dim]")
 
         # Settings deployment target
         console.print("\n[bold]Settings Deployment Target[/bold]")
