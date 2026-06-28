@@ -171,6 +171,7 @@ class TestMonitoringPipeline:
 
     @pytest.mark.slow
     @pytest.mark.timeout(120)
+    @pytest.mark.flaky(reruns=2, reruns_delay=30)
     def test_metric_arrives_in_cloudwatch(
         self,
         run_credential_process,

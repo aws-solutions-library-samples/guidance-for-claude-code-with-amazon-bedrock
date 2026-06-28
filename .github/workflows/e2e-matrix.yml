@@ -83,11 +83,46 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
+  # Smoke test — fast-fail before deploying expensive infrastructure
+  # ---------------------------------------------------------------------------
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux-amd64
+          path: source/go/dist/
+
+      - name: Make binaries executable
+        run: chmod +x source/go/dist/*
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-timeout pytest-rerunfailures boto3 requests tenacity PyJWT
+
+      - name: Run smoke test (profile 09 — passthrough, no infra)
+        run: |
+          pytest tests/e2e/test_credential_output.py tests/e2e/test_explain_contract.py \
+            --profile 09-passthrough-linux-none \
+            -v --timeout=10 \
+            -x  # fail fast
+        env:
+          E2E_BINARY_PATH: source/go/dist/credential-process-linux-amd64
+
+  # ---------------------------------------------------------------------------
   # Deploy shared E2E infrastructure
   # ---------------------------------------------------------------------------
   infra:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke]
     timeout-minutes: 15
     environment: e2e-testing
 
@@ -139,7 +174,7 @@ jobs:
   # Run E2E tests across profile matrix
   # ---------------------------------------------------------------------------
   test:
-    needs: [build, infra]
+    needs: [build, smoke, infra]
     timeout-minutes: 20
     environment: e2e-testing
 
@@ -234,7 +269,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest pytest-timeout boto3 requests tenacity PyJWT
+          pip install pytest pytest-timeout pytest-rerunfailures boto3 requests tenacity PyJWT
 
       - name: Download binaries
         uses: actions/download-artifact@v4

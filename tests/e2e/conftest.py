@@ -26,6 +26,24 @@ from . import helpers
 PROFILES_DIR = Path(__file__).parent / "profiles"
 
 
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "e2e: End-to-end test requiring infrastructure")
+    config.addinivalue_line(
+        "markers", "slow: Test with long wait (CloudWatch propagation)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "flaky_cloudwatch: May fail due to CloudWatch propagation delay (auto-reruns)",
+    )
+    config.addinivalue_line(
+        "markers", "flaky_eventual: May fail due to eventual consistency (auto-reruns)"
+    )
+    config.addinivalue_line(
+        "markers", "flaky_coldstart: May fail due to cold-start latency (auto-reruns)"
+    )
+
+
 def pytest_addoption(parser):
     """Add --profile CLI arg for selecting E2E profile."""
     parser.addoption(

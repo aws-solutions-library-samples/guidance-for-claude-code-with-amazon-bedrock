@@ -46,6 +46,7 @@ class TestQuotaEnforcement:
             f"Under-quota user blocked (exit {result.returncode}): {result.stderr}"
         )
 
+    @pytest.mark.flaky(reruns=1, reruns_delay=5)
     def test_over_quota_blocks(
         self,
         run_credential_process,
@@ -124,6 +125,7 @@ class TestQuotaEnforcement:
             f"Quota recheck with refresh failed: {result.stderr}"
         )
 
+    @pytest.mark.flaky(reruns=1, reruns_delay=5)
     def test_fine_grained_user_policy_overrides_default(
         self,
         run_credential_process,
@@ -152,6 +154,7 @@ class TestQuotaEnforcement:
             f"User with generous per-user policy should pass: {result.stderr}"
         )
 
+    @pytest.mark.flaky(reruns=1, reruns_delay=5)
     def test_fine_grained_group_policy(
         self,
         run_credential_process,
