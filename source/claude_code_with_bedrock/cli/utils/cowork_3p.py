@@ -252,6 +252,98 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         )
 
 
+WEBSEARCH_MCP_SERVER_NAME = "agentcore-websearch"
+
+
+def _oidc_issuer_for_profile(profile) -> str:
+    """OIDC issuer base URL for CoWork's oauth.authorizationServer (no well-known suffix).
+
+    Reuses deploy.py's per-provider discovery-URL derivation (single source of
+    truth) and strips the well-known suffix, so the issuer matches exactly what
+    the gateway's CUSTOM_JWT authorizer validates against. Imported lazily to
+    avoid a module-load cycle (deploy.py imports heavy CLI machinery).
+    """
+    from claude_code_with_bedrock.cli.commands.deploy import _websearch_discovery_url
+
+    suffix = "/.well-known/openid-configuration"
+    discovery = _websearch_discovery_url(profile)
+    return discovery[: -len(suffix)] if discovery.endswith(suffix) else discovery
+
+
+def _resolve_websearch_gateway_url(profile) -> str | None:
+    """Resolve the gateway MCP endpoint, profile-first with a CloudFormation fallback.
+
+    Prefers ``websearch_gateway_url`` saved on the profile by ``ccwb deploy``
+    (mirrors the OTLP-endpoint discovery precedent), falling back to the
+    ``websearch`` stack's ``GatewayMcpEndpoint`` output (the gateway is pinned to
+    us-east-1). Ensures exactly one ``/mcp`` suffix. Returns None when unresolved.
+    """
+    url = (getattr(profile, "websearch_gateway_url", "") or "").strip()
+    if not url:
+        stack = (getattr(profile, "stack_names", None) or {}).get("websearch")
+        region = getattr(profile, "websearch_region", None) or "us-east-1"
+        if stack:
+            try:
+                url = (get_stack_outputs(stack, region).get("GatewayMcpEndpoint") or "").strip()
+            except Exception:
+                url = ""
+    if not url:
+        return None
+    return url if url.rstrip("/").endswith("/mcp") else url.rstrip("/") + "/mcp"
+
+
+def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> None:
+    """Inject the AgentCore web search gateway as a CoWork managed MCP server.
+
+    No-op unless ``web_search_enabled``. Resolves the gateway endpoint at
+    generation time (never a stale stored value beyond the profile cache).
+    CoWork authenticates with an OAuth authorization-code flow against the same
+    IdP, reusing the solution's ``client_id`` and the localhost callback already
+    registered for Claude Code — so no secret is stored in the MDM config.
+    Preserves any administrator-defined ``managedMcpServers`` and de-dupes by name.
+    """
+    if not getattr(profile, "web_search_enabled", False):
+        return
+
+    url = _resolve_websearch_gateway_url(profile)
+    if not url:
+        console.print(
+            "[yellow]⚠ Web search is enabled but the gateway endpoint could not be resolved; "
+            "generating CoWork config without the web search MCP server.[/yellow]\n"
+            "[dim]  Run 'ccwb deploy websearch' first.[/dim]"
+        )
+        return
+
+    # Use native managedMcpServers "websearch" server type (v1.15962.0+)
+    # with "custom" provider pointing to our AgentCore Gateway.
+    entry = {
+        "name": WEBSEARCH_MCP_SERVER_NAME,
+        "server": "websearch",
+        "provider": "custom",
+        "customUrl": url,
+    }
+
+    # managedMcpServers is a JSON-encoded string in the MDM config. Merge with any
+    # admin-defined entries (e.g. from cowork_3p_extra_keys), keeping all and
+    # de-duping by name so a re-run never creates a duplicate web search entry.
+    existing_raw = mdm_config.get("managedMcpServers")
+    servers: list = []
+    if isinstance(existing_raw, str) and existing_raw.strip():
+        try:
+            parsed = json.loads(existing_raw)
+            if isinstance(parsed, list):
+                servers = parsed
+        except (ValueError, TypeError):
+            servers = []
+    elif isinstance(existing_raw, list):
+        servers = list(existing_raw)
+
+    servers = [s for s in servers if not (isinstance(s, dict) and s.get("name") == WEBSEARCH_MCP_SERVER_NAME)]
+    servers.append(entry)
+    mdm_config["managedMcpServers"] = json.dumps(servers)
+    console.print(f"[dim]Added {WEBSEARCH_MCP_SERVER_NAME} MCP server to CoWork config ({url})[/dim]")
+
+
 def _mdm_keys(config: dict) -> dict:
     """Return config without internal underscore-prefixed keys."""
     return {k: v for k, v in config.items() if not k.startswith("_")}
