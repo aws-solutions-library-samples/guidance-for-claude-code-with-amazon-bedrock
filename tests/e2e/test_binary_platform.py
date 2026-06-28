@@ -70,7 +70,7 @@ class TestBinaryPlatform:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                shell=True,
+                shell=True,  # nosec B602 — intentional: testing .cmd shell fallback on Windows
             )
 
             assert result.returncode == 0, f".cmd fallback failed: {result.stderr}"
@@ -170,7 +170,7 @@ class TestBinaryPlatform:
             shutil.copy2(str(credential_process_binary), space_binary)
 
             if not _is_windows():
-                os.chmod(space_binary, 0o755)
+                os.chmod(space_binary, 0o755)  # nosec B103 — test binary needs execute permission
 
             # Execute from spaced path
             result = subprocess.run(

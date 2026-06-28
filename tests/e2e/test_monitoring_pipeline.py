@@ -7,6 +7,7 @@ self-heals, and delivers metrics to CloudWatch.
 
 import json
 import os
+import tempfile
 import subprocess
 import time
 
@@ -145,7 +146,7 @@ class TestMonitoringPipeline:
         cache_paths = [
             os.path.join(home, ".ccwb", "otel-headers.json"),
             os.path.join(home, ".config", "ccwb", "otel-headers.json"),
-            "/tmp/ccwb-otel-headers.json",
+            os.path.join(tempfile.gettempdir(), "ccwb-otel-headers.json"),  # nosec B108
         ]
 
         cache_found = False

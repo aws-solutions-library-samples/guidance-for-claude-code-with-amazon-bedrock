@@ -274,15 +274,19 @@ jobs:
       - name: Check if profile should run
         id: should_run
         shell: bash
+        env:
+          INPUT_PROFILE: ${{ inputs.profile }}
+          MATRIX_PROFILE: ${{ matrix.profile }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           skip="false"
           # Skip if a specific profile was requested and this isn't it
-          if [[ -n "${{ inputs.profile }}" && "${{ inputs.profile }}" != "${{ matrix.profile }}" ]]; then
-            echo "Skipping ${{ matrix.profile }} — only running ${{ inputs.profile }}"
+          if [[ -n "$INPUT_PROFILE" && "$INPUT_PROFILE" != "$MATRIX_PROFILE" ]]; then
+            echo "Skipping $MATRIX_PROFILE — only running $INPUT_PROFILE"
             skip="true"
           fi
           # On PRs, only run canary profiles (01 Linux + 04 Windows)
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ matrix.profile }}" != "01-oidc-cognito-linux-central" && "${{ matrix.profile }}" != "04-oidc-cognito-windows-central" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request" && "$MATRIX_PROFILE" != "01-oidc-cognito-linux-central" && "$MATRIX_PROFILE" != "04-oidc-cognito-windows-central" ]]; then
             echo "PR mode: only running canary profiles 01 (Linux) and 04 (Windows)"
             skip="true"
           fi
