@@ -1493,8 +1493,8 @@ class InitCommand(Command):
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
 
-            # Generate CoWork service token for ALB auth bypass (central mode only).
-            # CoWork can't do OIDC, so this static token in X-Cowork-Token header
+            # Generate Claude Desktop service token for ALB auth bypass (central mode only).
+            # Claude Desktop can't do OIDC, so this static token in X-Cowork-Token header
             # bypasses JWT validation on the ALB listener.
             monitoring_mode = config.get("monitoring", {}).get("mode", "central")
             if monitoring_mode == "central":
@@ -2964,7 +2964,7 @@ class InitCommand(Command):
                 if getattr(profile, "codebuild_prior_regions", None):
                     existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
-            # Add CoWork 3P configuration
+            # Add Claude Desktop (cowork_3p) configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
             if profile.cowork_3p_extra_keys:
                 cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
