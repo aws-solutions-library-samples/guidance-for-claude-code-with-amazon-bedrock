@@ -261,14 +261,15 @@ def run_credential_process(
         config_dir.mkdir(exist_ok=True)
         config_file = config_dir / "config.json"
         if not config_file.exists():
-            config = {
+            profile_config = {
                 "auth_type": e2e_profile["auth"]["type"],
                 "region": "us-east-1",
                 "monitoring": e2e_profile.get("monitoring", {"mode": "none"}),
                 "quota": e2e_profile.get("quota", {"enabled": False}),
             }
             if e2e_profile["auth"].get("federation"):
-                config["federation"] = e2e_profile["auth"]["federation"]
+                profile_config["federation"] = e2e_profile["auth"]["federation"]
+            config = {"profiles": {"ClaudeCode": profile_config}}
             config_file.write_text(json.dumps(config, indent=2))
         env["HOME"] = str(fake_home)
 
