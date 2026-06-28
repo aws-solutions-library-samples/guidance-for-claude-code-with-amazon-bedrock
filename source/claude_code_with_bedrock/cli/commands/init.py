@@ -1104,11 +1104,11 @@ class InitCommand(Command):
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
 
-                    # Analytics configuration (central mode only)
-                    console.print("\n[bold]Analytics Pipeline[/bold]")
-                    console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
+                    # Historical usage analytics (central mode only — S3 data lake + Athena)
+                    console.print("\n[bold]Historical Usage Analytics[/bold]")
+                    console.print("Query historical per-user usage with SQL via AWS Athena (S3 data lake, ~$5/month)")
                     enable_analytics = questionary.confirm(
-                        "Enable analytics?",
+                        "Enable historical usage analytics?",
                         default=config.get("analytics", {}).get("enabled", True),
                     ).ask()
 
@@ -1117,10 +1117,12 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = enable_analytics
 
                     if enable_analytics:
-                        console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
+                        console.print(
+                            "[green]✓[/green] Historical analytics (S3 + Athena) will be deployed with your monitoring stack"
+                        )
 
                 else:
-                    # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
+                    # Sidecar mode: no VPC, no HTTPS, no historical analytics (PromQL dashboards still work)
                     console.print("[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar")
                     config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
