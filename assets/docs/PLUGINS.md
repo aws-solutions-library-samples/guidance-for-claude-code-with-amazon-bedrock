@@ -125,6 +125,8 @@ ccwb plugins sync              # Push registry to server
 
 Desktop receives `organizationPluginsUrl` in the bootstrap response and git-clones plugins automatically. Plugins with `"installationPreference": "required"` install without user confirmation.
 
+**How delivery works:** `ccwb plugins sync` uploads a registry JSON to the existing S3 bucket. The bootstrap Lambda reads it and serves it at `/plugins/index.json`. Each registry entry points to a git repo — Desktop clones directly from your repo, not through the bootstrap server.
+
 **IdP callback:** Add the bootstrap callback URL (printed after deploy) to your IdP's redirect URIs. Cognito configures this automatically.
 
 ### Setup (Dynamic config only)
