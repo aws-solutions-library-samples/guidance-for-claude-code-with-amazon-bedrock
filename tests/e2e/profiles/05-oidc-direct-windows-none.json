@@ -1,0 +1,10 @@
+{
+  "name": "05-oidc-direct-windows-none",
+  "description": "Minimal Windows: OIDC + Direct STS + No monitoring",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "azure"},
+  "platform": "windows-x64",
+  "monitoring": {"mode": "none"},
+  "config_delivery": "static",
+  "quota": {"enabled": false},
+  "tests": ["auth_flow", "credential_output", "binary_platform"]
+}

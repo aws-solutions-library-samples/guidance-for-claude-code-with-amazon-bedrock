@@ -1,0 +1,10 @@
+{
+  "name": "03-oidc-direct-linux-bootstrap-alert",
+  "description": "Bootstrap delivery + alert-only quota",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "linux-x64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "bootstrap",
+  "quota": {"enabled": true, "enforcement": "alert", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "config_delivery", "quota_enforcement"]
+}
