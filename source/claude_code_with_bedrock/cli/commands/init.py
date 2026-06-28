@@ -1509,10 +1509,10 @@ class InitCommand(Command):
                 else:
                     console.print("[dim]CoWork service token already configured[/dim]")
 
-            # CoWork configuration delivery mode (OIDC only)
+            # Claude Desktop configuration delivery mode (OIDC only)
             if config.get("auth_type", "oidc") == "oidc":
-                console.print("\n[bold]CoWork Configuration Delivery[/bold]")
-                console.print("How should CoWork clients receive their configuration?")
+                console.print("\n[bold]Claude Desktop Configuration Delivery[/bold]")
+                console.print("How should Claude Desktop clients receive their configuration?")
                 console.print("  • Static: MDM profile with inline config (default)")
                 console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
 
@@ -1529,7 +1529,7 @@ class InitCommand(Command):
                 ]
                 saved_config_delivery = config.get("cowork", {}).get("config_delivery", "static")
                 config_delivery = questionary.select(
-                    "CoWork configuration delivery:",
+                    "Claude Desktop config delivery:",
                     choices=config_delivery_choices,
                     default=saved_config_delivery,
                 ).ask()

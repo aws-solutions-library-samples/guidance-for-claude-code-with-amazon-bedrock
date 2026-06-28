@@ -13,7 +13,6 @@ import json
 import os
 import time
 import urllib.request
-from datetime import datetime, timezone
 
 # Optional: PyJWT with cryptography for RS256 verification
 # Falls back to manual verification if not available in Lambda layer
