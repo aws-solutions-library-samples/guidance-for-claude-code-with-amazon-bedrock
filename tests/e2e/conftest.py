@@ -253,6 +253,25 @@ def run_credential_process(
         env["E2E_RUN_ID"] = run_id
         env["E2E_PROFILE"] = e2e_profile["name"]
 
+        # Seed config.json in the binary's expected path (~/claude-code-with-bedrock/)
+        # Override HOME so each profile gets isolated config
+        fake_home = isolated_config_dir / "home"
+        fake_home.mkdir(exist_ok=True)
+        config_dir = fake_home / "claude-code-with-bedrock"
+        config_dir.mkdir(exist_ok=True)
+        config_file = config_dir / "config.json"
+        if not config_file.exists():
+            config = {
+                "auth_type": e2e_profile["auth"]["type"],
+                "region": "us-east-1",
+                "monitoring": e2e_profile.get("monitoring", {"mode": "none"}),
+                "quota": e2e_profile.get("quota", {"enabled": False}),
+            }
+            if e2e_profile["auth"].get("federation"):
+                config["federation"] = e2e_profile["auth"]["federation"]
+            config_file.write_text(json.dumps(config, indent=2))
+        env["HOME"] = str(fake_home)
+
         # Set profile-derived env vars
         auth = e2e_profile["auth"]
         env["CCWB_AUTH_TYPE"] = auth["type"]
