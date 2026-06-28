@@ -15,6 +15,8 @@ Bugs this prevents:
 - #454: Quota monitoring stack deploy fails when SSO disabled
 """
 
+import dataclasses
+
 import pytest
 
 from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
@@ -145,3 +147,37 @@ class TestDeployParameterMatrix:
         if pool_id and "_" in pool_id:
             pool_region = pool_id.split("_")[0]
             assert pool_region in issuer, f"Issuer should contain pool region '{pool_region}'"
+
+
+class TestBootstrapStackInclusion:
+    """Bootstrap stack is included only when config_delivery is set."""
+
+    def test_device_code_includes_bootstrap(self, command):
+        """bootstrap-device-code mode must include bootstrap in deploy-all."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["central_okta"],
+            cowork_config_delivery="bootstrap-device-code",
+        )
+        stacks = command._select_full_deploy_stacks(profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" in stack_types
+
+    def test_oidc_bearer_includes_bootstrap(self, command):
+        """bootstrap-oidc-bearer mode must include bootstrap in deploy-all."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["central_okta"],
+            cowork_config_delivery="bootstrap-oidc-bearer",
+        )
+        stacks = command._select_full_deploy_stacks(profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" in stack_types
+
+    def test_static_never_includes_bootstrap(self, command):
+        """Static config_delivery must never deploy bootstrap stack."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["central_okta"],
+            cowork_config_delivery="static",
+        )
+        stacks = command._select_full_deploy_stacks(profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" not in stack_types
