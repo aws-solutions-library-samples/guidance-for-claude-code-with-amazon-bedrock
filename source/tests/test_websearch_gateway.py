@@ -6,10 +6,12 @@
 from unittest.mock import Mock
 
 from claude_code_with_bedrock.cli.commands.deploy import (
+    VALID_STACKS,
     _poll_websearch_target_ready,
     _websearch_discovery_url,
     build_websearch_params,
     get_websearch_region,
+    validate_websearch_readiness,
     websearch_preflight,
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Profile
@@ -280,3 +282,53 @@ def test_poll_target_failed_returns_false():
         "gw-123", "us-east-1", Mock(), timeout=5, interval=0, session=_fake_session("FAILED")
     )
     assert ok is False
+# --- validate_websearch_readiness (doctor integration) ---
+
+
+def test_validate_readiness_returns_empty_when_disabled():
+    """When web_search_enabled is False, no issues are reported."""
+    profile = _cognito_profile(web_search_enabled=False)
+    assert validate_websearch_readiness(profile) == []
+
+
+def test_validate_readiness_warns_missing_gateway_url():
+    """Enabled but no gateway URL -> warning to deploy."""
+    profile = _cognito_profile(web_search_enabled=True, websearch_gateway_url=None)
+    issues = validate_websearch_readiness(profile)
+    assert len(issues) == 1
+    assert issues[0]["level"] == "warning"
+    assert "websearch_gateway_url" in issues[0]["message"]
+
+
+def test_validate_readiness_no_issues_when_fully_configured():
+    """Enabled + gateway URL set + valid region -> no issues."""
+    profile = _cognito_profile(
+        web_search_enabled=True,
+        websearch_gateway_url="https://abc123.execute-api.us-east-1.amazonaws.com/mcp",
+    )
+    issues = validate_websearch_readiness(profile)
+    assert issues == []
+
+
+def test_validate_readiness_error_on_unsupported_provider():
+    """Unsupported provider -> error."""
+    profile = _cognito_profile(web_search_enabled=True)
+    profile.provider_type = "idc"  # Not OIDC
+    issues = validate_websearch_readiness(profile)
+    assert len(issues) == 1
+    assert issues[0]["level"] == "error"
+
+
+# --- VALID_STACKS constant ---
+
+
+def test_valid_stacks_includes_websearch():
+    """VALID_STACKS must include websearch for deploy argument validation."""
+    assert "websearch" in VALID_STACKS
+
+
+def test_valid_stacks_includes_all_known_stacks():
+    """VALID_STACKS must include all the core stacks."""
+    for stack in ["auth", "monitoring", "dashboard", "distribution", "codebuild", "websearch"]:
+        assert stack in VALID_STACKS, f"Missing stack: {stack}"
+

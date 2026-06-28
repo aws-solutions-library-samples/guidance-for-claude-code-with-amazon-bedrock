@@ -31,6 +31,22 @@ from claude_code_with_bedrock.cli.utils.helpers import (
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
 
+# All deployable stack types. Used for input validation and help text.
+# Keep in sync with DESTROYABLE_STACKS in destroy.py when adding new stacks.
+VALID_STACKS = [
+    "auth",
+    "networking",
+    "monitoring",
+    "dashboard",
+    "cowork-dashboard",
+    "analytics",
+    "quota",
+    "distribution",
+    "codebuild",
+    "websearch",
+    "bootstrap",
+]
+
 # Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
 #   login.microsoftonline.com/{tenant-id}/v2.0
 #   https://login.microsoftonline.com/{tenant-id}
@@ -169,6 +185,53 @@ def websearch_preflight(profile) -> tuple[bool, str | None]:
             )
 
     return True, None
+
+
+def validate_websearch_readiness(profile) -> list[dict]:
+    """Validate websearch configuration readiness for a profile.
+
+    Returns a list of diagnostic issues (each a dict with 'level' and 'message').
+    Empty list = healthy. Designed for `ccwb doctor` integration — call this
+    to surface websearch misconfigurations without reimplementing the logic.
+
+    Levels: 'error' (broken), 'warning' (degraded), 'info' (informational).
+    """
+    issues = []
+    enabled = getattr(profile, "web_search_enabled", False)
+
+    if not enabled:
+        return []  # Websearch not enabled — nothing to validate
+
+    # Check provider compatibility
+    ok, msg = websearch_preflight(profile)
+    if not ok:
+        issues.append({"level": "error", "message": msg})
+        return issues  # No point checking further if preflight fails
+
+    # Check gateway URL is populated (set after successful deploy)
+    gateway_url = getattr(profile, "websearch_gateway_url", None)
+    if not gateway_url:
+        issues.append(
+            {
+                "level": "warning",
+                "message": (
+                    "web_search_enabled=True but websearch_gateway_url is not set. "
+                    "Run 'ccwb deploy websearch' to deploy the gateway stack."
+                ),
+            }
+        )
+
+    # Check region is supported
+    region = get_websearch_region(profile)
+    if region not in WEBSEARCH_SUPPORTED_REGIONS:
+        issues.append(
+            {
+                "level": "error",
+                "message": f"websearch_region '{region}' is not in supported regions: {', '.join(WEBSEARCH_SUPPORTED_REGIONS)}",
+            }
+        )
+
+    return issues
 
 
 def _websearch_discovery_url(profile) -> str:
@@ -453,10 +516,8 @@ class DeployCommand(Command):
                 stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, "
-                    "cowork-dashboard, analytics, quota, codebuild, bootstrap, websearch\n"
-                )
+                console.print(f"Valid stacks: {', '.join(VALID_STACKS)}\n")
+
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
                 return 1
