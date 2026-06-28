@@ -1,6 +1,12 @@
 # CLAUDE.md
 
 Project rules for AI coding agents. Detailed rules in `.claude/rules/`.
+Subdirectory `CLAUDE.md` files provide focused context per component:
+- `source/CLAUDE.md` — Python CLI, tests, config patterns
+- `source/go/CLAUDE.md` — Go binaries, --explain contract, Windows guards
+- `deployment/CLAUDE.md` — CloudFormation templates, IAM, conditions
+- `deployment/infrastructure/lambda-functions/CLAUDE.md` — Lambda auth, response patterns
+- `docs/CLAUDE.md` — Documentation naming, security, structure
 
 ## Key Principles
 
