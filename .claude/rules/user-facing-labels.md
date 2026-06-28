@@ -1,0 +1,13 @@
+---
+description: When writing user-facing output (CLI messages, doctor checks, issue templates, docs)
+---
+- Use full descriptive labels, not internal field names:
+  - "desktop config mode" not "config_mode"
+  - "bootstrap server" not "bootstrap"
+  - "OIDC client secret" not "client_secret_arn"
+  - "OIDC discovery endpoints" not "oidc_endpoints"
+  - "Claude Desktop config delivery" not "desktop delivery"
+- In summary banners, prefix with context: "Desktop Config:" not just "Desktop:"
+- In doctor checks, make each line self-explanatory without needing to read other lines
+- Avoid ARN references in user-facing messages — say "configured (SecretsManager)" instead
+- When referencing the bootstrap feature, always say "bootstrap server" (not just "bootstrap")
