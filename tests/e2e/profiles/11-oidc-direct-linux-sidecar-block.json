@@ -1,0 +1,10 @@
+{
+  "name": "11-oidc-direct-linux-sidecar-block",
+  "description": "Sidecar + hard block quota",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "linux-x64",
+  "monitoring": {"mode": "sidecar"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "block", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement"]
+}

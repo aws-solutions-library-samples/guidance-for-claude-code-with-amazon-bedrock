@@ -1,0 +1,10 @@
+{
+  "name": "02-oidc-direct-linux-central-block",
+  "description": "Enterprise: OIDC + Direct STS + Linux + Central + Quota block",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "linux-x64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "block", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement"]
+}

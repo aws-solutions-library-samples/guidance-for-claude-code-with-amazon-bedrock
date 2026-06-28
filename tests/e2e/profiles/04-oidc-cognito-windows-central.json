@@ -1,0 +1,10 @@
+{
+  "name": "04-oidc-cognito-windows-central",
+  "description": "Windows: OIDC + Cognito + Central monitoring",
+  "auth": {"type": "oidc", "federation": "cognito", "provider": "cognito"},
+  "platform": "windows-x64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "static",
+  "quota": {"enabled": false},
+  "tests": ["auth_flow", "credential_output", "binary_platform"]
+}
