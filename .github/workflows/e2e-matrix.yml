@@ -1,0 +1,508 @@
+name: E2E Matrix Tests
+
+on:
+  schedule:
+    # Weekday nightly at 3 AM UTC (beta branch only)
+    - cron: '0 3 * * 1-5'
+
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Specific profile to run (e.g., 01-oidc-cognito-linux-central). Leave empty for full matrix.'
+        required: false
+        type: string
+      keep_infra:
+        description: 'Keep infrastructure after tests (for debugging)'
+        required: false
+        type: boolean
+        default: false
+
+  pull_request:
+    branches:
+      - beta
+    paths:
+      - 'deployment/**'
+      - 'source/go/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  E2E_STACK_PREFIX: ccwb-e2e-${{ github.run_id }}
+
+concurrency:
+  group: e2e-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build binaries for all 3 OS platforms
+  # ---------------------------------------------------------------------------
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary_suffix: linux-amd64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary_suffix: windows-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary_suffix: darwin-arm64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go/go.mod
+
+      - name: Build credential-process
+        working-directory: source/go
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -ldflags="-s -w" -o dist/credential-process-${{ matrix.binary_suffix }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/credential-process/
+          go build -ldflags="-s -w" -o dist/otel-helper-${{ matrix.binary_suffix }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/otel-helper/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.binary_suffix }}
+          path: source/go/dist/
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Smoke test — fast-fail before deploying expensive infrastructure
+  # ---------------------------------------------------------------------------
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux-amd64
+          path: source/go/dist/
+
+      - name: Make binaries executable
+        run: chmod +x source/go/dist/*
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-timeout pytest-rerunfailures boto3 requests tenacity PyJWT
+
+      - name: Run smoke test (profile 09 — passthrough, no infra)
+        run: |
+          pytest tests/e2e/test_credential_output.py tests/e2e/test_explain_contract.py \
+            --profile 09-passthrough-linux-none \
+            -v --timeout=10 \
+            -x  # fail fast
+        env:
+          E2E_BINARY_PATH: source/go/dist/credential-process-linux-amd64
+
+      - name: Check binary size budget
+        run: |
+          echo "## Binary Size Check" >> $GITHUB_STEP_SUMMARY
+          budget_file=".github/size-budget.json"
+          failed=0
+          for binary in source/go/dist/*; do
+            name=$(basename "$binary")
+            size=$(stat -c%s "$binary" 2>/dev/null || stat -f%z "$binary")
+            budget=$(python3 -c "import json; d=json.load(open('$budget_file')); print(d['budgets'].get('$name', 0))")
+            if [ "$budget" -gt 0 ]; then
+              size_mb=$(echo "scale=1; $size / 1048576" | bc)
+              budget_mb=$(echo "scale=1; $budget / 1048576" | bc)
+              if [ "$size" -gt "$budget" ]; then
+                echo "❌ $name: ${size_mb}MB exceeds budget ${budget_mb}MB" >> $GITHUB_STEP_SUMMARY
+                echo "::error::$name (${size_mb}MB) exceeds size budget (${budget_mb}MB)"
+                failed=1
+              else
+                echo "✅ $name: ${size_mb}MB (budget: ${budget_mb}MB)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then exit 1; fi
+
+  # ---------------------------------------------------------------------------
+  # Deploy shared E2E infrastructure
+  # ---------------------------------------------------------------------------
+  infra:
+    runs-on: ubuntu-latest
+    needs: [build, smoke]
+    timeout-minutes: 15
+    environment: e2e-testing
+
+    outputs:
+      stack_outputs: ${{ steps.deploy.outputs.stack_outputs }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install CDK
+        run: npm install -g aws-cdk
+
+      - name: Deploy E2E stacks
+        id: deploy
+        working-directory: deployment
+        run: |
+          # Deploy shared infrastructure for E2E tests
+          cdk deploy \
+            --require-approval never \
+            --outputs-file /tmp/stack-outputs.json \
+            -c stackPrefix="${E2E_STACK_PREFIX}" \
+            -c e2eMode=true \
+            "${E2E_STACK_PREFIX}-auth" \
+            "${E2E_STACK_PREFIX}-monitoring" \
+            "${E2E_STACK_PREFIX}-quota" \
+            "${E2E_STACK_PREFIX}-config"
+
+          # Export outputs as JSON artifact
+          echo "stack_outputs=$(cat /tmp/stack-outputs.json | jq -c .)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload stack outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-outputs
+          path: /tmp/stack-outputs.json
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Run E2E tests across profile matrix
+  # ---------------------------------------------------------------------------
+  test:
+    needs: [build, smoke, infra]
+    timeout-minutes: 20
+    environment: e2e-testing
+
+    # Platform focus: Windows and macOS get extra profiles due to historical
+    # issues with keyring chunking (#649), .cmd fallback (#567), install.bat
+    # syntax (#427), CRLF in generated scripts (#428), and macOS Keychain
+    # integration (#349, #664). PRs run both Linux and Windows canary to
+    # catch platform regressions early.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux profiles
+          - profile: '01-oidc-cognito-linux-central'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '02-oidc-direct-linux-central-block'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '03-oidc-direct-linux-bootstrap-alert'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '07-idc-linux-central-block'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '09-passthrough-linux-none'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '10-oidc-direct-linux-bootstrap-finegrained'
+            os: ubuntu-latest
+            platform: linux-x64
+          - profile: '11-oidc-direct-linux-sidecar-block'
+            os: ubuntu-latest
+            platform: linux-x64
+          # Windows profiles
+          - profile: '04-oidc-cognito-windows-central'
+            os: windows-latest
+            platform: windows-x64
+          - profile: '05-oidc-direct-windows-none'
+            os: windows-latest
+            platform: windows-x64
+          - profile: '08-idc-windows-sidecar'
+            os: windows-latest
+            platform: windows-x64
+          - profile: '13-oidc-direct-windows-sidecar-alert'
+            os: windows-latest
+            platform: windows-x64
+          - profile: '14-oidc-cognito-windows-central-block'
+            os: windows-latest
+            platform: windows-x64
+          # macOS profiles
+          - profile: '06-oidc-direct-macos-sidecar-finegrained'
+            os: macos-latest
+            platform: macos-arm64
+          - profile: '12-oidc-cognito-macos-central-alert'
+            os: macos-latest
+            platform: macos-arm64
+          - profile: '15-oidc-direct-macos-central-block'
+            os: macos-latest
+            platform: macos-arm64
+          - profile: '16-idc-macos-sidecar'
+            os: macos-latest
+            platform: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - name: Check if profile should run
+        id: should_run
+        shell: bash
+        env:
+          INPUT_PROFILE: ${{ inputs.profile }}
+          MATRIX_PROFILE: ${{ matrix.profile }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          skip="false"
+          # Skip if a specific profile was requested and this isn't it
+          if [[ -n "$INPUT_PROFILE" && "$INPUT_PROFILE" != "$MATRIX_PROFILE" ]]; then
+            echo "Skipping $MATRIX_PROFILE — only running $INPUT_PROFILE"
+            skip="true"
+          fi
+          # On PRs, only run canary profiles (01 Linux + 04 Windows)
+          if [[ "$EVENT_NAME" == "pull_request" && "$MATRIX_PROFILE" != "01-oidc-cognito-linux-central" && "$MATRIX_PROFILE" != "04-oidc-cognito-windows-central" ]]; then
+            echo "PR mode: only running canary profiles 01 (Linux) and 04 (Windows)"
+            skip="true"
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.should_run.outputs.skip != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        if: steps.should_run.outputs.skip != 'true'
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        if: steps.should_run.outputs.skip != 'true'
+        run: |
+          pip install pytest pytest-timeout pytest-rerunfailures boto3 requests tenacity PyJWT
+
+      - name: Download binaries
+        if: steps.should_run.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform == 'linux-x64' && 'linux-amd64' || matrix.platform == 'windows-x64' && 'windows-amd64' || 'darwin-arm64' }}
+          path: source/go/dist/
+
+      - name: Make binaries executable
+        if: steps.should_run.outputs.skip != 'true' && runner.os != 'Windows'
+        run: chmod +x source/go/dist/*
+
+      - name: Download stack outputs
+        if: steps.should_run.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: stack-outputs
+          path: tests/e2e/artifacts/
+
+      - name: Run E2E tests
+        if: steps.should_run.outputs.skip != 'true'
+        env:
+          E2E_PROFILE: ${{ matrix.profile }}
+          E2E_STACK_OUTPUTS: tests/e2e/artifacts/stack-outputs.json
+          PYTEST_TIMEOUT: 300
+        run: |
+          pytest tests/e2e/ \
+            --profile "${{ matrix.profile }}" \
+            -v \
+            --timeout=300 \
+            --tb=short \
+            -x \
+            --junitxml=report-${{ matrix.profile }}.xml
+
+      - name: Upload test report
+        if: always() && steps.should_run.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.profile }}
+          path: report-*.xml
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Test summary + badge
+  # ---------------------------------------------------------------------------
+  summary:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all test reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-report-*
+          merge-multiple: true
+
+      - name: Generate test summary
+        run: |
+          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for report in report-*.xml; do
+            if [ -f "$report" ]; then
+              profile=$(echo "$report" | sed 's/report-//;s/\.xml//')
+              tests=$(grep -o 'tests="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              failures=$(grep -o 'failures="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              errors=$(grep -o 'errors="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              if [ "${failures:-0}" = "0" ] && [ "${errors:-0}" = "0" ]; then
+                echo "✅ **$profile**: $tests tests passed" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "❌ **$profile**: $tests tests, $failures failures, $errors errors" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+
+      - name: Generate badge
+        run: |
+          total=0
+          passed=0
+          failed=0
+          for report in report-*.xml; do
+            if [ -f "$report" ]; then
+              t=$(grep -o 'tests="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              f=$(grep -o 'failures="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              e=$(grep -o 'errors="[0-9]*"' "$report" | head -1 | grep -o '[0-9]*')
+              total=$((total + ${t:-0}))
+              failed=$((failed + ${f:-0} + ${e:-0}))
+            fi
+          done
+          passed=$((total - failed))
+
+          if [ "$failed" -eq 0 ]; then
+            color="brightgreen"
+            message="${passed}/${total} passing"
+          elif [ "$failed" -le 2 ]; then
+            color="yellow"
+            message="${passed}/${total} (${failed} flaky)"
+          else
+            color="red"
+            message="${passed}/${total} (${failed} failed)"
+          fi
+
+          cat > badge.json <<EOF
+          {
+            "schemaVersion": 1,
+            "label": "E2E Tests",
+            "message": "$message",
+            "color": "$color"
+          }
+          EOF
+
+          echo "Badge: $message ($color)"
+
+      - name: Upload badge
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-badge
+          path: badge.json
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Teardown infrastructure (always runs)
+  # ---------------------------------------------------------------------------
+  teardown:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always() && !inputs.keep_infra
+    timeout-minutes: 15
+    environment: e2e-testing
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install CDK
+        run: npm install -g aws-cdk
+
+      - name: Destroy E2E infrastructure
+        if: ${{ !inputs.keep_infra }}
+        run: |
+          destroy_stacks() {
+            aws cloudformation list-stacks \
+              --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+              --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+              --output text | tr '\t' '\n' | while read -r stack; do
+              echo "Destroying: $stack"
+              aws cloudformation delete-stack --stack-name "$stack" || true
+            done
+          }
+
+          # First attempt
+          destroy_stacks
+
+          # Wait for deletions
+          sleep 30
+
+          # Check for stragglers (DELETE_FAILED due to race conditions)
+          stragglers=$(aws cloudformation list-stacks \
+            --stack-status-filter DELETE_FAILED \
+            --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+            --output text)
+
+          if [ -n "$stragglers" ]; then
+            echo "⚠️ Retry: Found stacks in DELETE_FAILED state"
+            echo "$stragglers" | tr '\t' '\n' | while read -r stack; do
+              echo "Retrying: $stack"
+              aws cloudformation delete-stack --stack-name "$stack" --retain-resources || true
+            done
+            sleep 60
+          fi
+
+          # Final check — warn but don't fail (manual cleanup may be needed)
+          remaining=$(aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED \
+            --query "StackSummaries[?starts_with(StackName, '${E2E_STACK_PREFIX}')].StackName" \
+            --output text)
+
+          if [ -n "$remaining" ]; then
+            echo "::warning::Orphan stacks remaining (manual cleanup needed): $remaining"
+          else
+            echo "✅ All E2E stacks cleaned up"
+          fi
