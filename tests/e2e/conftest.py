@@ -475,14 +475,14 @@ def seed_quota_usage(dynamodb_client):
 def set_user_quota_policy(dynamodb_client):
     """Factory fixture: write per-user quota policy to DynamoDB."""
 
-    def _set(table_name: str, user: str, limit: int):
+    def _set(table_name: str, user: str, limit: int, enforcement: str = "block"):
         dynamodb_client.put_item(
             TableName=table_name,
             Item={
                 "pk": {"S": f"USER#{user}"},
                 "sk": {"S": "POLICY#quota"},
                 "token_limit": {"N": str(limit)},
-                "enforcement": {"S": "block"},
+                "enforcement": {"S": enforcement},
                 "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             },
         )

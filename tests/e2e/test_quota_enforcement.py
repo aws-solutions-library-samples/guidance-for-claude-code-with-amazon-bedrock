@@ -82,6 +82,7 @@ class TestQuotaEnforcement:
         self,
         run_credential_process,
         seed_quota_usage,
+        set_user_quota_policy,
         quota_table,
         test_user,
         e2e_profile,
@@ -91,8 +92,9 @@ class TestQuotaEnforcement:
         if e2e_profile["quota"].get("enforcement") != "block":
             pytest.skip("Only applicable for enforcement=block")
 
-        # Seed way over limit
+        # Seed way over limit and set block policy
         seed_quota_usage(quota_table, test_user, tokens=999_999_999)
+        set_user_quota_policy(quota_table, test_user, limit=1_000_000, enforcement="block")
 
         # Clear cached credentials so binary re-authenticates and hits quota check
         clear_credential_cache()
@@ -110,6 +112,7 @@ class TestQuotaEnforcement:
         self,
         run_credential_process,
         seed_quota_usage,
+        set_user_quota_policy,
         quota_table,
         test_user,
         e2e_profile,
@@ -119,8 +122,9 @@ class TestQuotaEnforcement:
         if e2e_profile["quota"].get("enforcement") != "alert":
             pytest.skip("Only applicable for enforcement=alert")
 
-        # Seed over limit
+        # Seed over limit and set alert-only policy
         seed_quota_usage(quota_table, test_user, tokens=999_999_999)
+        set_user_quota_policy(quota_table, test_user, limit=1_000_000, enforcement="alert")
 
         # Clear cached credentials so binary re-authenticates and hits quota check
         clear_credential_cache()
@@ -128,7 +132,7 @@ class TestQuotaEnforcement:
         result = run_credential_process(context="initial")
 
         assert result.returncode == 0, (
-            f"Alert-only quota should not block (exit {result.returncode})"
+            f"Alert-only quota should not block (exit {result.returncode}): {result.stderr}"
         )
 
         # Should have warning on stderr

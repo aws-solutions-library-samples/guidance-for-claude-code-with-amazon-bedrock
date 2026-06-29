@@ -270,19 +270,47 @@ Resources:
                   )
                   policy_item = policy_resp.get('Item', {})
                   limit = int(policy_item.get('token_limit', {}).get('N', str(DEFAULT_LIMIT)))
+                  enforcement = policy_item.get('enforcement', {}).get('S', 'block')
               except Exception:
                   limit = DEFAULT_LIMIT
+                  enforcement = 'block'
 
-              allowed = tokens_used < limit
-              return {
-                  'statusCode': 200,
-                  'headers': {'Content-Type': 'application/json'},
-                  'body': json.dumps({
-                      'Allowed': allowed,
-                      'Reason': 'quota' if not allowed else 'ok',
-                      'Message': f'{tokens_used}/{limit} tokens used'
-                  })
-              }
+              over_limit = tokens_used >= limit
+
+              if over_limit and enforcement == 'block':
+                  # Block mode: return Allowed=false
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({
+                          'Allowed': False,
+                          'Reason': 'quota',
+                          'Message': f'{tokens_used}/{limit} tokens used — blocked'
+                      })
+                  }
+              elif over_limit and enforcement == 'alert':
+                  # Alert mode: return Allowed=true with warning usage data
+                  pct = min(100.0, (tokens_used / limit) * 100) if limit > 0 else 100.0
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({
+                          'Allowed': True,
+                          'Reason': 'ok',
+                          'Message': f'{tokens_used}/{limit} tokens used — warning',
+                          'Usage': {'monthly_percent': pct, 'daily_percent': pct}
+                      })
+                  }
+              else:
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({
+                          'Allowed': True,
+                          'Reason': 'ok',
+                          'Message': f'{tokens_used}/{limit} tokens used'
+                      })
+                  }
       Tags:
         - Key: e2e-run
           Value: !Ref StackPrefix
