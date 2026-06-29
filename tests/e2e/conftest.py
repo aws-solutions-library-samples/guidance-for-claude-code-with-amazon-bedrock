@@ -329,6 +329,14 @@ def run_credential_process(
         if extra_env:
             env.update(extra_env)
 
+        # Debug: print config and token for diagnostics
+        if os.environ.get("E2E_DEBUG"):
+            print(f"[E2E DEBUG] Config written: {config_file}")
+            print(f"[E2E DEBUG] Config content: {config_file.read_text()[:200]}")
+            print(f"[E2E DEBUG] CLAUDE_CODE_MONITORING_TOKEN set: {'yes' if env.get('CLAUDE_CODE_MONITORING_TOKEN') else 'NO'}")
+            print(f"[E2E DEBUG] E2E_OIDC_ROLE_ARN: {env.get('E2E_OIDC_ROLE_ARN', 'NOT SET')}")
+            print(f"[E2E DEBUG] HOME: {env.get('HOME')}")
+
         cmd = [str(credential_process_binary)]
         if extra_args:
             cmd.extend(extra_args)
