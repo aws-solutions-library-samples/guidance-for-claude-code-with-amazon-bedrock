@@ -14,14 +14,6 @@ import pytest
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(10)]
 
 
-def _explain_available(binary_path: str) -> bool:
-    """Check if --explain flag is supported by the binary."""
-    import subprocess as sp
-
-    result = sp.run([binary_path, "--explain"], capture_output=True, timeout=5)
-    return result.returncode != 2  # exit 2 = unknown flag
-
-
 # Required top-level keys in --explain output
 REQUIRED_KEYS = {
     "version",
@@ -47,8 +39,9 @@ REQUIRED_PATHS_KEYS = {"config_dir", "config_file"}
 class TestExplainContract:
     """Validate --explain JSON schema matches expectations per profile."""
 
-    def test_explain_returns_valid_json(self, credential_process_binary):
-        """--explain exits 0 with parseable JSON."""
+    @pytest.fixture(autouse=True)
+    def _require_explain(self, credential_process_binary):
+        """Skip all tests in this class if --explain is not available."""
         result = subprocess.run(
             [str(credential_process_binary), "--explain"],
             capture_output=True,
@@ -57,6 +50,15 @@ class TestExplainContract:
         )
         if result.returncode == 2:
             pytest.skip("--explain flag not available in this binary version")
+
+    def test_explain_returns_valid_json(self, credential_process_binary):
+        """--explain exits 0 with parseable JSON."""
+        result = subprocess.run(
+            [str(credential_process_binary), "--explain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         assert result.returncode == 0, (
             f"--explain exited {result.returncode}: {result.stderr}"
         )
