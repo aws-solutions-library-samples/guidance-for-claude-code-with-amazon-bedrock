@@ -29,7 +29,7 @@ from claude_code_with_bedrock.cli.utils.progress import WizardProgress
 from claude_code_with_bedrock.cli.utils.validators import (
     validate_oidc_provider_domain,
 )
-from claude_code_with_bedrock.config import Config, Profile
+from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
 
 
 def validate_identity_pool_name(value: str) -> bool | str:
@@ -1467,6 +1467,42 @@ class InitCommand(Command):
                     )
                 config["codebuild"]["region"] = None
 
+        # Web Search (AgentCore Gateway)
+        console.print("\n[bold]Web Search[/bold]")
+        ws_region = config.get("web_search", {}).get("region") or WEBSEARCH_SUPPORTED_REGIONS[0]
+        console.print(
+            "Give Claude a hosted web-search tool via Amazon Bedrock AgentCore Gateway.\n"
+            f"[dim]Deploys to {ws_region}. Requires an OIDC provider (not IDC). "
+            "See: assets/docs/WEB_SEARCH.md[/dim]"
+        )
+
+        # Only show the prompt for OIDC-compatible providers
+        provider_type = config.get("provider_type")
+        auth_type = config.get("auth_type", "oidc")
+        if auth_type == "idc":
+            console.print(
+                "[dim]Web search is not available for IAM Identity Center (IDC) deployments "
+                "(Claude Desktop does not yet support SigV4 for MCP servers).[/dim]"
+            )
+            config.setdefault("web_search", {})["enabled"] = False
+        else:
+            enable_websearch = questionary.confirm(
+                "Enable web search?",
+                default=config.get("web_search", {}).get("enabled", False),
+            ).ask()
+
+            if "web_search" not in config:
+                config["web_search"] = {}
+            config["web_search"]["enabled"] = enable_websearch
+
+            if enable_websearch:
+                console.print(
+                    f"[green]\u2713[/green] Web search gateway will be deployed to {ws_region}\n"
+                    "[dim]  Run 'ccwb deploy websearch' after init to provision the gateway.[/dim]"
+                )
+            else:
+                console.print("[dim]Web search disabled — can be enabled later via 'ccwb init'.[/dim]")
+
         # Claude Desktop MDM configuration
         console.print("\n[bold]Claude Desktop Support[/bold]")
         console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
@@ -2598,6 +2634,7 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
+            "web_search_enabled": config_data.get("web_search", {}).get("enabled", False),
             "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
             "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
                 "chat_advanced_file_analysis", True
@@ -2963,6 +3000,9 @@ class InitCommand(Command):
                     existing_config["codebuild"]["region"] = profile.codebuild_region
                 if getattr(profile, "codebuild_prior_regions", None):
                     existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
+
+            # Add web search configuration
+            existing_config["web_search"] = {"enabled": getattr(profile, "web_search_enabled", False)}
 
             # Add Claude Desktop (cowork_3p) configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
