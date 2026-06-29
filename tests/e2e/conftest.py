@@ -290,6 +290,18 @@ def run_credential_process(
 
                 if e2e_profile["auth"].get("federation"):
                     profile_config["federation"] = e2e_profile["auth"]["federation"]
+
+                # Add quota API endpoint if profile has quota enabled
+                quota_cfg = e2e_profile.get("quota", {})
+                if quota_cfg.get("enabled"):
+                    quota_endpoint = os.environ.get("E2E_QUOTA_API_ENDPOINT", "")
+                    if quota_endpoint:
+                        profile_config["quota_api_endpoint"] = quota_endpoint
+                        if quota_cfg.get("enforcement"):
+                            profile_config["quota_fail_mode"] = (
+                                "closed" if quota_cfg["enforcement"] == "block" else "open"
+                            )
+
             config = {"profiles": {"ClaudeCode": profile_config}}
             config_file.write_text(json.dumps(config, indent=2))
         env["HOME"] = str(fake_home)

@@ -165,10 +165,174 @@ Resources:
         - Key: e2e-run
           Value: !Ref StackPrefix
 
+  # -----------------------------------------------------------------------
+  # Quota API — Lambda + HTTP API Gateway for quota enforcement E2E tests
+  # Binary calls GET <endpoint>/check with Authorization: Bearer <jwt>
+  # Lambda decodes JWT sub claim, looks up DynamoDB usage, returns allow/block.
+  # -----------------------------------------------------------------------
+  QuotaLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackPrefix}-quota-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt QuotaTable.Arn
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+  QuotaLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackPrefix}-quota-check'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt QuotaLambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          QUOTA_TABLE: !Ref QuotaTable
+          DEFAULT_LIMIT: '1000000'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import base64
+          import boto3
+
+          dynamodb = boto3.client('dynamodb')
+          TABLE = os.environ['QUOTA_TABLE']
+          DEFAULT_LIMIT = int(os.environ.get('DEFAULT_LIMIT', '1000000'))
+
+          def decode_jwt_payload(token):
+              """Decode JWT payload without signature verification (E2E only)."""
+              parts = token.split('.')
+              if len(parts) != 3:
+                  return None
+              payload = parts[1]
+              # Add padding
+              payload += '=' * (4 - len(payload) % 4)
+              try:
+                  return json.loads(base64.urlsafe_b64decode(payload))
+              except Exception:
+                  return None
+
+          def handler(event, context):
+              # Extract Bearer token
+              auth = event.get('headers', {}).get('authorization', '')
+              if not auth.startswith('Bearer '):
+                  return {'statusCode': 401, 'body': json.dumps({'error': 'Missing Bearer token'})}
+
+              token = auth[7:]
+              claims = decode_jwt_payload(token)
+              if not claims:
+                  return {'statusCode': 401, 'body': json.dumps({'error': 'Invalid JWT'})}
+
+              user = claims.get('sub', 'unknown')
+
+              # Look up usage in DynamoDB
+              try:
+                  resp = dynamodb.get_item(
+                      TableName=TABLE,
+                      Key={'pk': {'S': f'USER#{user}'}, 'sk': {'S': 'USAGE#current'}}
+                  )
+              except Exception as e:
+                  # Fail open on DynamoDB errors
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({'Allowed': True, 'Reason': 'db_error', 'Message': str(e)})
+                  }
+
+              item = resp.get('Item', {})
+              tokens_used = int(item.get('tokens_used', {}).get('N', '0'))
+
+              # Check per-user policy override
+              try:
+                  policy_resp = dynamodb.get_item(
+                      TableName=TABLE,
+                      Key={'pk': {'S': f'USER#{user}'}, 'sk': {'S': 'POLICY#quota'}}
+                  )
+                  policy_item = policy_resp.get('Item', {})
+                  limit = int(policy_item.get('token_limit', {}).get('N', str(DEFAULT_LIMIT)))
+              except Exception:
+                  limit = DEFAULT_LIMIT
+
+              allowed = tokens_used < limit
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({
+                      'Allowed': allowed,
+                      'Reason': 'quota' if not allowed else 'ok',
+                      'Message': f'{tokens_used}/{limit} tokens used'
+                  })
+              }
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+  QuotaApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${StackPrefix}-quota-api'
+      ProtocolType: HTTP
+      Tags:
+        e2e-run: !Ref StackPrefix
+
+  QuotaApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref QuotaApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt QuotaLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  QuotaApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref QuotaApiGateway
+      RouteKey: 'GET /check'
+      Target: !Sub 'integrations/${QuotaApiIntegration}'
+
+  QuotaApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref QuotaApiGateway
+      StageName: '$default'
+      AutoDeploy: true
+
+  QuotaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QuotaLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaApiGateway}/*'
+
 Outputs:
   QuotaTableName:
     Value: !Ref QuotaTable
     Description: DynamoDB table for quota enforcement tests
+
+  QuotaApiEndpoint:
+    Value: !Sub 'https://${QuotaApiGateway}.execute-api.${AWS::Region}.amazonaws.com'
+    Description: Quota check API endpoint for E2E tests
 
   BootstrapConfigUrl:
     Value: !Sub 'https://${ConfigApiGateway}.execute-api.${AWS::Region}.amazonaws.com/config'

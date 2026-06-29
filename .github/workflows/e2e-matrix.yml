@@ -387,6 +387,7 @@ jobs:
           E2E_PROFILE: ${{ matrix.profile }}
           CLAUDE_CODE_MONITORING_TOKEN: ${{ steps.oidc_token.outputs.token }}
           E2E_OIDC_ROLE_ARN: ${{ needs.infra.outputs.stack_outputs && fromJSON(needs.infra.outputs.stack_outputs).OIDCFederatedRoleArn || '' }}
+          E2E_QUOTA_API_ENDPOINT: ${{ needs.infra.outputs.stack_outputs && fromJSON(needs.infra.outputs.stack_outputs).QuotaApiEndpoint || '' }}
           E2E_STACK_OUTPUTS: tests/e2e/artifacts/stack-outputs.json
           PYTEST_TIMEOUT: 300
         run: |
