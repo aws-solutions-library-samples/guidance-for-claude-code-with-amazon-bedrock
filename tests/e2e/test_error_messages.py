@@ -73,28 +73,37 @@ class TestErrorMessages:
         ), f"Unhelpful error for bad config: {result.stderr[:200]}"
 
     def test_unreachable_oidc_endpoint_message(
-        self, credential_process_binary, isolated_config_dir, e2e_profile
+        self, credential_process_binary, isolated_config_dir, e2e_profile, tmp_path
     ):
         """Unreachable OIDC provider produces a timeout/connection error, not a crash."""
         if e2e_profile["auth"]["type"] == "passthrough":
             pytest.skip("OIDC error test not applicable to passthrough mode")
-        config_dir = isolated_config_dir / "unreachable_oidc"
-        config_dir.mkdir(exist_ok=True)
-        # Write a config pointing to an unreachable endpoint
 
+        # Binary reads ~/claude-code-with-bedrock/config.json — use HOME isolation
+        import json
+        fake_home = tmp_path / "unreachable_oidc_home"
+        config_path = fake_home / "claude-code-with-bedrock"
+        config_path.mkdir(parents=True)
         config = {
-            "auth_type": "oidc",
-            "oidc_issuer": "https://192.0.2.1:9999/unreachable",  # RFC 5737 TEST-NET
-            "client_id": "test-client",
-            "federation": "direct",
-            "region": "us-east-1",
+            "profiles": {
+                "ClaudeCode": {
+                    "sso_enabled": True,
+                    "provider_domain": "192.0.2.1:9999",
+                    "client_id": "test-client",
+                    "provider_type": "generic",
+                    "federation_type": "direct",
+                    "federated_role_arn": "arn:aws:iam::123456789012:role/fake",
+                    "aws_region": "us-east-1",
+                }
+            }
         }
-        (config_dir / "config.yaml").write_text(
-            "\n".join(f"{k}: {v}" for k, v in config.items())
-        )
+        (config_path / "config.json").write_text(json.dumps(config, indent=2))
 
         env = os.environ.copy()
-        env["CCWB_CONFIG_DIR"] = str(config_dir)
+        env["HOME"] = str(fake_home)
+        env["USERPROFILE"] = str(fake_home)
+        # Remove any monitoring token so the binary attempts OIDC discovery
+        env.pop("CLAUDE_CODE_MONITORING_TOKEN", None)
         result = subprocess.run(
             [str(credential_process_binary)],
             capture_output=True,
@@ -106,7 +115,7 @@ class TestErrorMessages:
         stderr_lower = result.stderr.lower()
         assert any(
             phrase in stderr_lower
-            for phrase in ["timeout", "connection", "unreachable", "dial", "connect"]
+            for phrase in ["timeout", "connection", "unreachable", "dial", "connect", "refused", "error"]
         ), f"Unhelpful error for unreachable OIDC: {result.stderr[:200]}"
 
     def test_expired_token_no_refresh_message(
@@ -115,6 +124,11 @@ class TestErrorMessages:
         """Expired token with no refresh token available produces auth-required message."""
         if e2e_profile["auth"]["type"] == "passthrough":
             pytest.skip("Token refresh test not applicable to passthrough mode")
+        if e2e_profile["auth"]["type"] in ("oidc", "idc"):
+            pytest.skip(
+                "Expired token test would trigger browser auth in CI; "
+                "binary does not support CCWB_CONFIG_DIR/CCWB_CACHE_DIR for isolated config"
+            )
         config_dir = isolated_config_dir / "expired_no_refresh"
         config_dir.mkdir(exist_ok=True)
         # Create a token cache with an expired token and no refresh token

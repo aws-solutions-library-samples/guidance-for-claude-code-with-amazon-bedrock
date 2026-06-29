@@ -389,7 +389,6 @@ jobs:
           E2E_OIDC_ROLE_ARN: ${{ needs.infra.outputs.stack_outputs && fromJSON(needs.infra.outputs.stack_outputs).OIDCFederatedRoleArn || '' }}
           E2E_STACK_OUTPUTS: tests/e2e/artifacts/stack-outputs.json
           PYTEST_TIMEOUT: 300
-          E2E_DEBUG: "1"
         run: |
           pytest tests/e2e/ \
             --profile "${{ matrix.profile }}" \
