@@ -271,15 +271,23 @@ def run_credential_process(
                 }
             else:
                 profile_config = {
-                    "auth_type": auth_type,
                     "aws_region": "us-east-1",
                 }
-                if auth_type == "oidc":
-                    profile_config["issuer_url"] = (
-                        "https://token.actions.githubusercontent.com"
-                    )
-                    profile_config["client_id"] = "sts.amazonaws.com"
-                    profile_config["provider_type"] = "generic"
+                if auth_type in ("oidc", "idc"):
+                    # Use GitHub OIDC issuer — binary's trySilentRefresh() path
+                    # will use CLAUDE_CODE_MONITORING_TOKEN env var to call
+                    # STS AssumeRoleWithWebIdentity against the E2E role.
+                    oidc_role_arn = os.environ.get("E2E_OIDC_ROLE_ARN", "")
+                    profile_config.update({
+                        "sso_enabled": True,
+                        "provider_domain": "token.actions.githubusercontent.com",
+                        "client_id": "sts.amazonaws.com",
+                        "provider_type": "generic",
+                        "federation_type": "direct",
+                        "federated_role_arn": oidc_role_arn,
+                        "aws_region": "us-east-1",
+                    })
+
                 if e2e_profile["auth"].get("federation"):
                     profile_config["federation"] = e2e_profile["auth"]["federation"]
             config = {"profiles": {"ClaudeCode": profile_config}}

@@ -55,6 +55,11 @@ class TestAuthFlow:
         """When token is expired, mid-session refresh gets new creds without browser."""
         if e2e_profile["auth"]["type"] == "passthrough":
             pytest.skip("Passthrough auth does not use token refresh")
+        if e2e_profile["auth"]["type"] in ("oidc", "idc"):
+            pytest.skip(
+                "OIDC/IDC E2E uses token injection (trySilentRefresh), "
+                "not env-var expiry overrides"
+            )
 
         # Simulate expired token via env override
         result = run_credential_process(
@@ -78,6 +83,11 @@ class TestAuthFlow:
         """When refresh token is revoked, mid-session refresh fails gracefully."""
         if e2e_profile["auth"]["type"] == "passthrough":
             pytest.skip("Passthrough auth does not use refresh tokens")
+        if e2e_profile["auth"]["type"] in ("oidc", "idc"):
+            pytest.skip(
+                "OIDC/IDC E2E uses token injection — refresh token override "
+                "env vars not supported by binary"
+            )
 
         result = run_credential_process(
             context="mid-session-refresh",

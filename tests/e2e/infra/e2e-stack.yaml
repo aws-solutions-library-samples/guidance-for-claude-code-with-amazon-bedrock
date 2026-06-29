@@ -130,6 +130,40 @@ Resources:
         - Key: e2e-run
           Value: !Ref StackPrefix
 
+  # -----------------------------------------------------------------------
+  # OIDC Federation — IAM role for testing OIDC auth via GitHub OIDC token
+  # The binary's trySilentRefresh() path uses CLAUDE_CODE_MONITORING_TOKEN
+  # env var to call AssumeRoleWithWebIdentity against this role.
+  # -----------------------------------------------------------------------
+  OIDCFederatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackPrefix}-oidc-federated'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: 'repo:aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock:*'
+      Policies:
+        - PolicyName: E2EMinimal
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: '*'
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
 Outputs:
   QuotaTableName:
     Value: !Ref QuotaTable
@@ -146,3 +180,7 @@ Outputs:
   MonitoringLogGroup:
     Value: !Sub '/ccwb/e2e/${StackPrefix}'
     Description: CloudWatch log group for monitoring tests
+
+  OIDCFederatedRoleArn:
+    Value: !GetAtt OIDCFederatedRole.Arn
+    Description: IAM role ARN for OIDC federation tests (AssumeRoleWithWebIdentity)
