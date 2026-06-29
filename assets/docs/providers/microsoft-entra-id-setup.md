@@ -13,7 +13,7 @@ This guide walks you through setting up Microsoft Entra ID from scratch to work 
 7. [Assign Users to Application](#7-assign-users-to-application)
 8. [Collect Required Information](#8-collect-required-information)
 9. [Test the Setup](#9-test-the-setup)
-10. [Web search for Claude Cowork (Entra-specific setup)](#10-web-search-for-claude-cowork-entra-specific-setup)
+10. [Web search for Claude Cowork (Entra ID notes)](#10-web-search-for-claude-cowork-entra-id-notes)
 
 ---
 
@@ -340,28 +340,21 @@ Should return a JSON response with OIDC configuration.
 
 ---
 
-## 10. Web search for Claude Cowork (Entra-specific setup)
+## 10. Web search for Claude Cowork (Entra ID notes)
 
-This section applies **only if you enable the optional [AgentCore Gateway web search](../COWORK_3P.md#web-search-via-agentcore-gateway)** for **Claude Cowork** with **Entra ID**. It is **not** required for the base SSO setup, and **not** required at all for Cognito.
+This section applies **only if you enable the optional [AgentCore Gateway web search](../COWORK_3P.md#web-search-via-agentcore-gateway)** for **Claude Cowork**. It is **not** required for the base SSO setup.
 
-### Why Cowork + Entra needs an extra step
+### No special Entra setup is required
 
-Claude Cowork connects to the gateway using a **native OAuth client** that follows the MCP spec, so it sends an [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) **`resource` indicator** equal to the gateway URL. Entra ID rejects a `resource` that is not a registered **Application ID URI**, failing with **`AADSTS9010010`**. (Claude Code's credential-helper path injects the id_token directly and never sends a `resource`, so it is unaffected — this gotcha is specific to the Cowork surface on Entra.)
+Claude Desktop v1.15962.0+ injects web search as a native `managedMcpServers` `websearch` entry and **authenticates by reusing the user's existing OIDC session** — it does **not** run a fresh OAuth flow for the gateway. Because no [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) `resource` indicator is sent, the earlier Entra limitation (rejecting an unregistered `resource` with **`AADSTS9010010`**, which would have required registering the gateway URL as an Application ID URI) **does not apply** to this path. No Expose-an-API / Application ID URI registration is needed.
 
-You must therefore register the gateway URL on your app registration:
+> **Historical note:** an earlier design used a raw OAuth client in the MDM entry, which *did* send a `resource` indicator and therefore required registering the gateway URL as an Application ID URI on Entra. The native `websearch` server type removed that requirement.
 
-1. Deploy the gateway first (`ccwb deploy websearch`) and note its URL (`https://<gateway-id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`).
-2. In your app registration → **Expose an API** → **Application ID URI** → **Add**, set the **gateway URL** as an Application ID URI.
-3. Ensure the app's access tokens are **v2**: in **Manifest**, set `"requestedAccessTokenVersion": 2`. This is usually the default for newer app registrations, but set it explicitly if yours differs — it is what lets the `aud` validation below succeed (and, on default-policy tenants, unblocks the verified-domain exemption for the custom URI).
-4. On **hardened tenants**, adding a non-verified-domain identifier URI may require a **Global Administrator** to relax the `nonDefaultUriAddition` restriction.
+### Audience validation (informational)
 
-### Audience validation (no action needed — informational)
+The gateway authorizer validates the token's **`aud` claim against your Client ID using `allowedAudience` only** — it does **not** set `allowedClients` (mixing in `allowedClients` breaks Entra validation). The solution's CloudFormation template already does this (`AllowedAudience: [ClientId]`) and `ccwb deploy` passes your **Client ID** as that value. The v2 Entra id_token's default `aud` equals the Client ID, so there is nothing to configure. Leave the `ccwb init` web search audience prompt at its default; `websearch_jwt_audience` is an advanced override for the rare case of a non-default `aud`.
 
-The gateway authorizer validates the token's **`aud` claim against your Client ID using `allowedAudience` only** — it does **not** set `allowedClients` (mixing in `allowedClients` breaks Entra validation). The solution's CloudFormation template already does exactly this (`AllowedAudience: [ClientId]`), and `ccwb deploy` passes your **Client ID** as that value.
-
-So at the `ccwb init` web search audience prompt (Entra ID only), **leave it empty / accept the default** — the gateway expects `aud == client_id` (the v2 Entra id_token's default audience). Do **not** set it to the `api://...` URI; the `websearch_jwt_audience` override is an advanced escape hatch for the rare case where your tokens carry a different `aud`, and setting it incorrectly will break validation.
-
-> **Cognito:** none of the above applies. Cognito does not have the `resource`-indicator restriction, and `allowedAudience = client_id` works out of the box.
+> **Cognito:** likewise no special setup — `allowedAudience = client_id` works out of the box.
 
 ---
 
