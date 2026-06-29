@@ -110,9 +110,11 @@ class TestErrorMessages:
         ), f"Unhelpful error for unreachable OIDC: {result.stderr[:200]}"
 
     def test_expired_token_no_refresh_message(
-        self, credential_process_binary, isolated_config_dir
+        self, credential_process_binary, isolated_config_dir, e2e_profile
     ):
         """Expired token with no refresh token available produces auth-required message."""
+        if e2e_profile["auth"]["type"] == "passthrough":
+            pytest.skip("Token refresh test not applicable to passthrough mode")
         config_dir = isolated_config_dir / "expired_no_refresh"
         config_dir.mkdir(exist_ok=True)
         # Create a token cache with an expired token and no refresh token
