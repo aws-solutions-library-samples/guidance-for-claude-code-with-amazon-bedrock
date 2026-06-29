@@ -139,6 +139,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${StackPrefix}-oidc-federated'
+      MaxSessionDuration: 43200
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
