@@ -6,6 +6,7 @@ handles token validation, and includes OTLP headers.
 """
 
 import json
+import os
 import time
 
 import jwt
@@ -25,22 +26,16 @@ def bootstrap_url(stack_outputs):
 
 
 @pytest.fixture
-def valid_token(run_credential_process):
-    """Get a valid bearer token from the credential process."""
-    result = run_credential_process(
-        context="initial",
-        extra_args=["--token-only"],
-    )
-    if result.returncode != 0:
-        # Fallback: extract from explain
-        result = run_credential_process(extra_args=["--explain"])
-        if result.returncode == 0:
-            explain = json.loads(result.stdout)
-            token = explain.get("auth", {}).get("id_token")
-            if token:
-                return token
-        pytest.skip("Cannot obtain valid token for bootstrap tests")
-    return result.stdout.strip()
+def valid_token():
+    """Get a valid bearer token for bootstrap API tests.
+
+    Uses the CLAUDE_CODE_MONITORING_TOKEN (GitHub OIDC JWT) which is valid,
+    unexpired, and has audience 'sts.amazonaws.com' (accepted by the authorizer).
+    """
+    token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN", "")
+    if not token:
+        pytest.skip("No CLAUDE_CODE_MONITORING_TOKEN available for config delivery tests")
+    return token
 
 
 class TestConfigDelivery:
@@ -99,7 +94,6 @@ class TestConfigDelivery:
             f"otlpHeaders missing x-user-email. Keys: {list(otlp_headers.keys())}"
         )
 
-    @pytest.mark.skip(reason="E2E bootstrap API has no JWT authorizer yet (PR #670 adds validation)")
     def test_bootstrap_rejects_expired_token(self, bootstrap_url):
         """Expired JWT returns 401."""
         # Create an expired JWT (not cryptographically valid but expired)
@@ -120,11 +114,10 @@ class TestConfigDelivery:
             timeout=15,
         )
 
-        assert response.status_code == 401, (
-            f"Expired token should return 401, got {response.status_code}"
+        assert response.status_code in (401, 403), (
+            f"Expired token should return 401 or 403, got {response.status_code}"
         )
 
-    @pytest.mark.skip(reason="E2E bootstrap API has no JWT authorizer yet (PR #670 adds validation)")
     def test_bootstrap_rejects_wrong_audience(self, bootstrap_url):
         """JWT with wrong audience returns 403."""
         # Create a JWT with wrong audience

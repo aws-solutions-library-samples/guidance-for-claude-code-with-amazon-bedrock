@@ -68,8 +68,15 @@ Resources:
                   "client_id": "sts.amazonaws.com",
                   "federation": "direct",
                   "region": "us-east-1",
+                  "inferenceProvider": "bedrock",
+                  "inferenceRegion": "us-east-1",
+                  "inferenceModels": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
                   "monitoring": {"mode": "none"},
-                  "quota": {"enabled": False}
+                  "quota": {"enabled": False},
+                  "otlpHeaders": {
+                      "x-user-email": "e2e-test@example.com",
+                      "x-team-id": "e2e-testing"
+                  }
               }
               return {
                   "statusCode": 200,
@@ -88,6 +95,74 @@ Resources:
       Tags:
         e2e-run: !Ref StackPrefix
 
+  ConfigAuthorizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackPrefix}-config-authz'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ConfigLambdaRole.Arn
+      Timeout: 5
+      Code:
+        ZipFile: |
+          import json
+          import base64
+          import time
+
+          def decode_jwt_payload(token):
+              parts = token.split('.')
+              if len(parts) != 3:
+                  return None
+              payload = parts[1] + '=' * (4 - len(parts[1]) % 4)
+              try:
+                  return json.loads(base64.urlsafe_b64decode(payload))
+              except Exception:
+                  return None
+
+          def handler(event, context):
+              """Validate JWT expiry and audience for bootstrap config endpoint."""
+              auth_header = event.get('headers', {}).get('authorization', '')
+              if not auth_header.startswith('Bearer '):
+                  return {'isAuthorized': False}
+
+              token = auth_header[7:]
+              claims = decode_jwt_payload(token)
+              if not claims:
+                  return {'isAuthorized': False}
+
+              # Check expiry
+              exp = claims.get('exp')
+              if exp and time.time() > exp:
+                  return {'isAuthorized': False}
+
+              # Check audience (reject obviously wrong audience)
+              aud = claims.get('aud')
+              if aud and aud not in ('sts.amazonaws.com', 'ccwb-bootstrap'):
+                  return {'isAuthorized': False}
+
+              return {'isAuthorized': True}
+      Tags:
+        - Key: e2e-run
+          Value: !Ref StackPrefix
+
+  ConfigAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConfigAuthorizerLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ConfigApiGateway}/*'
+
+  ConfigAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref ConfigApiGateway
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConfigAuthorizerLambda.Arn}/invocations'
+      AuthorizerPayloadFormatVersion: '2.0'
+      Name: !Sub '${StackPrefix}-config-jwt-authz'
+      EnableSimpleResponses: true
+
   ConfigApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
@@ -102,6 +177,8 @@ Resources:
       ApiId: !Ref ConfigApiGateway
       RouteKey: 'GET /config'
       Target: !Sub 'integrations/${ConfigApiIntegration}'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ConfigAuthorizer
 
   ConfigApiStage:
     Type: AWS::ApiGatewayV2::Stage
