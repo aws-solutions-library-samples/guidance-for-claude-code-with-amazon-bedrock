@@ -3,7 +3,10 @@
 
 """Unit tests for the AgentCore web search gateway deploy wiring (PR 2)."""
 
+from unittest.mock import Mock
+
 from claude_code_with_bedrock.cli.commands.deploy import (
+    _poll_websearch_target_ready,
     _websearch_discovery_url,
     build_websearch_params,
     get_websearch_region,
@@ -247,3 +250,34 @@ def test_deploy_all_treats_websearch_failure_as_non_fatal():
     # Non-websearch failures still abort.
     assert "failed = True" in loop
     assert "break" in loop
+
+
+def _fake_session(target_status):
+    """Build a fake boto3 session whose list_gateway_targets returns one target."""
+    client = Mock()
+    item = {"status": target_status}
+    if target_status == "FAILED":
+        item["statusReason"] = "boom"
+    client.list_gateway_targets.return_value = {"items": [item]}
+    session = Mock()
+    session.client.return_value = client
+    return session
+
+
+def test_poll_target_ready_reads_items_key():
+    """Regression: ListGatewayTargets returns targets under 'items'.
+
+    Reading any other key yields an empty list, so the poll would never see
+    READY and would spin until the timeout.
+    """
+    ok = _poll_websearch_target_ready(
+        "gw-123", "us-east-1", Mock(), timeout=5, interval=0, session=_fake_session("READY")
+    )
+    assert ok is True
+
+
+def test_poll_target_failed_returns_false():
+    ok = _poll_websearch_target_ready(
+        "gw-123", "us-east-1", Mock(), timeout=5, interval=0, session=_fake_session("FAILED")
+    )
+    assert ok is False
