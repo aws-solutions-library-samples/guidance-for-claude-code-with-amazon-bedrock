@@ -293,6 +293,7 @@ def run_credential_process(
             config = {"profiles": {"ClaudeCode": profile_config}}
             config_file.write_text(json.dumps(config, indent=2))
         env["HOME"] = str(fake_home)
+        env["USERPROFILE"] = str(fake_home)  # Windows: os.UserHomeDir() reads USERPROFILE
 
         # Set profile-derived env vars
         auth = e2e_profile["auth"]
