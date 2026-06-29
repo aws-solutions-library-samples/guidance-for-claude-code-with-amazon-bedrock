@@ -43,8 +43,23 @@ Parameters:
     Type: String
     Default: ''
     Description: >-
-      OIDC client_id (required when AuthType=oidc, ignored for idc). The
-      gateway validates the id_token's 'aud' claim against this value.
+      OIDC client_id (required when AuthType=oidc, ignored for idc). Validated
+      against the token's 'aud' or 'client_id' claim depending on
+      JwtValidationMode.
+
+  JwtValidationMode:
+    Type: String
+    Default: audience
+    AllowedValues:
+      - audience
+      - client_id
+    Description: >-
+      How the CUSTOM_JWT authorizer validates the inbound token (OIDC only).
+      'audience' validates the token 'aud' claim via AllowedAudience — use for
+      Entra ID, Okta, Auth0, Google and generic OIDC, which place the client id
+      in 'aud'. 'client_id' validates the 'client_id' claim via AllowedClients —
+      use for Amazon Cognito, whose access tokens carry 'client_id' and have no
+      'aud' claim. The deploy CLI sets this automatically from the provider type.
 
   DomainExcludeList:
     Type: CommaDelimitedList
@@ -55,6 +70,7 @@ Parameters:
 
 Conditions:
   IsOIDC: !Equals [!Ref AuthType, 'oidc']
+  UseClientId: !Equals [!Ref JwtValidationMode, 'client_id']
   HasDenylist: !Not [!Equals [!Join ['', !Ref DomainExcludeList], '']]
 
 Resources:
@@ -113,18 +129,23 @@ Resources:
         Mcp:
           SupportedVersions:
             - '2025-03-26'
-      # OIDC deployments use CUSTOM_JWT (validates id_token aud claim).
+      # OIDC deployments use CUSTOM_JWT. The validated claim depends on the IdP:
+      # Cognito access tokens carry 'client_id' (no 'aud'), so they validate via
+      # AllowedClients; Entra ID, Okta, Auth0, Google and generic OIDC place the
+      # client id in 'aud', so they validate via AllowedAudience. JwtValidationMode
+      # selects between the two (set automatically by the deploy CLI).
       # IDC deployments use AWS_IAM (validates caller's SigV4 credentials).
       AuthorizerType: !If [IsOIDC, CUSTOM_JWT, AWS_IAM]
       AuthorizerConfiguration: !If
         - IsOIDC
-        - CustomJWTAuthorizer:
-            DiscoveryUrl: !Ref DiscoveryUrl
-            # AllowedAudience validates the id_token's 'aud' claim, which every
-            # OIDC provider sets to client_id. Works uniformly across Cognito,
-            # Okta, Auth0, Entra ID, and Google.
-            AllowedAudience:
-              - !Ref ClientId
+        - CustomJWTAuthorizer: !If
+            - UseClientId
+            - DiscoveryUrl: !Ref DiscoveryUrl
+              AllowedClients:
+                - !Ref ClientId
+            - DiscoveryUrl: !Ref DiscoveryUrl
+              AllowedAudience:
+                - !Ref ClientId
         - !Ref 'AWS::NoValue'
 
   WebSearchTarget:
