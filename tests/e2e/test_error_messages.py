@@ -73,9 +73,11 @@ class TestErrorMessages:
         ), f"Unhelpful error for bad config: {result.stderr[:200]}"
 
     def test_unreachable_oidc_endpoint_message(
-        self, credential_process_binary, isolated_config_dir
+        self, credential_process_binary, isolated_config_dir, e2e_profile
     ):
         """Unreachable OIDC provider produces a timeout/connection error, not a crash."""
+        if e2e_profile["auth"]["type"] == "passthrough":
+            pytest.skip("OIDC error test not applicable to passthrough mode")
         config_dir = isolated_config_dir / "unreachable_oidc"
         config_dir.mkdir(exist_ok=True)
         # Write a config pointing to an unreachable endpoint
