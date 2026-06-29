@@ -1023,8 +1023,17 @@ class MultiProviderAuth:
             self._debug_print(f"Error parsing expiration: {e}")
             return True  # Assume expired on parse error
 
-    def authenticate_oidc(self):
-        """Perform OIDC authentication with PKCE"""
+    def authenticate_oidc(self, lock_socket=None):
+        """Perform OIDC authentication with PKCE.
+
+        Args:
+            lock_socket: An optional socket already bound to the redirect port by
+                the caller's lock check. Reusing it keeps the port continuously
+                held from the lock check through the callback, closing the TOCTOU
+                window (#428) where a concurrent credential-process could bind the
+                freed port and open a second browser. If None, a fresh server
+                socket is bound here (legacy behavior).
+        """
         state = secrets.token_urlsafe(16)
         nonce = secrets.token_urlsafe(16)
 
@@ -1079,7 +1088,17 @@ class MultiProviderAuth:
 
         # Setup callback server
         auth_result = {"code": None, "error": None}
-        server = HTTPServer(("127.0.0.1", self.redirect_port), self._create_callback_handler(state, auth_result))
+        handler = self._create_callback_handler(state, auth_result)
+        if lock_socket is not None:
+            # Reuse the caller's already-bound lock socket so the port is never
+            # released between the lock check and the callback (no TOCTOU gap, #428).
+            server = HTTPServer(("127.0.0.1", self.redirect_port), handler, bind_and_activate=False)
+            # Close the default socket TCPServer.__init__ created to avoid an fd leak.
+            server.socket.close()
+            server.socket = lock_socket
+            lock_socket.listen(5)
+        else:
+            server = HTTPServer(("127.0.0.1", self.redirect_port), handler)
 
         # Start server in background
         server_thread = threading.Thread(target=server.handle_request)
@@ -1481,34 +1500,50 @@ class MultiProviderAuth:
     def authenticate_for_monitoring(self):
         """Authenticate specifically for monitoring token (no AWS credential output)"""
         try:
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Try to acquire the port lock by binding to it. Keep the socket
+            # BOUND (don't close it) so the port is held continuously through
+            # authenticate_oidc — see run() for the TOCTOU rationale (#428).
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # SO_REUSEADDR on POSIX only — on Windows it would let a second active
+            # listener bind the same port and defeat the inter-process lock.
+            if platform.system() != "Windows":
+                lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
+                lock_socket.bind(("127.0.0.1", self.redirect_port))
                 # We got the port, we can proceed with authentication
                 self._debug_print("Port available, proceeding with monitoring authentication")
             except OSError as e:
+                lock_socket.close()
                 if e.errno == errno.EADDRINUSE:
                     # Port in use, another auth is in progress
                     self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
 
-                    # Wait for the other process to complete
-                    # After waiting, check if we now have a monitoring token
+                    # Wait for the other process to complete, then check if we
+                    # now have a monitoring token.
                     self._wait_for_auth_completion()
                     token = self.get_monitoring_token()
                     if token:
                         return token
-                    else:
-                        self._debug_print("Authentication timeout or failed in another process. Proceeding with authentication in this process.")
+                    # The other process failed/timed out; retry acquiring the
+                    # lock ourselves.
+                    self._debug_print("Authentication timeout or failed in another process. Proceeding with authentication in this process.")
+                    lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    if platform.system() != "Windows":
+                        lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    lock_socket.bind(("127.0.0.1", self.redirect_port))
                 else:
-                    test_socket.close()
                     raise
 
-            # Authenticate with OIDC provider
-            self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
-            id_token, token_claims = self.authenticate_oidc()
+            # From here we own the port lock; ensure it is always released.
+            try:
+                # Authenticate with OIDC provider (reuse the bound lock socket).
+                self._debug_print(f"Authenticating with {self.provider_config['name']} for monitoring token...")
+                id_token, token_claims = self.authenticate_oidc(lock_socket=lock_socket)
+            finally:
+                try:
+                    lock_socket.close()
+                except Exception:
+                    pass
 
             # Get AWS credentials (we need them but won't output them)
             self._debug_print("Exchanging token for AWS credentials...")
@@ -1861,41 +1896,60 @@ class MultiProviderAuth:
                 print(json.dumps(cached))  # noqa: S105
                 return 0
 
-            # Try to acquire port lock by testing if we can bind to it
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Try to acquire the port lock by binding to it. Keep the socket
+            # BOUND (don't close it) so the port is held continuously through
+            # authenticate_oidc — closing it here would open a TOCTOU window (#428)
+            # for a concurrent credential-process to also bind, auth, and pop a
+            # second browser, which on Windows snowballs into endless Okta popups.
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # SO_REUSEADDR lets a TIME_WAIT socket be rebound on POSIX. On Windows
+            # it instead lets a SECOND ACTIVE listener bind the same port, which
+            # would defeat the inter-process port lock — so guard it off there.
+            if platform.system() != "Windows":
+                lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                test_socket.bind(("127.0.0.1", self.redirect_port))
-                test_socket.close()
+                lock_socket.bind(("127.0.0.1", self.redirect_port))
                 # We got the port, we can proceed with authentication
                 self._debug_print("Port available, proceeding with authentication")
             except OSError as e:
+                lock_socket.close()
                 if e.errno == errno.EADDRINUSE:
                     # Port in use, another auth is in progress
                     self._debug_print("Another authentication is in progress, waiting...")
-                    test_socket.close()
 
                     # Wait for the other process to complete
                     cached = self._wait_for_auth_completion()
                     if cached:
                         print(json.dumps(cached))
                         return 0
-                    else:
-                        # Only print error to stderr for actual failures
-                        self._debug_print("Authentication timeout or failed in another process. Proceeding with authentication in this process.")
+                    # The other process failed/timed out; fall through and retry
+                    # acquiring the lock ourselves.
+                    self._debug_print("Authentication timeout or failed in another process. Proceeding with authentication in this process.")
+                    lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    if platform.system() != "Windows":
+                        lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    lock_socket.bind(("127.0.0.1", self.redirect_port))
                 else:
-                    test_socket.close()
                     raise
 
-            # Check cache again (another process might have just finished)
-            cached = self.get_cached_credentials()
-            if cached:
-                # Output cached credentials (intended behavior for AWS CLI)
-                print(json.dumps(cached))  # noqa: S105
-                return 0
+            # From here we own the port lock; ensure it is always released.
+            try:
+                # Check cache again (another process might have just finished
+                # while we were acquiring the lock).
+                cached = self.get_cached_credentials()
+                if cached:
+                    # Output cached credentials (intended behavior for AWS CLI)
+                    print(json.dumps(cached))  # noqa: S105
+                    return 0
 
-            # Authenticate with OIDC provider
-            self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
-            id_token, token_claims = self.authenticate_oidc()
+                # Authenticate with OIDC provider (reuse the bound lock socket).
+                self._debug_print(f"Authenticating with {self.provider_config['name']} for profile '{self.profile}'...")
+                id_token, token_claims = self.authenticate_oidc(lock_socket=lock_socket)
+            finally:
+                try:
+                    lock_socket.close()
+                except Exception:
+                    pass
 
             # Get AWS credentials
             self._debug_print("Exchanging token for AWS credentials...")
