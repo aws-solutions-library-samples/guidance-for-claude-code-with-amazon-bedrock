@@ -435,6 +435,24 @@ def query_cloudwatch_metric(cloudwatch_client):
     return _query
 
 
+@pytest.fixture
+def clear_credential_cache(isolated_config_dir):
+    """Delete cached AWS credentials so the binary re-authenticates."""
+    import shutil
+
+    def _clear():
+        fake_home = isolated_config_dir / "home"
+        aws_creds = fake_home / ".aws" / "credentials"
+        if aws_creds.exists():
+            aws_creds.unlink()
+        # Also clear any token storage
+        token_dir = fake_home / "claude-code-with-bedrock" / ".tokens"
+        if token_dir.exists():
+            shutil.rmtree(token_dir, ignore_errors=True)
+
+    return _clear
+
+
 @pytest.fixture(scope="session")
 def seed_quota_usage(dynamodb_client):
     """Factory fixture: write token usage to DynamoDB quota table."""

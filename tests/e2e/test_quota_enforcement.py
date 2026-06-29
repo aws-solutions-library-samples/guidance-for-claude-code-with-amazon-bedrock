@@ -85,6 +85,7 @@ class TestQuotaEnforcement:
         quota_table,
         test_user,
         e2e_profile,
+        clear_credential_cache,
     ):
         """Over-limit user is blocked with non-zero exit (enforcement=block only)."""
         if e2e_profile["quota"].get("enforcement") != "block":
@@ -92,6 +93,9 @@ class TestQuotaEnforcement:
 
         # Seed way over limit
         seed_quota_usage(quota_table, test_user, tokens=999_999_999)
+
+        # Clear cached credentials so binary re-authenticates and hits quota check
+        clear_credential_cache()
 
         result = run_credential_process(context="initial")
 
@@ -109,6 +113,7 @@ class TestQuotaEnforcement:
         quota_table,
         test_user,
         e2e_profile,
+        clear_credential_cache,
     ):
         """Over-limit user gets warning on stderr but still exits 0 (enforcement=alert)."""
         if e2e_profile["quota"].get("enforcement") != "alert":
@@ -116,6 +121,9 @@ class TestQuotaEnforcement:
 
         # Seed over limit
         seed_quota_usage(quota_table, test_user, tokens=999_999_999)
+
+        # Clear cached credentials so binary re-authenticates and hits quota check
+        clear_credential_cache()
 
         result = run_credential_process(context="initial")
 
@@ -153,6 +161,7 @@ class TestQuotaEnforcement:
         quota_table,
         test_user,
         e2e_profile,
+        clear_credential_cache,
     ):
         """Per-user DynamoDB policy overrides default limit (fine_grained only)."""
         if not e2e_profile["quota"].get("fine_grained"):
@@ -163,6 +172,9 @@ class TestQuotaEnforcement:
 
         # Set generous per-user policy
         set_user_quota_policy(quota_table, test_user, limit=2_000_000)
+
+        # Clear cached credentials so binary re-authenticates and hits quota check
+        clear_credential_cache()
 
         result = run_credential_process(context="initial")
 
