@@ -1472,8 +1472,7 @@ class InitCommand(Command):
         ws_region = config.get("web_search", {}).get("region") or WEBSEARCH_SUPPORTED_REGIONS[0]
         console.print(
             "Give Claude a hosted web-search tool via Amazon Bedrock AgentCore Gateway.\n"
-            f"[dim]Deploys to {ws_region}. Requires an OIDC provider (not IDC). "
-            "See: assets/docs/WEB_SEARCH.md[/dim]"
+            f"[dim]Currently available in {ws_region} only.[/dim]"
         )
 
         # Only show the prompt for OIDC-compatible providers
