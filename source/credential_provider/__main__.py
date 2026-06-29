@@ -420,13 +420,44 @@ class MultiProviderAuth:
 
         # Clear monitoring token from keyring
         try:
-            if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
-                # Replace with expired dummy token
-                expired_token = json.dumps(
-                    {"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}  # Expired timestamp
-                )
-                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", expired_token)
-                cleared_items.append("keyring monitoring token")
+            expired_token = json.dumps(
+                {"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}  # Expired timestamp
+            )
+            if platform.system() == "Windows":
+                # The Windows token is chunked across {profile}-monitoring-1..N
+                # with a {profile}-monitoring-meta entry. Expire the meta so the
+                # reader treats it as a 1-chunk EXPIRED token, then delete the
+                # leftover chunk entries so no stale token fragments survive.
+                cleared = False
+                meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
+                if meta_json:
+                    try:
+                        count = json.loads(meta_json).get("count", 0)
+                    except Exception:
+                        count = 0
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-1", "EXPIRED")
+                    keyring.set_password(
+                        "claude-code-with-bedrock",
+                        f"{self.profile}-monitoring-meta",
+                        json.dumps({"count": 1, "expires": 0, "email": "", "profile": self.profile}),
+                    )
+                    for idx in range(2, count + 1):
+                        try:
+                            keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
+                        except Exception:
+                            pass
+                    cleared = True
+                # Also expire any legacy single-entry token.
+                if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", expired_token)
+                    cleared = True
+                if cleared:
+                    cleared_items.append("keyring monitoring token")
+            else:
+                if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+                    # Replace with expired dummy token
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", expired_token)
+                    cleared_items.append("keyring monitoring token")
         except Exception as e:
             self._debug_print(f"Could not clear keyring monitoring token: {e}")
 
@@ -471,6 +502,102 @@ class MultiProviderAuth:
 
         return cleared_items
 
+    # Per-entry chunk size for the Windows monitoring-token split. Windows
+    # Credential Manager caps a single entry at CRED_MAX_CREDENTIAL_BLOB_SIZE
+    # (5*512 = 2560 bytes), and the keyring backend stores values as UTF-16LE
+    # (2 bytes/char), so the practical limit is ~1280 chars. A real Okta/Azure
+    # id_token can exceed this, so it must be split. 1000 leaves headroom.
+    _MONITORING_CHUNK_SIZE = 1000
+
+    def _save_monitoring_keyring_windows(self, token_data):
+        """Persist the monitoring token to Windows keyring as N size-bounded chunks.
+
+        A single Credential Manager entry cannot hold a full id_token (see
+        _MONITORING_CHUNK_SIZE), so the token string is split across
+        {profile}-monitoring-1..N entries with a {profile}-monitoring-meta entry
+        holding the chunk count plus small fields (expires/email/profile) that
+        callers need without reassembling the token.
+        """
+        token = token_data["token"]
+        size = self._MONITORING_CHUNK_SIZE
+        chunks = [token[i : i + size] for i in range(0, len(token), size)] or [""]
+
+        written = []
+        try:
+            for idx, chunk in enumerate(chunks, start=1):
+                entry = f"{self.profile}-monitoring-{idx}"
+                keyring.set_password("claude-code-with-bedrock", entry, chunk)
+                written.append(entry)
+            keyring.set_password(
+                "claude-code-with-bedrock",
+                f"{self.profile}-monitoring-meta",
+                json.dumps(
+                    {
+                        "count": len(chunks),
+                        "expires": token_data.get("expires", 0),
+                        "email": token_data.get("email", ""),
+                        "profile": token_data.get("profile", self.profile),
+                    }
+                ),
+            )
+        except Exception:
+            # Roll back any partial write so a stale half-token isn't left behind.
+            for entry in written:
+                try:
+                    keyring.delete_password("claude-code-with-bedrock", entry)
+                except Exception:
+                    pass
+            raise
+
+        # Remove any leftover chunk entries from a previous, longer token.
+        try:
+            idx = len(chunks) + 1
+            while keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}") is not None:
+                keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
+                idx += 1
+        except Exception:
+            pass
+
+        # Remove the legacy single-entry token if it exists.
+        try:
+            if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
+                keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+        except Exception:
+            pass
+
+    def _read_monitoring_keyring_windows(self):
+        """Reassemble the monitoring token from Windows keyring chunks.
+
+        Returns the token_data dict, or None if no valid chunk set is present.
+        Falls back to a legacy single {profile}-monitoring entry for installs
+        that predate the chunked format.
+        """
+        meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
+        if not meta_json:
+            legacy = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+            if not legacy:
+                return None
+            return json.loads(legacy)
+
+        meta = json.loads(meta_json)
+        count = meta.get("count", 0)
+        if not count:
+            return None
+
+        chunks = []
+        for idx in range(1, count + 1):
+            chunk = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
+            if chunk is None:
+                return None
+            chunks.append(chunk)
+
+        return {
+            "token": "".join(chunks),
+            "expires": meta.get("expires", 0),
+            "email": meta.get("email", ""),
+            "profile": meta.get("profile", self.profile),
+        }
+
     def save_monitoring_token(self, id_token, token_claims):
         """Save ID token for monitoring authentication"""
         try:
@@ -483,8 +610,15 @@ class MultiProviderAuth:
             }
 
             if self.credential_storage == "keyring":
-                # Store monitoring token in keyring
-                keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", json.dumps(token_data))
+                # Store monitoring token in keyring. On Windows a single
+                # Credential Manager entry can't hold a full id_token, so split
+                # it across chunked entries (see _save_monitoring_keyring_windows).
+                if platform.system() == "Windows":
+                    self._save_monitoring_keyring_windows(token_data)
+                else:
+                    keyring.set_password(
+                        "claude-code-with-bedrock", f"{self.profile}-monitoring", json.dumps(token_data)
+                    )
             else:
                 # Save to session directory alongside credentials
                 session_dir = Path.home() / ".claude-code-session"
@@ -702,13 +836,20 @@ class MultiProviderAuth:
                 return env_token
 
             if self.credential_storage == "keyring":
-                # Retrieve from keyring
-                token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
+                # Retrieve from keyring. On Windows the token is stored as
+                # chunked entries (see _read_monitoring_keyring_windows); other
+                # platforms use a single JSON entry.
+                if platform.system() == "Windows":
+                    token_data = self._read_monitoring_keyring_windows()
+                    if not token_data:
+                        return None
+                else:
+                    token_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring")
 
-                if not token_json:
-                    return None
+                    if not token_json:
+                        return None
 
-                token_data = json.loads(token_json)
+                    token_data = json.loads(token_json)
             else:
                 # Check session file
                 session_dir = Path.home() / ".claude-code-session"
@@ -717,7 +858,7 @@ class MultiProviderAuth:
                 if not token_file.exists():
                     return None
 
-                with open(token_file) as f:
+                with open(token_file, encoding="utf-8") as f:
                     token_data = json.load(f)
 
             # Check expiration
