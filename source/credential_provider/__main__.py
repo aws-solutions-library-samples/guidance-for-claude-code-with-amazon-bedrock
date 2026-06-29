@@ -424,30 +424,29 @@ class MultiProviderAuth:
                 {"token": "EXPIRED", "expires": 0, "email": "", "profile": self.profile}  # Expired timestamp
             )
             if platform.system() == "Windows":
-                # The Windows token is chunked across {profile}-monitoring-1..N
-                # with a {profile}-monitoring-meta entry. Expire the meta so the
-                # reader treats it as a 1-chunk EXPIRED token, then delete the
-                # leftover chunk entries so no stale token fragments survive.
+                # Chunked format: overwrite every chunk and reset the meta so the
+                # real token is not left recoverable. Also clear any legacy entry.
                 cleared = False
+                # Reset meta to count:0 BEFORE scrubbing chunks so an interrupted
+                # clear leaves the read gated to None rather than reassembling
+                # stale chunks.
                 meta_json = keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-meta")
                 if meta_json:
-                    try:
-                        count = json.loads(meta_json).get("count", 0)
-                    except Exception:
-                        count = 0
-                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-1", "EXPIRED")
                     keyring.set_password(
                         "claude-code-with-bedrock",
                         f"{self.profile}-monitoring-meta",
-                        json.dumps({"count": 1, "expires": 0, "email": "", "profile": self.profile}),
+                        json.dumps({"count": 0, "expires": 0, "email": "", "profile": self.profile}),
                     )
-                    for idx in range(2, count + 1):
-                        try:
-                            keyring.delete_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}")
-                        except Exception:
-                            pass
                     cleared = True
-                # Also expire any legacy single-entry token.
+                # Scan actual chunk entries from index 1 rather than trusting
+                # meta.count: this also scrubs orphans from a larger prior token
+                # and a meta-less set left by a crash mid-save (#448).
+                idx = 1
+                while keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}") is not None:
+                    keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring-{idx}", "EXPIRED")
+                    cleared = True
+                    idx += 1
+                # Also expire any legacy single-entry token (pre-chunk installs).
                 if keyring.get_password("claude-code-with-bedrock", f"{self.profile}-monitoring"):
                     keyring.set_password("claude-code-with-bedrock", f"{self.profile}-monitoring", expired_token)
                     cleared = True
