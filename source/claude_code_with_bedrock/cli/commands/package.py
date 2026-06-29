@@ -2600,6 +2600,15 @@ RUN pyinstaller \
             config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
 
+        # Add monitoring mode and endpoint for OTLP proxy auto-spawn (Cowork per-user identity).
+        # When cowork_config_mode is "dynamic" (bootstrap server), the server delivers
+        # otlpEndpoint + per-user identity headers at sign-in — no local proxy needed.
+        if getattr(profile, "monitoring_mode", None):
+            config[profile_name]["monitoring_mode"] = profile.monitoring_mode
+        if getattr(profile, "otel_collector_endpoint", None):
+            if getattr(profile, "cowork_config_mode", "static") != "dynamic":
+                config[profile_name]["otel_collector_endpoint"] = profile.otel_collector_endpoint
+
         config_path = output_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)

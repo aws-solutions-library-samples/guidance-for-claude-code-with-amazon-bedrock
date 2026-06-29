@@ -321,6 +321,10 @@ func (a *credentialApp) writeOtelCacheFromIDC(creds aws.Credentials, region stri
 	if err := otel.WriteCachedHeaders(a.profile, headers, expiry); err != nil {
 		debugPrint("writeOtelCacheFromIDC: cache write failed: %v", err)
 	}
+
+	// Ensure OTLP proxy is running for Cowork per-user identity (IDC provides
+	// email-only attribution from the STS ARN — no team/department).
+	ensureProxyRunning(a.profile)
 }
 
 // ssoCachedToken mirrors the on-disk format the AWS SDK's ssocreds package

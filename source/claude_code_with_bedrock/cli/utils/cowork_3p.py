@@ -204,24 +204,39 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
     if monitoring_mode == "sidecar":
-        # Sidecar mode: CoWork sends OTLP logs to the local otel-helper proxy,
-        # which SigV4-signs and forwards to CloudWatch OTLP.
-        # IMPORTANT: otel-helper must be running in proxy mode (otel-helper --proxy)
-        # for CoWork telemetry to work. Without it, events are silently dropped
-        # (connection refused on localhost:4318).
-        mdm_config["otlpEndpoint"] = "http://localhost:4318"
+        # Sidecar mode: CoWork sends OTLP to the local otel-helper identity proxy
+        # on port 4319, which injects per-user headers (x-user-email, etc.) from
+        # the JWT cache, then forwards to otelcol on port 4318. otelcol SigV4-signs
+        # and exports to CloudWatch.
+        #
+        # Chain: Cowork → proxy:4319 (identity) → otelcol:4318 (SigV4) → CloudWatch
+        #
+        # The proxy is auto-spawned by credential-process (same as central mode).
+        # otelcol must also be running (started by `ccwb start --sidecar`).
+        mdm_config["otlpEndpoint"] = "http://localhost:4319"
         mdm_config["otlpProtocol"] = "http/protobuf"
-        console.print("[dim]Sidecar mode \u2014 CoWork telemetry via local otel-helper proxy (localhost:4318)[/dim]")
-        console.print("[dim]  \u2514\u2500 Requires: otel-helper --proxy running on this device[/dim]")
+        console.print(
+            "[dim]Sidecar mode \u2014 CoWork telemetry via identity proxy (localhost:4319 \u2192 otelcol:4318)[/dim]"
+        )
+        console.print("[dim]  \u2514\u2500 Proxy auto-started by credential-process for per-user identity[/dim]")
 
-        # Add attribution headers if available (static, per-MDM-group)
+        # Add CoWork service token (proxy forwards it through to otelcol/ALB)
         cowork_token = getattr(profile, "cowork_service_token", None)
         if cowork_token:
             mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})
         return
 
-    # Try to resolve collector endpoint from stack outputs first,
-    # fall back to profile.otel_collector_endpoint if stack query fails.
+    # Central mode: Route Cowork telemetry through the local otel-helper proxy
+    # so per-user identity headers (x-user-email, x-department, etc.) are injected
+    # from the JWT cache before forwarding to the remote collector. The proxy is
+    # auto-spawned by credential-process on each credential refresh cycle (~1 hour).
+    #
+    # Without the proxy, Cowork sends directly to the ALB with only the static
+    # X-Cowork-Token header — no per-user attribution is possible.
+
+    # Resolve the remote collector endpoint (the proxy's upstream target).
+    # This is persisted to profile.otel_collector_endpoint for credential-process
+    # to read when spawning the proxy.
     endpoint = None
     monitoring_stack = profile.stack_names.get("monitoring", f"{profile.identity_pool_name}-otel-collector")
     try:
@@ -235,12 +250,13 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         endpoint = getattr(profile, "otel_collector_endpoint", None)
 
     if endpoint:
-        mdm_config["otlpEndpoint"] = endpoint
+        # Route through local proxy for per-user identity injection
+        mdm_config["otlpEndpoint"] = "http://localhost:4318"
         mdm_config["otlpProtocol"] = "http/protobuf"
-        console.print(f"[dim]OTLP endpoint: {endpoint}[/dim]")
+        console.print(f"[dim]Central mode — CoWork telemetry via local proxy (localhost:4318 → {endpoint})[/dim]")
+        console.print("[dim]  └─ Proxy auto-started by credential-process for per-user identity[/dim]")
 
-        # Add CoWork service token for ALB auth bypass (if configured).
-        # CoWork cannot do OIDC — this static token header bypasses JWT validation.
+        # Add CoWork service token for ALB auth bypass (proxy forwards it).
         cowork_token = getattr(profile, "cowork_service_token", None)
         if cowork_token:
             mdm_config["otlpHeaders"] = json.dumps({"X-Cowork-Token": cowork_token})

@@ -44,47 +44,72 @@ const (
 )
 
 // proxyConfig holds the configuration for the signing proxy.
+// proxyConfig holds the configuration for the OTLP proxy.
 type proxyConfig struct {
-	port    int
-	region  string
-	profile string
+	port     int
+	region   string
+	profile  string
+	upstream string // Custom upstream URL (overrides CloudWatch default; skips SigV4)
 }
 
-// startProxy runs the SigV4 signing proxy. Blocks until SIGTERM/SIGINT.
+// startProxy runs the OTLP proxy. Blocks until SIGTERM/SIGINT.
 // Returns 0 on clean shutdown, 1 on error.
+//
+// Two modes:
+//   - SigV4 mode (default): Forwards to CloudWatch OTLP with SigV4 signing.
+//     Used when otel-helper IS the collector (no separate otelcol).
+//   - Passthrough mode (--proxy-upstream <url>): Forwards to an arbitrary URL
+//     (e.g., central collector ALB or local otelcol) without SigV4.
+//     Only injects identity headers from the JWT cache.
 func startProxy(cfg proxyConfig) int {
-	region := cfg.region
-	if region == "" {
-		region = os.Getenv("AWS_REGION")
-	}
-	if region == "" {
-		region = os.Getenv("AWS_DEFAULT_REGION")
-	}
-	if region == "" {
-		logger.Printf("ERROR: --proxy-region or AWS_REGION must be set")
-		return 1
+	var upstream string
+	var useSigV4 bool
+	var region string
+
+	if cfg.upstream != "" {
+		// Passthrough mode: forward to custom upstream without SigV4
+		upstream = cfg.upstream
+		useSigV4 = false
+		logger.Printf("Starting OTLP identity proxy on 127.0.0.1:%d \u2192 %s (passthrough, no SigV4)", cfg.port, upstream)
+	} else {
+		// SigV4 mode: forward to CloudWatch OTLP endpoint
+		region = cfg.region
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		if region == "" {
+			region = os.Getenv("AWS_DEFAULT_REGION")
+		}
+		if region == "" {
+			logger.Printf("ERROR: --proxy-region or AWS_REGION must be set")
+			return 1
+		}
+		upstream = fmt.Sprintf("https://monitoring.%s.amazonaws.com", region)
+		useSigV4 = true
+		logger.Printf("Starting OTLP signing proxy on 127.0.0.1:%d \u2192 %s", cfg.port, upstream)
 	}
 
-	upstream := fmt.Sprintf("https://monitoring.%s.amazonaws.com", region)
-	logger.Printf("Starting OTLP signing proxy on 127.0.0.1:%d → %s", cfg.port, upstream)
-
-	// Warm the attribution cache before serving. This ensures the first
+// Warm the attribution cache before serving. This ensures the first
 	// CoWork telemetry requests already carry user.email headers instead of
 	// waiting for the user to trigger credential-process via the CLI.
 	if cfg.profile != "" {
 		warmAttributionCache(cfg.profile)
 	}
 
-	// Load AWS credentials via the standard chain (respects AWS_PROFILE, credential_process, etc.)
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(region),
-	)
-	if err != nil {
-		logger.Printf("ERROR: failed to load AWS config: %v", err)
-		return 1
+	var awsCfg aws.Config
+	var signer *v4.Signer
+	if useSigV4 {
+		var err error
+		awsCfg, err = awsconfig.LoadDefaultConfig(context.Background(),
+			awsconfig.WithRegion(region),
+		)
+		if err != nil {
+			logger.Printf("ERROR: failed to load AWS config: %v", err)
+			return 1
+		}
+		signer = v4.NewSigner()
 	}
 
-	signer := v4.NewSigner()
 	client := &http.Client{Timeout: upstreamTimeout}
 
 	mux := http.NewServeMux()
@@ -92,7 +117,12 @@ func startProxy(cfg proxyConfig) int {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
-	mux.HandleFunc("/", makeProxyHandler(awsCfg, signer, client, upstream, region, cfg.profile))
+
+	if useSigV4 {
+		mux.HandleFunc("/", makeProxyHandler(awsCfg, signer, client, upstream, region, cfg.profile))
+	} else {
+		mux.HandleFunc("/", makePassthroughHandler(client, upstream, cfg.profile))
+	}
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("127.0.0.1:%d", cfg.port),
@@ -119,7 +149,11 @@ func startProxy(cfg proxyConfig) int {
 		}
 	}()
 
-	logger.Printf("Proxy ready, forwarding to %s (service=%s, region=%s)", upstream, defaultService, region)
+	if useSigV4 {
+		logger.Printf("Proxy ready, forwarding to %s (service=%s, region=%s)", upstream, defaultService, region)
+	} else {
+		logger.Printf("Proxy ready, forwarding to %s (passthrough + identity injection)", upstream)
+	}
 
 	<-stop
 	logger.Printf("Shutting down proxy...")
@@ -299,4 +333,82 @@ func makeProxyHandler(
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// makePassthroughHandler returns an HTTP handler that:
+// 1. Reads the request body verbatim (no parsing)
+// 2. Injects attribution headers from the JWT cache
+// 3. Forwards to the upstream endpoint WITHOUT SigV4 signing
+//
+// Used for central collector mode (forwarding to ALB) and sidecar mode
+// (forwarding to local otelcol) where SigV4 is handled downstream.
+func makePassthroughHandler(
+	client *http.Client,
+	upstream string,
+	profile string,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// 1. Read body verbatim
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// 2. Build upstream request
+		targetURL := upstream + r.URL.Path
+		if r.URL.RawQuery != "" {
+			targetURL += "?" + r.URL.RawQuery
+		}
+		upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, "failed to create upstream request", http.StatusInternalServerError)
+			return
+		}
+
+		// Copy content-type from original request
+		if ct := r.Header.Get("Content-Type"); ct != "" {
+			upstreamReq.Header.Set("Content-Type", ct)
+		}
+
+		// Copy through client-provided auth headers (e.g., X-Cowork-Token from MDM otlpHeaders)
+		for _, key := range []string{"X-Cowork-Token", "Authorization"} {
+			if v := r.Header.Get(key); v != "" {
+				upstreamReq.Header.Set(key, v)
+			}
+		}
+
+		// 3. Inject attribution headers from JWT cache (per-user identity)
+		if profile != "" {
+			if cached, cacheErr := otel.ReadCachedHeaders(profile); cacheErr == nil && cached != nil {
+				for k, v := range cached {
+					upstreamReq.Header.Set(k, v)
+				}
+			}
+		}
+
+		// 4. Forward to upstream (no SigV4 signing)
+		resp, err := client.Do(upstreamReq)
+		if err != nil {
+			debugPrint("Passthrough upstream request failed: %v", err)
+			http.Error(w, "upstream request failed", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Copy response back to client
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	}
 }

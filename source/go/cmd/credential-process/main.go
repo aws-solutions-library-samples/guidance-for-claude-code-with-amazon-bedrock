@@ -460,6 +460,9 @@ func (a *credentialApp) run() int {
 				return 1
 			}
 		}
+		// Ensure OTLP proxy is running even on cached credential returns.
+		// Without this, proxy crash recovery only happens on full re-auth (~8h).
+		ensureProxyRunning(a.profile)
 		outputJSON(cached)
 		return 0
 	}
@@ -487,6 +490,7 @@ func (a *credentialApp) run() int {
 
 	// Check cache again (race condition guard)
 	if cached := a.getCachedCredentials(); cached != nil {
+		ensureProxyRunning(a.profile)
 		outputJSON(cached)
 		return 0
 	}
@@ -848,6 +852,7 @@ func (a *credentialApp) refreshIDTokenOnly() string {
 // the otel-headers cache so the PowerShell fallback (otel-helper.ps1) can serve
 // attribution headers without needing the Go otel-helper binary.
 // This is safe to call from any path that obtains a fresh ID token + claims.
+// It also ensures the OTLP proxy is running for Cowork per-user identity.
 func (a *credentialApp) saveMonitoringTokenAndHeaders(idToken string, claims map[string]interface{}) {
 	_ = storage.SaveMonitoringToken(a.profile, a.cfg.CredentialStorage, idToken, claims)
 
@@ -869,6 +874,10 @@ func (a *credentialApp) saveMonitoringTokenAndHeaders(idToken string, claims map
 			debugPrint("saveMonitoringTokenAndHeaders: cache write failed: %v", err)
 		}
 	}
+
+	// Ensure OTLP proxy is running for Cowork per-user identity (central mode).
+	// Non-blocking, best-effort — no error returned.
+	ensureProxyRunning(a.profile)
 }
 
 func (a *credentialApp) shouldRecheckQuota() bool {
@@ -971,6 +980,10 @@ func (a *credentialApp) writeOtelCacheFromSTS() bool {
 	}
 
 	debugPrint("Wrote OTEL attribution cache for IDC user: %s", email)
+
+	// Ensure OTLP proxy is running for Cowork per-user identity
+	ensureProxyRunning(a.profile)
+
 	return true
 }
 

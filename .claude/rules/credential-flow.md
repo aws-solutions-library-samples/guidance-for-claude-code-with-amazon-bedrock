@@ -46,11 +46,13 @@ Quota check happens AFTER auth but BEFORE outputting credentials:
 
 ## OTEL Attribution
 
-After successful auth, otel-helper updates the attribution cache:
+After successful auth, credential-process updates the attribution cache:
 - Extracts user info from JWT claims (OIDC) or ARN (IDC)
-- Writes headers to `~/.ccwb/cache/<profile>-otel-headers.json`
-- Central collector reads these via ALB forwarded headers
-- Sidecar collector reads from local cache file
+- Writes headers to `~/.claude-code-session/<profile>-otel-headers.json`
+- Calls `ensureProxyRunning()` to auto-spawn the otel-helper proxy if not listening
+- **Central mode:** Proxy on port 4318 injects identity, forwards to remote ALB
+- **Sidecar mode:** Proxy on port 4319 injects identity, forwards to local otelcol on 4318
+- Claude Code CLI uses `otelHeadersHelper` directly (no proxy needed)
 
 ## Related Rules
 - `otel-attribution-chain.md` — header format and token lifecycle

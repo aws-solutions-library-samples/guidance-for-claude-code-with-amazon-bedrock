@@ -11,10 +11,13 @@ source/go/
 │   ├── credential-process/   # Main binary — auth, quota, OTEL attribution
 │   │   ├── main.go           # OIDC flow, entry point, CLI flags
 │   │   ├── idc.go            # IDC active SSO flow (device auth)
-│   │   └── passthrough.go    # IDC passthrough (ambient creds)
+│   │   ├── passthrough.go    # IDC passthrough (ambient creds)
+│   │   ├── proxy.go          # Auto-spawn otel-helper proxy for CoWork identity
+│   │   ├── proxy_unix.go     # Unix process detach (setsid)
+│   │   └── proxy_windows.go  # Windows no-op detach
 │   └── otel-helper/          # OTEL header generation + signing proxy
 │       ├── main.go           # Header extraction from JWT
-│       └── proxy.go          # SigV4 signing proxy for CoWork sidecar
+│       └── proxy.go          # SigV4 signing proxy + identity injection for CoWork
 ├── internal/
 │   ├── browser/              # OS-specific browser open
 │   ├── config/               # ProfileConfig struct (mirrors Python Profile)
