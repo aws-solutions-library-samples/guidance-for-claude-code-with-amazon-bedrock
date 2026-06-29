@@ -256,7 +256,11 @@ def _poll_websearch_target_ready(
     while time.time() < deadline:
         try:
             resp = client.list_gateway_targets(gatewayIdentifier=gateway_id, maxResults=1)
-            targets = resp.get("gatewayTargets", [])
+            # ListGatewayTargets returns the targets under "items" (per the
+            # bedrock-agentcore-control API). Reading any other key yields an
+            # empty list, so the poll would never observe READY and would spin
+            # silently until the timeout.
+            targets = resp.get("items", [])
             if targets:
                 status = targets[0].get("status", "")
                 if status == "READY":
