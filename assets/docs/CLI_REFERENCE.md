@@ -1193,14 +1193,16 @@ poetry run ccwb destroy [stack] [options]
 Runs health checks on the local machine to catch misconfigurations and aid troubleshooting.
 
 ```bash
-poetry run ccwb doctor [options]
+# Quick self-check (instant, no network)
+poetry run ccwb doctor
+
+# Full diagnostic export (includes live probes)
+poetry run ccwb doctor --json > diagnostics.json
 ```
 
 **Options:**
 
-- `--verbose` / `-v` - Show raw JSON from `credential-process --explain` and `otel-helper --status`
-- `--live` / `-l` - Also attempt authentication and check proxy connectivity
-- `--json` - Machine-readable JSON output (for CI or support)
+- `--json` - Full diagnostic export as JSON (includes live auth + proxy checks)
 - `--profile <name>` - Check a specific profile
 
 **Health Checks:**
@@ -1214,10 +1216,14 @@ poetry run ccwb doctor [options]
 | `explain` | Calls `credential-process --explain` — shows resolved auth mode, provider, quota |
 | `otel-helper` | Telemetry binary exists (only FAIL if monitoring configured) |
 | `otel-status` | Calls `otel-helper --status` — proxy running? headers cached? |
-| `auth-test` | (--live only) Attempts credential check |
-| `proxy-health` | (--live only) TCP connect to OTEL proxy port |
+| `auth-test` | (--json only) Attempts credential check |
+| `proxy-health` | (--json only) TCP connect to OTEL proxy port |
 
-**On failure:** Generates a pre-filled GitHub issue URL with diagnostics, environment, and auth mode.
+**Troubleshooting workflow:**
+
+1. Run `ccwb doctor` — fix any FAIL items using the suggested fixes
+2. If issues persist, export diagnostics: `ccwb doctor --json > diagnostics.json`
+3. Ask Claude to file an issue: *"Create a GitHub issue on aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock with the diagnostics from diagnostics.json. Use `gh api`."*
 
 ### Go Binary Diagnostic Flags
 

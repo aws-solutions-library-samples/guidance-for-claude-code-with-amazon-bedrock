@@ -1,14 +1,11 @@
 # ABOUTME: Doctor command to validate installation health and catch common misconfigurations.
 # ABOUTME: Integrates credential-process --explain and otel-helper --status for deep diagnostics.
 
-"""Doctor command — validate installation health and catch common misconfigurations.
+"""Doctor command — validate installation health and export diagnostics.
 
-Two diagnostic layers:
-  1. ccwb doctor         → static checks + --explain/--status integration (no auth)
-  2. ccwb doctor --live  → actually attempts authentication and telemetry
-
-This consolidates what would otherwise be 3 separate tools into one command
-that progressively reveals more detail (plain → --verbose → --live → --json).
+Two modes:
+  1. ccwb doctor         → pretty self-troubleshooting (static checks, no network)
+  2. ccwb doctor --json  → full diagnostic export (static + live checks + raw config)
 """
 
 import json
@@ -54,7 +51,6 @@ class HealthCheck:
 def _find_binary(install_dir: Path, name: str) -> Path | None:
     """Find a binary, checking platform-appropriate extensions."""
     if sys.platform == "win32":
-        # Check .exe, .cmd, .ps1 in order
         for ext in [".exe", ".cmd", ".ps1"]:
             p = install_dir / f"{name}{ext}"
             if p.exists():
@@ -70,7 +66,6 @@ def _run_binary_json(binary_path: Path, args: list, timeout: int = 10) -> dict |
     """Run a binary with args, parse JSON stdout. Returns None on failure."""
     try:
         cmd = [str(binary_path)] + args
-        # On Windows, .cmd/.ps1 need shell or explicit interpreter
         if binary_path.suffix == ".ps1":
             cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File"] + cmd
         elif binary_path.suffix == ".cmd":
@@ -89,13 +84,13 @@ def _run_binary_json(binary_path: Path, args: list, timeout: int = 10) -> dict |
     return None
 
 
-def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> list:
-    """Run all health checks and return list of HealthCheck results.
+def run_doctor(home: Path = None, profile: str = None, include_live: bool = False) -> list:
+    """Run health checks and return list of HealthCheck results.
 
     Args:
         home: Override home directory (for testing).
-        live: If True, also perform network-dependent checks (auth, proxy health).
         profile: If set, check only this profile (passed to --explain/--status).
+        include_live: If True, also run network-dependent checks (auth, proxy).
     """
     checks = []
 
@@ -190,10 +185,7 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
             monitoring_str = ""
             if monitoring.get("enabled"):
                 mon_mode = monitoring.get("mode", "?")
-                delivery = monitoring.get("config_delivery", "static")
                 monitoring_str = f", monitoring={mon_mode}"
-                if delivery == "bootstrap":
-                    monitoring_str += " (bootstrap)"
             quota_str = ""
             if explain_data.get("quota", {}).get("enabled"):
                 quota_str = ", quota=enabled"
@@ -211,13 +203,12 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
         check.message = "Binary not available"
     checks.append(check)
 
-    # ─── Check 6: otel-helper ──────────────────────────────────────────────────
+    # ─── Check 6: otel-helper binary ──────────────────────────────────────────
     check = HealthCheck("otel-helper", "Telemetry helper binary exists")
     otel_path = _find_binary(install_dir, "otel-helper")
     if otel_path:
         check.pass_(str(otel_path))
     elif config_data:
-        # Only fail if monitoring is actually configured
         profiles_data = config_data.get("profiles", config_data)
         any_monitoring = any(
             isinstance(profiles_data.get(p), dict) and profiles_data[p].get("otel_collector_endpoint")
@@ -236,7 +227,7 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
         check.message = "Config not available"
     checks.append(check)
 
-    # ─── Check 7: otel-helper --status (proxy health) ─────────────────────────
+    # ─── Check 7: otel-helper --status ────────────────────────────────────────
     check = HealthCheck("otel-status", "Telemetry proxy status")
     if otel_path:
         status_args = ["--status"]
@@ -252,11 +243,11 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
                     detail=status_data,
                 )
             else:
-                # Proxy not running is only a problem if monitoring is configured
                 if config_data:
                     profiles_data = config_data.get("profiles", config_data)
                     any_monitoring = any(
-                        isinstance(profiles_data.get(p), dict) and profiles_data[p].get("otel_collector_endpoint")
+                        isinstance(profiles_data.get(p), dict)
+                        and profiles_data[p].get("otel_collector_endpoint")
                         for p in profiles_data
                     )
                     if any_monitoring:
@@ -279,11 +270,11 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
         check.message = "otel-helper not available"
     checks.append(check)
 
-    # ─── Check 8 (live only): credential-process auth test ─────────────────────
-    if live:
+    # ─── Live checks (only in --json export mode) ─────────────────────────────
+    if include_live:
+        # Auth test
         check = HealthCheck("auth-test", "Credential helper can authenticate")
         if binary_path and config_data:
-            # Try credential-process with a short timeout
             try:
                 result = subprocess.run(
                     [str(binary_path), "--check-expiration"],
@@ -309,7 +300,7 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
             check.message = "Binary or config not available"
         checks.append(check)
 
-        # ─── Check 9 (live only): proxy port health ───────────────────────────
+        # Proxy port health
         check = HealthCheck("proxy-health", "OTEL proxy accepting connections")
         import socket
 
@@ -324,7 +315,8 @@ def run_doctor(home: Path = None, live: bool = False, profile: str = None) -> li
             if config_data:
                 profiles_data = config_data.get("profiles", config_data)
                 any_monitoring = any(
-                    isinstance(profiles_data.get(p), dict) and profiles_data[p].get("otel_collector_endpoint")
+                    isinstance(profiles_data.get(p), dict)
+                    and profiles_data[p].get("otel_collector_endpoint")
                     for p in profiles_data
                 )
                 if any_monitoring:
@@ -348,7 +340,7 @@ def print_results(checks: list, console: Console = None) -> int:
     if console is None:
         console = Console()
 
-    console.print("\n[bold]ccwb doctor[/bold] — Installation Health Check\n")
+    console.print("\n[bold]ccwb doctor[/bold]\n")
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("Check", style="cyan", min_width=18)
@@ -373,7 +365,6 @@ def print_results(checks: list, console: Console = None) -> int:
 
     console.print(table)
 
-    # Summary
     fails = sum(1 for c in checks if c.status == "fail")
     warns = sum(1 for c in checks if c.status == "warn")
     passes = sum(1 for c in checks if c.status == "pass")
@@ -381,110 +372,44 @@ def print_results(checks: list, console: Console = None) -> int:
     console.print()
     if fails == 0:
         console.print(f"[green]✓ All checks passed[/green] ({passes} pass, {warns} warnings)")
-        return 0
     else:
         console.print(f"[red]✗ {fails} check(s) failed[/red] ({passes} pass, {warns} warnings)")
-        _print_issue_link(checks, console)
-        return 1
+        console.print("\n[dim]Export diagnostics for troubleshooting:[/dim]")
+        console.print("  [cyan]ccwb doctor --json > diagnostics.json[/cyan]")
 
-
-def _print_issue_link(checks: list, console: Console):
-    """Generate a pre-filled GitHub issue URL from failed checks."""
-    import platform
-    import urllib.parse
-
-    failed_checks = [c for c in checks if c.status == "fail"]
-
-    issue_body = "## ccwb doctor output\n\n"
-    issue_body += "| Check | Status | Details |\n|-------|--------|---------|\n"
-    for c in checks:
-        issue_body += f"| {c.name} | {c.status.upper()} | {c.message} |\n"
-
-    issue_body += "\n## Environment\n"
-    issue_body += f"- **OS:** {platform.system()} {platform.release()} ({platform.machine()})\n"
-    issue_body += f"- **Python:** {platform.python_version()}\n"
-
-    # Include --explain output if available
-    explain_check = next((c for c in checks if c.name == "explain" and c.detail), None)
-    if explain_check:
-        issue_body += f"- **Auth mode:** {explain_check.detail.get('auth', {}).get('mode', 'unknown')}\n"
-        issue_body += f"- **Version:** {explain_check.detail.get('version', 'unknown')}\n"
-        issue_body += f"- **Commit:** {explain_check.detail.get('commit', 'unknown')}\n"
-        if explain_check.detail.get("provider"):
-            issue_body += f"- **Provider:** {explain_check.detail['provider'].get('type', 'unknown')}\n"
-        monitoring = explain_check.detail.get("monitoring", {})
-        if monitoring.get("enabled"):
-            issue_body += f"- **Monitoring:** {monitoring.get('mode', 'unknown')} ({monitoring.get('config_delivery', 'static')})\n"
-            if monitoring.get("endpoint"):
-                issue_body += f"- **OTEL endpoint:** {monitoring['endpoint']}\n"
-            if monitoring.get("bootstrap_endpoint"):
-                issue_body += f"- **Bootstrap endpoint:** {monitoring['bootstrap_endpoint']}\n"
-
-    params = urllib.parse.urlencode(
-        {
-            "title": f"ccwb doctor: {', '.join(c.name for c in failed_checks)} failed",
-            "body": issue_body,
-            "labels": "bug",
-        }
-    )
-    issue_url = f"https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/new?{params}"
-    console.print("\n[dim]Report this issue (pre-filled):[/dim]")
-    console.print(f"  {issue_url}")
-
-
-def print_verbose(checks: list, console: Console):
-    """Print detailed --explain and --status output for troubleshooting."""
-    console.print("\n[bold]Detailed Diagnostics[/bold] (--verbose)\n")
-
-    explain_check = next((c for c in checks if c.name == "explain" and c.detail), None)
-    if explain_check:
-        console.print("[cyan]credential-process --explain:[/cyan]")
-        console.print_json(json.dumps(explain_check.detail, indent=2))
-        console.print()
-
-    status_check = next((c for c in checks if c.name == "otel-status" and c.detail), None)
-    if status_check:
-        console.print("[cyan]otel-helper --status:[/cyan]")
-        console.print_json(json.dumps(status_check.detail, indent=2))
-        console.print()
+    return 0 if fails == 0 else 1
 
 
 class DoctorCommand(Command):
     name = "doctor"
-    description = "Validate installation health and catch common misconfigurations"
+    description = "Validate installation health and export diagnostics"
     help = """Run post-installation health checks on the local machine.
 
 Checks credential-process binary, config.json, AWS profile, Claude Code
 settings, resolved auth mode (via --explain), and telemetry proxy status.
 
-Use after running the installer to verify everything is working:
+Quick self-check (instant, no network):
   <info>poetry run ccwb doctor</info>
 
-Live checks (actually attempts auth + proxy connectivity):
-  <info>poetry run ccwb doctor --live</info>
-
-Detailed config dump for troubleshooting:
-  <info>poetry run ccwb doctor --verbose</info>
-
-Machine-readable output (pipe to scripts or support):
-  <info>poetry run ccwb doctor --json</info>
+Full diagnostic export (includes live probes):
+  <info>poetry run ccwb doctor --json > diagnostics.json</info>
 """
 
     options = [
         option("profile", description="Configuration profile to check", flag=False),
-        option("verbose", "v", description="Show detailed --explain and --status JSON output"),
-        option("live", "l", description="Perform live checks (auth test, proxy connectivity)"),
-        option("json", description="Output results as JSON (for automation)"),
+        option("json", description="Full diagnostic export as JSON (includes live checks)"),
     ]
 
     def handle(self) -> int:
         """Execute the doctor command."""
         console = Console()
-        live = self.option("live")
         profile = self.option("profile")
-        checks = run_doctor(live=live, profile=profile)
+        is_json = self.option("json")
 
-        if self.option("json"):
+        # JSON mode includes live checks for complete diagnostics
+        checks = run_doctor(profile=profile, include_live=is_json)
+
+        if is_json:
             output = {
                 "checks": [
                     {
@@ -500,9 +425,4 @@ Machine-readable output (pipe to scripts or support):
             console.print_json(json.dumps(output))
             return 0 if not any(c.status == "fail" for c in checks) else 1
 
-        exit_code = print_results(checks, console)
-
-        if self.option("verbose"):
-            print_verbose(checks, console)
-
-        return exit_code
+        return print_results(checks, console)
