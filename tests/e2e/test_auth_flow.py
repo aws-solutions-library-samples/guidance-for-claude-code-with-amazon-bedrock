@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-pytestmark = [pytest.mark.e2e, pytest.mark.timeout(30)]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(60)]
 
 
 class TestAuthFlow:

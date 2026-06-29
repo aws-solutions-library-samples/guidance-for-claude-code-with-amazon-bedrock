@@ -323,7 +323,7 @@ def run_credential_process(
         env["CCWB_AUTH_CONTEXT"] = context
         
         # Enable binary debug output for E2E diagnostics
-        env["CCWB_DEBUG"] = "1"
+        env["COGNITO_AUTH_DEBUG"] = "1"
 
         if context == "mid-session-refresh":
             env["CCWB_FORCE_REFRESH"] = "1"
@@ -346,7 +346,7 @@ def run_credential_process(
             ver = sp2.run([str(credential_process_binary), "--version"], capture_output=True, text=True, env=env, timeout=5)
             print(f"[E2E DEBUG] Binary --version: exit={ver.returncode}, stdout={ver.stdout.strip()}, stderr={ver.stderr.strip()[:100]}")
             # Run with CCWB_DEBUG=1 to get binary debug output
-            env["CCWB_DEBUG"] = "1"
+            env["COGNITO_AUTH_DEBUG"] = "1"
 
         cmd = [str(credential_process_binary)]
         if extra_args:
