@@ -321,6 +321,9 @@ def run_credential_process(
 
         # Context (initial vs mid-session-refresh)
         env["CCWB_AUTH_CONTEXT"] = context
+        
+        # Enable binary debug output for E2E diagnostics
+        env["CCWB_DEBUG"] = "1"
 
         if context == "mid-session-refresh":
             env["CCWB_FORCE_REFRESH"] = "1"
@@ -332,22 +335,43 @@ def run_credential_process(
         # Debug: print config and token for diagnostics
         if os.environ.get("E2E_DEBUG"):
             print(f"[E2E DEBUG] Config written: {config_file}")
-            print(f"[E2E DEBUG] Config content: {config_file.read_text()[:200]}")
-            print(f"[E2E DEBUG] CLAUDE_CODE_MONITORING_TOKEN set: {'yes' if env.get('CLAUDE_CODE_MONITORING_TOKEN') else 'NO'}")
+            print(f"[E2E DEBUG] Config content: {config_file.read_text()}")
+            token_val = env.get('CLAUDE_CODE_MONITORING_TOKEN', '')
+            print(f"[E2E DEBUG] CLAUDE_CODE_MONITORING_TOKEN set: {'yes (' + str(len(token_val)) + ' chars)' if token_val else 'NO'}")
             print(f"[E2E DEBUG] E2E_OIDC_ROLE_ARN: {env.get('E2E_OIDC_ROLE_ARN', 'NOT SET')}")
             print(f"[E2E DEBUG] HOME: {env.get('HOME')}")
+            print(f"[E2E DEBUG] Binary: {credential_process_binary}")
+            # Quick pre-flight: run binary with --version to confirm it works
+            import subprocess as sp2
+            ver = sp2.run([str(credential_process_binary), "--version"], capture_output=True, text=True, env=env, timeout=5)
+            print(f"[E2E DEBUG] Binary --version: exit={ver.returncode}, stdout={ver.stdout.strip()}, stderr={ver.stderr.strip()[:100]}")
+            # Run with CCWB_DEBUG=1 to get binary debug output
+            env["CCWB_DEBUG"] = "1"
 
         cmd = [str(credential_process_binary)]
         if extra_args:
             cmd.extend(extra_args)
 
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+            # Print stderr for debug when E2E_DEBUG is set
+            if os.environ.get("E2E_DEBUG") and result.stderr:
+                print(f"[E2E DEBUG] Binary stderr: {result.stderr[:500]}")
+            return result
+        except subprocess.TimeoutExpired as e:
+            # Capture partial output before re-raising
+            stderr_partial = e.stderr.decode() if e.stderr else ""
+            stdout_partial = e.stdout.decode() if e.stdout else ""
+            print(f"[E2E TIMEOUT] Binary timed out after {timeout}s")
+            print(f"[E2E TIMEOUT] Partial stderr: {stderr_partial[:500]}")
+            print(f"[E2E TIMEOUT] Partial stdout: {stdout_partial[:200]}")
+            raise
 
     return _run
 
