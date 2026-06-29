@@ -395,7 +395,6 @@ jobs:
             -v \
             --timeout=300 \
             --tb=short \
-            -x \
             --junitxml=report-${{ matrix.profile }}.xml
 
       - name: Upload test report
