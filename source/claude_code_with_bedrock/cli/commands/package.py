@@ -3190,6 +3190,27 @@ echo
         # harmless and the copy stays best-effort.
         _otel_missing_is_fatal = bool(profile.monitoring_enabled)
 
+        # Web search headersHelper (Windows): when web search is enabled (OIDC),
+        # write %USERPROFILE%\claude-code-with-bedrock\websearch-headers.cmd, a
+        # wrapper that runs credential-process.exe --get-mcp-auth-header (the
+        # browserless MCP-header mode). %USERPROFILE% is expanded at install time
+        # so the .cmd carries an absolute path.
+        windows_websearch_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            windows_websearch_block = f"""
+REM Web search headersHelper (Cowork web search via AgentCore Gateway).
+REM Emits {{"Authorization":"Bearer <id_token>"}} via the browserless
+REM --get-mcp-auth-header mode, bound to the '{profile.name}' profile.
+echo Installing web search headersHelper...
+(
+echo @echo off
+echo "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile {profile.name} --get-mcp-auth-header
+) > "%USERPROFILE%\\claude-code-with-bedrock\\websearch-headers.cmd"
+echo OK Web search headersHelper installed
+"""
+
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
 cd /d "%~dp0"
@@ -3231,7 +3252,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-
+{windows_websearch_block}
 REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...

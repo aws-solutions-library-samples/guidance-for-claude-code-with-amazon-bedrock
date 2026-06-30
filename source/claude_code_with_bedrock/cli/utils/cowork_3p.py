@@ -254,17 +254,22 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
 
 WEBSEARCH_MCP_SERVER_NAME = "agentcore-websearch"
 
-# Filename of the headersHelper script the installer drops next to the
-# credential-process binary (in ~/claude-code-with-bedrock/). It prints
+# Filename of the headersHelper the installer drops next to the credential-process
+# binary (in ~/claude-code-with-bedrock/). It prints
 # {"Authorization": "Bearer <id_token>"} on stdout for Claude Desktop to attach
-# to every MCP request to the gateway.
+# to every MCP request to the gateway. On Windows it is a .cmd wrapper.
 WEBSEARCH_HEADERS_HELPER_NAME = "websearch-headers"
 
-# Default install location (mirrors where 'ccwb package' installs
-# credential-process). Used as the default headersHelper path; tilde-expanded
-# per-user. Admins can override with an absolute path via the profile attribute
-# ``websearch_headers_helper_path`` if their MDM/Claude build does not expand ~.
-WEBSEARCH_HEADERS_HELPER_DEFAULT = f"~/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
+# Per-OS default headersHelper paths. The MDM config is generated once but
+# rendered into per-OS formats (.mobileconfig vs .reg/.ps1), so the entry stores
+# a placeholder that each generator resolves to the right path. Admins can still
+# override with an explicit absolute path via ``websearch_headers_helper_path``.
+WEBSEARCH_HEADERS_HELPER_PLACEHOLDER = "__WEBSEARCH_HEADERS_HELPER__"
+WEBSEARCH_HEADERS_HELPER_POSIX = f"~/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
+WEBSEARCH_HEADERS_HELPER_WINDOWS = rf"%USERPROFILE%\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
+
+# Back-compat alias (POSIX default) for callers/tests that referenced the old name.
+WEBSEARCH_HEADERS_HELPER_DEFAULT = WEBSEARCH_HEADERS_HELPER_POSIX
 
 # How often (seconds) Claude Desktop re-invokes the headersHelper. Kept below the
 # Cognito id_token lifetime (~1h) so a fresh bearer is fetched before expiry.
@@ -312,11 +317,14 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
     that connector sends a request body the AgentCore Gateway cannot parse
     ("Invalid JSON format"), even though auth succeeds.
 
-    The ``headersHelper`` path defaults to ``~/claude-code-with-bedrock/
-    websearch-headers`` (where ``ccwb package`` installs the wrapper) and can be
-    overridden with an absolute path via the profile attribute
-    ``websearch_headers_helper_path``. Preserves any administrator-defined
-    ``managedMcpServers`` and de-dupes by name.
+    The ``headersHelper`` path is OS-specific. Unless overridden, the entry
+    carries a placeholder that each generator resolves to the per-OS default
+    (``~/claude-code-with-bedrock/websearch-headers`` on macOS/Linux,
+    ``%USERPROFILE%\\claude-code-with-bedrock\\websearch-headers.cmd`` on
+    Windows) — the same path where ``ccwb package`` installs the wrapper. An
+    explicit ``websearch_headers_helper_path`` override is used verbatim across
+    all formats. Preserves any administrator-defined ``managedMcpServers`` and
+    de-dupes by name.
     """
     if not getattr(profile, "web_search_enabled", False):
         return
@@ -341,13 +349,36 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
         )
         return
 
-    # Remote MCP entry authenticated via a headersHelper script (Metodo 1).
-    # Claude Desktop invokes the helper, attaches the returned
-    # {"Authorization": "Bearer <id_token>"} header to each MCP request, and
-    # re-fetches every headersHelperTtlSec so an expiring token is refreshed.
-    headers_helper = (
-        getattr(profile, "websearch_headers_helper_path", "") or ""
-    ).strip() or WEBSEARCH_HEADERS_HELPER_DEFAULT
+    # Remote MCP entry authenticated via a headersHelper script. Claude Desktop
+    # invokes the helper, attaches the returned {"Authorization": "Bearer
+    # <id_token>"} header to each MCP request, and re-fetches every
+    # headersHelperTtlSec so an expiring token is refreshed.
+    #
+    # The path is OS-specific, but this one MDM dict is rendered into both macOS
+    # (.mobileconfig) and Windows (.reg/.ps1) formats. So unless the admin sets
+    # an explicit override, store a placeholder that each generator resolves to
+    # the right per-OS default. An override wins verbatim across all formats.
+    override = (getattr(profile, "websearch_headers_helper_path", "") or "").strip()
+    if override:
+        headers_helper = override
+        looks_absolute = (
+            override.startswith("/")
+            or override.startswith("~")
+            or override.startswith("%")
+            or (len(override) > 2 and override[1] == ":")  # Windows drive, e.g. C:\
+        )
+        if not looks_absolute:
+            console.print(
+                "[yellow]⚠ websearch_headers_helper_path is not an absolute path; "
+                "Claude Desktop may not resolve it.[/yellow]"
+            )
+        console.print(
+            "[dim]Web search: using a custom headersHelper path. The installer only creates the "
+            "default path \u2014 ensure an executable helper exists at this path on every user's "
+            "machine, and that it matches the target OS, especially with --target-platform all.[/dim]"
+        )
+    else:
+        headers_helper = WEBSEARCH_HEADERS_HELPER_PLACEHOLDER
     entry = {
         "name": WEBSEARCH_MCP_SERVER_NAME,
         "url": url,
@@ -381,6 +412,23 @@ def _mdm_keys(config: dict) -> dict:
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
+def _mdm_keys_resolved(config: dict, helper_path: str) -> dict:
+    """Like ``_mdm_keys`` but resolves the headersHelper placeholder for one OS.
+
+    ``add_websearch_mcp_config`` stores ``WEBSEARCH_HEADERS_HELPER_PLACEHOLDER``
+    in the ``managedMcpServers`` entry (unless the admin set an explicit path).
+    Each generator calls this with its platform default so the macOS plist and
+    the Windows .reg/.ps1 each get the correct path from the same MDM dict.
+    No-op when the placeholder is absent (e.g. an explicit override).
+    """
+    keys = _mdm_keys(config)
+    raw = keys.get("managedMcpServers")
+    if isinstance(raw, str) and WEBSEARCH_HEADERS_HELPER_PLACEHOLDER in raw:
+        keys = dict(keys)
+        keys["managedMcpServers"] = raw.replace(WEBSEARCH_HEADERS_HELPER_PLACEHOLDER, helper_path)
+    return keys
+
+
 def generate_json(output_dir: Path, mdm_config: dict) -> Path:
     """Generate raw MDM configuration JSON file.
 
@@ -388,7 +436,7 @@ def generate_json(output_dir: Path, mdm_config: dict) -> Path:
     """
     json_path = output_dir / "cowork-3p-config.json"
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(_mdm_keys(mdm_config), f, indent=2)
+        json.dump(_mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_POSIX), f, indent=2)
     return json_path
 
 
@@ -403,7 +451,7 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
     # Per Claude CoWork docs: all values are stored as strings in the OS preference
     # store, even booleans, integers, and arrays. Arrays must be JSON-encoded strings.
     payload_items = []
-    for key, value in _mdm_keys(mdm_config).items():
+    for key, value in _mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_POSIX).items():
         payload_items.append(f"\t\t\t<key>{xml_escape(key)}</key>")
         if isinstance(value, bool):
             string_value = "true" if value else "false"
@@ -483,7 +531,7 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
 
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
-    for key, value in _mdm_keys(config).items():
+    for key, value in _mdm_keys_resolved(config, WEBSEARCH_HEADERS_HELPER_WINDOWS).items():
         if isinstance(value, bool):
             string_value = "true" if value else "false"
         elif isinstance(value, list | dict):
@@ -578,7 +626,7 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
 
     Returns the path to the generated .ps1 file.
     """
-    keys = _mdm_keys(mdm_config)
+    keys = _mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_WINDOWS)
 
     lines = [
         "<#",
