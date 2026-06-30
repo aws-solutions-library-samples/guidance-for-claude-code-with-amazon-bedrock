@@ -17,12 +17,6 @@ on:
         type: boolean
         default: false
 
-  pull_request:
-    branches:
-      - beta
-    paths:
-      - 'deployment/**'
-      - 'source/go/**'
 
 permissions:
   id-token: write
