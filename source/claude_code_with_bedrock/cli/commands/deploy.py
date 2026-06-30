@@ -1104,6 +1104,21 @@ class DeployCommand(Command):
                 )
 
                 if result == 0:
+
+                    # Trigger CodeBuild to build the gateway image
+                    build_project = outputs.get("GatewayBuildProjectName", "") if outputs else ""
+                    if build_project:
+                        console.print("[cyan]Building gateway image (CodeBuild)...[/cyan]")
+                        try:
+                            import boto3 as _boto3
+                            cb = _boto3.client("codebuild", region_name=profile.aws_region)
+                            build_resp = cb.start_build(projectName=build_project)
+                            build_id = build_resp["build"]["id"]
+                            console.print(f"[dim]Build started: {build_id}[/dim]")
+                            console.print("[dim]ECS will pull the image once build completes (~2-3 min).[/dim]")
+                        except Exception as e:
+                            console.print(f"[yellow]Warning: Could not trigger image build: {e}[/yellow]")
+
                     outputs = get_stack_outputs(stack_name, profile.aws_region)
                     gateway_url = outputs.get("GatewayUrl", "N/A") if outputs else "N/A"
                     console.print("\n[bold green]✓ Claude Apps Gateway deployed![/bold green]")

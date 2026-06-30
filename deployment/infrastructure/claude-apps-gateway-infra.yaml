@@ -38,12 +38,10 @@ Parameters:
     Default: us-east-1
     Description: AWS region for Bedrock model inference
 
-  GatewayImage:
+  ClaudeBinaryUrl:
     Type: String
-    Description: >-
-      Container image with the claude binary and gateway.yaml baked in.
-      Build your own image following the gateway deployment guide, or use
-      the official image when available. No default — must be provided.
+    Default: 'https://storage.googleapis.com/anthropic-public/claude-code/claude-linux-arm64'
+    Description: URL to download the claude Linux binary for the gateway image build
 
   DbInstanceClass:
     Type: String
@@ -222,7 +220,7 @@ Resources:
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
         - Name: gateway
-          Image: !Ref GatewayImage
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${GatewayEcrRepo}:latest'
           # NOTE: The gateway requires a config file (gateway.yaml). The exact
           # interface depends on your claude binary version. Options:
           # 1. Bake gateway.yaml into your container image
@@ -268,6 +266,128 @@ Resources:
             Interval: 30
             Timeout: 5
             Retries: 3
+
+
+  # ECR Repository for gateway images (built by CodeBuild)
+  GatewayEcrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${AWS::StackName}-gateway'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+
+  # CodeBuild project — builds the gateway container image automatically
+  GatewayBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GatewayBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt GatewayEcrRepo.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+  GatewayBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AWS::StackName}-build'
+      ServiceRole: !GetAtt GatewayBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPO_URI
+            Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${GatewayEcrRepo}'
+          - Name: CLAUDE_BINARY_URL
+            Value: !Ref ClaudeBinaryUrl
+          - Name: OIDC_ISSUER_URL
+            Value: !Ref OidcIssuerUrl
+          - Name: OIDC_CLIENT_ID
+            Value: !Ref OidcClientId
+          - Name: OIDC_CLIENT_SECRET_ARN
+            Value: !Ref OidcClientSecretArn
+          - Name: BEDROCK_REGION
+            Value: !Ref BedrockRegion
+          - Name: GATEWAY_PORT
+            Value: !Ref GatewayPort
+          - Name: DB_HOST
+            Value: !GetAtt Database.Endpoint.Address
+          - Name: DB_SECRET_ARN
+            Value: !Ref DbPassword
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_REPO_URI
+                - curl -fsSL $CLAUDE_BINARY_URL -o claude && chmod +x claude
+            build:
+              commands:
+                - |
+                  cat > gateway.yaml << EOF
+                  listen:
+                    port: $GATEWAY_PORT
+                  oidc:
+                    issuer: "$OIDC_ISSUER_URL"
+                    client_id: "$OIDC_CLIENT_ID"
+                    client_secret_arn: "$OIDC_CLIENT_SECRET_ARN"
+                  store:
+                    type: postgres
+                    host: "$DB_HOST"
+                    port: 5432
+                    database: gateway
+                    user: gateway
+                    password_secret_arn: "$DB_SECRET_ARN"
+                  upstreams:
+                    - provider: bedrock
+                      region: "$BEDROCK_REGION"
+                  EOF
+                - |
+                  cat > Dockerfile << EOF
+                  FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
+                  RUN dnf install -y curl && dnf clean all
+                  COPY claude /usr/local/bin/claude
+                  COPY gateway.yaml /etc/gateway/gateway.yaml
+                  RUN chmod +x /usr/local/bin/claude
+                  EXPOSE $GATEWAY_PORT
+                  ENTRYPOINT ["claude", "gateway", "--config", "/etc/gateway/gateway.yaml"]
+                  EOF
+                - docker build -t $ECR_REPO_URI:latest .
+            post_build:
+              commands:
+                - docker push $ECR_REPO_URI:latest
+      TimeoutInMinutes: 10
 
   GatewayService:
     Type: AWS::ECS::Service
@@ -353,3 +473,9 @@ Outputs:
   ClusterArn:
     Description: ECS cluster ARN
     Value: !GetAtt EcsCluster.Arn
+  GatewayBuildProjectName:
+    Description: CodeBuild project name — trigger to rebuild gateway image
+    Value: !Ref GatewayBuildProject
+  GatewayEcrRepositoryUri:
+    Description: ECR repository URI for the gateway image
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${GatewayEcrRepo}'
