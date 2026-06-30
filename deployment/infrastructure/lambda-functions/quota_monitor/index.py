@@ -222,6 +222,25 @@ def update_quota_metrics(usage_data):
     print(f"Updated UserQuotaMetrics for {len(usage_data)} users")
 
 
+def _build_usage_entry(item, current_date):
+    """Build a usage_data entry for threshold checking, applying the stale-day guard.
+
+    Mirrors quota_check.get_user_usage: if the stored daily_date is not today
+    (UTC), the daily counter belongs to a prior day and must be treated as 0.
+    Otherwise an idle user whose daily_tokens froze above the limit gets a fresh
+    "daily exceeded" alert every new UTC day even though they had no activity.
+    Monthly (total_tokens) is unaffected — it accumulates across the whole month.
+    """
+    daily_tokens = float(item.get("daily_tokens", 0))
+    daily_date = item.get("daily_date")
+    if daily_date != current_date:
+        daily_tokens = 0
+    return {
+        "total_tokens": float(item.get("total_tokens", 0)),
+        "daily_tokens": daily_tokens,
+    }
+
+
 def lambda_handler(event, context):
     """Fetch usage from PromQL, update DynamoDB, check quotas, send alerts."""
     print(f"Starting quota monitoring at {datetime.now(timezone.utc).isoformat()}")
@@ -242,30 +261,29 @@ def lambda_handler(event, context):
         # Step 2: Read cumulative totals from DynamoDB for threshold checking
         current_month = now.strftime("%Y-%m")
         usage_data = {}
+        # NOTE: daily_date MUST be projected so we can apply the same stale-day
+        # guard that quota_check uses (quota_check/index.py). Without it, an idle
+        # user's frozen daily_tokens is read verbatim and re-alerted every new UTC
+        # day even though they had no activity.
+        projection = "email, total_tokens, daily_tokens, daily_date"
         response = quota_table.scan(
             FilterExpression=Attr("sk").eq(f"MONTH#{current_month}") & Attr("pk").begins_with("USER#"),
-            ProjectionExpression="email, total_tokens, daily_tokens",
+            ProjectionExpression=projection,
         )
         for item in response.get("Items", []):
             email = item.get("email")
             if email:
-                usage_data[email] = {
-                    "total_tokens": float(item.get("total_tokens", 0)),
-                    "daily_tokens": float(item.get("daily_tokens", 0)),
-                }
+                usage_data[email] = _build_usage_entry(item, current_date)
         while "LastEvaluatedKey" in response:
             response = quota_table.scan(
                 FilterExpression=Attr("sk").eq(f"MONTH#{current_month}") & Attr("pk").begins_with("USER#"),
-                ProjectionExpression="email, total_tokens, daily_tokens",
+                ProjectionExpression=projection,
                 ExclusiveStartKey=response["LastEvaluatedKey"],
             )
             for item in response.get("Items", []):
                 email = item.get("email")
                 if email:
-                    usage_data[email] = {
-                        "total_tokens": float(item.get("total_tokens", 0)),
-                        "daily_tokens": float(item.get("daily_tokens", 0)),
-                    }
+                    usage_data[email] = _build_usage_entry(item, current_date)
 
         if not usage_data:
             print("No usage data in DynamoDB")
