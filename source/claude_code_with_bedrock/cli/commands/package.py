@@ -2780,6 +2780,30 @@ if [ ! -f "$CREDENTIAL_BINARY" ]; then
 fi
 """
 
+        # Web search headersHelper: when web search is enabled (OIDC only), the
+        # installer drops a small wrapper next to credential-process that emits
+        # {"Authorization":"Bearer <id_token>"} for Claude Desktop's
+        # managedMcpServers headersHelper. Bound to this deployment profile.
+        websearch_helper_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            websearch_helper_block = f"""
+# Web search headersHelper (Cowork web search via AgentCore Gateway).
+# Emits {{"Authorization":"Bearer <id_token>"}} so Claude Desktop authenticates
+# managedMcpServers requests to the gateway. Bound to the '{profile.name}' profile.
+echo
+echo "Installing web search headersHelper..."
+WS_HELPER="$ACTUAL_HOME/claude-code-with-bedrock/websearch-headers"
+cat > "$WS_HELPER" <<WS_EOF
+#!/bin/sh
+exec "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" --profile {profile.name} --get-mcp-auth-header
+WS_EOF
+chmod +x "$WS_HELPER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$WS_HELPER"; fi
+echo "OK Web search headersHelper installed: $WS_HELPER"
+"""
+
         installer_content += f"""
 # Create directory
 echo
@@ -2797,6 +2821,18 @@ chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 if [ -n "$SUDO_USER" ]; then
     chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
 fi
+{websearch_helper_block}
+# Resolve __CCWB_HOME__ to the real home in the CoWork MDM files. Claude Desktop
+# on macOS does NOT expand ~ or env vars in MDM string values, and the
+# .mobileconfig is generated centrally, so the absolute paths (headersHelper,
+# inferenceCredentialHelper) must be substituted here on the user's machine.
+for _ccwb_mdm in "cowork-3p.mobileconfig" "cowork-3p-config.json"; do
+    if [ -f "$_ccwb_mdm" ] && grep -q "__CCWB_HOME__" "$_ccwb_mdm" 2>/dev/null; then
+        sed -i.bak "s|__CCWB_HOME__|$ACTUAL_HOME|g" "$_ccwb_mdm" && rm -f "$_ccwb_mdm.bak"
+        if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$_ccwb_mdm"; fi
+        echo "OK Resolved home directory in $_ccwb_mdm"
+    fi
+done
 
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -3166,6 +3202,30 @@ echo
         # harmless and the copy stays best-effort.
         _otel_missing_is_fatal = bool(profile.monitoring_enabled)
 
+        # Web search headersHelper (Windows): when web search is enabled (OIDC),
+        # write %USERPROFILE%\claude-code-with-bedrock\websearch-headers.cmd, a
+        # wrapper that runs credential-process.exe --get-mcp-auth-header (the
+        # browserless MCP-header mode). The .cmd itself keeps %USERPROFILE%: that
+        # is fine because cmd.exe expands it at runtime when the wrapper EXECUTES.
+        # (The registry path that points AT this .cmd is the one that must be
+        # absolute — Claude reads it literally — handled via __CCWB_HOME__ in the
+        # .reg, resolved by the cowork-3p.reg substitution block below.)
+        windows_websearch_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            windows_websearch_block = f"""
+REM Web search headersHelper (Cowork web search via AgentCore Gateway).
+REM Emits {{"Authorization":"Bearer <id_token>"}} via the browserless
+REM --get-mcp-auth-header mode, bound to the '{profile.name}' profile.
+echo Installing web search headersHelper...
+(
+echo @echo off
+echo "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile {profile.name} --get-mcp-auth-header
+) > "%USERPROFILE%\\claude-code-with-bedrock\\websearch-headers.cmd"
+echo OK Web search headersHelper installed
+"""
+
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
 cd /d "%~dp0"
@@ -3207,7 +3267,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-
+{windows_websearch_block}
 REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...
@@ -3281,6 +3341,19 @@ if exist "collector-config.yaml" (
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+
+REM Resolve __CCWB_HOME__ to the absolute home in the CoWork MDM .reg. Claude
+REM Desktop does NOT expand %USERPROFILE% (or other env vars) in registry MDM
+REM string values, and cowork-3p.reg is generated centrally, so the headersHelper
+REM / inferenceCredentialHelper absolute paths must be baked in here before the
+REM admin/user imports it. The .reg escapes backslashes, so the home is escaped
+REM (\\ -> \\\\) to match the .reg format; reg import un-escapes it back to a
+REM single backslash in the stored REG_SZ value.
+if exist "cowork-3p.reg" (
+    echo Resolving home directory in cowork-3p.reg...
+    powershell -NoProfile -Command "$h = $env:USERPROFILE.Replace('\\','\\\\'); (Get-Content 'cowork-3p.reg' -Raw).Replace('__CCWB_HOME__', $h) | Set-Content 'cowork-3p.reg'"
+    echo OK Resolved home directory in cowork-3p.reg ^(import it with: reg import cowork-3p.reg, then fully restart Claude^)
+)
 
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
@@ -3950,6 +4023,7 @@ Available metrics include:
         """
         from claude_code_with_bedrock.cli.utils.cowork_3p import (
             add_monitoring_config,
+            add_websearch_mcp_config,
             build_mdm_config,
             derive_model_aliases,
             generate_all,
@@ -3979,6 +4053,7 @@ Available metrics include:
                 mdm_config["inferenceSessionLifetimeSec"] = profile.cowork_inference_session_lifetime_sec
 
             add_monitoring_config(mdm_config, profile, console)
+            add_websearch_mcp_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 
         except Exception as e:

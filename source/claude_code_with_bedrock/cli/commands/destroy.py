@@ -12,11 +12,12 @@ from rich.prompt import Confirm
 
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
 from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials, get_codebuild_region
-from claude_code_with_bedrock.config import Config
+from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
 
 # All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
 # Keep in sync with deploy.py's stack types when adding new stacks.
 DESTROYABLE_STACKS = [
+    "websearch",
     "codebuild",
     "analytics",
     "quota",
@@ -143,12 +144,20 @@ class DestroyCommand(Command):
                 continue
             if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
                 continue
+            if stack == "websearch" and not getattr(profile, "web_search_enabled", False):
+                continue
 
             stack_name = profile.stack_names.get(stack, f"{profile.identity_pool_name}-{stack}")
             # CodeBuild may have been deployed cross-region (Windows container fleet
             # isn't in every region); delete it where it actually lives, or it's
             # silently orphaned in the build region while the destroy reports success.
-            stack_region = get_codebuild_region(profile) if stack == "codebuild" else profile.aws_region
+            # Web search likewise deploys into us-east-1 (managed connector region).
+            if stack == "codebuild":
+                stack_region = get_codebuild_region(profile)
+            elif stack == "websearch":
+                stack_region = getattr(profile, "websearch_region", None) or WEBSEARCH_SUPPORTED_REGIONS[0]
+            else:
+                stack_region = profile.aws_region
             console.print(f"Destroying {stack} stack: [cyan]{stack_name}[/cyan]")
 
             result = self._delete_stack(stack_name, stack_region, console)
