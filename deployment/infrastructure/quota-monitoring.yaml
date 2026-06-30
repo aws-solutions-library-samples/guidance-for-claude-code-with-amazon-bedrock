@@ -50,6 +50,17 @@ Parameters:
       - 'false'
     Description: Enable fine-grained quota policies (user/group/default levels)
 
+  PersonaOrder:
+    Type: String
+    Default: ''
+    Description: >-
+      Comma-separated persona group values in DECLARED order, enabling
+      persona-based-access (PBAC) declared-order quota resolution in the
+      quota Lambdas. When set, the first matching group in this list wins
+      (matches the credential helper's persona resolution). When empty
+      (default), the Lambdas preserve legacy most-restrictive resolution.
+      Populated by `ccwb deploy` from the configured personas.
+
   EnableBypassDetection:
     Type: String
     Default: 'false'
@@ -226,6 +237,8 @@ Resources:
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
+          # PBAC declared-order resolution (empty = legacy most-restrictive)
+          PERSONA_ORDER: !Ref PersonaOrder
           METRICS_REGION: !Ref 'AWS::Region'
       Code: ./lambda-functions/quota_monitor/
 
@@ -378,6 +391,14 @@ Resources:
                   - !GetAtt UserQuotaMetrics.Arn
                   - !GetAtt QuotaPolicies.Arn
                   - !Sub '${QuotaPolicies.Arn}/index/*'
+              # Persist per-user group membership (USER#<email>/GROUPS) so the
+              # quota_monitor can resolve per-persona alert thresholds. Write is
+              # scoped to the metrics table only — quota_check never writes policies.
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt UserQuotaMetrics.Arn
 
   # Lambda function for real-time quota checking
   QuotaCheckFunction:
@@ -399,6 +420,8 @@ Resources:
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
+          # PBAC declared-order resolution (empty = legacy most-restrictive)
+          PERSONA_ORDER: !Ref PersonaOrder
       Code: ./lambda-functions/quota_check/
 
   # HTTP API Gateway (v2 - cheaper and faster than REST API)

@@ -384,6 +384,9 @@ Resources:
                   - key: team.id
                     from_context: metadata.x-team-id
                     action: upsert
+                  - key: persona
+                    from_context: metadata.x-persona
+                    action: upsert
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
@@ -430,6 +433,8 @@ Resources:
                   - dimensions: [[department, OTelLib]]
                     metric_name_selectors: [".*"]
                   - dimensions: [[team.id, OTelLib]]
+                    metric_name_selectors: [".*"]
+                  - dimensions: [[persona, OTelLib]]
                     metric_name_selectors: [".*"]
                   - dimensions: [[organization, OTelLib]]
                     metric_name_selectors: [".*"]
@@ -497,6 +502,9 @@ Resources:
                     action: upsert
                   - key: team.id
                     from_context: metadata.x-team-id
+                    action: upsert
+                  - key: persona
+                    from_context: metadata.x-persona
                     action: upsert
                   - key: cost_center
                     from_context: metadata.x-cost-center

@@ -13,6 +13,7 @@ import (
 	"ccwb-go/internal/jwt"
 	"ccwb-go/internal/oidc"
 	"ccwb-go/internal/otel"
+	"ccwb-go/internal/persona"
 	"ccwb-go/internal/portlock"
 	"ccwb-go/internal/provider"
 	"ccwb-go/internal/quota"
@@ -44,6 +45,8 @@ func main() {
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
+	getPersonaModel := flag.Bool("get-persona-model", false, "Print shell `export` lines routing ANTHROPIC_*_MODEL to the resolved persona's per-tier inference profiles (FR-5.1). Local only. Exit codes: 0 emitted, 2 no persona/ARNs, 4 token expired.")
+	personaTier := flag.String("tier", "", "With --get-persona-model: emit only this tier (haiku|sonnet|opus). Default emits all tiers the persona has, plus ANTHROPIC_MODEL=primary.")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -119,6 +122,10 @@ func main() {
 
 	if *getTag != "" {
 		os.Exit(app.getTag(*getTag))
+	}
+
+	if *getPersonaModel {
+		os.Exit(app.getPersonaModel(*personaTier))
 	}
 
 	if *getMonitoring {
@@ -348,7 +355,7 @@ func (a *credentialApp) getTag(key string) int {
 	if err != nil {
 		return 2
 	}
-	if exp := claims.GetFloat("exp"); exp > 0 && int64(exp) < time.Now().Unix() {
+	if tokenExpired(claims, time.Now().Unix()) {
 		return 4
 	}
 	value := otel.ExtractPrincipalTag(claims, key)
@@ -357,6 +364,123 @@ func (a *credentialApp) getTag(key string) int {
 	}
 	fmt.Println(value)
 	return 0
+}
+
+// getPersonaModel resolves the user's persona from the cached ID token's groups
+// claim and prints shell `export` lines that point ANTHROPIC_*_MODEL at that
+// persona's per-tier Application Inference Profile ARNs (FR-5.1). This backs the
+// generated launch wrapper (`persona-model.sh` / `.ps1`) so a persona's traffic
+// is attributed to its own cost-tagged profile.
+//
+// It is purely local (no OIDC flow, no network) so it is safe to call from a
+// shell function on every `claude` launch. Output is plain `export KEY=value`
+// lines (one per resolved tier) that the wrapper `eval`s; on no match / no ARNs
+// it prints nothing and the baked settings.json model stays in effect.
+//
+// tier (optional) restricts output to a single tier (haiku|sonnet|opus); empty
+// emits every tier the persona has an ARN for, plus ANTHROPIC_MODEL set to the
+// persona's primary (most-capable) tier.
+//
+// Exit codes mirror getTag so the wrapper can branch:
+//
+//	0 -- one or more exports printed
+//	2 -- no persona matched, persona has no inference-profile ARNs, or personas
+//	     aren't configured (the wrapper then leaves the env untouched)
+//	4 -- cached token is expired (user needs to re-auth)
+func (a *credentialApp) getPersonaModel(tier string) int {
+	if len(a.cfg.Personas) == 0 {
+		return 2
+	}
+
+	token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+	if token == "" {
+		return 2
+	}
+	claims, err := jwt.DecodePayload(token)
+	if err != nil {
+		return 2
+	}
+	if tokenExpired(claims, time.Now().Unix()) {
+		return 4
+	}
+
+	lines, code := resolvePersonaModelExports(a.cfg, claims, tier)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return code
+}
+
+// _tierEnvVar maps a Claude tier to its Claude Code per-tier model env var.
+var _tierEnvVar = map[string]string{
+	"haiku":  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+	"sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"opus":   "ANTHROPIC_DEFAULT_OPUS_MODEL",
+}
+
+// _tierOrder is ascending model capability; the last entry a persona has an ARN
+// for is its "primary" tier (used for bare ANTHROPIC_MODEL).
+var _tierOrder = []string{"haiku", "sonnet", "opus"}
+
+// tokenExpired reports whether the cached token's `exp` claim is in the past
+// relative to `now` (unix seconds). A missing or non-positive `exp` is treated
+// as NOT expired (some tokens omit it; the upstream OIDC flow still validates).
+// Factored out (like selectRoleARN / resolvePersonaModelExports) so the exit-code-4
+// path of getTag/getPersonaModel is unit-testable without the credential cache —
+// pass a fixed `now` rather than reading the clock.
+func tokenExpired(claims jwt.Claims, now int64) bool {
+	exp := claims.GetFloat("exp")
+	return exp > 0 && int64(exp) < now
+}
+
+// resolvePersonaModelExports is the pure core of getPersonaModel: given the
+// profile config, decoded token claims, and an optional single tier, it returns
+// the shell `export` lines to print and the process exit code (0 emitted, 2
+// nothing to emit). Factored out (like selectRoleARN) so it is unit-testable
+// without touching the credential cache. Expiry is checked by the caller.
+func resolvePersonaModelExports(cfg *config.ProfileConfig, claims jwt.Claims, tier string) ([]string, int) {
+	if len(cfg.Personas) == 0 {
+		return nil, 2
+	}
+	groupsClaim := cfg.GroupsClaimName
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	p, err := persona.Resolve(claims.GetStringSlice(groupsClaim), cfg.Personas, cfg.FallbackPersona)
+	if err != nil || p == nil || len(p.InferenceProfileArns) == 0 {
+		return nil, 2
+	}
+
+	var lines []string
+	if tier != "" {
+		// Single-tier request: emit just that tier's env var if the persona has it.
+		envKey, known := _tierEnvVar[tier]
+		arn := p.InferenceProfileArns[tier]
+		if !known || arn == "" {
+			return nil, 2
+		}
+		lines = append(lines, fmt.Sprintf("export %s=%s", envKey, arn))
+		return lines, 0
+	}
+
+	// All tiers the persona has, ascending capability so the primary (last) is
+	// deterministic. Also set bare ANTHROPIC_MODEL to the primary tier's ARN.
+	var primaryARN string
+	for _, t := range _tierOrder {
+		arn := p.InferenceProfileArns[t]
+		if arn == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("export %s=%s", _tierEnvVar[t], arn))
+		primaryARN = arn
+	}
+	if primaryARN != "" {
+		lines = append(lines, fmt.Sprintf("export ANTHROPIC_MODEL=%s", primaryARN))
+	}
+	if len(lines) == 0 {
+		return nil, 2
+	}
+	return lines, 0
 }
 
 func (a *credentialApp) run() int {
@@ -547,10 +671,71 @@ func (a *credentialApp) resolveConfidentialAuth() (*oidc.ConfidentialAuth, error
 	}
 }
 
+// selectRoleARN decides which IAM role the direct-STS path should assume.
+//
+// With no personas configured it returns the profile's FederatedRoleARN —
+// byte-for-byte today's behavior, so existing deployments are unaffected. When
+// personas are configured (persona-based access, direct-IAM only), it resolves
+// the user's persona from their groups claim using the shared §4.3 algorithm
+// (persona.Resolve) and returns that persona's role ARN. A user whose groups
+// match no persona and for whom no fallback is configured is hard-denied with a
+// clear, actionable error rather than silently falling back to a broad role.
+//
+// This is pure, in-memory resolution — no AWS SDK / boto3 calls (the credential
+// process is invoked BY the SDK; calling back into it would recurse, see
+// credential-recursion.md). The only AWS call remains the existing STS
+// AssumeRoleWithWebIdentity performed by the caller.
+func selectRoleARN(cfg *config.ProfileConfig, claims jwt.Claims) (string, error) {
+	if len(cfg.Personas) == 0 {
+		return cfg.FederatedRoleARN, nil
+	}
+
+	groupsClaim := cfg.GroupsClaimName
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	groups := claims.GetStringSlice(groupsClaim)
+
+	p, err := persona.Resolve(groups, cfg.Personas, cfg.FallbackPersona)
+	if err != nil {
+		return "", fmt.Errorf("resolving persona: %w", err)
+	}
+	if p == nil {
+		// Distinguish the two no-result cases so the admin sees the right cause:
+		// a fallback that names a non-existent persona is a config error to fix,
+		// whereas no fallback at all means the user needs a persona group. Both
+		// are correctly hard-denied (no role assumed); only the message differs.
+		if cfg.FallbackPersona != "" {
+			return "", fmt.Errorf(
+				"no persona matched your groups %v (claim %q) and the configured fallback_persona %q "+
+					"does not name any declared persona; fix fallback_persona in config.yaml and re-run `ccwb package`",
+				groups, groupsClaim, cfg.FallbackPersona,
+			)
+		}
+		return "", fmt.Errorf(
+			"no persona matched your groups %v (claim %q) and no fallback persona is configured; "+
+				"contact your administrator to be added to a persona group",
+			groups, groupsClaim,
+		)
+	}
+	if p.RoleARN == "" {
+		return "", fmt.Errorf(
+			"persona %q matched but has no role ARN in config.json; "+
+				"re-run `ccwb package` after deploying the persona stack",
+			p.Name,
+		)
+	}
+	return p.RoleARN, nil
+}
+
 func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AWSCredentials, error) {
 	if a.cfg.FederationType == "direct" {
+		roleARN, err := selectRoleARN(a.cfg, auth.TokenClaims)
+		if err != nil {
+			return nil, err
+		}
 		return federation.AssumeRoleWithWebIdentity(
-			a.cfg.AWSRegion, a.cfg.FederatedRoleARN, auth.IDToken,
+			a.cfg.AWSRegion, roleARN, auth.IDToken,
 			auth.TokenClaims, a.cfg.MaxSessionDuration,
 		)
 	}

@@ -16,7 +16,8 @@ import (
 //
 //	v1  initial 10-header set (no version field)
 //	v2  adds x-project (driven by the AWS session-tag claim)
-const currentCacheSchemaVersion = 2
+//	v3  adds x-persona (persona-based access, resolved from the groups claim)
+const currentCacheSchemaVersion = 3
 
 // cacheEntry is the JSON structure of {profile}-otel-headers.json.
 type cacheEntry struct {

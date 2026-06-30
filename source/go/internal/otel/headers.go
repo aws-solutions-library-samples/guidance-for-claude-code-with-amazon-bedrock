@@ -13,6 +13,7 @@ var HeaderMapping = map[string]string{
 	"role":            "x-role",
 	"manager":         "x-manager",
 	"project":         "x-project",
+	"persona":         "x-persona",
 }
 
 // FormatHeaders converts UserInfo to a map of HTTP header name -> value.
@@ -30,6 +31,7 @@ func FormatHeaders(info UserInfo) map[string]string {
 		"role":            info.Role,
 		"manager":         info.Manager,
 		"project":         info.Project,
+		"persona":         info.Persona,
 	}
 
 	headers := make(map[string]string)

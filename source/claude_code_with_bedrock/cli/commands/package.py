@@ -313,6 +313,24 @@ class PackageCommand(Command):
                     console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
                     return 1
 
+        # PBAC safety gate: persona access control is enforced ONLY by the Go
+        # credential-process (it resolves the persona from the OIDC groups claim and
+        # assumes that persona's restricted role). The legacy (PyInstaller/Nuitka) Python
+        # credential-process has no persona logic — it always assumes the base
+        # federated_role_arn. Packaging a persona profile without --go would ship a bundle
+        # where every restricted persona silently receives the BROAD base role, bypassing
+        # the per-persona model restrictions. Refuse loudly rather than ship that.
+        if self._personas_require_go(profile, federation_type, use_go):
+            console.print(
+                "\n[red]✗ Persona-based access control requires the Go credential-process.[/red]\n"
+                "[red]  The legacy (non-Go) binary has no persona logic and would assume the\n"
+                "  base role for every user — silently bypassing persona model restrictions.[/red]\n\n"
+                "  Re-run with the [cyan]--go[/cyan] flag:\n"
+                "      [cyan]poetry run ccwb package --go[/cyan]\n\n"
+                "  (Personas are declared in this profile; see PBAC_README.md.)"
+            )
+            return 1
+
         # Welcome
         console.print(
             Panel.fit(
@@ -519,6 +537,11 @@ class PackageCommand(Command):
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+
+        # Per-persona model-routing launch wrapper (FR-5.1). Only emitted when at
+        # least one persona has resolved inference-profile ARNs — otherwise there
+        # is nothing to route and the baked settings.json model is sufficient.
+        self._create_persona_model_wrapper(output_dir, profile, profile_name, console)
 
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
@@ -2030,6 +2053,18 @@ RUN pyinstaller \
             console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
             return 1
 
+        # PBAC: regeneration reuses whatever binaries are already in dist/, and Go vs
+        # legacy binaries share the same filenames, so we cannot detect provenance here.
+        # Personas are only enforced by the Go binary; warn so an operator who reuses a
+        # legacy (non-Go) build with a persona profile doesn't ship a non-enforcing bundle.
+        if federation_type == "direct" and getattr(profile, "personas", None):
+            console.print(
+                "[yellow]⚠ This profile declares personas. Persona model restrictions are enforced\n"
+                "  ONLY by the Go credential-process. Ensure the binaries in dist/ were built with\n"
+                "  [cyan]ccwb package --go[/cyan] — a legacy binary ignores personas and assumes the\n"
+                "  base role.[/yellow]"
+            )
+
         # Prompt for co-authorship and OTEL attributes
         include_coauthored_by = questionary.confirm(
             "Include 'Co-Authored-By: Claude' in git commits?", default=False
@@ -2066,6 +2101,12 @@ RUN pyinstaller \
         console.print("[cyan]Generating Claude Code settings...[/cyan]")
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
+        # Regenerate the per-persona model-routing wrapper (PBAC FR-5.1). Self-gates
+        # on resolved AIP ARNs, so it is a no-op for non-routing profiles — but
+        # without this a `--regenerate-installers` bundle would ship config.json
+        # advertising inference_profile_arns yet no wrapper to apply them.
+        self._create_persona_model_wrapper(output_dir, profile, profile_name, console)
+
         # Summary
         console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
@@ -2081,6 +2122,22 @@ RUN pyinstaller \
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
         console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
         return 0
+
+    @staticmethod
+    def _personas_require_go(profile, federation_type: str, use_go: bool) -> bool:
+        """True when a persona profile is being packaged WITHOUT the Go credential-process.
+
+        Personas are enforced only by the Go binary; the legacy Python binary ignores
+        them and assumes the base role. We block only the case that actually ships a
+        non-enforcing bundle: direct federation (the only mode that serializes personas)
+        + at least one persona + not building with Go. Cognito personas are never
+        serialized (FR-2.7), so they don't trip this gate.
+        """
+        return (
+            not use_go
+            and federation_type == "direct"
+            and bool(getattr(profile, "personas", None))
+        )
 
     def _create_config(
         self,
@@ -2183,10 +2240,162 @@ RUN pyinstaller \
             config[profile_name]["quota_fail_mode"] = getattr(profile, "quota_fail_mode", "open")
             config[profile_name]["quota_check_interval"] = getattr(profile, "quota_check_interval", 30)
 
+        # Add persona-based access control settings if configured (PBAC).
+        # _create_config is an explicit allowlist, so personas must be added by hand here
+        # or the Go credential-process / otel-helper never see them. We project each persona
+        # dict down to exactly the fields the Go PersonaConfig consumes (spec §4.2), carrying
+        # the role_arn that deploy resolved from the persona stack outputs. Omitting personas
+        # entirely when none are configured preserves the legacy FederatedRoleARN path.
+        #
+        # Gate on direct federation: personas are direct-IAM only (Cognito federation
+        # skips persona provisioning, FR-2.7), and the Go helper ignores personas unless
+        # FederationType == "direct". Serializing them under Cognito would write dead data
+        # (persona blocks with empty role_arn that nothing reads).
+        personas = getattr(profile, "personas", None)
+        if personas and federation_type == "direct":
+            config[profile_name]["personas"] = [self._serialize_persona(p) for p in personas]
+            config[profile_name]["groups_claim_name"] = getattr(profile, "groups_claim_name", "groups")
+            fallback_persona = getattr(profile, "fallback_persona", None)
+            if fallback_persona:
+                config[profile_name]["fallback_persona"] = fallback_persona
+
         config_path = output_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         return config_path
+
+    @staticmethod
+    def _serialize_persona(persona: dict) -> dict:
+        """Project a persona dict down to the fields the Go PersonaConfig consumes.
+
+        Mirrors the frozen contract in spec.md#4.2: the credential-process and otel-helper
+        read exactly these keys. Optional fields are emitted only when present (matching the
+        Go struct's ``omitempty`` tags) so config.json stays compact and round-trips cleanly.
+        ``role_arn`` is the per-persona role resolved from the persona stack outputs at deploy
+        time; it is emitted as an empty string if not yet resolved so the field is always
+        present for the helper.
+
+        Args:
+            persona: A persona dict in the canonical config shape (spec.md#4.1).
+
+        Returns:
+            A new dict containing only the §4.2 fields that are set.
+        """
+        serialized: dict = {
+            "name": persona.get("name", ""),
+            "group": persona.get("group", ""),
+            "role_arn": persona.get("role_arn", ""),
+        }
+        # Optional fields — included only when present (Go side uses omitempty).
+        optional_keys = (
+            "display_name",
+            "allowed_models",
+            "denied_models",
+            "monthly_token_limit",
+            "enforcement_mode",
+            "cost_tags",
+            # Per-tier Application Inference Profile ARNs (tier -> ARN), resolved
+            # at deploy time. The Go --get-persona-model flow emits these as
+            # ANTHROPIC_*_MODEL exports for per-persona cost-attributed routing
+            # (FR-5.1). Omitted when the persona has no AIPs (no model override).
+            "inference_profile_arns",
+        )
+        for key in optional_keys:
+            value = persona.get(key)
+            if value:
+                serialized[key] = value
+        return serialized
+
+    def _create_persona_model_wrapper(self, output_dir: Path, profile, profile_name: str, console: Console) -> None:
+        """Emit per-persona model-routing launch wrappers (FR-5.1).
+
+        Personas resolve per-user at credential-issuance, but ``ANTHROPIC_MODEL``
+        is baked statically into settings.json at package time. To route each
+        persona's traffic to its own cost-tagged inference profile, we ship a thin
+        launch wrapper that asks the credential helper for the resolved persona's
+        per-tier ARNs (``--get-persona-model``) and exports them before ``claude``
+        starts. On no-match / no-ARNs the helper exits non-zero and the wrapper
+        leaves the env untouched, so the baked settings.json model stays in effect
+        (backward compatible).
+
+        Emitted only when at least one persona carries ``inference_profile_arns``
+        (resolved by ``ccwb deploy``). Writes both a POSIX ``persona-model.sh`` and
+        a Windows ``persona-model.ps1`` (CRLF, per windows-platform-guards.md). The
+        wrapper is opt-in: the installer/docs tell users to source it from their
+        shell rc — settings.json is unchanged so nothing breaks if they don't.
+        """
+        personas = getattr(profile, "personas", None) or []
+        federation_type = getattr(profile, "federation_type", "")
+        # Personas are direct-IAM only, and routing needs resolved AIP ARNs.
+        if federation_type != "direct" or not any(p.get("inference_profile_arns") for p in personas):
+            return
+
+        # POSIX shell function: eval the helper's export lines, then exec claude.
+        # The helper is local-only and fast; a non-zero exit (no persona / expired
+        # token) leaves ANTHROPIC_* untouched so the baked default applies.
+        posix = (
+            "#!/usr/bin/env bash\n"
+            "# Per-persona model routing for Claude Code (PBAC FR-5.1).\n"
+            "# Source this from your shell rc (e.g. ~/.bashrc, ~/.zshrc):\n"
+            f"#     source \"$HOME/claude-code-with-bedrock/persona-model.sh\"\n"
+            "# It defines a `claude` wrapper that points ANTHROPIC_*_MODEL at the\n"
+            "# inference profile(s) for the persona your OIDC groups resolve to, so\n"
+            "# your Bedrock usage is attributed to that persona's cost-tagged profile.\n"
+            "# No persona match (or an expired token) leaves your model settings as-is.\n"
+            "claude() {\n"
+            f'  local _ccwb_cp="$HOME/claude-code-with-bedrock/credential-process"\n'
+            f'  if [ -x "$_ccwb_cp" ]; then\n'
+            f'    local _ccwb_exports\n'
+            f'    if _ccwb_exports="$("$_ccwb_cp" --profile {profile_name} --get-persona-model 2>/dev/null)"; then\n'
+            '      eval "$_ccwb_exports"\n'
+            "    fi\n"
+            "  fi\n"
+            "  command claude \"$@\"\n"
+            "}\n"
+        )
+        (output_dir / "persona-model.sh").write_text(posix, encoding="utf-8")
+
+        # PowerShell wrapper: Invoke-Expression the export-equivalent. The Go helper
+        # prints POSIX `export K=V` lines; on Windows we translate them to
+        # `$env:K = "V"` so the same binary output drives both shells.
+        ps1 = (
+            "# Per-persona model routing for Claude Code (PBAC FR-5.1).\n"
+            "# Dot-source this from your PowerShell profile:\n"
+            '#     . "$env:USERPROFILE\\claude-code-with-bedrock\\persona-model.ps1"\n'
+            "# It defines a `claude` function that points ANTHROPIC_*_MODEL at the\n"
+            "# inference profile(s) for the persona your OIDC groups resolve to.\n"
+            "function claude {\n"
+            '    $cp = Join-Path $env:USERPROFILE "claude-code-with-bedrock\\credential-process.exe"\n'
+            "    if (Test-Path $cp) {\n"
+            f'        $lines = & $cp --profile {profile_name} --get-persona-model 2>$null\n'
+            "        if ($LASTEXITCODE -eq 0 -and $lines) {\n"
+            "            foreach ($line in $lines) {\n"
+            # Match any POSIX-valid env-var name (letter/underscore start, then
+            # letters/digits/underscores) so the wrapper keeps working if the helper
+            # ever emits a lowercase- or digit-bearing var name. Value is (.*) so ARNs
+            # with ':' '/' '.' are captured intact.
+            "                if ($line -match '^export ([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {\n"
+            '                    Set-Item -Path \"Env:$($matches[1])\" -Value $matches[2]\n'
+            "                }\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            # Resolve the real `claude` executable on PATH rather than hardcoding
+            # claude.cmd — an install may expose claude.exe or a differently-named shim.
+            # `-CommandType Application` also skips THIS function (the PowerShell analogue
+            # of POSIX `command claude`), preventing infinite recursion. Fall back to
+            # claude.cmd only if nothing resolves on PATH.
+            "    $claudeExe = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue |\n"
+            "        Select-Object -First 1\n"
+            "    if ($claudeExe) { & $claudeExe.Source @args } else { & claude.cmd @args }\n"
+            "}\n"
+        )
+        # Windows scripts use CRLF (windows-platform-guards.md).
+        (output_dir / "persona-model.ps1").write_text(ps1.replace("\n", "\r\n"), encoding="utf-8")
+
+        console.print(
+            "  • persona-model.sh / persona-model.ps1 - per-persona model-routing launch wrappers (FR-5.1)"
+        )
 
     def _get_bedrock_region_for_profile(self, profile) -> str:
         """Get the correct AWS region for Bedrock API calls based on user-selected source region."""
@@ -2434,6 +2643,19 @@ if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
     echo "  ~/claude-code-with-bedrock/otel-helper --test"
 fi
 
+# Copy the per-persona model-routing launch wrapper if present (PBAC FR-5.1).
+# Installed to the same dir the credential-process lives in so the path the
+# wrapper docs tell users to source ($HOME/claude-code-with-bedrock/persona-model.sh)
+# actually exists after a standard install. Opt-in: it only takes effect once the
+# user sources it from their shell rc.
+if [ -f "persona-model.sh" ]; then
+    cp persona-model.sh ~/claude-code-with-bedrock/persona-model.sh
+    echo
+    echo "✓ Per-persona model routing wrapper installed (PBAC FR-5.1)"
+    echo "  To enable per-persona model routing, add to your shell rc (~/.bashrc, ~/.zshrc):"
+    echo "    source \\"$HOME/claude-code-with-bedrock/persona-model.sh\\""
+fi
+
 # Update AWS config
 echo
 echo "Configuring AWS profiles..."
@@ -2577,6 +2799,17 @@ REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+)
+
+REM Copy the per-persona model-routing launch wrapper if present (PBAC FR-5.1).
+REM Installed next to credential-process.exe so the path the wrapper docs tell
+REM users to dot-source ($env:USERPROFILE\\claude-code-with-bedrock\\persona-model.ps1)
+REM exists after a standard install. Opt-in: takes effect once dot-sourced from $PROFILE.
+if exist "persona-model.ps1" (
+    echo Copying per-persona model routing wrapper [PBAC FR-5.1]...
+    copy /Y "persona-model.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1" >nul
+    echo   To enable per-persona model routing, add to your PowerShell $PROFILE:
+    echo     . "%USERPROFILE%\\claude-code-with-bedrock\\persona-model.ps1"
 )
 
 REM Copy configuration

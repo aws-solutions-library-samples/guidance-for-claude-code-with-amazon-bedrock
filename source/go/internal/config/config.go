@@ -20,6 +20,16 @@ type ProfileConfig struct {
 	FederatedRoleARN string `json:"federated_role_arn"`
 	FederationType   string `json:"federation_type"`
 
+	// Persona-based access control. When Personas is non-empty (direct-IAM
+	// mode only), the credential helper resolves the user's persona from the
+	// `groups` claim and assumes that persona's RoleARN instead of
+	// FederatedRoleARN. Empty Personas preserves today's behavior. Mirrors the
+	// Python Profile persona fields (spec persona-based-access §4.1/§4.2);
+	// keep field names and JSON tags in parity per config-sync.md.
+	Personas        []PersonaConfig `json:"personas,omitempty"`
+	GroupsClaimName string          `json:"groups_claim_name,omitempty"`
+	FallbackPersona string          `json:"fallback_persona,omitempty"`
+
 	// Federation - Cognito
 	IdentityPoolID    string `json:"identity_pool_id"`
 	IdentityPoolName  string `json:"identity_pool_name"`
@@ -81,6 +91,32 @@ type ProfileConfig struct {
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
 	OktaClientID string `json:"okta_client_id"`
+}
+
+// PersonaConfig describes a single persona: a named group (matched against the
+// OIDC `groups` claim) whose members assume a dedicated Bedrock IAM role.
+// Frozen contract — must stay byte-for-byte in parity with the Python Profile
+// persona schema (spec persona-based-access §4.2) so config.json written by
+// `ccwb package` round-trips through the Go helper. RoleARN is resolved at
+// package time from the persona stack outputs.
+type PersonaConfig struct {
+	Name              string            `json:"name"`
+	DisplayName       string            `json:"display_name,omitempty"`
+	Group             string            `json:"group"`
+	AllowedModels     []string          `json:"allowed_models,omitempty"`
+	DeniedModels      []string          `json:"denied_models,omitempty"`
+	RoleARN           string            `json:"role_arn"`
+	MonthlyTokenLimit int64             `json:"monthly_token_limit,omitempty"`
+	EnforcementMode   string            `json:"enforcement_mode,omitempty"`
+	CostTags          map[string]string `json:"cost_tags,omitempty"`
+	// InferenceProfileArns maps a model tier ("haiku"/"sonnet"/"opus") to the
+	// persona's tagged Application Inference Profile ARN for that tier (resolved
+	// at deploy time, FR-5.1). The --get-persona-model flow emits these as
+	// ANTHROPIC_*_MODEL exports so a persona's traffic is attributed to its own
+	// cost-tagged profile. Empty/absent => no per-persona model routing (the
+	// baked settings.json model stays in effect). Mirrors the Python persona
+	// dict key inference_profile_arns (config-sync.md parity).
+	InferenceProfileArns map[string]string `json:"inference_profile_arns,omitempty"`
 }
 
 // configFile represents the on-disk config.json format.

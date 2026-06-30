@@ -7,6 +7,13 @@ PID_FILE="$INSTALL_DIR/collector.pid"
 CACHE_DIR="$HOME/.claude-code-session"
 CACHE_FILE="$CACHE_DIR/${PROFILE}-otel-headers.json"
 RAW_FILE="$CACHE_DIR/${PROFILE}-otel-headers.raw"
+# Must match currentCacheSchemaVersion in source/go/internal/otel/cache.go. The
+# shim serves the unversioned .raw companion on the fast path, so it MUST also
+# honor the schema gate the Go binary enforces — otherwise a cache written by an
+# older binary (e.g. one that predates the x-persona header) would be served
+# stale until the JWT expires, defeating the schema bump. On a version mismatch
+# we fall through to the binary, which re-extracts headers under the new schema.
+CACHE_SCHEMA_VERSION=3
 
 # Ensure collector sidecar is running (only in sidecar mode — binary present)
 # Use a dedicated <profile>-collector AWS profile so the Go SDK always resolves
@@ -29,7 +36,15 @@ if [ -f "$CACHE_FILE" ] && [ -f "$RAW_FILE" ]; then
     TOKEN_EXP=$(grep -o '"token_exp":[[:space:]]*[0-9]*' "$CACHE_FILE" | sed 's/.*:[[:space:]]*//')
     NOW=$(date +%s)
 
-    if [ -n "$TOKEN_EXP" ] && [ "$TOKEN_EXP" -gt "$((NOW + 60))" ]; then
+    # Honor the cache schema gate (see CACHE_SCHEMA_VERSION above). A missing or
+    # older schema_version means the cache shape predates this binary's headers
+    # (e.g. no x-persona) — fall through to the binary to re-extract rather than
+    # serve stale attribution. Default to 0 when absent so legacy caches refresh.
+    CACHE_SCHEMA=$(grep -o '"schema_version":[[:space:]]*[0-9]*' "$CACHE_FILE" | sed 's/.*:[[:space:]]*//')
+    CACHE_SCHEMA="${CACHE_SCHEMA:-0}"
+
+    if [ -n "$TOKEN_EXP" ] && [ "$TOKEN_EXP" -gt "$((NOW + 60))" ] \
+        && [ "$CACHE_SCHEMA" -ge "$CACHE_SCHEMA_VERSION" ]; then
         # Token still valid (>60s remaining) - serve cached attribution headers.
         # The .raw file deliberately omits the Bearer token (never persisted to
         # disk), so splice it onto stdout here: the OTEL collector's ALB jwt-validation
