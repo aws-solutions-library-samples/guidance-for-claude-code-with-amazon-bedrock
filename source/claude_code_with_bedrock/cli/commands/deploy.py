@@ -1054,9 +1054,7 @@ class DeployCommand(Command):
                 stack_name = profile.stack_names.get("gateway", f"{profile.identity_pool_name}-gateway")
 
                 # Require networking stack
-                networking_stack = profile.stack_names.get(
-                    "networking", f"{profile.identity_pool_name}-networking"
-                )
+                networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
                 networking_outputs = get_stack_outputs(networking_stack, profile.aws_region)
 
                 if not networking_outputs or not networking_outputs.get("VpcId"):
@@ -1069,9 +1067,8 @@ class DeployCommand(Command):
 
                 # OIDC params
                 oidc_issuer_url, oidc_client_id = self._resolve_oidc_config(profile)
-                client_secret_arn = (
-                    getattr(profile, 'distribution_idp_client_secret_arn', '')
-                    or getattr(profile, 'client_secret_arn', '')
+                client_secret_arn = getattr(profile, "distribution_idp_client_secret_arn", "") or getattr(
+                    profile, "client_secret_arn", ""
                 )
 
                 if not oidc_issuer_url or not oidc_client_id:
@@ -1104,13 +1101,13 @@ class DeployCommand(Command):
                 )
 
                 if result == 0:
-
                     # Trigger CodeBuild to build the gateway image
                     build_project = outputs.get("GatewayBuildProjectName", "") if outputs else ""
                     if build_project:
                         console.print("[cyan]Building gateway image (CodeBuild)...[/cyan]")
                         try:
                             import boto3 as _boto3
+
                             cb = _boto3.client("codebuild", region_name=profile.aws_region)
                             build_resp = cb.start_build(projectName=build_project)
                             build_id = build_resp["build"]["id"]
@@ -1124,9 +1121,7 @@ class DeployCommand(Command):
                     console.print("\n[bold green]✓ Claude Apps Gateway deployed![/bold green]")
                     console.print(f"\n[bold]Gateway URL:[/bold] {gateway_url}")
                     console.print("\n[dim]To connect Claude Code CLI, set in managed-settings.json:[/dim]")
-                    console.print(
-                        f'  {{"forceLoginMethod": "gateway", "forceLoginGatewayUrl": "{gateway_url}"}}'
-                    )
+                    console.print(f'  {{"forceLoginMethod": "gateway", "forceLoginGatewayUrl": "{gateway_url}"}}')
 
                 return result
 

@@ -135,7 +135,7 @@ Resources:
     Type: AWS::RDS::DBInstance
     Properties:
       Engine: postgres
-      EngineVersion: '17'
+      EngineVersion: '17.6'
       DBInstanceClass: !Ref DbInstanceClass
       AllocatedStorage: 20
       StorageEncrypted: true
