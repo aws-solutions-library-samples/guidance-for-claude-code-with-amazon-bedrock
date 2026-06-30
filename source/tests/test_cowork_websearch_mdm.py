@@ -15,10 +15,14 @@ import json
 from rich.console import Console
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
-    WEBSEARCH_HEADERS_HELPER_DEFAULT,
+    WEBSEARCH_HEADERS_HELPER_PLACEHOLDER,
+    WEBSEARCH_HEADERS_HELPER_POSIX,
+    WEBSEARCH_HEADERS_HELPER_WINDOWS,
     WEBSEARCH_HEADERS_TTL_SEC,
     WEBSEARCH_MCP_SERVER_NAME,
     add_websearch_mcp_config,
+    generate_mobileconfig,
+    generate_reg_file,
 )
 from claude_code_with_bedrock.config import Profile
 
@@ -61,7 +65,8 @@ def test_enabled_adds_headers_helper_entry():
     entry = servers[0]
     assert entry["name"] == WEBSEARCH_MCP_SERVER_NAME
     assert entry["url"] == "https://gw-abc.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
-    assert entry["headersHelper"] == WEBSEARCH_HEADERS_HELPER_DEFAULT
+    # Without an override, the entry carries the OS placeholder; generators resolve it.
+    assert entry["headersHelper"] == WEBSEARCH_HEADERS_HELPER_PLACEHOLDER
     assert entry["headersHelperTtlSec"] == WEBSEARCH_HEADERS_TTL_SEC
     # Remote MCP entry → not the built-in websearch connector, no oauth block.
     assert "server" not in entry
@@ -70,11 +75,33 @@ def test_enabled_adds_headers_helper_entry():
     assert "oauth" not in entry
 
 
-def test_headers_helper_path_override():
+def test_mobileconfig_resolves_posix_helper_path(tmp_path):
+    mdm = {}
+    add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
+    generate_mobileconfig(tmp_path, mdm)
+    content = (tmp_path / "cowork-3p.mobileconfig").read_text()
+    assert WEBSEARCH_HEADERS_HELPER_POSIX in content
+    assert WEBSEARCH_HEADERS_HELPER_PLACEHOLDER not in content
+
+
+def test_reg_resolves_windows_helper_path(tmp_path):
+    mdm = {}
+    add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
+    generate_reg_file(tmp_path, mdm)
+    content = (tmp_path / "cowork-3p.reg").read_text()
+    # .reg JSON-escapes backslashes; check on the unescaped form.
+    assert WEBSEARCH_HEADERS_HELPER_WINDOWS.replace("\\", "\\\\") in content
+    assert WEBSEARCH_HEADERS_HELPER_PLACEHOLDER not in content
+
+
+def test_override_skips_placeholder_in_all_formats(tmp_path):
     mdm = {}
     custom = "/opt/org/bin/websearch-headers"
     add_websearch_mcp_config(mdm, _profile(websearch_headers_helper_path=custom), _CONSOLE)
+    # Entry carries the literal override (no placeholder), so generators emit it verbatim.
     assert _servers(mdm)[0]["headersHelper"] == custom
+    generate_mobileconfig(tmp_path, mdm)
+    assert custom in (tmp_path / "cowork-3p.mobileconfig").read_text()
 
 
 def test_managed_mcp_servers_is_json_encoded_string():
