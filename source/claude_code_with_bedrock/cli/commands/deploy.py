@@ -1353,7 +1353,7 @@ class DeployCommand(Command):
                 f"SubnetIds=<SubnetIds from {networking_stack}>",
                 f"OidcIssuerUrl={profile.provider_domain or '<issuer-url>'}",
                 f"OidcClientId={profile.client_id or '<client-id>'}",
-                f"OidcClientSecretArn=<secrets-manager-arn>",
+                "OidcClientSecretArn=<secrets-manager-arn>",
                 f"BedrockRegion={profile.aws_region}",
             ]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
