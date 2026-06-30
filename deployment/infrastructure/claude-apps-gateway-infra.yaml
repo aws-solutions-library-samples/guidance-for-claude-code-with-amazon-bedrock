@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Claude Apps Gateway — self-hosted control plane for Claude Code CLI.
+  Deploys the gateway as a Fargate container with PostgreSQL (RDS) and ALB.
+  Provides corporate SSO, managed settings delivery, per-user spend caps,
+  and OTLP telemetry for Claude Code on Amazon Bedrock.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID (from networking stack)
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnet IDs for ALB (at least 2 AZs)
+
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: Private subnet IDs for ECS tasks and RDS. Uses SubnetIds if empty.
+
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC issuer URL for developer authentication
+    AllowedPattern: '^https://.*'
+
+  OidcClientId:
+    Type: String
+    Description: OIDC client ID registered with your IdP
+    MinLength: 1
+
+  OidcClientSecretArn:
+    Type: String
+    Description: SecretsManager ARN containing the OIDC client secret
+
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+    Description: AWS region for Bedrock model inference
+
+  GatewayImage:
+    Type: String
+    Default: 'public.ecr.aws/anthropic/claude:latest'
+    Description: Container image (claude binary with gateway support)
+
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium, db.r6g.large]
+    Description: RDS instance size
+
+  GatewayPort:
+    Type: Number
+    Default: 8080
+    Description: Port the gateway listens on inside the container
+
+Conditions:
+  HasPrivateSubnets: !Not [!Equals [!Join ['', !Ref PrivateSubnetIds], '']]
+
+Resources:
+  # Security Groups
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Claude Apps Gateway ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Claude Apps Gateway tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref GatewayPort
+          ToPort: !Ref GatewayPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Claude Apps Gateway RDS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  # RDS PostgreSQL
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for Gateway DB
+      SubnetIds: !If [HasPrivateSubnets, !Ref PrivateSubnetIds, !Ref SubnetIds]
+
+  DbPassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Claude Apps Gateway database password
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "gateway"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      EngineVersion: '16'
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: 20
+      StorageEncrypted: true
+      MasterUsername: gateway
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbPassword}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DbSecurityGroup
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db'
+
+  # ECS
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${AWS::StackName}-cluster'
+      CapacityProviders: [FARGATE]
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}'
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DbPassword
+                  - !Ref OidcClientSecretArn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${AWS::StackName}-gateway'
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: gateway
+          Image: !Ref GatewayImage
+          Command: ['claude', 'gateway', '--port', '8080']
+          PortMappings:
+            - ContainerPort: !Ref GatewayPort
+              Protocol: tcp
+          Environment:
+            - Name: CLAUDE_GATEWAY_OIDC_ISSUER
+              Value: !Ref OidcIssuerUrl
+            - Name: CLAUDE_GATEWAY_OIDC_CLIENT_ID
+              Value: !Ref OidcClientId
+            - Name: CLAUDE_GATEWAY_UPSTREAM_PROVIDER
+              Value: bedrock
+            - Name: CLAUDE_GATEWAY_UPSTREAM_REGION
+              Value: !Ref BedrockRegion
+            - Name: CLAUDE_GATEWAY_DB_HOST
+              Value: !GetAtt Database.Endpoint.Address
+            - Name: CLAUDE_GATEWAY_DB_PORT
+              Value: '5432'
+            - Name: CLAUDE_GATEWAY_DB_NAME
+              Value: gateway
+            - Name: CLAUDE_GATEWAY_DB_USER
+              Value: gateway
+          Secrets:
+            - Name: CLAUDE_GATEWAY_OIDC_CLIENT_SECRET
+              ValueFrom: !Ref OidcClientSecretArn
+            - Name: CLAUDE_GATEWAY_DB_PASSWORD
+              ValueFrom: !Sub '${DbPassword}:password::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: gateway
+          HealthCheck:
+            Command: ['CMD-SHELL', 'curl -sf http://localhost:8080/health || exit 1']
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+
+  GatewayService:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !If [HasPrivateSubnets, !Ref PrivateSubnetIds, !Ref SubnetIds]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: gateway
+          ContainerPort: !Ref GatewayPort
+          TargetGroupArn: !Ref TargetGroup
+
+  # ALB
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Subnets: !Ref SubnetIds
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref GatewayPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  GatewayUrl:
+    Description: Gateway URL — use as forceLoginGatewayUrl in managed-settings.json
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
+  GatewayHealthEndpoint:
+    Description: Health check endpoint
+    Value: !Sub 'http://${LoadBalancer.DNSName}/health'
+  DatabaseEndpoint:
+    Description: RDS PostgreSQL endpoint
+    Value: !GetAtt Database.Endpoint.Address
+  ClusterArn:
+    Description: ECS cluster ARN
+    Value: !GetAtt EcsCluster.Arn

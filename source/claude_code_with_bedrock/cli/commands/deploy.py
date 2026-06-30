@@ -189,10 +189,12 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "gateway":
+                stacks_to_deploy.append(("gateway", "Claude Apps Gateway (ECS + RDS + ALB)"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
+                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild, gateway\n"
                 )
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
@@ -1047,6 +1049,72 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "gateway":
+                template = project_root / "deployment" / "infrastructure" / "claude-apps-gateway-infra.yaml"
+                stack_name = profile.stack_names.get("gateway", f"{profile.identity_pool_name}-gateway")
+
+                # Require networking stack
+                networking_stack = profile.stack_names.get(
+                    "networking", f"{profile.identity_pool_name}-networking"
+                )
+                networking_outputs = get_stack_outputs(networking_stack, profile.aws_region)
+
+                if not networking_outputs or not networking_outputs.get("VpcId"):
+                    console.print("[red]Error: Networking stack required for Gateway deployment.[/red]")
+                    console.print("[dim]Run 'ccwb deploy networking' first.[/dim]")
+                    return 1
+
+                vpc_id = networking_outputs.get("VpcId", "")
+                subnet_ids = networking_outputs.get("SubnetIds", "")
+
+                # OIDC params
+                oidc_issuer_url, oidc_client_id = self._resolve_oidc_config(profile)
+                client_secret_arn = (
+                    getattr(profile, 'distribution_idp_client_secret_arn', '')
+                    or getattr(profile, 'client_secret_arn', '')
+                )
+
+                if not oidc_issuer_url or not oidc_client_id:
+                    console.print("[red]Error: OIDC configuration required for Gateway deployment.[/red]")
+                    console.print("[dim]Configure OIDC authentication via 'ccwb init' first.[/dim]")
+                    return 1
+
+                if not client_secret_arn:
+                    console.print("[red]Error: OIDC client secret ARN required.[/red]")
+                    console.print(
+                        "[dim]Deploy the distribution stack first, or set "
+                        "distribution_idp_client_secret_arn in your profile.[/dim]"
+                    )
+                    return 1
+
+                params = [
+                    f"VpcId={vpc_id}",
+                    f"SubnetIds={subnet_ids}",
+                    f"OidcIssuerUrl={oidc_issuer_url}",
+                    f"OidcClientId={oidc_client_id}",
+                    f"OidcClientSecretArn={client_secret_arn}",
+                    f"BedrockRegion={profile.aws_region}",
+                ]
+
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    task_description="Deploying Claude Apps Gateway (ECS + RDS + ALB)...",
+                )
+
+                if result == 0:
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    gateway_url = outputs.get("GatewayUrl", "N/A") if outputs else "N/A"
+                    console.print("\n[bold green]✓ Claude Apps Gateway deployed![/bold green]")
+                    console.print(f"\n[bold]Gateway URL:[/bold] {gateway_url}")
+                    console.print("\n[dim]To connect Claude Code CLI, set in managed-settings.json:[/dim]")
+                    console.print(
+                        f'  {{"forceLoginMethod": "gateway", "forceLoginGatewayUrl": "{gateway_url}"}}'
+                    )
+
+                return result
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1259,6 +1327,20 @@ class DeployCommand(Command):
             else:
                 template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
+            print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
+
+        elif stack_type == "gateway":
+            template = project_root / "deployment" / "infrastructure" / "claude-apps-gateway-infra.yaml"
+            stack_name = profile.stack_names.get("gateway", f"{profile.identity_pool_name}-gateway")
+            networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+            params = [
+                f"VpcId=<VpcId from {networking_stack}>",
+                f"SubnetIds=<SubnetIds from {networking_stack}>",
+                f"OidcIssuerUrl={profile.provider_domain or '<issuer-url>'}",
+                f"OidcClientId={profile.client_id or '<client-id>'}",
+                f"OidcClientSecretArn=<secrets-manager-arn>",
+                f"BedrockRegion={profile.aws_region}",
+            ]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         else:
