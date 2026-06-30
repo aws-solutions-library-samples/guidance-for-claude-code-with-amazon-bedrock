@@ -15,6 +15,7 @@ import json
 from rich.console import Console
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
+    CCWB_HOME_PLACEHOLDER,
     WEBSEARCH_HEADERS_HELPER_PLACEHOLDER,
     WEBSEARCH_HEADERS_HELPER_POSIX,
     WEBSEARCH_HEADERS_HELPER_WINDOWS,
@@ -82,6 +83,27 @@ def test_mobileconfig_resolves_posix_helper_path(tmp_path):
     content = (tmp_path / "cowork-3p.mobileconfig").read_text()
     assert WEBSEARCH_HEADERS_HELPER_POSIX in content
     assert WEBSEARCH_HEADERS_HELPER_PLACEHOLDER not in content
+    # macOS path carries the home placeholder for install.sh to substitute
+    # (Claude Desktop does not expand ~/$HOME in MDM values).
+    assert CCWB_HOME_PLACEHOLDER in content
+
+
+def test_egress_allowed_hosts_defaults_to_wildcard():
+    mdm = {}
+    add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
+    assert mdm["coworkEgressAllowedHosts"] == json.dumps(["*"])
+
+
+def test_egress_allowed_hosts_respects_existing_admin_value():
+    mdm = {"coworkEgressAllowedHosts": json.dumps(["example.com"])}
+    add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
+    assert mdm["coworkEgressAllowedHosts"] == json.dumps(["example.com"])
+
+
+def test_egress_not_set_when_web_search_disabled():
+    mdm = {}
+    add_websearch_mcp_config(mdm, _profile(web_search_enabled=False), _CONSOLE)
+    assert "coworkEgressAllowedHosts" not in mdm
 
 
 def test_reg_resolves_windows_helper_path(tmp_path):
