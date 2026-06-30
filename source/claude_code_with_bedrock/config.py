@@ -176,6 +176,7 @@ class Profile:
     websearch_region: str | None = None  # Region for the gateway stack (allow-list; None = default us-east-1)
     websearch_jwt_audience: str | None = None  # Entra ID (audience mode) only: aud the authorizer accepts
     websearch_domain_denylist: list[str] = field(default_factory=list)  # Optional domains to exclude from results
+    websearch_headers_helper_path: str = ""  # Absolute path override for the Cowork headersHelper (default: ~/claude-code-with-bedrock/websearch-headers)
 
     # Legacy field support
     @property

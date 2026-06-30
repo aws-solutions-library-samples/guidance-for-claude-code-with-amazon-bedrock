@@ -254,6 +254,22 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
 
 WEBSEARCH_MCP_SERVER_NAME = "agentcore-websearch"
 
+# Filename of the headersHelper script the installer drops next to the
+# credential-process binary (in ~/claude-code-with-bedrock/). It prints
+# {"Authorization": "Bearer <id_token>"} on stdout for Claude Desktop to attach
+# to every MCP request to the gateway.
+WEBSEARCH_HEADERS_HELPER_NAME = "websearch-headers"
+
+# Default install location (mirrors where 'ccwb package' installs
+# credential-process). Used as the default headersHelper path; tilde-expanded
+# per-user. Admins can override with an absolute path via the profile attribute
+# ``websearch_headers_helper_path`` if their MDM/Claude build does not expand ~.
+WEBSEARCH_HEADERS_HELPER_DEFAULT = f"~/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
+
+# How often (seconds) Claude Desktop re-invokes the headersHelper. Kept below the
+# Cognito id_token lifetime (~1h) so a fresh bearer is fetched before expiry.
+WEBSEARCH_HEADERS_TTL_SEC = 900
+
 
 def _resolve_websearch_gateway_url(profile) -> str | None:
     """Resolve the gateway MCP endpoint, profile-first with a CloudFormation fallback.
@@ -282,11 +298,25 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
 
     No-op unless ``web_search_enabled``. Resolves the gateway endpoint at
     generation time (never a stale stored value beyond the profile cache) and
-    emits a native ``managedMcpServers`` ``websearch`` entry (Claude Desktop
-    v1.15962.0+): ``server: "websearch"`` + ``provider: "custom"`` + ``customUrl``.
-    Claude Desktop authenticates natively by reusing the user's existing OIDC
-    session, so no OAuth block or secret is stored in the MDM config. Preserves
-    any administrator-defined ``managedMcpServers`` and de-dupes by name.
+    emits a **remote MCP** ``managedMcpServers`` entry authenticated with a
+    ``headersHelper`` script: ``{name, url, headersHelper, headersHelperTtlSec}``.
+
+    Claude Desktop treats this as a generic remote MCP server and speaks standard
+    MCP JSON-RPC that the AgentCore Gateway understands. The gateway's
+    ``CUSTOM_JWT`` authorizer validates the OIDC id_token the ``headersHelper``
+    emits (``Authorization: Bearer <id_token>``); the id_token's ``aud`` is the
+    app client ID, so the gateway must be deployed with ``AllowedAudience``
+    (the template default) — universal across Cognito/Entra/Okta.
+
+    The built-in ``server:"websearch"``/``provider:"custom"`` shape is NOT used:
+    that connector sends a request body the AgentCore Gateway cannot parse
+    ("Invalid JSON format"), even though auth succeeds.
+
+    The ``headersHelper`` path defaults to ``~/claude-code-with-bedrock/
+    websearch-headers`` (where ``ccwb package`` installs the wrapper) and can be
+    overridden with an absolute path via the profile attribute
+    ``websearch_headers_helper_path``. Preserves any administrator-defined
+    ``managedMcpServers`` and de-dupes by name.
     """
     if not getattr(profile, "web_search_enabled", False):
         return
@@ -311,14 +341,18 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
         )
         return
 
-    # Native managedMcpServers "websearch" server type (Claude Desktop v1.15962.0+),
-    # "custom" provider pointing at our AgentCore Gateway. Desktop authenticates
-    # natively via the user's existing OIDC session — no oauth block needed.
+    # Remote MCP entry authenticated via a headersHelper script (Metodo 1).
+    # Claude Desktop invokes the helper, attaches the returned
+    # {"Authorization": "Bearer <id_token>"} header to each MCP request, and
+    # re-fetches every headersHelperTtlSec so an expiring token is refreshed.
+    headers_helper = (
+        getattr(profile, "websearch_headers_helper_path", "") or ""
+    ).strip() or WEBSEARCH_HEADERS_HELPER_DEFAULT
     entry = {
         "name": WEBSEARCH_MCP_SERVER_NAME,
-        "server": "websearch",
-        "provider": "custom",
-        "customUrl": url,
+        "url": url,
+        "headersHelper": headers_helper,
+        "headersHelperTtlSec": WEBSEARCH_HEADERS_TTL_SEC,
     }
 
     # managedMcpServers is a JSON-encoded string in the MDM config. Merge with any
@@ -373,7 +407,7 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
         payload_items.append(f"\t\t\t<key>{xml_escape(key)}</key>")
         if isinstance(value, bool):
             string_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             string_value = json.dumps(value)
         else:
             string_value = str(value)
@@ -452,7 +486,7 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     for key, value in _mdm_keys(config).items():
         if isinstance(value, bool):
             string_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             string_value = json.dumps(value)
         else:
             string_value = str(value)
@@ -578,7 +612,7 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
     for key, value in keys.items():
         if isinstance(value, bool):
             ps_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             ps_value = json.dumps(value)
         else:
             ps_value = str(value)
