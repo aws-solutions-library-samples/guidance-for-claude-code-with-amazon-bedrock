@@ -1,0 +1,549 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Device-code bootstrap server for Claude Desktop config and org plugin delivery.
+  Implements RFC 8628 device authorization grant using an existing OIDC IdP.
+
+Parameters:
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC issuer URL (e.g. https://accounts.google.com)
+
+  OidcClientId:
+    Type: String
+    Description: OIDC client ID registered with the IdP
+
+  OidcClientSecretArn:
+    Type: String
+    Description: ARN of the SecretsManager secret containing the OIDC client secret
+
+  OidcTokenEndpoint:
+    Type: String
+    Description: IdP token endpoint URL
+
+  OidcAuthorizeEndpoint:
+    Type: String
+    Description: IdP authorization endpoint URL
+
+  OidcJwksEndpoint:
+    Type: String
+    Description: IdP JWKS endpoint URL for token verification
+
+  AllowedCidr:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: >-
+      CIDR range allowed to access the API. Default 0.0.0.0/0 allows all traffic
+      (WAF is skipped). Set to a restrictive CIDR (e.g. 203.0.113.0/24) to enable
+      WAF IP allowlisting for enterprise deployments.
+
+  InferenceRegion:
+    Type: String
+    Default: us-east-1
+    Description: AWS region for Bedrock inference
+
+  InferenceModels:
+    Type: String
+    Default: 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+    Description: Comma-separated list of allowed model IDs
+
+  PluginsRegistryJson:
+    Type: String
+    Default: ''
+    Description: >-
+      Inline JSON of the plugin registry (fallback). Prefer S3-backed registry
+      via PluginsS3Bucket for easier updates without stack redeployment.
+
+  PluginsS3Bucket:
+    Type: String
+    Default: ''
+    Description: >-
+      S3 bucket name for plugin registry storage. When set, Lambda reads
+      plugins-registry.json from this bucket (updated by ccwb plugins sync).
+      Uses the existing s3bucket stack bucket when available.
+
+Conditions:
+  EnableWaf: !Not [!Equals [!Ref AllowedCidr, '0.0.0.0/0']]
+  HasPluginsS3Bucket: !Not [!Equals [!Ref PluginsS3Bucket, '']]
+
+Resources:
+  # ============================================================
+  # DynamoDB Table for device-code grants
+  # ============================================================
+  DeviceCodeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-device-codes'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_code
+          AttributeType: S
+        - AttributeName: user_code
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_code
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user-code-index
+          KeySchema:
+            - AttributeName: user_code
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      DeletionProtectionEnabled: false
+
+  # ============================================================
+  # WAFv2 WebACL - IP allowlist
+  # ============================================================
+  AllowedIpSet:
+    Condition: EnableWaf
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub '${AWS::StackName}-allowed-ips'
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        - !Ref AllowedCidr
+
+  WebAcl:
+    Condition: EnableWaf
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${AWS::StackName}-waf'
+      Scope: REGIONAL
+      DefaultAction:
+        Block: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${AWS::StackName}-waf'
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AllowCidr
+          Priority: 1
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub '${AWS::StackName}-allow-cidr'
+            SampledRequestsEnabled: true
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowedIpSet.Arn
+
+  # ============================================================
+  # IAM Role for Lambda functions
+  # ============================================================
+  BootstrapLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt DeviceCodeTable.Arn
+                  - !Sub '${DeviceCodeTable.Arn}/index/*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref OidcClientSecretArn
+        - PolicyName: PluginsS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !If
+                  - HasPluginsS3Bucket
+                  - !Sub 'arn:${AWS::Partition}:s3:::${PluginsS3Bucket}/plugins-registry.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::dummy-no-bucket/*'
+
+  AuthorizerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  # ============================================================
+  # Lambda Functions
+  # ============================================================
+  BootstrapHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bootstrap-handler'
+      Runtime: python3.12
+      Handler: index.handler
+      Architectures:
+        - arm64
+      Role: !GetAtt BootstrapLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DeviceCodeTable
+          OIDC_ISSUER_URL: !Ref OidcIssuerUrl
+          OIDC_CLIENT_ID: !Ref OidcClientId
+          OIDC_CLIENT_SECRET_ARN: !Ref OidcClientSecretArn
+          OIDC_TOKEN_ENDPOINT: !Ref OidcTokenEndpoint
+          OIDC_AUTHORIZE_ENDPOINT: !Ref OidcAuthorizeEndpoint
+          OIDC_JWKS_ENDPOINT: !Ref OidcJwksEndpoint
+          INFERENCE_REGION: !Ref InferenceRegion
+          INFERENCE_MODELS: !Ref InferenceModels
+          PLUGINS_REGISTRY_JSON: !Ref PluginsRegistryJson
+          PLUGINS_S3_BUCKET: !Ref PluginsS3Bucket
+          PLUGINS_S3_KEY: plugins-registry.json
+          API_BASE_URL: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+      Code: ./lambda-functions/bootstrap_device_code/
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-authorizer'
+      Runtime: python3.12
+      Handler: authorizer.handler
+      Architectures:
+        - arm64
+      Role: !GetAtt AuthorizerLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          OIDC_ISSUER_URL: !Ref OidcIssuerUrl
+          OIDC_CLIENT_ID: !Ref OidcClientId
+          OIDC_JWKS_ENDPOINT: !Ref OidcJwksEndpoint
+      Code: ./lambda-functions/bootstrap_device_code/
+
+  # ============================================================
+  # API Gateway REST API
+  # ============================================================
+  BootstrapApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-bootstrap-api'
+      Description: Device-code bootstrap API for Claude Desktop
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Authorizer
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: DeviceCodeAuthorizer
+      Type: REQUEST
+      RestApiId: !Ref BootstrapApi
+      AuthorizerUri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations'
+      AuthorizerResultTtlInSeconds: 0
+      IdentitySource: ""
+
+  # Lambda permissions for API Gateway invocation
+  BootstrapHandlerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BootstrapHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
+
+  AuthorizerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*'
+
+  # ============================================================
+  # API Resources
+  # ============================================================
+
+  # /.well-known
+  WellKnownResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: '.well-known'
+
+  # /.well-known/oauth-authorization-server
+  OAuthMetadataResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !Ref WellKnownResource
+      PathPart: oauth-authorization-server
+
+  # /device
+  DeviceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: device
+
+  # /device/code
+  DeviceCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !Ref DeviceResource
+      PathPart: code
+
+  # /verify
+  VerifyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: verify
+
+  # /callback
+  CallbackResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: callback
+
+  # /oauth
+  OAuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: oauth
+
+  # /oauth/token
+  OAuthTokenResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !Ref OAuthResource
+      PathPart: token
+
+  # /bootstrap
+  BootstrapResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: bootstrap
+
+  # /plugins
+  PluginsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !GetAtt BootstrapApi.RootResourceId
+      PathPart: plugins
+
+  # /plugins/{name}
+  PluginsNameResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ParentId: !Ref PluginsResource
+      PathPart: '{name}'
+
+  # ============================================================
+  # API Methods - All use CUSTOM authorizer
+  # ============================================================
+
+  # GET /.well-known/oauth-authorization-server
+  OAuthMetadataMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref OAuthMetadataResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # POST /device/code
+  DeviceCodeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref DeviceCodeResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # GET /verify
+  VerifyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref VerifyResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # GET /callback
+  CallbackMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref CallbackResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # POST /oauth/token
+  OAuthTokenMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref OAuthTokenResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # GET /bootstrap
+  BootstrapMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref BootstrapResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # GET /plugins
+  PluginsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref PluginsResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # GET /plugins/{name}
+  PluginsNameMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      ResourceId: !Ref PluginsNameResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BootstrapHandlerFunction.Arn}/invocations'
+
+  # ============================================================
+  # API Deployment
+  # ============================================================
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - OAuthMetadataMethod
+      - DeviceCodeMethod
+      - VerifyMethod
+      - CallbackMethod
+      - OAuthTokenMethod
+      - BootstrapMethod
+      - PluginsMethod
+      - PluginsNameMethod
+    Properties:
+      RestApiId: !Ref BootstrapApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref BootstrapApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+
+  # WAF Association
+  WafAssociation:
+    Condition: EnableWaf
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${BootstrapApi}/stages/prod'
+      WebACLArn: !GetAtt WebAcl.Arn
+    DependsOn: ApiStage
+
+Outputs:
+  BootstrapUrl:
+    Description: URL for the bootstrap endpoint
+    Value: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod/bootstrap'
+
+  ApiEndpoint:
+    Description: Base URL of the API
+    Value: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+
+  CallbackUrl:
+    Description: >-
+      OAuth callback URL to register with your IdP. Add this as an additional
+      redirect URI in your existing app registration (same client_id used for
+      credential-process). Per-IdP instructions:
+        - Cognito: Pass this URL as BootstrapCallbackUrl parameter to cognito-user-pool-setup.yaml
+          (auto-adds to UserPoolClient CallbackURLs, no manual step needed).
+        - Okta: Admin Console > Applications > your app > Sign-in redirect URIs > Add URI.
+        - Azure/Entra: Azure Portal > App Registrations > your app > Authentication > Add redirect URI.
+        - Google: Cloud Console > APIs & Services > Credentials > OAuth client > Authorized redirect URIs.
+        - IAM Identity Center: Not needed — uses AWS SSO-OIDC native device flow.
+    Value: !Sub 'https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/prod/callback'

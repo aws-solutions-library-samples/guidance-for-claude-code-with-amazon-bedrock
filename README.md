@@ -13,7 +13,8 @@ This guidance enables enterprise deployment of Claude Code and Claude Cowork on 
 - **Multi-Platform**: Windows, macOS, Linux — Go or Python binaries, pre-built from GitHub Releases
 - **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop (which features Chat, Cowork and Code)
 - **Model Flexibility**: Choose from Opus, Sonnet, Haiku with model aliases (e.g. `opusplan` for Opus planning + Sonnet execution)
-- **Native Desktop Experience**: Deploy and manage Claude Cowork (Claude Desktop) via MDM (Jamf, Intune, Group Policy)
+- **Native Desktop Experience**: Deploy and manage Claude Desktop via MDM (Jamf, Intune, Group Policy)
+- **Dynamic Config Delivery**: Deliver per-user settings and [organization plugins](assets/docs/PLUGINS.md#bootstrap-server-delivery-dynamic) to Claude Desktop at sign-in via a bootstrap server — no MDM re-push needed for config changes
 - **Data Residency**: Select your cross-region inference profile (US, EU, AU) to keep data within your compliance boundary
 - **AWS-Native**: Your data, your AWS account, your compliance controls — no Anthropic licensing required
 
