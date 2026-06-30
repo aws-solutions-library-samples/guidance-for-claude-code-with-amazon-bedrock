@@ -1,11 +1,13 @@
 # ABOUTME: Tests for injecting the AgentCore web search gateway into the CoWork MDM config (PR4)
-# ABOUTME: Covers add_websearch_mcp_config: opt-in gating, native entry shape, IDC skip, merge/dedup
+# ABOUTME: Covers add_websearch_mcp_config: opt-in gating, headersHelper entry shape, IDC skip, merge/dedup
 
 """Unit tests for add_websearch_mcp_config (CoWork managedMcpServers injection).
 
-Uses the native Claude Desktop v1.15962.0+ ``managedMcpServers`` ``websearch``
-server type (``server``/``provider``/``customUrl``); auth is handled natively by
-Claude Desktop reusing the user's OIDC session, so there is no ``oauth`` block.
+Uses the remote-MCP ``managedMcpServers`` entry authenticated with a
+``headersHelper`` script (Metodo 1): ``{name, url, headersHelper,
+headersHelperTtlSec}``. The built-in ``server:"websearch"``/``provider:"custom"``
+shape is intentionally NOT used — the AgentCore Gateway cannot parse the body
+that connector sends.
 """
 
 import json
@@ -13,6 +15,8 @@ import json
 from rich.console import Console
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
+    WEBSEARCH_HEADERS_HELPER_DEFAULT,
+    WEBSEARCH_HEADERS_TTL_SEC,
     WEBSEARCH_MCP_SERVER_NAME,
     add_websearch_mcp_config,
 )
@@ -49,19 +53,28 @@ def test_disabled_is_noop():
     assert "managedMcpServers" not in mdm
 
 
-def test_enabled_adds_native_websearch_entry():
+def test_enabled_adds_headers_helper_entry():
     mdm = {}
     add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
     servers = _servers(mdm)
     assert len(servers) == 1
     entry = servers[0]
     assert entry["name"] == WEBSEARCH_MCP_SERVER_NAME
-    assert entry["server"] == "websearch"
-    assert entry["provider"] == "custom"
-    assert entry["customUrl"] == "https://gw-abc.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
-    # Native auth → no oauth block / raw transport in the entry.
+    assert entry["url"] == "https://gw-abc.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+    assert entry["headersHelper"] == WEBSEARCH_HEADERS_HELPER_DEFAULT
+    assert entry["headersHelperTtlSec"] == WEBSEARCH_HEADERS_TTL_SEC
+    # Remote MCP entry → not the built-in websearch connector, no oauth block.
+    assert "server" not in entry
+    assert "provider" not in entry
+    assert "customUrl" not in entry
     assert "oauth" not in entry
-    assert "transport" not in entry
+
+
+def test_headers_helper_path_override():
+    mdm = {}
+    custom = "/opt/org/bin/websearch-headers"
+    add_websearch_mcp_config(mdm, _profile(websearch_headers_helper_path=custom), _CONSOLE)
+    assert _servers(mdm)[0]["headersHelper"] == custom
 
 
 def test_managed_mcp_servers_is_json_encoded_string():
@@ -77,19 +90,19 @@ def test_appends_mcp_suffix_when_missing():
         _profile(websearch_gateway_url="https://gw-abc.gateway.bedrock-agentcore.us-east-1.amazonaws.com"),
         _CONSOLE,
     )
-    customurl = _servers(mdm)[0]["customUrl"]
-    assert customurl.endswith("/mcp")
-    assert not customurl.endswith("/mcp/mcp")
+    url = _servers(mdm)[0]["url"]
+    assert url.endswith("/mcp")
+    assert not url.endswith("/mcp/mcp")
 
 
 def test_does_not_double_mcp_suffix():
     mdm = {}
     add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
-    assert _servers(mdm)[0]["customUrl"].count("/mcp") == 1
+    assert _servers(mdm)[0]["url"].count("/mcp") == 1
 
 
-def test_native_entry_is_provider_agnostic_for_azure():
-    """The native entry shape is identical regardless of IdP (no per-provider auth)."""
+def test_entry_is_provider_agnostic_for_azure():
+    """The entry shape is identical regardless of IdP (id_token aud=client_id is universal)."""
     profile = _profile(
         provider_type="azure",
         provider_domain="login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
@@ -99,8 +112,8 @@ def test_native_entry_is_provider_agnostic_for_azure():
     mdm = {}
     add_websearch_mcp_config(mdm, profile, _CONSOLE)
     entry = _servers(mdm)[0]
-    assert entry["server"] == "websearch"
-    assert entry["provider"] == "custom"
+    assert entry["url"].endswith("/mcp")
+    assert "headersHelper" in entry
     assert "oauth" not in entry
 
 

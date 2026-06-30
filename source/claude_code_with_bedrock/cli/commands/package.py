@@ -3011,6 +3011,30 @@ if [ ! -f "$CREDENTIAL_BINARY" ]; then
 fi
 """
 
+        # Web search headersHelper: when web search is enabled (OIDC only), the
+        # installer drops a small wrapper next to credential-process that emits
+        # {"Authorization":"Bearer <id_token>"} for Claude Desktop's
+        # managedMcpServers headersHelper. Bound to this deployment profile.
+        websearch_helper_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            websearch_helper_block = f"""
+# Web search headersHelper (Cowork web search via AgentCore Gateway).
+# Emits {{"Authorization":"Bearer <id_token>"}} so Claude Desktop authenticates
+# managedMcpServers requests to the gateway. Bound to the '{profile.name}' profile.
+echo
+echo "Installing web search headersHelper..."
+WS_HELPER="$ACTUAL_HOME/claude-code-with-bedrock/websearch-headers"
+cat > "$WS_HELPER" <<WS_EOF
+#!/bin/sh
+exec "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" --profile {profile.name} --get-mcp-auth-header
+WS_EOF
+chmod +x "$WS_HELPER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$WS_HELPER"; fi
+echo "OK Web search headersHelper installed: $WS_HELPER"
+"""
+
         installer_content += f"""
 # Create directory
 echo
@@ -3028,7 +3052,7 @@ chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 if [ -n "$SUDO_USER" ]; then
     chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
 fi
-
+{websearch_helper_block}
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
