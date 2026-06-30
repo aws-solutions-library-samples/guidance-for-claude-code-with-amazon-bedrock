@@ -64,13 +64,13 @@ class TestBuildMdmConfigCredentialHelper:
         assert config["inferenceBedrockProfile"] == "ClaudeCode"
 
     def test_helper_mode_uses_unix_path_by_default(self):
-        """Default path should use ~/ prefix (Unix convention)."""
+        """Default macOS path uses the __CCWB_HOME__ placeholder (install.sh resolves it)."""
         config = build_mdm_config(
             bedrock_region="us-west-2",
             model_aliases=["sonnet"],
             profile_name="Test",
         )
-        assert config["inferenceCredentialHelper"].startswith("~/")
+        assert config["inferenceCredentialHelper"].startswith("__CCWB_HOME__/")
 
 
 class TestBuildMdmConfigProfileMode:
@@ -151,6 +151,9 @@ class TestGenerateJsonCredentialHelper:
         )
         json_path = generate_json(tmp_path, config)
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        assert data["inferenceCredentialHelper"] == "~/claude-code-with-bedrock/credential-process --profile MyProfile"
+        assert (
+            data["inferenceCredentialHelper"]
+            == "__CCWB_HOME__/claude-code-with-bedrock/credential-process --profile MyProfile"
+        )
         assert data["inferenceCredentialHelperTtlSec"] == "3500"
         assert data["inferenceCredentialHelperSilentRefreshEnabled"] == "true"

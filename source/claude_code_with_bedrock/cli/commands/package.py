@@ -2822,6 +2822,18 @@ if [ -n "$SUDO_USER" ]; then
     chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
 fi
 {websearch_helper_block}
+# Resolve __CCWB_HOME__ to the real home in the CoWork MDM files. Claude Desktop
+# on macOS does NOT expand ~ or env vars in MDM string values, and the
+# .mobileconfig is generated centrally, so the absolute paths (headersHelper,
+# inferenceCredentialHelper) must be substituted here on the user's machine.
+for _ccwb_mdm in "cowork-3p.mobileconfig" "cowork-3p-config.json"; do
+    if [ -f "$_ccwb_mdm" ] && grep -q "__CCWB_HOME__" "$_ccwb_mdm" 2>/dev/null; then
+        sed -i.bak "s|__CCWB_HOME__|$ACTUAL_HOME|g" "$_ccwb_mdm" && rm -f "$_ccwb_mdm.bak"
+        if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$_ccwb_mdm"; fi
+        echo "OK Resolved home directory in $_ccwb_mdm"
+    fi
+done
+
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.

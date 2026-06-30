@@ -12,6 +12,15 @@ from rich.console import Console
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 
+# Placeholder for the user's home directory in macOS MDM path values. Claude
+# Desktop on macOS does NOT expand "~" (or env vars) in MDM string values, and
+# the .mobileconfig is generated centrally (the packaging host's home may not be
+# the user's). So macOS paths embed this token and `install.sh` substitutes it
+# with the real $HOME on each user's machine at install time — mirroring the
+# __CREDENTIAL_PROCESS_PATH__ pattern used for managed-settings.json. Windows
+# paths use the native %USERPROFILE% env var instead.
+CCWB_HOME_PLACEHOLDER = "__CCWB_HOME__"
+
 # CoWork 3P model aliases — defined by Anthropic's Claude Desktop client.
 # These may differ from the model IDs used by Claude Code (ANTHROPIC_MODEL env var).
 # The ccwb cowork generate --models flag allows admins to override if needed.
@@ -112,14 +121,15 @@ def _credential_process_path(profile_name: str) -> dict[str, str]:
     """Return platform-specific credential-process paths for inferenceCredentialHelper.
 
     The installer places the binary at a predictable location per-platform:
-    - macOS/Linux: ~/claude-code-with-bedrock/credential-process
+    - macOS/Linux: <home>/claude-code-with-bedrock/credential-process
     - Windows: %USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe
 
-    For MDM deployment we use the tilde (~) shorthand which Claude Desktop
-    resolves to the user's home directory on all platforms.
+    Claude Desktop on macOS does NOT expand "~"/env vars in MDM values, so the
+    unix path embeds CCWB_HOME_PLACEHOLDER, which `install.sh` substitutes with
+    the real $HOME at install time. Windows uses the native %USERPROFILE%.
     """
     return {
-        "unix": f"~/claude-code-with-bedrock/credential-process --profile {profile_name}",
+        "unix": f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/credential-process --profile {profile_name}",
         "windows": f"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile {profile_name}",
     }
 
@@ -265,7 +275,7 @@ WEBSEARCH_HEADERS_HELPER_NAME = "websearch-headers"
 # a placeholder that each generator resolves to the right path. Admins can still
 # override with an explicit absolute path via ``websearch_headers_helper_path``.
 WEBSEARCH_HEADERS_HELPER_PLACEHOLDER = "__WEBSEARCH_HEADERS_HELPER__"
-WEBSEARCH_HEADERS_HELPER_POSIX = f"~/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
+WEBSEARCH_HEADERS_HELPER_POSIX = f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
 WEBSEARCH_HEADERS_HELPER_WINDOWS = rf"%USERPROFILE%\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
 
 # Back-compat alias (POSIX default) for callers/tests that referenced the old name.
@@ -406,6 +416,19 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
     mdm_config["managedMcpServers"] = json.dumps(servers)
     console.print(f"[dim]Added {WEBSEARCH_MCP_SERVER_NAME} MCP server to CoWork config ({url})[/dim]")
 
+    # Web Fetch egress: the Cowork sandbox blocks outbound egress by default, so
+    # opening the URLs that web search returns fails with "failed to fetch".
+    # Default to allowing all hosts so search results are usable out of the box.
+    # Only set it when the admin hasn't already provided a value (e.g. a narrower
+    # allowlist via cowork_3p_extra_keys), and warn loudly: "*" is broad.
+    if "coworkEgressAllowedHosts" not in mdm_config:
+        mdm_config["coworkEgressAllowedHosts"] = json.dumps(["*"])
+        console.print(
+            "[yellow]⚠ Web search: set coworkEgressAllowedHosts=[\"*\"] so Web Fetch can open result "
+            "pages. This allows sandbox egress to ALL hosts \u2014 narrow it to a targeted domain list "
+            "for production (set coworkEgressAllowedHosts via cowork_3p_extra_keys).[/yellow]"
+        )
+
 
 def _mdm_keys(config: dict) -> dict:
     """Return config without internal underscore-prefixed keys."""
@@ -519,12 +542,14 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     # Create a copy with Windows-specific credential helper path
     config = dict(mdm_config)
     helper_key = "inferenceCredentialHelper"
-    if helper_key in config and isinstance(config[helper_key], str) and config[helper_key].startswith("~/"):
-        # Convert ~/claude-code-with-bedrock/credential-process --profile X
+    if helper_key in config and isinstance(config[helper_key], str) and config[helper_key].startswith(
+        f"{CCWB_HOME_PLACEHOLDER}/"
+    ):
+        # Convert __CCWB_HOME__/claude-code-with-bedrock/credential-process --profile X
         # to %USERPROFILE%\claude-code-with-bedrock\credential-process.exe --profile X
         unix_path = config[helper_key]
         parts = unix_path.split(" ", 1)
-        binary_part = parts[0].replace("~/", "%USERPROFILE%\\").replace("/", "\\")
+        binary_part = parts[0].replace(f"{CCWB_HOME_PLACEHOLDER}/", "%USERPROFILE%\\").replace("/", "\\")
         if not binary_part.endswith(".exe"):
             binary_part += ".exe"
         config[helper_key] = f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
