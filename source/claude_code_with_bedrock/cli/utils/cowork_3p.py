@@ -122,11 +122,13 @@ def _credential_process_path(profile_name: str) -> dict[str, str]:
 
     The installer places the binary at a predictable location per-platform:
     - macOS/Linux: <home>/claude-code-with-bedrock/credential-process
-    - Windows: %USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe
+    - Windows: <home>\\claude-code-with-bedrock\\credential-process.exe
 
-    Claude Desktop on macOS does NOT expand "~"/env vars in MDM values, so the
-    unix path embeds CCWB_HOME_PLACEHOLDER, which `install.sh` substitutes with
-    the real $HOME at install time. Windows uses the native %USERPROFILE%.
+    Claude Desktop does NOT expand "~"/env vars in MDM values on EITHER platform,
+    so both paths embed CCWB_HOME_PLACEHOLDER. `install.sh` (macOS/Linux) and
+    `install.bat` (Windows) substitute it with the real home at install time —
+    Windows escapes it for the .reg (see generate_reg_file). Using %USERPROFILE%
+    here would NOT work: Claude reads the literal string from the registry.
     """
     return {
         "unix": f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/credential-process --desktop --profile {profile_name}",
@@ -276,7 +278,13 @@ WEBSEARCH_HEADERS_HELPER_NAME = "websearch-headers"
 # override with an explicit absolute path via ``websearch_headers_helper_path``.
 WEBSEARCH_HEADERS_HELPER_PLACEHOLDER = "__WEBSEARCH_HEADERS_HELPER__"
 WEBSEARCH_HEADERS_HELPER_POSIX = f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
-WEBSEARCH_HEADERS_HELPER_WINDOWS = rf"%USERPROFILE%\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
+# Windows path also embeds the home placeholder (NOT %USERPROFILE%): Claude
+# Desktop does NOT expand env vars in registry MDM string values (same class of
+# bug as "~" on macOS, confirmed by live Windows testing). install.bat
+# substitutes __CCWB_HOME__ with the absolute home (the .reg-escaped
+# %USERPROFILE%) before the .reg is imported; the Intune .ps1 resolves it via
+# $env:USERPROFILE at deploy time.
+WEBSEARCH_HEADERS_HELPER_WINDOWS = rf"{CCWB_HOME_PLACEHOLDER}\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
 
 # Back-compat alias (POSIX default) for callers/tests that referenced the old name.
 WEBSEARCH_HEADERS_HELPER_DEFAULT = WEBSEARCH_HEADERS_HELPER_POSIX
@@ -526,33 +534,46 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
     return mobileconfig_path
 
 
+def _to_windows_credential_helper(value: str) -> str:
+    """Convert the unix inferenceCredentialHelper path to the Windows form.
+
+    ``__CCWB_HOME__/claude-code-with-bedrock/credential-process --profile X``
+    becomes ``__CCWB_HOME__\\claude-code-with-bedrock\\credential-process.exe --profile X``.
+    Keeps the ``__CCWB_HOME__`` placeholder (resolved at install/deploy time by
+    install.bat / the Intune .ps1); only rewrites slashes and adds the ``.exe``
+    suffix. No-op when the value is not a placeholder path.
+    """
+    if not (isinstance(value, str) and value.startswith(f"{CCWB_HOME_PLACEHOLDER}/")):
+        return value
+    parts = value.split(" ", 1)
+    binary_part = parts[0].replace("/", "\\")
+    if not binary_part.endswith(".exe"):
+        binary_part += ".exe"
+    return f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+
+
 def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     """Generate a Windows .reg file for Claude Cowork 3P.
 
     All values are stored as REG_SZ strings — booleans, integers, and arrays
     included — matching what Claude Desktop reads from the registry.
 
-    If inferenceCredentialHelper is present and uses a Unix-style path (~/ prefix),
-    it is rewritten to the Windows equivalent (%USERPROFILE%\\ + .exe suffix).
+    Paths embed the __CCWB_HOME__ home placeholder (NOT %USERPROFILE%): Claude
+    Desktop does not expand env vars in registry MDM values. inferenceCredentialHelper's
+    Unix path is converted to backslashes + .exe suffix (keeping the placeholder);
+    install.bat substitutes __CCWB_HOME__ with the .reg-escaped absolute home
+    before the file is imported.
 
     Returns the path to the generated file.
     """
     reg_key = r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude"
 
-    # Create a copy with Windows-specific credential helper path
+    # Create a copy with the Windows credential helper path (backslashes + .exe),
+    # keeping the __CCWB_HOME__ placeholder for install.bat to resolve.
     config = dict(mdm_config)
     helper_key = "inferenceCredentialHelper"
-    if helper_key in config and isinstance(config[helper_key], str) and config[helper_key].startswith(
-        f"{CCWB_HOME_PLACEHOLDER}/"
-    ):
-        # Convert __CCWB_HOME__/claude-code-with-bedrock/credential-process --profile X
-        # to %USERPROFILE%\claude-code-with-bedrock\credential-process.exe --profile X
-        unix_path = config[helper_key]
-        parts = unix_path.split(" ", 1)
-        binary_part = parts[0].replace(f"{CCWB_HOME_PLACEHOLDER}/", "%USERPROFILE%\\").replace("/", "\\")
-        if not binary_part.endswith(".exe"):
-            binary_part += ".exe"
-        config[helper_key] = f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+    if helper_key in config:
+        config[helper_key] = _to_windows_credential_helper(config[helper_key])
 
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
@@ -652,6 +673,11 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
     Returns the path to the generated .ps1 file.
     """
     keys = _mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_WINDOWS)
+    # Convert the unix credential-helper path to the Windows form (keeps the
+    # __CCWB_HOME__ placeholder, resolved at deploy time below).
+    if "inferenceCredentialHelper" in keys:
+        keys = dict(keys)
+        keys["inferenceCredentialHelper"] = _to_windows_credential_helper(keys["inferenceCredentialHelper"])
 
     lines = [
         "<#",
@@ -674,6 +700,12 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
         "",
         '$regPath = "HKCU:\\SOFTWARE\\Policies\\Claude"',
         "",
+        "# Resolve the home-directory placeholder to this user's absolute home.",
+        "# Claude Desktop does NOT expand %USERPROFILE% (or other env vars) in",
+        "# registry MDM values, so headersHelper / inferenceCredentialHelper paths",
+        "# must be absolute. This script writes the literal (single-backslash) path.",
+        "$ccwbHome = $env:USERPROFILE",
+        "",
         "# Create registry key if it does not exist",
         "if (-not (Test-Path $regPath)) {",
         "    New-Item -Path $regPath -Force | Out-Null",
@@ -691,7 +723,14 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
             ps_value = str(value)
         # Escape single quotes for PowerShell
         escaped = ps_value.replace("'", "''")
-        lines.append(f"Set-ItemProperty -Path $regPath -Name '{key}' -Value '{escaped}' -Type String")
+        # Values carrying the home placeholder are resolved at deploy time to the
+        # user's absolute home ($ccwbHome). %USERPROFILE% would NOT work — Claude
+        # reads the registry string literally.
+        if CCWB_HOME_PLACEHOLDER in ps_value:
+            value_expr = f"'{escaped}'.Replace('{CCWB_HOME_PLACEHOLDER}', $ccwbHome)"
+        else:
+            value_expr = f"'{escaped}'"
+        lines.append(f"Set-ItemProperty -Path $regPath -Name '{key}' -Value {value_expr} -Type String")
 
     lines.extend(
         [

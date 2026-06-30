@@ -3456,8 +3456,11 @@ echo
         # Web search headersHelper (Windows): when web search is enabled (OIDC),
         # write %USERPROFILE%\claude-code-with-bedrock\websearch-headers.cmd, a
         # wrapper that runs credential-process.exe --get-mcp-auth-header (the
-        # browserless MCP-header mode). %USERPROFILE% is expanded at install time
-        # so the .cmd carries an absolute path.
+        # browserless MCP-header mode). The .cmd itself keeps %USERPROFILE%: that
+        # is fine because cmd.exe expands it at runtime when the wrapper EXECUTES.
+        # (The registry path that points AT this .cmd is the one that must be
+        # absolute — Claude reads it literally — handled via __CCWB_HOME__ in the
+        # .reg, resolved by the cowork-3p.reg substitution block below.)
         windows_websearch_block = ""
         _ws_enabled = getattr(profile, "web_search_enabled", False)
         _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
@@ -3589,6 +3592,19 @@ if exist "collector-config.yaml" (
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+
+REM Resolve __CCWB_HOME__ to the absolute home in the CoWork MDM .reg. Claude
+REM Desktop does NOT expand %USERPROFILE% (or other env vars) in registry MDM
+REM string values, and cowork-3p.reg is generated centrally, so the headersHelper
+REM / inferenceCredentialHelper absolute paths must be baked in here before the
+REM admin/user imports it. The .reg escapes backslashes, so the home is escaped
+REM (\\ -> \\\\) to match the .reg format; reg import un-escapes it back to a
+REM single backslash in the stored REG_SZ value.
+if exist "cowork-3p.reg" (
+    echo Resolving home directory in cowork-3p.reg...
+    powershell -NoProfile -Command "$h = $env:USERPROFILE.Replace('\\','\\\\'); (Get-Content 'cowork-3p.reg' -Raw).Replace('__CCWB_HOME__', $h) | Set-Content 'cowork-3p.reg'"
+    echo OK Resolved home directory in cowork-3p.reg ^(import it with: reg import cowork-3p.reg, then fully restart Claude^)
+)
 
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
