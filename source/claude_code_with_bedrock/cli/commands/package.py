@@ -725,7 +725,14 @@ class PackageCommand(Command):
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            is_idc_zero_binary=is_idc_zero_binary,
+        )
 
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
@@ -2667,6 +2674,120 @@ RUN pyinstaller \
             self.line("  <info>Using existing installer scripts (install.sh, ccwb-install.ps1)</info>")
             return installer_path
 
+        # IDC zero-binary mode: no credential-process binary, auth via aws sso login
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc")) == "idc"
+        _has_quota = bool(getattr(profile, "quota_api_endpoint", None))
+        if _is_idc and not _has_quota and not built_executables:
+            idc_start_url = getattr(profile, "idc_start_url", "") or ""
+            idc_account_id = getattr(profile, "idc_account_id", "") or ""
+            idc_permission_set = getattr(profile, "idc_permission_set_name", "BedrockDeveloperAccess") or "BedrockDeveloperAccess"
+            aws_region = getattr(profile, "aws_region", "us-east-1") or "us-east-1"
+            sso_region = getattr(profile, "sso_region", aws_region) or aws_region
+            idc_content = f"""#!/bin/bash
+# Claude Code with Bedrock — IAM Identity Center Installer
+# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo "~$SUDO_USER")
+else
+    ACTUAL_USER="$USER"
+    ACTUAL_HOME="$HOME"
+fi
+
+echo "======================================"
+echo "Claude Code with Bedrock — IDC Setup"
+echo "======================================"
+echo
+
+# Prerequisites
+if ! command -v aws &>/dev/null; then
+    echo "ERROR: AWS CLI v2 is required."
+    echo "       Install from: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    exit 1
+fi
+echo "✓ AWS CLI found"
+
+# Write config.json
+mkdir -p "$ACTUAL_HOME/claude-code-with-bedrock"
+cp config.json "$ACTUAL_HOME/claude-code-with-bedrock/"
+if [ -n "$SUDO_USER" ]; then
+    chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
+fi
+echo "✓ Configuration installed"
+
+# Install collector sidecar if present
+if [ -f "collector-config.yaml" ]; then
+    mkdir -p "$ACTUAL_HOME/.ccwb"
+    cp collector-config.yaml "$ACTUAL_HOME/.ccwb/"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.ccwb/collector-config.yaml"; fi
+    echo "✓ OTel collector config installed"
+fi
+
+# Configure AWS SSO profile
+echo
+echo "Configuring AWS SSO profile 'ClaudeCode'..."
+mkdir -p "$ACTUAL_HOME/.aws"
+touch "$ACTUAL_HOME/.aws/config"
+
+# Remove old ClaudeCode entries if present
+sed -i.bak '/^\\[profile ClaudeCode\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+sed -i.bak '/^\\[sso-session ClaudeCode-session\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+rm -f "$ACTUAL_HOME/.aws/config.bak"
+
+cat >> "$ACTUAL_HOME/.aws/config" << 'AWSCONFIG'
+[profile ClaudeCode]
+sso_session = ClaudeCode-session
+sso_account_id = {idc_account_id}
+sso_role_name = {idc_permission_set}
+region = {aws_region}
+
+[sso-session ClaudeCode-session]
+sso_start_url = {idc_start_url}
+sso_region = {sso_region}
+sso_registration_scopes = sso:account:access
+AWSCONFIG
+
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
+echo "✓ AWS profile 'ClaudeCode' configured"
+
+# Install Claude Code settings
+if [ -d "claude-settings" ] && [ -f "claude-settings/settings.json" ]; then
+    mkdir -p "$ACTUAL_HOME/.claude"
+    if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+        cp "$ACTUAL_HOME/.claude/settings.json" "$ACTUAL_HOME/.claude/settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+    fi
+    cp "claude-settings/settings.json" "$ACTUAL_HOME/.claude/settings.json"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/settings.json"; fi
+    echo "✓ Claude Code settings installed"
+fi
+
+echo
+echo "======================================"
+echo "Installation complete!"
+echo "======================================"
+echo
+echo "Next step — authenticate with AWS SSO:"
+echo
+echo "  aws sso login --profile ClaudeCode"
+echo
+echo "Then verify:"
+echo
+echo "  aws sts get-caller-identity --profile ClaudeCode"
+echo
+echo "Claude Code will use the ClaudeCode profile automatically."
+echo "Re-run 'aws sso login --profile ClaudeCode' when your session expires (every 8 hours)."
+"""
+            with open(installer_path, "w", encoding="utf-8") as f:
+                f.write(idc_content)
+            installer_path.chmod(0o755)
+            return installer_path
+
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
         [platform for platform, _ in built_otel_helpers] if built_otel_helpers else []
@@ -3657,6 +3778,7 @@ Available metrics include:
         include_coauthored_by: bool = True,
         profile_name: str = "ClaudeCode",
         otel_resource_attributes: str | None = None,
+        is_idc_zero_binary: bool = False,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -3674,13 +3796,14 @@ Available metrics include:
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     # AWS_PROFILE is used by both AWS SDK and otel-helper
                     "AWS_PROFILE": profile_name,
-                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
-                    # directly without requiring the AWS CLI or ~/.aws/config.
-                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
-                    # install.sh/install.bat with the actual binary path at install time.
-                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
                 }
             }
+            # IDC zero-binary: AWS_PROFILE + ~/.aws/config SSO profile handle creds
+            # directly — no credential-process binary exists to reference.
+            if not is_idc_zero_binary:
+                # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                # install.sh/install.bat with the actual binary path at install time.
+                settings["env"]["AWS_CREDENTIAL_PROCESS"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
             # Only add the field if the user wants it disabled
@@ -3726,9 +3849,15 @@ Available metrics include:
             #
             # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
             # can be interactive (browser), which is exactly what that hook is for.
-            if profile.effective_auth_type == "idc":
+            if profile.effective_auth_type == "idc" and not is_idc_zero_binary:
+                # IDC+quota path: credential-process binary handles STS refresh + quota.
                 settings["awsCredentialExport"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --login --profile {profile_name}"
+            elif profile.effective_auth_type == "idc" and is_idc_zero_binary:
+                # IDC zero-binary: no credential-process. AWS SDK resolves via the
+                # ClaudeCode SSO profile in ~/.aws/config written by install.sh.
+                # Session expiry is handled out-of-band via `aws sso login`.
+                pass
             elif profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
