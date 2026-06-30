@@ -40,8 +40,10 @@ Parameters:
 
   GatewayImage:
     Type: String
-    Default: 'public.ecr.aws/anthropic/claude:latest'
-    Description: Container image (claude binary with gateway support)
+    Description: >-
+      Container image with the claude binary and gateway.yaml baked in.
+      Build your own image following the gateway deployment guide, or use
+      the official image when available. No default — must be provided.
 
   DbInstanceClass:
     Type: String
@@ -203,7 +205,13 @@ Resources:
       ContainerDefinitions:
         - Name: gateway
           Image: !Ref GatewayImage
-          Command: ['claude', 'gateway', '--port', '8080']
+          # NOTE: The gateway requires a config file (gateway.yaml). The exact
+          # interface depends on your claude binary version. Options:
+          # 1. Bake gateway.yaml into your container image
+          # 2. Mount from EFS or SSM Parameter Store via init container
+          # 3. Use environment variables if your version supports them
+          # See: https://code.claude.com/docs/en/claude-apps-gateway-config
+          Command: ['claude', 'gateway', '--config', '/etc/gateway/gateway.yaml']
           PortMappings:
             - ContainerPort: !Ref GatewayPort
               Protocol: tcp
@@ -251,6 +259,7 @@ Resources:
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
+          AssignPublicIp: !If [HasPrivateSubnets, DISABLED, ENABLED]
           Subnets: !If [HasPrivateSubnets, !Ref PrivateSubnetIds, !Ref SubnetIds]
           SecurityGroups: [!Ref TaskSecurityGroup]
       LoadBalancers:
