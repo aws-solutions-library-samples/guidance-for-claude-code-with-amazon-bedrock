@@ -345,29 +345,41 @@ When enabled, `ccwb package` (and `ccwb cowork generate`) automatically inject a
 
 1. **`ccwb init`** — answer *yes* to the web search question (web search is opt-in, default off).
 2. **`ccwb deploy websearch`** — deploys the AgentCore Gateway + Web Search connector, reusing your existing identity provider for inbound authorization. The gateway endpoint is saved to your profile.
-3. **`ccwb package`** (or `ccwb cowork generate`) — injects the `agentcore-websearch` MCP server into the `.json` / `.mobileconfig` / `.reg` outputs.
+3. **`ccwb package`** (or `ccwb cowork generate`) — injects the `agentcore-websearch` MCP server into the `.json` / `.mobileconfig` / `.reg` outputs, and `install.sh` drops a small `websearch-headers` helper next to `credential-process`.
 
-The generated entry uses Claude Desktop's native `managedMcpServers` **`websearch`** server type (Claude Desktop **v1.15962.0+**), with the `custom` provider pointing at your gateway. It is emitted as a JSON-encoded string, like all array/object MDM values:
+The generated entry is a **remote MCP server** pointing at your gateway, authenticated with a `headersHelper` script. It is emitted as a JSON-encoded string, like all array/object MDM values:
 
 ```json
 {
   "name": "agentcore-websearch",
-  "server": "websearch",
-  "provider": "custom",
-  "customUrl": "https://<gateway-id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+  "url": "https://<gateway-id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+  "headersHelper": "/Users/<you>/claude-code-with-bedrock/websearch-headers",
+  "headersHelperTtlSec": 900
 }
 ```
 
+Claude Desktop treats this as a generic remote MCP server and speaks standard MCP JSON-RPC, which the AgentCore Gateway understands. (The built-in `server: "websearch"` / `provider: "custom"` connector is **not** used: it sends a request body the gateway cannot parse, which surfaces in Cowork as "No results" even though authentication succeeds.)
+
 ### How authentication works
 
-For the native `server: "websearch"` entry, **Claude Desktop handles authentication itself** by reusing the user's existing OIDC session (the same sign-in used for Bedrock inference) — there is no `oauth` block and **no secret** in the MDM config. Claude Desktop attaches the user's bearer token to the gateway request, and the gateway validates it with its `CUSTOM_JWT` authorizer (the token's `aud` claim equals your `clientId`). Requires Claude Desktop **v1.15962.0 or later**; older versions do not recognize the `websearch` server type.
+The `headersHelper` is a tiny executable that `ccwb package` installs next to `credential-process` (`<home>/claude-code-with-bedrock/websearch-headers`). On each MCP request — and again every `headersHelperTtlSec` (900s) — Claude Desktop runs it and attaches whatever headers it prints. The helper execs `credential-process --get-mcp-auth-header` (the browserless, Go/Python-parity MCP-header mode) which emits:
+
+```json
+{"Authorization": "Bearer <id_token>"}
+```
+
+That mode reads the cached id_token and silently refreshes it via the stored refresh token when expired; it **never** opens a browser (a headersHelper cannot drive an interactive login). The gateway's `CUSTOM_JWT` authorizer validates that id_token. An OIDC **id_token** carries `aud = clientId` for every provider, so the gateway is deployed with **`AllowedAudience = [clientId]`** (the template default) — there is no provider-specific authorizer to configure. The TTL is kept below the token lifetime (Cognito ~1h) so an expiring bearer is refreshed before it lapses.
+
+> **Absolute paths (important).** Claude Desktop on macOS does **not** expand `~` (or env vars) in MDM string values, so the `headersHelper`/`inferenceCredentialHelper` paths must be absolute. Because the `.mobileconfig` is generated centrally, the macOS paths embed a `__CCWB_HOME__` placeholder and `install.sh` substitutes it with the user's real `$HOME` at install time — one artifact distributes centrally, each machine gets a correct absolute path. Windows uses the native `%USERPROFILE%`. To pin a fixed path yourself, set `websearch_headers_helper_path` on the profile (applied verbatim to every format).
+
+> **Web Fetch.** Web search returns titles, URLs, and snippets; opening those result pages needs sandbox egress, which Cowork blocks by default. When web search is enabled, `ccwb` sets `coworkEgressAllowedHosts=["*"]` automatically (with a warning) so results are usable out of the box. `["*"]` allows egress to **all** hosts — **narrow it to a targeted domain list for production** by setting `coworkEgressAllowedHosts` yourself (e.g. via `cowork_3p_extra_keys`); an admin-provided value is never overwritten.
 
 ### Things to know
 
 - **Region:** the managed Web Search connector is currently available in **`us-east-1` only**, so the gateway is deployed there regardless of your other stacks' region.
 - **Data residency:** web search queries (or fragments of user prompts) are processed in `us-east-1`. Review compliance impact for regulated workloads before enabling.
 - **Cost:** approximately **$7 per 1,000 queries**, billed to your AWS account.
-- **Identity providers:** works with the solution's OIDC providers (Amazon Cognito, Microsoft Entra ID, Okta, Auth0, Google, generic OIDC). Because Claude Desktop reuses the existing OIDC session (rather than running a fresh OAuth flow), **no provider-specific setup is required** — including for Entra ID. See [Microsoft Entra ID setup → web search](providers/microsoft-entra-id-setup.md#10-web-search-for-claude-cowork-entra-id-notes) for notes.
+- **Identity providers:** works with the solution's OIDC providers (Amazon Cognito, Microsoft Entra ID, Okta, Auth0, Google, generic OIDC). Because the bearer is an id_token (`aud = clientId`) validated by `AllowedAudience`, **no provider-specific setup is required**. See [Microsoft Entra ID setup → web search](providers/microsoft-entra-id-setup.md#10-web-search-for-claude-cowork-entra-id-notes) for notes.
 
 > **Claude Code & joint documentation.** The equivalent web search capability for the **Claude Code CLI** (injected into `settings.json` via the credential helper) is delivered by a separate contribution and is **not** documented here yet. A single consolidated `WEB_SEARCH.md` covering both surfaces (Claude Code + Cowork) is planned once that work lands. Note: the merged CloudFormation template PR shipped the gateway template only — it did not include a standalone usage doc.
 
