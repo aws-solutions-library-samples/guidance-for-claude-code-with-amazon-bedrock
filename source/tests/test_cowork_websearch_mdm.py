@@ -111,9 +111,14 @@ def test_reg_resolves_windows_helper_path(tmp_path):
     add_websearch_mcp_config(mdm, _profile(), _CONSOLE)
     generate_reg_file(tmp_path, mdm)
     content = (tmp_path / "cowork-3p.reg").read_text()
-    # .reg JSON-escapes backslashes; check on the unescaped form.
+    # .reg JSON-escapes backslashes; check on the escaped form.
     assert WEBSEARCH_HEADERS_HELPER_WINDOWS.replace("\\", "\\\\") in content
     assert WEBSEARCH_HEADERS_HELPER_PLACEHOLDER not in content
+    # Windows path now carries the __CCWB_HOME__ placeholder (install.bat resolves
+    # it to the absolute home), NOT %USERPROFILE% — Claude Desktop reads the
+    # registry value literally and does not expand env vars.
+    assert CCWB_HOME_PLACEHOLDER in content
+    assert "%USERPROFILE%" not in content
 
 
 def test_override_skips_placeholder_in_all_formats(tmp_path):
