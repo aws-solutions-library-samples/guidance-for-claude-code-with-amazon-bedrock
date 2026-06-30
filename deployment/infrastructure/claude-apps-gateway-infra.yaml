@@ -56,8 +56,26 @@ Parameters:
     Default: 8080
     Description: Port the gateway listens on inside the container
 
+  ALBScheme:
+    Type: String
+    Default: internal
+    AllowedValues: [internet-facing, internal]
+    Description: >-
+      ALB scheme. 'internal' recommended per Claude apps gateway docs
+      (developers connect via VPN/private network). Use 'internet-facing'
+      only if developers access from the public internet.
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional ACM certificate ARN for HTTPS. When provided, enables an
+      HTTPS listener on port 443. Required for production (IdPs reject
+      HTTP callback URLs).
+
 Conditions:
   HasPrivateSubnets: !Not [!Equals [!Join ['', !Ref PrivateSubnetIds], '']]
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
 Resources:
   # Security Groups
@@ -244,7 +262,9 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: gateway
           HealthCheck:
-            Command: ['CMD-SHELL', 'curl -sf http://localhost:8080/health || exit 1']
+            Command:
+              - CMD-SHELL
+              - !Sub 'curl -sf http://localhost:${GatewayPort}/health || exit 1'
             Interval: 30
             Timeout: 5
             Retries: 3
@@ -256,6 +276,7 @@ Resources:
       Cluster: !Ref EcsCluster
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: 1
+      HealthCheckGracePeriodSeconds: 120
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
@@ -272,7 +293,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Type: application
-      Scheme: internet-facing
+      Scheme: !Ref ALBScheme
       SecurityGroups: [!Ref AlbSecurityGroup]
       Subnets: !Ref SubnetIds
 
@@ -293,13 +314,36 @@ Resources:
       Port: 80
       Protocol: HTTP
       DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
 Outputs:
   GatewayUrl:
     Description: Gateway URL — use as forceLoginGatewayUrl in managed-settings.json
-    Value: !Sub 'http://${LoadBalancer.DNSName}'
+    Value: !If
+      - HasCertificate
+      - !Sub 'https://${LoadBalancer.DNSName}'
+      - !Sub 'http://${LoadBalancer.DNSName}'
   GatewayHealthEndpoint:
     Description: Health check endpoint
     Value: !Sub 'http://${LoadBalancer.DNSName}/health'
