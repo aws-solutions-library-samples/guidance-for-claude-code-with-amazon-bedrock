@@ -2680,7 +2680,9 @@ RUN pyinstaller \
         if _is_idc and not _has_quota and not built_executables:
             idc_start_url = getattr(profile, "idc_start_url", "") or ""
             idc_account_id = getattr(profile, "idc_account_id", "") or ""
-            idc_permission_set = getattr(profile, "idc_permission_set_name", "BedrockDeveloperAccess") or "BedrockDeveloperAccess"
+            idc_permission_set = (
+                getattr(profile, "idc_permission_set_name", "BedrockDeveloperAccess") or "BedrockDeveloperAccess"
+            )
             aws_region = getattr(profile, "aws_region", "us-east-1") or "us-east-1"
             sso_region = getattr(profile, "sso_region", aws_region) or aws_region
             idc_content = f"""#!/bin/bash
