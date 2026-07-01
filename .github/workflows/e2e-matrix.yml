@@ -55,11 +55,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: source/go/go.mod
 
@@ -74,7 +74,7 @@ jobs:
           go build -ldflags="-s -w" -o dist/otel-helper-${{ matrix.binary_suffix }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/otel-helper/
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.binary_suffix }}
           path: source/go/dist/
@@ -88,12 +88,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
       - name: Download Linux binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: binaries-linux-amd64
           path: source/go/dist/
@@ -101,7 +101,7 @@ jobs:
       - name: Make binaries executable
         run: chmod +x source/go/dist/*
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -189,12 +189,12 @@ jobs:
       stack_outputs: ${{ steps.deploy.outputs.stack_outputs }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -226,7 +226,7 @@ jobs:
           echo "stack_outputs=$(cat /tmp/stack-outputs.json | jq -c .)" >> "$GITHUB_OUTPUT"
 
       - name: Upload stack outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stack-outputs
           path: /tmp/stack-outputs.json
@@ -304,7 +304,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
@@ -331,12 +331,12 @@ jobs:
 
       - name: Configure AWS credentials (OIDC)
         if: steps.should_run.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.should_run.outputs.skip != 'true'
         with:
           python-version: '3.11'
@@ -348,7 +348,7 @@ jobs:
 
       - name: Download binaries
         if: steps.should_run.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: binaries-${{ matrix.platform == 'linux-x64' && 'linux-amd64' || matrix.platform == 'windows-x64' && 'windows-amd64' || 'darwin-arm64' }}
           path: source/go/dist/
@@ -359,7 +359,7 @@ jobs:
 
       - name: Download stack outputs
         if: steps.should_run.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: stack-outputs
           path: tests/e2e/artifacts/
@@ -367,7 +367,7 @@ jobs:
       - name: Mint GitHub OIDC token for binary injection
         if: steps.should_run.outputs.skip != 'true'
         id: oidc_token
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const token = await core.getIDToken('sts.amazonaws.com');
@@ -393,7 +393,7 @@ jobs:
 
       - name: Upload test report
         if: always() && steps.should_run.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-report-${{ matrix.profile }}
           path: report-*.xml
@@ -408,7 +408,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all test reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: test-report-*
           merge-multiple: true
@@ -470,7 +470,7 @@ jobs:
           echo "Badge: $message ($color)"
 
       - name: Upload badge
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-badge
           path: badge.json
@@ -487,12 +487,12 @@ jobs:
     environment: e2e-testing
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
