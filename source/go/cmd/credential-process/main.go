@@ -12,6 +12,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"golang.org/x/term"
 
 	"ccwb-go/internal/config"
 	"ccwb-go/internal/federation"
@@ -51,6 +52,7 @@ func main() {
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
 	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
+	setClientSecret := flag.Bool("set-client-secret", false, "Store Azure AD client secret in OS secure storage. Set CCWB_CLIENT_SECRET env var for non-interactive use, or enter it at the prompt.")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -67,6 +69,12 @@ func main() {
 		if detected := config.AutoDetectProfile(); detected != "" {
 			profile = detected
 		}
+	}
+
+	// --set-client-secret runs before config load so it works on fresh machines
+	// where config.json may not yet exist.
+	if *setClientSecret {
+		os.Exit(runSetClientSecret(profile))
 	}
 
 	debug = os.Getenv("COGNITO_AUTH_DEBUG") == "1" || os.Getenv("COGNITO_AUTH_DEBUG") == "true" || os.Getenv("COGNITO_AUTH_DEBUG") == "yes"
@@ -628,7 +636,7 @@ func (a *credentialApp) resolveConfidentialAuth() (*oidc.ConfidentialAuth, error
 		if secret == "" {
 			return nil, fmt.Errorf(
 				"azure_auth_mode is 'secret' but no client secret is stored.\n"+
-					"Run: ccwb init --profile %s (re-run the Azure step) to store one in the OS keyring.",
+					"Run: credential-process --set-client-secret --profile %s",
 				a.profile)
 		}
 		return &oidc.ConfidentialAuth{ClientSecret: secret}, nil
@@ -1112,4 +1120,37 @@ func printQuotaBlocked(qr *quota.Result) {
 func outputJSON(v interface{}) {
 	data, _ := json.Marshal(v)
 	fmt.Println(string(data))
+}
+
+// runSetClientSecret stores an Azure confidential-client secret in the OS keyring.
+// Mirrors the Python credential-process --set-client-secret behaviour:
+//   - Read secret from CCWB_CLIENT_SECRET env var (non-interactive / automation), or
+//   - Prompt via terminal (interactive). Blank input clears the stored secret.
+func runSetClientSecret(profile string) int {
+	var secret string
+
+	if env := os.Getenv("CCWB_CLIENT_SECRET"); env != "" {
+		secret = env // pragma: allowlist secret
+	} else {
+		fmt.Fprintf(os.Stderr, "Enter client secret for profile '%s' (press Enter to clear): ", profile)
+		raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr) // newline after hidden input
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading secret: %v\n", err)
+			return 1
+		}
+		secret = string(raw)
+	}
+
+	if err := storage.SaveClientSecret(profile, secret); err != nil {
+		fmt.Fprintf(os.Stderr, "Error storing client secret: %v\n", err)
+		return 1
+	}
+
+	if secret == "" {
+		fmt.Fprintf(os.Stderr, "✓ Client secret cleared for profile '%s'\n", profile)
+	} else {
+		fmt.Fprintf(os.Stderr, "✓ Client secret stored for profile '%s'\n", profile)
+	}
+	return 0
 }

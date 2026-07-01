@@ -3,7 +3,7 @@
 
 """Quota policy CRUD operations for fine-grained quota management."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -150,7 +150,7 @@ class QuotaPolicyManager:
         if warning_threshold_90 is None:
             warning_threshold_90 = int(monthly_token_limit * 0.9)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         policy = QuotaPolicy(
             policy_type=policy_type,
             identifier=identifier,
@@ -246,7 +246,7 @@ class QuotaPolicyManager:
         expression_values: dict[str, Any] = {}
         expression_names: dict[str, str] = {}
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         update_parts.append("#updated_at = :updated_at")
         expression_values[":updated_at"] = now
         expression_names["#updated_at"] = "updated_at"

@@ -6,6 +6,7 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
@@ -115,3 +116,88 @@ class TestPackageCommandCrossRegion:
             assert "AWS_REGION" in installer_content or "aws_region" in installer_content
             # The fallback should now have the interpolated region value
             assert "us-west-2" in installer_content or "config.json" in installer_content
+
+
+class TestResolveFederation:
+    """Regression tests for federation identifier resolution.
+
+    Guards against the bug where `ccwb package` used `identity_pool_name` (a
+    human-readable name) as the Cognito identity pool ID, producing a config.json
+    that failed Cognito GetId validation ([\\w-]+:[0-9a-f-]+).
+    """
+
+    def _profile(self, **overrides):
+        defaults = {
+            "name": "test",
+            "provider_domain": "example.auth.us-east-1.amazoncognito.com",
+            "client_id": "test-client-id",
+            "credential_storage": "keyring",
+            "aws_region": "us-east-1",
+            "identity_pool_name": "claude-code-auth",  # a NAME, not the pool ID
+            "federation_type": "cognito",
+            "monitoring_enabled": False,
+        }
+        defaults.update(overrides)
+        return Profile(**defaults)
+
+    def test_cognito_resolves_pool_id_from_stack_not_name(self):
+        """Cognito must use the stack's IdentityPoolId (region:uuid), never the
+        identity_pool_name. Core regression guard for the GetId ValidationException."""
+        command = PackageCommand()
+        profile = self._profile()
+        console = MagicMock()
+        fake_outputs = {
+            "FederationType": "cognito",
+            "IdentityPoolId": "us-east-1:00000000-0000-0000-0000-000000000000",
+        }
+        with patch(
+            "claude_code_with_bedrock.cli.commands.package.get_stack_outputs",
+            return_value=fake_outputs,
+        ):
+            federation_type, identity_pool_id, federated_role_arn = command._resolve_federation(profile, console)
+
+        assert federation_type == "cognito"
+        assert identity_pool_id == "us-east-1:00000000-0000-0000-0000-000000000000"
+        # Must NOT fall back to the human-readable name (the original bug)
+        assert identity_pool_id != "claude-code-auth"
+        assert federated_role_arn is None
+
+    def test_direct_uses_profile_role_arn_without_stack(self):
+        """Direct STS keeps the profile shortcut — the profile stores the real ARN."""
+        command = PackageCommand()
+        arn = "arn:aws:iam::123456789012:role/BedrockRole"
+        profile = self._profile(federation_type="direct", federated_role_arn=arn)
+        console = MagicMock()
+        with patch("claude_code_with_bedrock.cli.commands.package.get_stack_outputs") as mock_stack:
+            federation_type, identity_pool_id, federated_role_arn = command._resolve_federation(profile, console)
+
+        assert federation_type == "direct"
+        assert federated_role_arn == arn
+        assert identity_pool_id is None
+        mock_stack.assert_not_called()  # no stack lookup needed for direct shortcut
+
+    def test_cognito_missing_pool_id_returns_none(self):
+        """If the stack has no IdentityPoolId, resolution fails gracefully (no name fallback)."""
+        command = PackageCommand()
+        profile = self._profile()
+        console = MagicMock()
+        with patch(
+            "claude_code_with_bedrock.cli.commands.package.get_stack_outputs",
+            return_value={"FederationType": "cognito"},
+        ):
+            federation_type, identity_pool_id, federated_role_arn = command._resolve_federation(profile, console)
+
+        assert identity_pool_id is None
+        assert federated_role_arn is None
+
+    def test_sso_disabled_returns_no_identifier(self):
+        """SSO disabled needs no federation identifier and performs no stack lookup."""
+        command = PackageCommand()
+        profile = self._profile(sso_enabled=False)
+        console = MagicMock()
+        with patch("claude_code_with_bedrock.cli.commands.package.get_stack_outputs") as mock_stack:
+            federation_type, identity_pool_id, federated_role_arn = command._resolve_federation(profile, console)
+
+        assert identity_pool_id is None
+        assert federated_role_arn is None
+        mock_stack.assert_not_called()

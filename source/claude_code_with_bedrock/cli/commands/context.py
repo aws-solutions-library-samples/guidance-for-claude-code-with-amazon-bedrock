@@ -501,9 +501,9 @@ class ConfigExportCommand(Command):
                 sanitized["stack_names"][key] = "[REDACTED]"
 
         # Add export metadata
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        sanitized["_exported_at"] = datetime.utcnow().isoformat()
+        sanitized["_exported_at"] = datetime.now(timezone.utc).isoformat()
         sanitized["_export_note"] = "Sensitive fields have been redacted. Update before importing."
 
         return sanitized

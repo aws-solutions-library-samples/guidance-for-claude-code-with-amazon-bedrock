@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/99designs/keyring"
 	"ccwb-go/internal/federation"
+	"github.com/99designs/keyring"
 )
 
 // Windows Credential Manager has a ~2560 byte UTF-16LE limit.
@@ -18,6 +18,7 @@ import (
 type keyringRW interface {
 	Get(key string) (keyring.Item, error)
 	Set(item keyring.Item) error
+	Remove(key string) error
 }
 
 func readFromKeyringWindows(kr keyring.Keyring, profile string) (*federation.AWSCredentials, error) {

@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -20,10 +21,17 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
+from claude_code_with_bedrock.cli.validators import validate_profile_for_packaging
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
 )
+
+
+def _is_interactive() -> bool:
+    """Return True when stdin is a TTY and prompts can be displayed."""
+    return sys.stdin.isatty()
+
 
 # Runtime packages bundled into the credential provider binary.
 _CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "cryptography"]
@@ -210,6 +218,11 @@ class PackageCommand(Command):
             description="Use legacy PyInstaller/Nuitka build instead of Go (deprecated)",
             flag=True,
         ),
+        option(
+            "skip-validation",
+            description="Skip configuration validation checks",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -238,6 +251,25 @@ class PackageCommand(Command):
         if not profile:
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
+
+        # Run configuration validation (unless skipped)
+        if not self.option("skip-validation"):
+            validation_errors = validate_profile_for_packaging(profile)
+            if validation_errors:
+                has_errors = False
+                for err in validation_errors:
+                    if err.severity == "error":
+                        console.print(f"[red]✗ [{err.field}] {err.message}[/red]")
+                        has_errors = True
+                    else:
+                        console.print(f"[yellow]⚠ [{err.field}] {err.message}[/yellow]")
+                if has_errors:
+                    console.print(
+                        "\n[red]Configuration validation failed. "
+                        "Fix the errors above or re-run with --skip-validation to bypass.[/red]"
+                    )
+                    return 1
+                console.print()  # blank line after warnings
 
         # Regenerate installers from existing binaries (no rebuild needed)
         if self.option("regenerate-installers"):
@@ -297,28 +329,41 @@ class PackageCommand(Command):
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
-            selected_platforms = questionary.checkbox(
-                "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
-                choices=platform_choices,
-                validate=lambda x: len(x) > 0 or "You must select at least one platform",
-            ).ask()
+            if _is_interactive():
+                selected_platforms = questionary.checkbox(
+                    "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
+                    choices=platform_choices,
+                    validate=lambda x: len(x) > 0 or "You must select at least one platform",
+                ).ask()
+            else:
+                # Non-interactive: build all available platforms
+                selected_platforms = platform_choices
+                console.print(
+                    f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]"
+                )
 
             # Use the selected platforms (guaranteed to have at least one due to validation)
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
 
         # Prompt for co-authorship preference (default to No - opt-in approach)
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?",
-            default=False,
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?",
+                default=False,
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         # Prompt for custom OTel resource attributes (only when monitoring is enabled)
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes? (department, team, cost center)",
-                default=False,
-            ).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm(
+                    "Customize telemetry resource attributes? (department, team, cost center)",
+                    default=False,
+                ).ask()
+            else:
+                customize_otel = False
 
             if customize_otel:
                 console.print(
@@ -348,45 +393,31 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get federation identifier — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        identity_pool_id = None
-        federated_role_arn = None
+        # Normalize generic platform tokens to their arch-specific canonical names.
+        # This ensures binary naming is consistent with what distribute and install.sh expect.
+        # See #682 Bug 4: generic 'linux' produces 'credential-process-linux' which
+        # distribute silently drops and install.sh can't find.
+        _PLATFORM_CANONICAL = {
+            "linux": "linux-x64",
+            "macos": "macos-arm64",
+        }
+        if use_go:
+            if isinstance(target_platform, list):
+                target_platform = [_PLATFORM_CANONICAL.get(p, p) for p in target_platform]
+            elif target_platform in _PLATFORM_CANONICAL:
+                canonical = _PLATFORM_CANONICAL[target_platform]
+                console.print(
+                    f"[dim]Normalizing platform '{target_platform}' → '{canonical}' for consistent binary naming[/dim]"
+                )
+                target_platform = canonical
 
-        if not getattr(profile, "sso_enabled", True):
-            # SSO disabled — no auth stack to query, no federation needed
-            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
-        elif federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federated_role_arn = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federated_role_arn}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            identity_pool_id = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {identity_pool_id}[/dim]")
-        else:
-            # Fall back to CloudFormation stack outputs
-            console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-
-            if federation_type == "direct":
-                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                    return 1
-            else:
-                identity_pool_id = stack_outputs.get("IdentityPoolId")
-                if not identity_pool_id:
-                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
-                    return 1
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito). See _resolve_federation: Cognito ALWAYS reads the pool ID
+        # from CloudFormation stack outputs because identity_pool_name is only a
+        # name, not the "<region>:<uuid>" pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        if getattr(profile, "sso_enabled", True) and not (identity_pool_id or federated_role_arn):
+            return 1
 
         # Welcome
         console.print(
@@ -463,17 +494,22 @@ class PackageCommand(Command):
                 if "@" in session_name:
                     idc_user_email = session_name
                     console.print(f"[dim]Detected user email from IDC: {idc_user_email}[/dim]")
-                else:
+                elif _is_interactive():
                     # Prompt if we can't auto-detect
                     idc_user_email = questionary.text(
                         "User email for OTEL attribution (IDC session name):",
                         default=session_name or "",
                     ).ask()
+                else:
+                    idc_user_email = session_name or ""
             except Exception:
-                idc_user_email = questionary.text(
-                    "User email for OTEL attribution:",
-                    default="",
-                ).ask()
+                if _is_interactive():
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution:",
+                        default="",
+                    ).ask()
+                else:
+                    idc_user_email = ""
 
             if not idc_user_email:
                 console.print("[yellow]Warning: No user email — OTEL attribution will be anonymous[/yellow]")
@@ -2415,43 +2451,30 @@ RUN pyinstaller \
                 if script_src.exists():
                     shutil.copy2(script_src, output_dir / script_name)
 
-        # Get federation info — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        federation_identifier = None
-
-        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federation_identifier = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federation_identifier}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            federation_identifier = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {federation_identifier}[/dim]")
-        else:
-            console.print("[cyan]Fetching deployment information from CloudFormation...[/cyan]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-            if federation_type == "direct":
-                federation_identifier = stack_outputs.get("DirectSTSRoleArn") or stack_outputs.get("FederatedRoleArn")
-            else:
-                federation_identifier = stack_outputs.get("IdentityPoolId")
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito) — see _resolve_federation. Cognito ALWAYS reads the pool ID
+        # from stack outputs; identity_pool_name is a name, not the pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
 
         if not federation_identifier or federation_identifier == "N/A":
             console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
             return 1
 
         # Prompt for co-authorship and OTEL attributes
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?", default=False
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?", default=False
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            else:
+                customize_otel = False
             if customize_otel:
                 department = questionary.text("Department:", default="engineering").ask()
                 team_id = questionary.text("Team ID:", default="default").ask()
@@ -2494,6 +2517,63 @@ RUN pyinstaller \
             "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]"
         )
         return 0
+
+    def _resolve_federation(self, profile, console):
+        r"""Resolve federation details for packaging.
+
+        Returns a ``(federation_type, identity_pool_id, federated_role_arn)``
+        tuple. On success exactly one of ``identity_pool_id`` /
+        ``federated_role_arn`` is set; both are ``None`` when SSO is disabled or
+        when resolution fails (the caller is expected to handle the failure).
+
+        IMPORTANT — Cognito Identity Pool federation ALWAYS resolves the pool ID
+        from the deployed CloudFormation stack outputs. ``profile.identity_pool_name``
+        holds only a human-readable name (e.g. ``"claude-code-auth"``); the real
+        pool ID has the form ``"<region>:<uuid>"`` and is created by
+        ``ccwb deploy``. Using the name as the identity pool ID produces a
+        ``config.json`` that fails Cognito ``GetId`` validation
+        (``[\w-]+:[0-9a-f-]+``), breaking authentication for every distributed
+        user. Direct STS keeps a profile shortcut because the profile stores the
+        real role ARN.
+        """
+        federation_type = profile.federation_type
+
+        if not getattr(profile, "sso_enabled", True):
+            # SSO disabled — no auth stack to query, no federation needed.
+            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
+            return federation_type, None, None
+
+        # Direct STS: the profile stores the real role ARN, so it is a safe shortcut.
+        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+            console.print(f"[dim]Using role ARN from profile: {profile.federated_role_arn}[/dim]")
+            return federation_type, None, profile.federated_role_arn
+
+        # Cognito (and direct without a cached ARN) must read from the stack: the
+        # profile never holds the real identity pool ID, only its name.
+        console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
+        stack_outputs = get_stack_outputs(
+            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+        )
+        if not stack_outputs:
+            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+            return federation_type, None, None
+
+        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+        if federation_type == "direct":
+            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                federated_role_arn = stack_outputs.get("FederatedRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                return federation_type, None, None
+            return federation_type, None, federated_role_arn
+
+        identity_pool_id = stack_outputs.get("IdentityPoolId")
+        if not identity_pool_id:
+            console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            return federation_type, None, None
+        return federation_type, identity_pool_id, None
 
     def _create_config(
         self,
@@ -3903,10 +3983,25 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Try profile first (saved by ccwb deploy), fall back to CloudFormation query
-                endpoint = getattr(profile, "otel_collector_endpoint", None)
+                _monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
-                if not endpoint:
+                # Sidecar mode: Claude Code always sends to the local otelcol on
+                # localhost:4318. There is no central monitoring stack to read a
+                # CollectorEndpoint from, so resolve the endpoint up front and skip
+                # the profile/CloudFormation/prompt resolution below (which only
+                # applies to central mode). Doing this here — rather than as an
+                # override after resolution — is what actually configures telemetry
+                # for sidecar packages: real sidecar deploys have no saved
+                # otel_collector_endpoint, so the old post-resolution override never
+                # ran and telemetry was silently left unconfigured.
+                if _monitoring_mode == "sidecar":
+                    endpoint = "http://localhost:4318"
+                else:
+                    # Central mode: try profile first (saved by ccwb deploy), then
+                    # fall back to CloudFormation query.
+                    endpoint = getattr(profile, "otel_collector_endpoint", None)
+
+                if not endpoint and _monitoring_mode != "sidecar":
                     # Fall back to reading from CloudFormation stack outputs
                     # Try multiple possible stack name patterns
                     possible_stacks = [
@@ -3994,19 +4089,14 @@ Available metrics include:
                         pass
 
                 if endpoint:
-                    # Add monitoring configuration
+                    # Add monitoring configuration. In sidecar mode `endpoint` was
+                    # already resolved to http://localhost:4318 above; in central
+                    # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
                         "department=engineering,team.id=default,"
                         "cost_center=default,organization=default,"
                         "project=default"
                     )
-
-                    # Sidecar mode: Claude Code sends to local otelcol, not directly to the ALB.
-                    # Override whatever endpoint the profile stores (which is the ALB address) so
-                    # users don't have to edit settings.json manually after running ccwb package.
-                    _monitoring_mode = getattr(profile, "monitoring_mode", "central")
-                    if _monitoring_mode == "sidecar":
-                        endpoint = "http://localhost:4318"
 
                     settings["env"].update(
                         {
