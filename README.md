@@ -142,7 +142,7 @@ flowchart LR
 The **otel-helper** binary operates in two modes depending on the surface:
 
 - **Header mode** (Claude Code CLI): Called once per OTLP export as a header provider. Returns JSON headers containing user identity (email, team, department) extracted from the cached JWT. Claude Code's OTLP exporter attaches these headers to each request.
-- **Proxy mode** (Claude Desktop): Auto-spawned by `credential-process` after each successful auth. Runs as a local identity-injecting proxy that reads the user's decoded JWT from the local cache and injects `x-user-email`, `x-department`, `x-team-id` headers into every OTLP request. In central mode it listens on port 4318 (forwarding to the remote ALB); in sidecar mode it listens on port 4319 (forwarding to the local otelcol on 4318 to avoid port conflicts).
+- **Proxy mode** (Claude Desktop — experimental, coming soon via [#660](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/pull/660)): Auto-spawned by `credential-process` after each successful auth. Runs as a local identity-injecting proxy that reads the user's decoded JWT from the local cache and injects `x-user-email`, `x-department`, `x-team-id` headers into every OTLP request. In central mode it listens on port 4318 (forwarding to the remote ALB); in sidecar mode it listens on port 4319 (forwarding to the local otelcol on 4318 to avoid port conflicts).
 
 ```mermaid
 flowchart LR
@@ -167,7 +167,7 @@ flowchart LR
 | Surface | otel-helper mode | What it does | Collector mode | Identity in telemetry |
 |---------|-----------------|--------------|----------------|----------------------|
 | **Claude Code (CLI)** | Header mode | Called once per export, returns identity headers as JSON | Central (ECS/ALB) or Sidecar (local) | User's JWT claims (email, team, department) |
-| **Claude Desktop (Cowork)** | Proxy mode | Auto-spawned by credential-process; injects identity headers from JWT cache | Central or Sidecar | Full JWT claims (email, team, department) |
+| **Claude Desktop (Cowork)** | Proxy mode (experimental — [#660](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/pull/660)) | Auto-spawned by credential-process; injects identity headers from JWT cache | Central or Sidecar | Full JWT claims (email, team, department) |
 | **Claude Desktop (bootstrap server)** | Not used | Bootstrap server delivers per-user `otlpHeaders` at sign-in | Central (ECS/ALB) | Per-user (from OIDC token) |
 
 > **When is the proxy needed?** The proxy is **not needed** if you use the [Bootstrap Server](assets/docs/BOOTSTRAP_SERVER.md) (OIDC only) — it delivers per-user `otlpHeaders` at sign-in. Similarly, Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values set via MDM. The proxy is only required when:
