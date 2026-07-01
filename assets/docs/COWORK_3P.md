@@ -123,19 +123,81 @@ For automated deployment at scale, create an MDM profile with the following esse
 | `inferenceBedrockProfile` | Name of the AWS named profile in `~/.aws/config` that Claude Desktop should use for Bedrock calls. The installer configures this profile with `credential_process` pointing at the bundled `credential-process` binary |
 | `inferenceBedrockRegion` | AWS region for Bedrock API calls (e.g., `us-west-2`, `us-east-1`) |
 | `inferenceBedrockAwsDir` | Path to the directory containing AWS config/credentials files (default: `~/.aws`) |
-| `inferenceModels` | JSON array of model aliases available to users (`opus`, `sonnet`, `haiku`). First entry is the default |
+| `inferenceModels` | JSON array of model entries. Supports simple aliases (`["opus", "sonnet", "haiku"]`) or object entries with tier tagging (see below). First entry is the default |
 
 > **Note:** The model aliases used by CoWork 3P (`opus`, `sonnet`, `haiku`) are resolved internally by Claude Desktop and may differ from the CRIS model IDs configured for Claude Code via `ANTHROPIC_MODEL`. The `ccwb cowork generate` command includes all available aliases by default. Use `--models` to customize the list for your organization.
 
+#### Model Entries with Family Tier (v1.13576+)
+
+Claude Desktop supports object entries in `inferenceModels` with `anthropicFamilyTier` and `isFamilyDefault` fields. This lets tier shortcuts (like "opus" and "sonnet" in the model picker) resolve to your specific Bedrock model IDs:
+
+```json
+"inferenceModels": [
+  {
+    "name": "global.anthropic.claude-opus-4-8",
+    "labelOverride": "Claude Opus 4.8",
+    "anthropicFamilyTier": "opus",
+    "isFamilyDefault": true
+  },
+  {
+    "name": "global.anthropic.claude-sonnet-4-6",
+    "labelOverride": "Claude Sonnet 4.6",
+    "anthropicFamilyTier": "sonnet",
+    "isFamilyDefault": true
+  },
+  {
+    "name": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "labelOverride": "Claude Haiku 4.5",
+    "anthropicFamilyTier": "haiku",
+    "isFamilyDefault": true
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | The model ID your provider routes (e.g., CRIS inference profile ID) |
+| `labelOverride` | string | Optional display name in the model picker |
+| `anthropicFamilyTier` | string | Which Claude tier this model stands in for: `opus`, `sonnet`, `haiku`, or `fable` |
+| `isFamilyDefault` | boolean | Whether this is the default model when the tier shortcut is used |
+| `supports1m` | boolean | Whether the model supports 1M token context |
+
+> **When to use object format:** Use it when your Bedrock setup uses specific CRIS inference profile IDs (e.g., `global.anthropic.claude-opus-4-8`) and you want the tier shortcuts in the Claude Desktop model picker to resolve to those exact model IDs. The simple alias format (`["opus", "sonnet", "haiku"]`) still works and lets Claude Desktop handle resolution internally.
+
 ### How Credentials Flow
 
+This solution supports two credential modes for CoWork. The **credential helper** mode (default since v2.6.0) is recommended because it gives Claude Desktop direct control over credential lifecycle, eliminating the stale-credential bug that required manual app restarts.
+
+#### Credential Helper Mode (Recommended)
+
 When Claude Cowork starts a session:
+
+1. Claude Desktop reads `inferenceCredentialHelper` from the MDM policy — this points directly at the credential-process binary
+2. Claude Desktop runs the binary and reads temporary AWS credentials from stdout
+3. The output is cached for `inferenceCredentialHelperTtlSec` seconds (default: 3500, just under the 1h STS token lifetime)
+4. When the cache expires, Claude Desktop automatically re-runs the helper — **no restart required**
+5. If credentials are rejected mid-session, Claude Desktop re-runs with `CLAUDE_HELPER_CONTEXT=mid-session-refresh` for seamless recovery (20s timeout)
+
+The credential-process binary handles the `CLAUDE_HELPER_CONTEXT` environment variable:
+- `interactive` → Full browser-based OIDC authentication
+- `mid-session-refresh` → Silent refresh via cached refresh_token (no browser)
+- `background` / `setup-test` → Silent path only, exit non-zero if unavailable
+
+This mode resolves the known issue where CoWork doesn't automatically refresh AWS credentials after token expiry (affecting both IDC and OIDC/Azure AD federated auth users).
+
+Ref: [Claude Desktop Credential Helper documentation](https://claude.com/docs/third-party/claude-desktop/credential-helper)
+
+#### AWS Profile Mode (Legacy)
+
+The legacy flow uses `inferenceBedrockProfile` instead:
 
 1. Claude Desktop reads `inferenceBedrockProfile` from the applied MDM policy (registry on Windows, managed preference on macOS)
 2. It hands that profile name to the AWS SDK, which resolves the corresponding `[profile <name>]` stanza in `~/.aws/config`
 3. The stanza's `credential_process = .../credential-process --profile <name>` entry runs the bundled credential-process binary
 4. The binary authenticates the user via your OIDC provider (Okta, Azure AD, Auth0, etc.) and returns temporary AWS credentials in the standard AWS `credential_process` JSON format
 5. The AWS SDK signs each Bedrock call with those credentials; caching and refresh are handled automatically by the SDK
+
+To use this mode, set `cowork_credential_mode = "profile"` in your deployment profile before running `ccwb cowork generate`.
 
 No wrapper script is required — CoWork reuses the same `credential-process` binary and `~/.aws/config` entry that `install.sh` / `install.bat` already configure for Claude Code CLI.
 
@@ -223,6 +285,56 @@ The full set of MDM configuration keys is documented in the [official Anthropic 
 | `inferenceMaxTokensPerWindow` | integer | Token cap per tumbling window |
 | `inferenceTokenWindowHours` | integer | Tumbling window length in hours (max 720) |
 
+## Custom MDM Keys
+
+Administrators often need to set additional MDM keys beyond the defaults generated by `ccwb cowork generate`. Common examples include:
+
+| Key | Purpose |
+|-----|---------|
+| `coworkEgressAllowedHosts` | Allow Claude Desktop to access external hosts (required for Web Fetch) |
+| `coworkWebSearchEnabled` | Enable web search capability |
+| `managedMcpServers` | Deploy managed MCP servers (e.g., Brave Search for web search on Bedrock) |
+| `disabledBuiltinTools` | Lock down specific tools |
+| `allowedWorkspaceFolders` | Restrict workspace access to approved directories |
+
+### Configuring via `ccwb init`
+
+During the interactive `ccwb init` wizard, you'll be prompted to add custom MDM keys when CoWork 3P is enabled:
+
+```
+Claude Cowork (Desktop) Support
+Generate CoWork 3P MDM configuration during packaging? Yes
+Would you like to add custom MDM keys? Yes
+New MDM key name (empty to finish): coworkEgressAllowedHosts
+Value for 'coworkEgressAllowedHosts': ["*"]
+✓ MDM key: coworkEgressAllowedHosts=["*"]
+New MDM key name (empty to finish): coworkWebSearchEnabled
+Value for 'coworkWebSearchEnabled': true
+✓ MDM key: coworkWebSearchEnabled=true
+New MDM key name (empty to finish):
+```
+
+### Configuring via profile JSON
+
+You can also edit the profile JSON directly at `~/.ccwb/profiles/<name>.json`:
+
+```json
+{
+  "cowork_3p_enabled": true,
+  "cowork_3p_extra_keys": {
+    "coworkEgressAllowedHosts": "[\"*\"]",
+    "coworkWebSearchEnabled": "true",
+    "managedMcpServers": "[{\"name\":\"brave-search\",\"command\":\"npx\",\"args\":[\"-y\",\"@anthropic-ai/mcp-server-brave-search\"]}]",
+    "allowedWorkspaceFolders": "[\"/Users\",\"/home\"]"
+  }
+}
+```
+
+Custom keys are merged into the generated MDM configuration after the base keys and monitoring configuration, so they can override defaults if needed.
+
+> **Note:** Values should be strings, including for booleans (`"true"`) and arrays (`"[\"item1\"]"`). This matches how MDM systems deliver configuration — all values are stored as strings in the OS preference store.
+
+
 ## Verification
 
 After deploying the MDM profile:
@@ -251,9 +363,65 @@ Claude Cowork sends the following OTLP metrics to the collector:
 | `claude_code.cost.usage` | Estimated cost in USD (client-side approximation) |
 | `claude_code.session.count` | Number of active sessions |
 
-These are displayed in the **Claude CoWork Dashboard** in CloudWatch, which shows aggregate token usage, cost, sessions, model breakdown, and platform distribution. Metrics are tracked at the session level — individual user attribution is not available since CoWork telemetry does not include user email.
+These are displayed in the **Claude CoWork Dashboard** in CloudWatch, which shows aggregate token usage, cost, sessions, model breakdown, and platform distribution.
+
+### Per-device identity
+
+Every CoWork 3P OTEL event includes a `user.id` attribute — an anonymous device/installation UUID generated by Claude Desktop. This identifies each device uniquely and can be used for:
+
+- Per-device cost attribution and chargeback
+- Identifying high-usage devices
+- Correlating CoWork usage with Claude Code quota data
+
+> **Note:** `user.id` is a device identifier, not a human identity. To map devices to users, maintain a device enrollment registry (e.g., populated during `ccwb package` distribution or MDM enrollment).
+
+> **Note:** `user.email`, `user.account_uuid`, and `organization.id` are only available in Claude.ai-managed CoWork deployments (not 3P).  
+
+Per-device dashboard dimensions are planned — see [#585](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/issues/585). Both central and sidecar monitoring modes are supported for CoWork telemetry.
 
 ![Claude CoWork Dashboard](../../assets/images/ClaudeCoworkDashboard.png)
+
+## Quota Enforcement
+
+CoWork 3P usage is subject to the same per-user quota enforcement as Claude Code. Here's how it works:
+
+### How enforcement applies
+
+CoWork uses `credential-process` for credential refresh (via the `inferenceBedrockProfile` AWS named profile). The credential-process binary checks the quota API on every refresh cycle:
+
+1. CoWork's AWS session token expires (~1 hour)
+2. AWS SDK calls `credential-process --profile <name>` for fresh credentials
+3. `credential-process` calls the quota-check API (`GET /check`)
+4. If the user is over quota → credentials are denied → CoWork loses Bedrock access
+5. If under quota → fresh credentials issued → CoWork continues
+
+**Enforcement granularity:** Per credential refresh (~1 hour). A user can exceed their quota within a session but will be blocked on the next refresh.
+
+### How CoWork usage is counted
+
+CoWork sends OTLP **log events** (not metrics) to the collector. The monitoring pipeline processes them:
+
+1. CoWork sends `claude_code.api_request` log events to the OTEL collector
+2. Collector injects `user_email` from HTTP attribution headers
+3. Events are written to `/aws/claude-cowork/events` CloudWatch Logs
+4. MetricFilters extract per-user token counts into the `ClaudeCoWork` namespace (with `user_email` dimension)
+5. `quota_monitor` Lambda queries both `ClaudeCode` and `ClaudeCoWork` PromQL metrics
+6. Combined usage is aggregated into a single DynamoDB record per user
+
+**Result:** A user's total quota includes both Claude Code CLI and CoWork Desktop usage.
+
+### Requirements for per-user CoWork quota
+
+- Monitoring stack deployed (central mode with custom domain + HTTPS, or sidecar mode with local proxy)
+- CoWork service token configured (`ccwb init` generates it)
+- Attribution headers flowing (credential-process provides `x-user-email`)
+- CoWork dashboard stack deployed (`ccwb deploy --stack cowork-dashboard`)
+
+### Limitations
+
+- **No inline blocking:** CoWork calls Bedrock directly via AWS credentials. There is no per-request interception — enforcement happens at credential refresh boundaries only.
+- **Attribution required:** If `x-user-email` header is not configured, CoWork usage is aggregate-only and cannot be attributed to individual users for quota purposes.
+- **CoWork-native `user.id`:** The opaque hash in raw CoWork events cannot be mapped back to an email without a separate device registry.
 
 ## Additional Resources
 

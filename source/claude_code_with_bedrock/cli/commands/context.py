@@ -221,7 +221,11 @@ class ContextShowCommand(Command):
             console.print("\n[bold cyan]Bedrock Configuration:[/bold cyan]")
             if profile.selected_model:
                 console.print(f"  Selected Model:       {profile.selected_model}")
-            for tier, attr in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+            for tier, attr in [
+                ("Opus", "inference_profile_opus_arn"),
+                ("Sonnet", "inference_profile_sonnet_arn"),
+                ("Haiku", "inference_profile_haiku_arn"),
+            ]:
                 arn = getattr(profile, attr, None)
                 if arn:
                     console.print(f"  {tier} Inference Profile: {arn}")
@@ -497,9 +501,9 @@ class ConfigExportCommand(Command):
                 sanitized["stack_names"][key] = "[REDACTED]"
 
         # Add export metadata
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        sanitized["_exported_at"] = datetime.utcnow().isoformat()
+        sanitized["_exported_at"] = datetime.now(timezone.utc).isoformat()
         sanitized["_export_note"] = "Sensitive fields have been redacted. Update before importing."
 
         return sanitized

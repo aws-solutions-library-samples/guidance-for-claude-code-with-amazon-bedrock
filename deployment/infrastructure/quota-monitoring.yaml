@@ -69,6 +69,33 @@ Parameters:
     MaxValue: 60
     Description: Lookback window (minutes) for bypass detection - should match the detection schedule
 
+  QuotaMode:
+    Type: String
+    Default: 'token'
+    AllowedValues:
+      - 'token'
+      - 'cost'
+    Description: >-
+      Quota enforcement mode. 'token' counts raw tokens (existing behavior).
+      'cost' converts tokens to estimated USD using Bedrock pricing rates and
+      compares against dollar-denominated limits.
+
+  MonthlyCostLimitUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Monthly cost limit per user in USD (cost mode only). 0 = no limit.
+      Example: 500 = block at $500/month estimated spend.
+
+  DailyCostLimitUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Daily cost limit per user in USD (cost mode only). 0 = no limit.
+      Example: 50 = block at $50/day estimated spend.
+
   # JWT Authentication Parameters for Quota Check API
   OidcIssuerUrl:
     Type: String
@@ -161,6 +188,11 @@ Resources:
   # IAM Role for Quota Monitor Lambda
   QuotaMonitorRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "CloudWatch GetMetricData/ListMetrics and CloudTrail LookupEvents require Resource: * by API design"
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -170,7 +202,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: QuotaMonitorPolicy
           PolicyDocument:
@@ -206,6 +238,13 @@ Resources:
   # Lambda function for quota monitoring
   QuotaMonitorFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Lambda invoked by EventBridge schedule, requires internet access for CloudWatch/DynamoDB/SNS — VPC adds complexity without security benefit"
+          - id: W92
+            reason: "Event-driven single invocation every 15 min — reserved concurrency unnecessary"
     Properties:
       FunctionName: claude-code-quota-monitor
       Description: Monitors user token usage and sends alerts when quotas are exceeded
@@ -269,7 +308,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: BypassDetectionPolicy
           PolicyDocument:
@@ -364,7 +403,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: QuotaCheckPolicy
           PolicyDocument:
@@ -421,8 +460,8 @@ Resources:
 
   # JWT Authorizer for OIDC token validation (only when SSO is enabled)
   QuotaCheckAuthorizer:
-    Type: AWS::ApiGatewayV2::Authorizer
     Condition: HasJwtAuth
+    Type: AWS::ApiGatewayV2::Authorizer
     Properties:
       ApiId: !Ref QuotaCheckApi
       AuthorizerType: JWT
@@ -443,24 +482,17 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check (JWT authenticated when SSO enabled, open when disabled)
-  QuotaCheckRouteWithAuth:
+  # Route for GET /check — single resource to avoid route-key conflict on
+  # in-place updates (two resources sharing the same RouteKey causes CFN 409).
+  # Uses !If to switch between JWT auth (OIDC) and IAM auth (IDC/none).
+  QuotaCheckRoute:
     Type: AWS::ApiGatewayV2::Route
-    Condition: HasJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
-      AuthorizerId: !Ref QuotaCheckAuthorizer
-      AuthorizationType: JWT
-
-  QuotaCheckRouteNoAuth:
-    Type: AWS::ApiGatewayV2::Route
-    Condition: NoJwtAuth
-    Properties:
-      ApiId: !Ref QuotaCheckApi
-      RouteKey: 'GET /check'
-      Target: !Sub 'integrations/${QuotaCheckIntegration}'
+      AuthorizerId: !If [HasJwtAuth, !Ref QuotaCheckAuthorizer, !Ref 'AWS::NoValue']
+      AuthorizationType: !If [HasJwtAuth, 'JWT', 'AWS_IAM']
 
   # Default stage with auto-deploy
   QuotaCheckStage:
@@ -477,11 +509,30 @@ Resources:
       FunctionName: !Ref QuotaCheckFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
 
   # ============================================
   # End Quota Check API
   # ============================================
+
+  # IAM Managed Policy granting execute-api:Invoke on the quota API.
+  # Required for IAM-auth callers (IDC permission sets, federated roles).
+  # The credential-process signs requests with SigV4, and API Gateway
+  # requires the caller to have this permission in their identity policy.
+  # Admins should attach this policy to their IDC permission set or IAM role.
+  QuotaApiInvokePolicy:
+    Condition: NoJwtAuth
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::StackName}-QuotaApiInvoke'
+      Description: 'Allows invoke on the quota check API Gateway (required for IAM-auth callers)'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowQuotaApiInvoke
+            Effect: Allow
+            Action: 'execute-api:Invoke'
+            Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
 
 Outputs:
   QuotaTableName:
@@ -538,3 +589,12 @@ Outputs:
     Value: !GetAtt SidecarMonitorFunction.Arn
     Export:
       Name: !Sub '${AWS::StackName}-SidecarMonitorFunctionArn'
+
+  QuotaApiInvokePolicyArn:
+    Condition: NoJwtAuth
+    Description: >-
+      IAM Managed Policy ARN granting execute-api:Invoke on the quota API.
+      Attach this to your IDC permission set or IAM role used by Claude Code users.
+    Value: !Ref QuotaApiInvokePolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-QuotaApiInvokePolicyArn'

@@ -60,6 +60,14 @@ var Configs = map[string]Config{
 		ResponseType:      "code",
 		ResponseMode:      "query",
 	},
+	"google": {
+		Name:              "Google",
+		AuthorizeEndpoint: "/o/oauth2/v2/auth",
+		TokenEndpoint:     "https://oauth2.googleapis.com/token",
+		Scopes:            "openid email profile",
+		ResponseType:      "code",
+		ResponseMode:      "query",
+	},
 	"generic": {
 		Name:              "Generic OIDC",
 		AuthorizeEndpoint: "", // Unused — full URLs come from ProfileConfig
@@ -105,4 +113,42 @@ func ConfigFor(providerType, oktaAuthServerID string) Config {
 func IsKnown(providerType string) bool {
 	_, ok := Configs[providerType]
 	return ok
+}
+
+// NormalizeDomain returns the provider domain with any provider-specific
+// suffix removed so that ConfigFor().TokenEndpoint / .AuthorizeEndpoint can be
+// appended without duplication.
+//
+// Azure AD's provider_domain is stored with a trailing "/v2.0"
+// (e.g. "login.microsoftonline.com/<tenant>/v2.0") while its endpoints already
+// carry the version segment ("/oauth2/v2.0/token"). Concatenating the two
+// verbatim yields ".../v2.0/oauth2/v2.0/token" — a doubled segment the IdP
+// rejects with HTTP 404. Stripping the trailing "/v2.0" here keeps the auth
+// and refresh paths building identical URLs.
+func NormalizeDomain(providerType, providerDomain string) string {
+	if providerType == "azure" {
+		return strings.TrimSuffix(providerDomain, "/v2.0")
+	}
+	return providerDomain
+}
+
+// TokenEndpointURL returns the absolute token endpoint URL for a named provider
+// given its configured provider_domain. It centralizes the domain
+// normalization + endpoint concatenation that the authorization-code flow and
+// the refresh_token exchange must share — keeping them in lockstep so an Azure
+// (or future provider) URL quirk can't be fixed in one path and missed in the
+// other. Returns "" for an unknown provider type.
+//
+// Generic providers are intentionally not handled here: they supply absolute
+// endpoint URLs directly via ProfileConfig, with no domain to normalize.
+func TokenEndpointURL(providerType, oktaAuthServerID, providerDomain string) string {
+	cfg := ConfigFor(providerType, oktaAuthServerID)
+	if cfg.Name == "" {
+		return ""
+	}
+	if strings.HasPrefix(cfg.TokenEndpoint, "https://") {
+		return cfg.TokenEndpoint
+	}
+	domain := NormalizeDomain(providerType, providerDomain)
+	return "https://" + domain + cfg.TokenEndpoint
 }

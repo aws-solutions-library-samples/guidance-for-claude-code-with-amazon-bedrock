@@ -118,7 +118,6 @@ class TestPackageCommandCrossRegion:
             assert "us-west-2" in installer_content or "config.json" in installer_content
 
 
-
 class TestResolveFederation:
     """Regression tests for federation identifier resolution.
 

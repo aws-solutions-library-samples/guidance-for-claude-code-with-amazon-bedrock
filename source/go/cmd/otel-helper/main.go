@@ -45,10 +45,23 @@ func debugPrint(format string, args ...interface{}) {
 	}
 }
 
+// attachBearer sets the Authorization header. Intentionally exp-AGNOSTIC:
+// the Layer-1 cache-hit path never decodes the token, so token validation
+// lives at the token source (see storage.GetMonitoringToken), NOT here.
+// Do not add an exp check inside this function.
+func attachBearer(headers map[string]string, token string) {
+	if token != "" {
+		headers["authorization"] = "Bearer " + token
+	}
+}
+
 func main() {
 	testMode := flag.Bool("test", false, "Run in test mode with verbose output")
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
 	versionFlag := flag.Bool("version", false, "Show version")
+	proxyMode := flag.Bool("proxy", false, "Run as SigV4 signing proxy for CoWork OTLP logs")
+	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the signing proxy (default 4318)")
+	proxyRegion := flag.String("proxy-region", "", "AWS region for CloudWatch OTLP (default: AWS_REGION env)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -59,6 +72,18 @@ func main() {
 	verbose = *verboseFlag || *testMode
 	debug = os.Getenv("DEBUG_MODE") != "" || verbose
 
+	if *proxyMode {
+		profile := os.Getenv("AWS_PROFILE")
+		if profile == "" {
+			profile = "ClaudeCode"
+		}
+		os.Exit(startProxy(proxyConfig{
+			port:    *proxyPort,
+			region:  *proxyRegion,
+			profile: profile,
+		}))
+	}
+
 	os.Exit(run(*testMode))
 }
 
@@ -68,17 +93,38 @@ func run(testMode bool) int {
 		profile = "ClaudeCode"
 	}
 
-	// Layer 1: Check file cache first (avoids credential-process entirely)
+	// Layer 1: Serve attribution from the file cache. The cache stores
+	// attribution headers only, never the token, so the Bearer is still
+	// resolved below (env var, then credential-process). credential-process
+	// is the correct fallback here — it owns token refresh, keyring storage,
+	// and serve-past-expiry, none of which a direct monitoring.json read does.
+	//
+	// In test mode we still CONSULT the cache (so --test reflects what the
+	// production path would emit) but render it via the test formatter rather
+	// than printing the JSON contract. This matters for IDC, where there is no
+	// JWT: the cache (written by credential-process from the IAM ARN) is the
+	// ONLY source of attribution, so skipping it here made --test always show
+	// empty headers even when attribution was working.
+	if testMode {
+		if headers, err := otel.ReadCachedHeaders(profile); err == nil && len(headers) > 0 {
+			debugPrint("Using cached OTEL headers (test mode)")
+			printTestOutput(userInfoFromHeaders(headers), headers)
+			return 0
+		}
+		debugPrint("No cached OTEL headers; falling through to token-based extraction (test mode)")
+	}
 	if !testMode {
 		headers, err := otel.ReadCachedHeaders(profile)
 		if err == nil && headers != nil {
 			debugPrint("Using cached OTEL headers (token still valid)")
 			// Resolve Bearer fresh — the cache stores attribution headers only,
 			// never the token itself. Try env var (free) then credential-process (~20ms).
-			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" {
-				headers["authorization"] = "Bearer " + t
+			// An expired env-var token is skipped so we fall through to
+			// credential-process refresh instead of attaching a stale Bearer.
+			if t := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN"); t != "" && !jwt.IsTokenExpired(t) {
+				attachBearer(headers, t)
 			} else if t, err := getTokenViaCredentialProcess(profile); err == nil && t != "" {
-				headers["authorization"] = "Bearer " + t
+				attachBearer(headers, t)
 			} else {
 				// No token from env var or credential-process. Emit cached attribution
 				// anyway (otelHeadersHelper contract), but log so an ALB 401 is
@@ -91,8 +137,14 @@ func run(testMode bool) int {
 		}
 	}
 
-	// Layer 2: Check environment variable
+	// Layer 2: Check environment variable. An expired env-var token is treated
+	// as absent so we fall through to credential-process (which handles refresh)
+	// instead of attaching a stale token that would yield a silent 401.
 	token := os.Getenv("CLAUDE_CODE_MONITORING_TOKEN")
+	if token != "" && jwt.IsTokenExpired(token) {
+		debugPrint("Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process")
+		token = ""
+	}
 	if token != "" {
 		debugPrint("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
 	} else {
@@ -133,7 +185,7 @@ func run(testMode bool) int {
 
 	if testMode {
 		// Include Bearer in test output so --test shows the full header set.
-		headers["authorization"] = "Bearer " + token
+		attachBearer(headers, token)
 		printTestOutput(userInfo, headers)
 	} else {
 		// Cache attribution headers only — Bearer token must never be persisted
@@ -146,11 +198,33 @@ func run(testMode bool) int {
 		} else {
 			debugPrint("JWT has no exp claim, skipping cache write")
 		}
-		headers["authorization"] = "Bearer " + token
+		attachBearer(headers, token)
 		outputJSON(headers)
 	}
 
 	return 0
+}
+
+// userInfoFromHeaders reconstructs a UserInfo from cached x-* headers so the
+// test-mode formatter can display the attributes. It is the inverse of
+// otel.FormatHeaders for the fields that round-trip through headers (the cache
+// stores headers, not the full UserInfo, so JWT-only fields like account_uuid /
+// issuer / subject are not represented and remain empty — that's expected, since
+// a cache hit is the IDC path which has no JWT).
+func userInfoFromHeaders(h map[string]string) otel.UserInfo {
+	return otel.UserInfo{
+		Email:          h["x-user-email"],
+		UserID:         h["x-user-id"],
+		Username:       h["x-user-name"],
+		Department:     h["x-department"],
+		Team:           h["x-team-id"],
+		CostCenter:     h["x-cost-center"],
+		OrganizationID: h["x-organization"],
+		Location:       h["x-location"],
+		Role:           h["x-role"],
+		Manager:        h["x-manager"],
+		Project:        h["x-project"],
+	}
 }
 
 // emitEmptyHeaders satisfies Claude Code's otelHeadersHelper contract when no

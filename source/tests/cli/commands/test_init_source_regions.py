@@ -111,9 +111,9 @@ class TestInitCommandSourceRegions:
 
             # Should have all expected regions
             for expected_region in expected_regions:
-                assert (
-                    expected_region in source_regions
-                ), f"Expected region {expected_region} not found in {source_regions} for {model_key}/{profile_key}"
+                assert expected_region in source_regions, (
+                    f"Expected region {expected_region} not found in {source_regions} for {model_key}/{profile_key}"
+                )
 
     def test_source_region_fallback_behavior(self):
         """Test fallback behavior when no source region is selected."""

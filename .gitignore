@@ -63,8 +63,12 @@ source/.ccwb-config/
 
 guidance-submission/
 tests/
+!tests/e2e/
+!tests/e2e/**
 !source/tests/
 !source/tests/**
+source/tests/**/__pycache__/
+tests/e2e/artifacts/
 assets/docs/planning
 
 .pytest_cache/
@@ -83,3 +87,6 @@ PARTITION_*.md
 FEEDBACK.md
 .claudeignore
 .mcp.json
+source/go/credential-process
+site/
+coverage.json

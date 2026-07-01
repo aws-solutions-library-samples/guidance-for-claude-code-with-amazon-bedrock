@@ -1,6 +1,6 @@
 # ABOUTME: Lambda function for real-time quota checking before credential issuance
 # ABOUTME: Returns allowed/blocked status based on user quota policy and current usage
-# ABOUTME: Requires JWT authentication - extracts user identity from API Gateway JWT Authorizer claims
+# ABOUTME: Extracts user identity from JWT claims (OIDC) or IAM caller ARN (IDC) for quota enforcement
 
 import json
 import boto3
@@ -54,27 +54,45 @@ def lambda_handler(event, context):
         JSON response with allowed status and usage details
     """
     try:
-        # Extract validated claims from API Gateway JWT Authorizer
-        # The JWT Authorizer validates the token before Lambda is invoked
+        # Extract user identity from either JWT claims (OIDC) or IAM caller identity (IDC)
+        email = None
+        groups = []
+
+        # Path 1: JWT Authorizer (OIDC users)
         authorizer_context = event.get("requestContext", {}).get("authorizer", {})
         jwt_claims = authorizer_context.get("jwt", {}).get("claims", {})
 
-        # Email from validated JWT claims (secure - no parameter tampering possible)
-        email = jwt_claims.get("email")
+        if jwt_claims:
+            email = jwt_claims.get("email")
+            groups = extract_groups_from_claims(jwt_claims)
 
-        # Extract groups from various possible JWT claims
-        groups = extract_groups_from_claims(jwt_claims)
+        # Path 2: IAM identity (IDC users) — extract identity from caller ARN
+        # ARN format: arn:aws:sts::ACCOUNT:assumed-role/AWSReservedSSO_.../user@company.com
+        # OR:         arn:aws:sts::ACCOUNT:assumed-role/AWSReservedSSO_.../username (non-email IDC usernames)
+        if not email:
+            identity = event.get("requestContext", {}).get("identity", {})
+            caller_arn = identity.get("caller", "") or identity.get("userArn", "")
+            if "/" in caller_arn:
+                session_name = caller_arn.split("/")[-1]
+                if "@" in session_name:
+                    # Standard case: IDC username is an email address
+                    email = session_name
+                    print(f"Identity resolved from IAM ARN (email): {email}")
+                elif session_name and "AWSReservedSSO" in caller_arn:
+                    # IDC username without @ (e.g. "akshaya.claude" instead of "user@company.com")
+                    # Use the raw username as the identity — policies can be set by username
+                    email = session_name
+                    print(f"Identity resolved from IAM ARN (IDC username): {email}")
 
         if not email:
-            # JWT is valid but missing email claim
-            # Security: Default to fail-closed (block) unless explicitly configured to allow
-            print(f"JWT missing email claim. Available claims: {list(jwt_claims.keys())}")
+            # Neither JWT nor IAM identity resolved
+            print(f"No user identity found. JWT claims: {list(jwt_claims.keys())}")
             allow_missing_email = MISSING_EMAIL_ENFORCEMENT != "block"
             return build_response(200, {
-                "error": "No email claim in JWT token",
+                "error": "No user identity found (no JWT email claim or IAM session name)",
                 "allowed": allow_missing_email,
-                "reason": "missing_email_claim",
-                "message": "JWT token does not contain email claim" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
+                "reason": "missing_identity",
+                "message": "Could not resolve user identity" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
             })
 
         # 1. Resolve the effective quota policy for this user
@@ -130,13 +148,49 @@ def lambda_handler(event, context):
                 "message": "Access granted - enforcement mode is alert-only"
             })
 
-        # 5. Check limits (monthly, daily)
+        # 5. Check limits (monthly, daily) — supports both token and cost modes
         monthly_tokens = usage.get("total_tokens", 0)
         daily_tokens = usage.get("daily_tokens", 0)
+        monthly_cost = float(usage.get("cost_usd", 0))
+        daily_cost = float(usage.get("daily_cost_usd", 0))
 
         monthly_limit = policy.get("monthly_token_limit", 0)
         daily_limit = policy.get("daily_token_limit")
+        monthly_cost_limit = float(policy.get("monthly_cost_limit", 0))
+        daily_cost_limit = float(policy.get("daily_cost_limit", 0))
 
+        # Cost-based enforcement (takes precedence when configured)
+        if monthly_cost_limit > 0 and monthly_cost >= monthly_cost_limit:
+            return build_response(200, {
+                "allowed": False,
+                "reason": "monthly_cost_exceeded",
+                "enforcement_mode": enforcement_mode,
+                "usage": usage_summary,
+                "policy": {
+                    "type": policy.get("policy_type"),
+                    "identifier": policy.get("identifier")
+                },
+                "unblock_status": {"is_unblocked": False},
+                "message": f"Monthly spend limit exceeded: ${monthly_cost:.2f} / ${monthly_cost_limit:.2f} ({monthly_cost/monthly_cost_limit*100:.1f}%). Contact your administrator."
+            })
+
+        if daily_cost_limit > 0 and daily_cost >= daily_cost_limit:
+            daily_mode = policy.get("daily_enforcement_mode", "alert")
+            if daily_mode == "block":
+                return build_response(200, {
+                    "allowed": False,
+                    "reason": "daily_cost_exceeded",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {
+                        "type": policy.get("policy_type"),
+                        "identifier": policy.get("identifier")
+                    },
+                    "unblock_status": {"is_unblocked": False},
+                    "message": f"Daily spend limit exceeded: ${daily_cost:.2f} / ${daily_cost_limit:.2f}. Resets at UTC midnight."
+                })
+
+        # Token-based enforcement (existing behavior)
         # Check monthly token limit
         if monthly_limit > 0 and monthly_tokens >= monthly_limit:
             return build_response(200, {

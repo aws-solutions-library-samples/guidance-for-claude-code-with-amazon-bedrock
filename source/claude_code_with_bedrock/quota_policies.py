@@ -3,7 +3,7 @@
 
 """Quota policy CRUD operations for fine-grained quota management."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -116,6 +116,7 @@ class QuotaPolicyManager:
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode = EnforcementMode.ALERT,
+        daily_enforcement_mode: EnforcementMode = EnforcementMode.ALERT,
         enabled: bool = True,
         created_by: str | None = None,
     ) -> QuotaPolicy:
@@ -149,7 +150,7 @@ class QuotaPolicyManager:
         if warning_threshold_90 is None:
             warning_threshold_90 = int(monthly_token_limit * 0.9)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         policy = QuotaPolicy(
             policy_type=policy_type,
             identifier=identifier,
@@ -158,6 +159,7 @@ class QuotaPolicyManager:
             warning_threshold_80=warning_threshold_80,
             warning_threshold_90=warning_threshold_90,
             enforcement_mode=enforcement_mode,
+            daily_enforcement_mode=daily_enforcement_mode,
             enabled=enabled,
             created_at=now,
             updated_at=now,
@@ -175,16 +177,12 @@ class QuotaPolicyManager:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise PolicyAlreadyExistsError(
-                    f"Policy already exists for {policy_type.value}:{identifier}"
-                )
+                raise PolicyAlreadyExistsError(f"Policy already exists for {policy_type.value}:{identifier}")
             raise QuotaPolicyError(f"Failed to create policy: {e}") from e
 
         return policy
 
-    def get_policy(
-        self, policy_type: PolicyType, identifier: str
-    ) -> QuotaPolicy | None:
+    def get_policy(self, policy_type: PolicyType, identifier: str) -> QuotaPolicy | None:
         """Get a policy by type and identifier.
 
         Args:
@@ -216,6 +214,7 @@ class QuotaPolicyManager:
         warning_threshold_80: int | None = None,
         warning_threshold_90: int | None = None,
         enforcement_mode: EnforcementMode | None = None,
+        daily_enforcement_mode: EnforcementMode | None = None,
         enabled: bool | None = None,
     ) -> QuotaPolicy:
         """Update an existing policy.
@@ -240,16 +239,14 @@ class QuotaPolicyManager:
         # First get the existing policy
         existing = self.get_policy(policy_type, identifier)
         if not existing:
-            raise PolicyNotFoundError(
-                f"Policy not found for {policy_type.value}:{identifier}"
-            )
+            raise PolicyNotFoundError(f"Policy not found for {policy_type.value}:{identifier}")
 
         # Build update expression
         update_parts = []
         expression_values: dict[str, Any] = {}
         expression_names: dict[str, str] = {}
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         update_parts.append("#updated_at = :updated_at")
         expression_values[":updated_at"] = now
         expression_names["#updated_at"] = "updated_at"
@@ -279,6 +276,10 @@ class QuotaPolicyManager:
             update_parts.append("enforcement_mode = :mode")
             expression_values[":mode"] = enforcement_mode.value
 
+        if daily_enforcement_mode is not None:
+            update_parts.append("daily_enforcement_mode = :daily_mode")
+            expression_values[":daily_mode"] = daily_enforcement_mode.value
+
         if enabled is not None:
             update_parts.append("#enabled = :enabled")
             expression_values[":enabled"] = enabled
@@ -297,9 +298,7 @@ class QuotaPolicyManager:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise PolicyNotFoundError(
-                    f"Policy not found for {policy_type.value}:{identifier}"
-                )
+                raise PolicyNotFoundError(f"Policy not found for {policy_type.value}:{identifier}")
             raise QuotaPolicyError(f"Failed to update policy: {e}") from e
 
         return QuotaPolicy.from_dynamodb_item(response["Attributes"])
@@ -329,9 +328,7 @@ class QuotaPolicyManager:
 
         return "Attributes" in response
 
-    def list_policies(
-        self, policy_type: PolicyType | None = None
-    ) -> list[QuotaPolicy]:
+    def list_policies(self, policy_type: PolicyType | None = None) -> list[QuotaPolicy]:
         """List all policies, optionally filtered by type.
 
         Args:
@@ -369,9 +366,7 @@ class QuotaPolicyManager:
 
         return policies
 
-    def resolve_quota_for_user(
-        self, email: str, groups: list[str] | None = None
-    ) -> QuotaPolicy | None:
+    def resolve_quota_for_user(self, email: str, groups: list[str] | None = None) -> QuotaPolicy | None:
         """Resolve the effective quota policy for a user.
 
         Precedence: user-specific > group (most restrictive) > default
@@ -440,18 +435,12 @@ class QuotaPolicyManager:
             }
 
         monthly_pct = (
-            (current_monthly_tokens / policy.monthly_token_limit * 100)
-            if policy.monthly_token_limit > 0
-            else 0
+            (current_monthly_tokens / policy.monthly_token_limit * 100) if policy.monthly_token_limit > 0 else 0
         )
 
         daily_pct = None
         if policy.daily_token_limit:
-            daily_pct = (
-                (current_daily_tokens / policy.daily_token_limit * 100)
-                if policy.daily_token_limit > 0
-                else 0
-            )
+            daily_pct = (current_daily_tokens / policy.daily_token_limit * 100) if policy.daily_token_limit > 0 else 0
 
         return {
             "email": email,
@@ -470,9 +459,7 @@ class QuotaPolicyManager:
             "warning_threshold_90": policy.warning_threshold_90,
         }
 
-    def export_policies(
-        self, policy_type: PolicyType | None = None
-    ) -> list[dict[str, Any]]:
+    def export_policies(self, policy_type: PolicyType | None = None) -> list[dict[str, Any]]:
         """Export policies as list of dicts with human-readable token values.
 
         Args:
@@ -550,12 +537,14 @@ class QuotaPolicyManager:
                 if existing:
                     if skip_existing:
                         results["skipped"] += 1
-                        results["details"].append({
-                            "action": "skip",
-                            "type": parsed["policy_type"].value,
-                            "identifier": parsed["identifier"],
-                            "reason": "already exists",
-                        })
+                        results["details"].append(
+                            {
+                                "action": "skip",
+                                "type": parsed["policy_type"].value,
+                                "identifier": parsed["identifier"],
+                                "reason": "already exists",
+                            }
+                        )
                     elif update_existing:
                         if not dry_run:
                             self.update_policy(
@@ -567,20 +556,24 @@ class QuotaPolicyManager:
                                 enabled=parsed.get("enabled", True),
                             )
                         results["updated"] += 1
-                        results["details"].append({
-                            "action": "update",
-                            "type": parsed["policy_type"].value,
-                            "identifier": parsed["identifier"],
-                            "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
-                        })
+                        results["details"].append(
+                            {
+                                "action": "update",
+                                "type": parsed["policy_type"].value,
+                                "identifier": parsed["identifier"],
+                                "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
+                            }
+                        )
                     else:
                         # Neither skip nor update - this is a conflict
-                        results["errors"].append({
-                            "row": i,
-                            "type": parsed["policy_type"].value,
-                            "identifier": parsed["identifier"],
-                            "error": "Policy already exists (use --skip-existing or --update)",
-                        })
+                        results["errors"].append(
+                            {
+                                "row": i,
+                                "type": parsed["policy_type"].value,
+                                "identifier": parsed["identifier"],
+                                "error": "Policy already exists (use --skip-existing or --update)",
+                            }
+                        )
                 else:
                     # Create new policy
                     if not dry_run:
@@ -593,18 +586,22 @@ class QuotaPolicyManager:
                             enabled=parsed.get("enabled", True),
                         )
                     results["created"] += 1
-                    results["details"].append({
-                        "action": "create",
-                        "type": parsed["policy_type"].value,
-                        "identifier": parsed["identifier"],
-                        "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
-                    })
+                    results["details"].append(
+                        {
+                            "action": "create",
+                            "type": parsed["policy_type"].value,
+                            "identifier": parsed["identifier"],
+                            "monthly_limit": _format_tokens(parsed["monthly_token_limit"]),
+                        }
+                    )
 
             except (ValueError, KeyError) as e:
-                results["errors"].append({
-                    "row": i,
-                    "error": str(e),
-                })
+                results["errors"].append(
+                    {
+                        "row": i,
+                        "error": str(e),
+                    }
+                )
 
         return results
 
@@ -685,7 +682,9 @@ class QuotaPolicyManager:
             elif enforcement_str in ("alert", ""):
                 result["enforcement_mode"] = EnforcementMode.ALERT
             else:
-                raise ValueError(f"Row {row_num}: Invalid enforcement_mode '{enforcement_str}'. Use 'alert' or 'block'.")
+                raise ValueError(
+                    f"Row {row_num}: Invalid enforcement_mode '{enforcement_str}'. Use 'alert' or 'block'."
+                )
 
         # Parse enabled status
         enabled_val = policy_dict.get("enabled", True)

@@ -45,3 +45,18 @@ OIDC token (email, sub, groups)
 - Proxy: verify ALB-forwarded headers match expected format
 
 *Issues: #361, #365, #441, #446*
+
+## CoWork 3P Telemetry Path
+
+CoWork uses a different telemetry path than Claude Code:
+- **Auth**: Service token (not user JWT) — ALB must allow unauthenticated for CoWork ingest
+- **Schema**: Different metric names and resource attributes
+- **Log group**: Separate (`/ecs/cowork-events`) from Claude Code metrics
+- **Testing**: Changes to otel-collector.yaml or dashboards must be tested with BOTH Claude Code and CoWork telemetry payloads
+
+## Token Lifecycle
+
+- Monitoring token MUST have `exp` claim validated before use
+- `--get-monitoring-token` must try `refresh_token` before triggering browser auth
+- ENV-injected tokens must still be validated for expiry (don't trust blindly)
+- Expired token → re-authenticate silently if refresh_token available, else prompt

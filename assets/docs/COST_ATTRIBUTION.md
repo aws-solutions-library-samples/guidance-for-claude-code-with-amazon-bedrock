@@ -158,3 +158,34 @@ Once activated, session tags are available in both **Cost Explorer** and **CUR 2
 With session tags configured, you can also group costs by department or any other tag dimension. The following example shows department-level Bedrock costs queried from CUR 2.0 data using Athena:
 
 ![Per-department Bedrock cost attribution via CUR 2.0](../images/cost-attribution-per-department.png)
+
+---
+
+## 4. Real-time project attribution in CloudWatch dashboards
+
+In addition to CUR/Cost Explorer (which has 24-hour latency), you can see per-project usage in real-time via the CloudWatch dashboard.
+
+The otel-helper extracts project information from the same JWT claims used for session tags and emits it as an `x-project` header. The OTEL collector maps this to a `project` CloudWatch dimension.
+
+### Supported claim names
+
+The otel-helper checks these specific claim names (first non-empty wins):
+
+| Priority | Claim path | Used by |
+|----------|-----------|---------|
+| 1 | `https://aws.amazon.com/tags` → `principal_tags.Project` | Okta, Auth0, Entra ID (session tag format) |
+| 1 | `https://aws.amazon.com/tags` → `principal_tags.CostCenter` | Alternative tag key |
+| 1 | `https://aws.amazon.com/tags` → `principal_tags.BillingCode` | Alternative tag key |
+| 2 | `custom:project` | Cognito custom attributes |
+| 3 | `project` or `Project` | Generic IdP direct claims |
+| 4 | `billing_code` or `BillingCode` | Alternative naming |
+
+> **Note:** Only these specific claim names are recognized. If your IdP uses a different claim name, you must map it to one of the above in your IdP configuration.
+
+### What you get
+
+Once configured, the CloudWatch dashboard shows usage grouped by project in the "Organizational Breakdown" section. No additional infrastructure setup required — the OTEL collector handles the dimension mapping automatically.
+
+### IDC limitation
+
+IAM Identity Center (SSO) users do not have JWT claims, so project/team/department attribution via OTEL is not available for IDC deployments (per-user email attribution still works). For per-user cost visibility in CUR 2.0, configure [ABAC attributes](https://docs.aws.amazon.com/singlesignon/latest/userguide/abac.html) in IAM Identity Center so session tags flow automatically.

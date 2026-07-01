@@ -3,24 +3,22 @@
 
 """Tests for claude_code_with_bedrock.cli.utils.cloudformation module."""
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
 from claude_code_with_bedrock.cli.utils.cf_exceptions import (
-    CloudFormationError,
     PermissionError as CfnPermissionError,
+)
+from claude_code_with_bedrock.cli.utils.cf_exceptions import (
     ResourceConflictError,
-    StackNotFoundError,
     TemplateValidationError,
 )
 from claude_code_with_bedrock.cli.utils.cloudformation import (
     CloudFormationManager,
-    StackDeploymentResult,
     StackDeletionResult,
+    StackDeploymentResult,
 )
 
 
@@ -91,12 +89,12 @@ class TestCloudFormationManagerInit:
 
     @patch("claude_code_with_bedrock.cli.utils.cloudformation.boto3")
     def test_init_with_region_only(self, mock_boto3):
-        manager = CloudFormationManager(region="eu-west-1")
+        CloudFormationManager(region="eu-west-1")
         mock_boto3.Session.assert_called_with(region_name="eu-west-1")
 
     @patch("claude_code_with_bedrock.cli.utils.cloudformation.boto3")
     def test_init_with_profile(self, mock_boto3):
-        manager = CloudFormationManager(region="us-east-1", profile="my-profile")
+        CloudFormationManager(region="us-east-1", profile="my-profile")
         mock_boto3.Session.assert_called_with(region_name="us-east-1", profile_name="my-profile")
 
     @patch("claude_code_with_bedrock.cli.utils.cloudformation.boto3")
@@ -135,7 +133,11 @@ class TestDeployStack:
         # Mock get_stack_outputs
         cfn_manager._cf_client.describe_stacks.side_effect = [
             ClientError({"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"),
-            {"Stacks": [{"StackStatus": "CREATE_COMPLETE", "Outputs": [{"OutputKey": "Url", "OutputValue": "https://x"}]}]},
+            {
+                "Stacks": [
+                    {"StackStatus": "CREATE_COMPLETE", "Outputs": [{"OutputKey": "Url", "OutputValue": "https://x"}]}
+                ]
+            },
         ]
 
         result = cfn_manager.deploy_stack(stack_name="test-stack", template_path=small_template)
@@ -215,9 +217,7 @@ class TestDeleteStack:
 
     def test_successful_delete(self, cfn_manager):
         """Delete stack that exists."""
-        cfn_manager._cf_client.describe_stacks.return_value = {
-            "Stacks": [{"StackStatus": "CREATE_COMPLETE"}]
-        }
+        cfn_manager._cf_client.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
         waiter_mock = MagicMock()
         cfn_manager._cf_client.get_waiter.return_value = waiter_mock
 
@@ -240,22 +240,22 @@ class TestGetStackOutputs:
 
     def test_returns_outputs_dict(self, cfn_manager):
         cfn_manager._cf_client.describe_stacks.return_value = {
-            "Stacks": [{
-                "StackStatus": "CREATE_COMPLETE",
-                "Outputs": [
-                    {"OutputKey": "BucketName", "OutputValue": "my-bucket"},
-                    {"OutputKey": "Endpoint", "OutputValue": "https://api.example.com"},
-                ],
-            }]
+            "Stacks": [
+                {
+                    "StackStatus": "CREATE_COMPLETE",
+                    "Outputs": [
+                        {"OutputKey": "BucketName", "OutputValue": "my-bucket"},
+                        {"OutputKey": "Endpoint", "OutputValue": "https://api.example.com"},
+                    ],
+                }
+            ]
         }
 
         outputs = cfn_manager.get_stack_outputs("my-stack")
         assert outputs == {"BucketName": "my-bucket", "Endpoint": "https://api.example.com"}
 
     def test_no_outputs_returns_empty(self, cfn_manager):
-        cfn_manager._cf_client.describe_stacks.return_value = {
-            "Stacks": [{"StackStatus": "CREATE_COMPLETE"}]
-        }
+        cfn_manager._cf_client.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
 
         outputs = cfn_manager.get_stack_outputs("my-stack")
         assert outputs == {}
@@ -265,9 +265,7 @@ class TestGetStackStatus:
     """Tests for get_stack_status."""
 
     def test_returns_status(self, cfn_manager):
-        cfn_manager._cf_client.describe_stacks.return_value = {
-            "Stacks": [{"StackStatus": "UPDATE_IN_PROGRESS"}]
-        }
+        cfn_manager._cf_client.describe_stacks.return_value = {"Stacks": [{"StackStatus": "UPDATE_IN_PROGRESS"}]}
         assert cfn_manager.get_stack_status("my-stack") == "UPDATE_IN_PROGRESS"
 
     def test_nonexistent_returns_none(self, cfn_manager):

@@ -107,11 +107,36 @@ The CloudWatch Dashboard uses PromQL queries over OTLP-ingested metrics. Section
 - **Organizational Breakdown** — Token usage by department and team
 - **Bedrock API Health** — Throttles, client errors, server errors by model
 
+### Per-user attribution (`user.email`)
+
+The collector sets the `user.email` dimension from the `x-user-email` request
+header, which Claude Code sends only when `otelHeadersHelper` (the `otel-helper`
+binary) is configured in `settings.json`. How the email is resolved depends on
+the auth type:
+
+- **OIDC** — extracted from the JWT `email` claim.
+- **IDC (with the credential-process binary, e.g. when quota is enabled)** —
+  resolved from the IAM ARN session name (`assumed-role/Role/user@company.com`)
+  and cached by the credential process; the helper serves it. Per-user dashboard
+  attribution works the same as OIDC. *(Requires repackaging with a build that
+  wires `otelHeadersHelper` for IDC — older packages attributed all IDC users to
+  one static identity.)*
+- **IDC zero-binary (no credential-process)** — there is no runtime identity
+  resolver, so a single static identity is baked into the collector config at
+  package time; all telemetry is attributed to that one identity.
+
+Note: richer OTEL dimensions (department, team, project) come from JWT claims and
+are only populated for OIDC. IDC attributes `user.email` only. See
+[Cost Attribution](COST_ATTRIBUTION.md#idc-limitation) for the CUR/ABAC path to
+per-user team/department breakdowns under IDC.
+
 ## Usage Quota Monitoring
 
 Quota monitoring uses the CloudWatch Prometheus-compatible API (`monitoring.<region>.amazonaws.com/api/v1/query`) to query per-user token usage via PromQL. The quota monitor Lambda runs every 15 minutes, fetches usage data via PromQL, writes results to a DynamoDB table (`UserQuotaMetrics`), and checks against quota policies.
 
 The quota check Lambda provides real-time allow/block decisions by reading the DynamoDB table (fast reads, at most 15 minutes stale).
+
+Both Claude Code and CoWork 3P (Claude Desktop) usage are counted toward the same per-user quota when the CoWork dashboard stack is deployed. See [CoWork 3P Quota Enforcement](COWORK_3P.md#quota-enforcement) for details.
 
 > **Detailed Information**: See the [Quota Monitoring Guide](QUOTA_MONITORING.md).
 

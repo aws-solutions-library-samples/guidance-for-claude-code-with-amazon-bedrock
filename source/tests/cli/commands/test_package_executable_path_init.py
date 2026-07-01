@@ -47,18 +47,17 @@ def test_build_failure_before_assignment_does_not_crash(mock_config):
     command = PackageCommand()
     tester = CommandTester(command)
 
-    with patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config), patch(
-        "questionary.confirm"
-    ) as mock_confirm, patch.object(
-        PackageCommand, "_build_executable", side_effect=RuntimeError("Nuitka not found")
+    with (
+        patch("claude_code_with_bedrock.config.Config.load", return_value=mock_config),
+        patch("questionary.confirm") as mock_confirm,
+        patch.object(PackageCommand, "_build_executable", side_effect=RuntimeError("Nuitka not found")),
     ):
         # All confirm() prompts (co-authored-by, customize OTEL) answer No.
         mock_confirm.return_value.ask.return_value = False
 
-        # Build only Windows so the loop's single iteration fails before assignment.
-        # Before the fix this raised UnboundLocalError out of handle(); the assertion
-        # below is unreachable because tester.execute() would propagate that exception.
-        result = tester.execute("--target-platform windows")
+        # Use --legacy to force Nuitka path (bypasses Go cross-compilation which
+        # would succeed on CI runners that have Go 1.24+ installed).
+        result = tester.execute("--target-platform windows --legacy")
 
     # Reaches the "No binaries were successfully built" guard and exits cleanly (1)
     # instead of crashing with UnboundLocalError.

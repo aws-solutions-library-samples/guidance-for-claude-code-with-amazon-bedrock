@@ -3,8 +3,6 @@
 
 """Tests for validate_identity_pool_name."""
 
-import pytest
-
 from claude_code_with_bedrock.cli.commands.init import validate_identity_pool_name
 
 

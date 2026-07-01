@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Amazon Bedrock AgentCore Gateway with the managed Web Search connector for
+  Claude Cowork. Supports both OIDC (CUSTOM_JWT) and IAM Identity Center (IAM)
+  authorization modes via the AuthType parameter. Deploy into us-east-1 (the
+  only region where the Web Search connector is currently available).
+  DATA RESIDENCY: web search queries are processed in us-east-1 regardless of
+  where Bedrock inference or the IDE session runs. Organizations with data
+  residency or sovereignty obligations should evaluate whether user query data
+  transiting to this region is acceptable before enabling web search.
+
+Metadata:
+  DataResidency:
+    Note: >-
+      Web search queries (or fragments of user prompts) are sent to the managed
+      Web Search connector in us-east-1, regardless of where the IDE session or
+      Bedrock inference runs. Review compliance impact for regulated workloads
+      (e.g. GDPR, data sovereignty) before enabling.
+
+Parameters:
+  AuthType:
+    Type: String
+    Default: oidc
+    AllowedValues:
+      - oidc
+      - idc
+    Description: >-
+      Authorization mode. Use 'oidc' for OIDC providers (Cognito, Okta, Entra,
+      Auth0, Google) — validates id_token via CUSTOM_JWT. Use 'idc' for IAM
+      Identity Center — authorizes via IAM credentials (SigV4).
+
+  DiscoveryUrl:
+    Type: String
+    Default: ''
+    Description: >-
+      OIDC discovery URL (required when AuthType=oidc, ignored for idc). The
+      gateway resolves .well-known/openid-configuration from this base URL.
+      Examples: https://cognito-idp.us-east-1.amazonaws.com/<pool-id>,
+      https://login.microsoftonline.com/<tenant>/v2.0,
+      https://<domain>.okta.com/oauth2/default
+
+  ClientId:
+    Type: String
+    Default: ''
+    Description: >-
+      OIDC client_id (required when AuthType=oidc, ignored for idc). The
+      gateway validates the id_token's 'aud' claim against this value.
+
+  DomainExcludeList:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      Optional. Domains to exclude from web search results (server-side
+      denylist). Leave empty for no filtering.
+
+Conditions:
+  IsOIDC: !Equals [!Ref AuthType, 'oidc']
+  HasDenylist: !Not [!Equals [!Join ['', !Ref DomainExcludeList], '']]
+
+Resources:
+  # IAM execution role assumed by the AgentCore service to operate the gateway
+  # and invoke the managed Web Search tool.
+  GatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-gateway-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/${AWS::StackName}-gw-*'
+      Policies:
+        - PolicyName: websearch-gateway
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetGateway
+                Effect: Allow
+                Action: bedrock-agentcore:GetGateway
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/${AWS::StackName}-gw-*'
+              - Sid: GetConfigurationBundleVersion
+                Effect: Allow
+                Action: bedrock-agentcore:GetConfigurationBundleVersion
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:configuration-bundle/*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Ref 'AWS::AccountId'
+                    aws:RequestedRegion: !Ref 'AWS::Region'
+              - Sid: InvokeWebSearch
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeWebSearch
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:tool/web-search.v1'
+              - Sid: InvokeGateway
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeGateway
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/${AWS::StackName}-gw-*'
+
+  WebSearchGateway:
+    Type: AWS::BedrockAgentCore::Gateway
+    Properties:
+      Name: !Sub '${AWS::StackName}-gw'
+      Description: Claude Cowork web search gateway (managed Web Search connector)
+      RoleArn: !GetAtt GatewayExecutionRole.Arn
+      ProtocolType: MCP
+      ProtocolConfiguration:
+        Mcp:
+          SupportedVersions:
+            - '2025-03-26'
+      # OIDC deployments use CUSTOM_JWT (validates id_token aud claim).
+      # IDC deployments use AWS_IAM (validates caller's SigV4 credentials).
+      AuthorizerType: !If [IsOIDC, CUSTOM_JWT, AWS_IAM]
+      AuthorizerConfiguration: !If
+        - IsOIDC
+        - CustomJWTAuthorizer:
+            DiscoveryUrl: !Ref DiscoveryUrl
+            # AllowedAudience validates the id_token's 'aud' claim, which every
+            # OIDC provider sets to client_id. Works uniformly across Cognito,
+            # Okta, Auth0, Entra ID, and Google.
+            AllowedAudience:
+              - !Ref ClientId
+        - !Ref 'AWS::NoValue'
+
+  WebSearchTarget:
+    Type: AWS::BedrockAgentCore::GatewayTarget
+    # The managed "Connector" target type (web-search) is newer than the schema
+    # bundled with current cfn-lint, which still expects the legacy
+    # Http/Lambda/OpenApiSchema/etc. shapes and flags Connector/Mcp and an
+    # optional Name as invalid. These are false positives; the configuration is
+    # validated against a live in-account gateway. Suppress the affected checks
+    # locally until the cfn-lint resource spec catches up.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+            - E3003
+            - E3018
+    Properties:
+      GatewayIdentifier: !GetAtt WebSearchGateway.GatewayIdentifier
+      Name: !Sub '${AWS::StackName}-websearch'
+      Description: Managed Web Search connector tool
+      CredentialProviderConfigurations:
+        - CredentialProviderType: GATEWAY_IAM_ROLE
+      TargetConfiguration:
+        Mcp:
+          Connector:
+            Source:
+              ConnectorId: web-search
+            Configurations:
+              # ParameterValues must always be present — the service rejects a
+              # config entry without it. Empty {} = no domain filter.
+              - Name: WebSearch
+                ParameterValues: !If
+                  - HasDenylist
+                  - domainFilter:
+                      exclude: !Ref DomainExcludeList
+                  - {}
+
+Outputs:
+  GatewayMcpEndpoint:
+    Description: >-
+      MCP endpoint URL of the gateway. The CloudFormation GatewayUrl attribute
+      already includes the /mcp suffix; consumers should use it as-is.
+    Value: !GetAtt WebSearchGateway.GatewayUrl
+    Export:
+      Name: !Sub '${AWS::StackName}-GatewayUrl'
+
+  GatewayArn:
+    Description: ARN of the AgentCore gateway.
+    Value: !GetAtt WebSearchGateway.GatewayArn
+
+  GatewayId:
+    Description: Identifier of the AgentCore gateway.
+    Value: !GetAtt WebSearchGateway.GatewayIdentifier
+
+  GatewayExecutionRoleArn:
+    Description: ARN of the gateway execution IAM role.
+    Value: !GetAtt GatewayExecutionRole.Arn
+
+  AuthorizerType:
+    Description: >-
+      The authorizer type configured for this gateway (CUSTOM_JWT or IAM).
+    Value: !If [IsOIDC, CUSTOM_JWT, AWS_IAM]

@@ -103,9 +103,7 @@ class ProfileValidator:
         # Validate profile name format
         name = profile_data.get("name", "")
         if not ProfileValidator._is_valid_profile_name(name):
-            errors.append(
-                f"Invalid profile name '{name}'. " "Must be alphanumeric with hyphens only, max 64 characters"
-            )
+            errors.append(f"Invalid profile name '{name}'. Must be alphanumeric with hyphens only, max 64 characters")
 
         # Validate provider domain format
         domain = profile_data.get("provider_domain", "")
@@ -165,7 +163,7 @@ class ProfileValidator:
         if distribution_type:
             if distribution_type not in ["presigned-s3", "landing-page"]:
                 errors.append(
-                    f"Invalid distribution_type: {distribution_type}. " "Must be 'presigned-s3' or 'landing-page'"
+                    f"Invalid distribution_type: {distribution_type}. Must be 'presigned-s3' or 'landing-page'"
                 )
 
             # Landing page requires additional fields
@@ -173,15 +171,27 @@ class ProfileValidator:
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
-                elif dist_provider not in ["okta", "auth0", "azure", "cognito"]:
+                elif dist_provider not in ["okta", "auth0", "azure", "cognito", "generic"]:
                     errors.append(
                         f"Invalid distribution_idp_provider: {dist_provider}. "
-                        "Must be 'okta', 'auth0', 'azure', or 'cognito'"
+                        "Must be 'okta', 'auth0', 'azure', 'cognito', or 'generic'"
                     )
 
-                dist_domain = profile_data.get("distribution_idp_domain")
-                if not dist_domain:
-                    errors.append("distribution_idp_domain is required for landing-page distribution")
+                # Domain-derived providers need a domain; generic providers supply explicit
+                # endpoints instead (the domain isn't used to build the ALB OIDC config).
+                if dist_provider == "generic":
+                    for required_field in (
+                        "distribution_idp_issuer",
+                        "distribution_idp_authorization_endpoint",
+                        "distribution_idp_token_endpoint",
+                        "distribution_idp_userinfo_endpoint",
+                    ):
+                        if not profile_data.get(required_field):
+                            errors.append(f"{required_field} is required for generic landing-page distribution")
+                else:
+                    dist_domain = profile_data.get("distribution_idp_domain")
+                    if not dist_domain:
+                        errors.append("distribution_idp_domain is required for landing-page distribution")
 
                 dist_client_id = profile_data.get("distribution_idp_client_id")
                 if not dist_client_id:
@@ -213,7 +223,7 @@ class ProfileValidator:
             valid_profiles = ["us", "europe", "apac", "global", "japan", "eu"]
             if cross_region not in valid_profiles:
                 warnings.append(
-                    f"Unknown cross_region_profile: {cross_region}. " f"Expected one of: {', '.join(valid_profiles)}"
+                    f"Unknown cross_region_profile: {cross_region}. Expected one of: {', '.join(valid_profiles)}"
                 )
 
         # Validate quota settings
@@ -242,7 +252,7 @@ class ProfileValidator:
                 errors.append("data_retention_days must be a positive integer")
             elif retention_days > 365:
                 warnings.append(
-                    f"data_retention_days ({retention_days}) is over 1 year. " "This may incur significant costs."
+                    f"data_retention_days ({retention_days}) is over 1 year. This may incur significant costs."
                 )
 
         # Validate schema version

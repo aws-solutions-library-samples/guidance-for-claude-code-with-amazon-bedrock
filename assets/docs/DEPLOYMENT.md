@@ -159,6 +159,25 @@ Windows binary builds use AWS CodeBuild with Nuitka for optimal performance. Win
 - Windows builds take 20+ minutes
 - To enable Windows builds after initial setup, re-run `poetry run ccwb init`
 
+### Organization-Wide Enforcement (Optional)
+
+For large deployments (50+ users) where settings must be non-overridable, use managed settings:
+
+```bash
+poetry run ccwb init --managed
+poetry run ccwb package --go
+```
+
+This writes settings to the OS-level `managed-settings.json` path instead of user-scope `~/.claude/settings.json`. Managed settings have the **highest precedence** in Claude Code's settings hierarchy and cannot be edited or overridden by end users.
+
+| OS | Managed path | Requires |
+|---|---|---|
+| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` | `sudo` |
+| Linux/WSL | `/etc/claude-code/managed-settings.json` | `sudo` |
+| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` | Administrator |
+
+The installer will detect managed settings in the package and prompt for elevated privileges. For MDM-managed fleets (Jamf, Intune, Group Policy), see Anthropic's [MDM templates](https://github.com/anthropics/claude-code/tree/main/examples/mdm) for alternative delivery.
+
 ## Phase 4: Testing Your Deployment
 
 Before distributing to users, thoroughly test the package to ensure everything works as expected. The CLI provides a comprehensive test command that simulates exactly what end users will experience:

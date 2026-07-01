@@ -3,7 +3,6 @@
 
 """Tests for init command quota monitoring configuration."""
 
-
 import pytest
 from cleo.testers.command_tester import CommandTester
 

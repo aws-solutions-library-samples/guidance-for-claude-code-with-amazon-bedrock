@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 LAMBDA_PATH = (
     Path(__file__).resolve().parents[2]
     / "deployment"
@@ -295,14 +294,17 @@ class TestDailyEnforcementFineGrainedPath:
 RESPONSE_REQUIRED_KEYS = {"allowed"}
 
 # Keys expected when a quota policy exists and user is within quota
-NORMAL_RESPONSE_KEYS = {
-    "allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"
-}
+NORMAL_RESPONSE_KEYS = {"allowed", "reason", "enforcement_mode", "usage", "policy", "unblock_status", "message"}
 
 # Valid values for 'reason' field
 VALID_REASONS = {
-    "within_quota", "monthly_exceeded", "daily_exceeded",
-    "no_policy", "no_email", "unblocked", "missing_email_claim",
+    "within_quota",
+    "monthly_exceeded",
+    "daily_exceeded",
+    "no_policy",
+    "no_email",
+    "unblocked",
+    "missing_email_claim",
 }
 
 # Valid values for 'enforcement_mode' field
@@ -479,7 +481,7 @@ class TestInputValidationContract:
         assert response["statusCode"] == 200
         body = _parse(response)
         assert "allowed" in body
-        assert body.get("reason") == "missing_email_claim"
+        assert body.get("reason") in ("missing_email_claim", "missing_identity")
 
     def test_missing_authorizer_context(self, base_env):
         """Request with no authorizer context does not crash."""
@@ -503,15 +505,79 @@ class TestInputValidationContract:
     def test_missing_email_blocked_by_default(self, base_env):
         """Missing email defaults to blocked (fail-closed security)."""
         env = {**base_env, "MISSING_EMAIL_ENFORCEMENT": "block"}
-        mod = _load_quota_check({
-            **env,
-            "ENABLE_FINEGRAINED_QUOTAS": "false",
-            "MONTHLY_TOKEN_LIMIT": "1000",
-            "DAILY_TOKEN_LIMIT": "100",
-            "MONTHLY_ENFORCEMENT_MODE": "block",
-            "DAILY_ENFORCEMENT_MODE": "block",
-        })
+        mod = _load_quota_check(
+            {
+                **env,
+                "ENABLE_FINEGRAINED_QUOTAS": "false",
+                "MONTHLY_TOKEN_LIMIT": "1000",
+                "DAILY_TOKEN_LIMIT": "100",
+                "MONTHLY_ENFORCEMENT_MODE": "block",
+                "DAILY_ENFORCEMENT_MODE": "block",
+            }
+        )
         event = {"requestContext": {"authorizer": {"jwt": {"claims": {}}}}}
 
         body = _parse(mod.lambda_handler(event, None))
+        assert body["allowed"] is False
+
+
+class TestIdcUsernameIdentity:
+    """Tests for IAM Identity Center username-based identity resolution (#592 feedback)."""
+
+    @pytest.fixture
+    def base_env(self):
+        return {
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "QUOTA_TABLE_NAME": "test-table",
+            "ENABLE_FINEGRAINED_QUOTAS": "false",
+            "MONTHLY_TOKEN_LIMIT": "1000000",
+            "DAILY_TOKEN_LIMIT": "100000",
+            "MONTHLY_ENFORCEMENT_MODE": "warn",
+            "DAILY_ENFORCEMENT_MODE": "warn",
+            "MISSING_EMAIL_ENFORCEMENT": "allow",
+        }
+
+    def test_email_session_name_resolves(self, base_env):
+        """Standard case: IDC username is an email address."""
+        mod = _load_quota_check(base_env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {
+                    "caller": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockDeveloper_abc123/user@company.com"
+                },
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Should resolve identity and not return missing_identity
+        assert body.get("reason") != "missing_identity"
+
+    def test_non_email_idc_username_resolves(self, base_env):
+        """IDC username without @ (e.g. 'akshaya.claude') should still resolve."""
+        mod = _load_quota_check(base_env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {
+                    "caller": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_BedrockDeveloper_abc123/akshaya.claude"
+                },
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Should resolve identity (not missing_identity)
+        assert body.get("reason") != "missing_identity"
+
+    def test_non_sso_role_without_email_does_not_resolve(self, base_env):
+        """Non-SSO role without @ should NOT be treated as identity."""
+        env = {**base_env, "MISSING_EMAIL_ENFORCEMENT": "block"}
+        mod = _load_quota_check(env)
+        event = {
+            "requestContext": {
+                "authorizer": {"jwt": {"claims": {}}},
+                "identity": {"caller": "arn:aws:sts::123456789012:assumed-role/CustomRole/session123"},
+            }
+        }
+        body = _parse(mod.lambda_handler(event, None))
+        # Non-SSO role without email should be blocked
+        assert body.get("reason") == "missing_identity"
         assert body["allowed"] is False

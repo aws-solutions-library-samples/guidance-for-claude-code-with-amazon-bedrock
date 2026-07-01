@@ -65,6 +65,21 @@ def validate_cognito_user_pool_id(value: str) -> bool | str:
     return "Invalid User Pool ID format"
 
 
+def _remember_prior_codebuild_region(config: dict, prior_region: str) -> None:
+    """Record a CodeBuild region being abandoned, so destroy can clean its orphan.
+
+    When the user changes the CodeBuild region during re-init, a stack may still
+    exist in the old region. ``ccwb destroy`` reads the *current* region, so it
+    can't reach the old one — we persist abandoned regions in
+    ``config["codebuild"]["prior_regions"]`` and have destroy iterate them.
+    Deduped, and never includes the region that is now current.
+    """
+    cb = config.setdefault("codebuild", {})
+    priors = cb.setdefault("prior_regions", [])
+    if prior_region and prior_region not in priors:
+        priors.append(prior_region)
+
+
 class InitCommand(Command):
     name = "init"
     description = "Interactive setup wizard for first-time deployment"
@@ -76,7 +91,13 @@ class InitCommand(Command):
             description="Configuration profile name (optional, will prompt if not specified)",
             flag=False,
             default=None,
-        )
+        ),
+        option(
+            "managed",
+            None,
+            description="Deploy settings to OS-level managed-settings.json (highest precedence, non-overridable)",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -293,7 +314,9 @@ class InitCommand(Command):
         console.print("")
         return True
 
-    def _gather_configuration(self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None) -> dict[str, Any]:
+    def _gather_configuration(
+        self, progress: WizardProgress, existing_config: dict[str, Any] = None, profile_name: str | None = None
+    ) -> dict[str, Any]:
         """Gather configuration from user."""
         console = Console()
         # Use existing config as base if provided, otherwise use saved progress
@@ -322,23 +345,103 @@ class InitCommand(Command):
             console.print("\n[bold blue]Step 1: Authentication Configuration[/bold blue]")
             console.print("─" * 40)
 
-            console.print("\n[bold]SSO Authentication[/bold]")
-            console.print("Enable Single Sign-On authentication via identity providers")
-            console.print("(Okta, Auth0, Azure AD, AWS Cognito)")
-            console.print("\nWhen disabled:")
-            console.print("  • Uses AWS IAM roles for access control")
-            console.print("  • Metrics will use anonymous tracking based on IAM identity")
-            console.print("  • No user authentication required\n")
+            console.print("\n[bold]Authentication Method[/bold]")
+            console.print("Choose how developers will authenticate to use Claude Code:\n")
 
-            sso_enabled = questionary.confirm(
-                "Enable SSO authentication?",
-                default=config.get("sso_enabled", True),
+            # Determine default based on existing config
+            _existing_sso = config.get("sso_enabled", True)
+            _existing_auth_type = config.get("auth_type", "oidc" if _existing_sso else "none")
+            _default_auth = _existing_auth_type if _existing_auth_type in ("oidc", "idc", "none") else "oidc"
+
+            auth_method = questionary.select(
+                "Select authentication method:",
+                choices=[
+                    questionary.Choice(
+                        "OIDC (Okta, Azure AD, Auth0, Cognito)",
+                        value="oidc",
+                    ),
+                    questionary.Choice(
+                        "IAM Identity Center",
+                        value="idc",
+                    ),
+                    questionary.Choice(
+                        "None",
+                        value="none",
+                    ),
+                ],
+                default=_default_auth,
             ).ask()
 
-            if sso_enabled is None:
+            if auth_method is None:
                 return None
 
-            config["sso_enabled"] = sso_enabled
+            # Map selection to stored config fields (backward compatible)
+            config["auth_type"] = auth_method
+            config["sso_enabled"] = auth_method == "oidc"
+
+        # IAM Identity Center Configuration
+        if not skip_okta and config.get("auth_type") == "idc":
+            console.print("\n[bold blue]IAM Identity Center Configuration[/bold blue]")
+            console.print("─" * 30)
+            console.print()
+            console.print("Configure your IAM Identity Center (SSO) connection.")
+            console.print("Users will authenticate via their SSO portal and receive")
+            console.print("temporary credentials for Bedrock access.\n")
+
+            # IDC start URL
+            idc_start_url = questionary.text(
+                "Enter your IAM Identity Center start URL:",
+                instruction="(e.g., https://company.awsapps.com/start)",
+                default=config.get("idc_start_url", ""),
+                validate=lambda x: bool(x.strip()) or "Start URL cannot be empty",
+            ).ask()
+            if idc_start_url is None:
+                return None
+            config["idc_start_url"] = idc_start_url.strip().rstrip("/")
+
+            # SSO region (auto-suggest from start URL if possible)
+            suggested_region = "us-east-1"
+            _region_match = re.search(r"\.(us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d+\.", idc_start_url)
+            if _region_match:
+                suggested_region = _region_match.group(0).strip(".")
+
+            sso_region = questionary.text(
+                "Enter your SSO region (where Identity Center is configured):",
+                default=config.get("sso_region", suggested_region),
+                validate=lambda x: bool(x.strip()) or "SSO region cannot be empty",
+            ).ask()
+            if sso_region is None:
+                return None
+            config["sso_region"] = sso_region.strip()
+
+            # AWS account ID
+            account_id = questionary.text(
+                "Enter the AWS account ID for Bedrock access:",
+                default=config.get("idc_account_id", ""),
+                validate=lambda x: (
+                    (len(x.strip()) == 12 and x.strip().isdigit()) or "Must be a 12-digit AWS account ID"
+                ),
+            ).ask()
+            if account_id is None:
+                return None
+            config["idc_account_id"] = account_id.strip()
+
+            # Permission set name
+            permission_set = questionary.text(
+                "Enter the permission set name (IAM role users will assume):",
+                instruction="(e.g., BedrockDeveloperAccess)",
+                default=config.get("idc_permission_set_name", "BedrockDeveloperAccess"),
+                validate=lambda x: bool(x.strip()) or "Permission set name cannot be empty",
+            ).ask()
+            if permission_set is None:
+                return None
+            config["idc_permission_set_name"] = permission_set.strip()
+
+            console.print("\n[green]✓[/green] IAM Identity Center configured")
+            console.print(f"  Start URL: {config['idc_start_url']}")
+            console.print(f"  Region: {config['sso_region']}")
+            console.print(f"  Account: {config['idc_account_id']}")
+            console.print(f"  Permission Set: {config['idc_permission_set_name']}")
 
         # OIDC Provider Configuration
         if not skip_okta and config.get("sso_enabled", True):
@@ -347,8 +450,9 @@ class InitCommand(Command):
 
             provider_domain = questionary.text(
                 "Enter your OIDC provider domain:",
-                validate=lambda x: validate_oidc_provider_domain(x)
-                or "Invalid provider domain format (e.g., company.okta.com)",
+                validate=lambda x: (
+                    validate_oidc_provider_domain(x) or "Invalid provider domain format (e.g., company.okta.com)"
+                ),
                 instruction=(
                     "(e.g., company.okta.com, company.auth0.com, "
                     "login.microsoftonline.com/{tenant-id}/v2.0, "
@@ -408,9 +512,7 @@ class InitCommand(Command):
             # If auto-detection failed (custom domain, Keycloak, PingFederate, etc.)
             # ask the user to select the provider type manually so deploy never gets None
             if provider_type is None:
-                console.print(
-                    "\n[yellow]Could not auto-detect provider type from domain.[/yellow]"
-                )
+                console.print("\n[yellow]Could not auto-detect provider type from domain.[/yellow]")
                 provider_type = questionary.select(
                     "Select your identity provider type:",
                     choices=[
@@ -483,7 +585,8 @@ class InitCommand(Command):
 
                 # Construct issuer URL from the domain entered earlier; let the user override.
                 default_issuer = (
-                    provider_domain if provider_domain.startswith(("http://", "https://"))
+                    provider_domain
+                    if provider_domain.startswith(("http://", "https://"))
                     else f"https://{provider_domain}"
                 ).rstrip("/")
 
@@ -542,11 +645,7 @@ class InitCommand(Command):
                 oidc_jwks_uri = questionary.text(
                     "JWKS URI:",
                     validate=lambda x: bool(x) or "JWKS URI cannot be empty",
-                    default=(
-                        discovered.get("jwks_uri")
-                        or config.get("oidc_jwks_uri")
-                        or f"{oidc_issuer_url}/pf/JWKS"
-                    ),
+                    default=(discovered.get("jwks_uri") or config.get("oidc_jwks_uri") or f"{oidc_issuer_url}/pf/JWKS"),
                     instruction="(full URL)",
                 ).ask()
                 if not oidc_jwks_uri:
@@ -569,7 +668,11 @@ class InitCommand(Command):
                 oidc_thumbprint = questionary.text(
                     "JWKS TLS cert SHA-1 thumbprint:",
                     validate=lambda x: (
-                        bool(x and len(x.replace(":", "")) == 40 and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", "")))
+                        bool(
+                            x
+                            and len(x.replace(":", "")) == 40
+                            and all(c in "0123456789abcdefABCDEF" for c in x.replace(":", ""))
+                        )
                         or "Thumbprint must be 40 hex characters (colons optional)"
                     ),
                     default=computed_thumbprint or config.get("oidc_thumbprint", ""),
@@ -606,7 +709,9 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice("Public client (default, no secret required)", value="public"),
                         questionary.Choice("Confidential client — client secret", value="secret"),
-                        questionary.Choice("Confidential client — certificate (recommended for enterprise)", value="certificate"),
+                        questionary.Choice(
+                            "Confidential client — certificate (recommended for enterprise)", value="certificate"
+                        ),
                     ],
                     default=config.get("azure_auth_mode", "public"),
                 ).ask()
@@ -624,6 +729,7 @@ class InitCommand(Command):
                     if not profile_name:
                         raise ValueError("profile_name is required to store client secret in keyring")
                     import keyring as _keyring
+
                     _keyring.set_password("claude-code-with-bedrock", f"{profile_name}-client-secret", client_secret)
                     console.print("[dim]  ✓ Client secret stored in OS secure storage (not written to config)[/dim]")
                     console.print(
@@ -660,19 +766,34 @@ class InitCommand(Command):
                 config["client_certificate_key_path"] = client_certificate_key_path
 
             # Credential Storage Method
+            from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
+
+            wsl_detected = is_wsl()
+            keyring_available = is_keyring_available()
+
             console.print("\n[bold]Credential Storage Method[/bold]")
             console.print("Choose how to store AWS credentials locally:")
-            console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
+            if wsl_detected:
+                console.print("  • [dim]Keyring[/dim]: [yellow]Unavailable under WSL (no keyring backend)[/yellow]")
+            elif not keyring_available:
+                console.print("  • [dim]Keyring[/dim]: [yellow]No keyring backend detected[/yellow]")
+            else:
+                console.print("  • [cyan]Keyring[/cyan]: Uses OS secure storage (may prompt for password)")
             console.print("  • [cyan]Session Files[/cyan]: Temporary files (deleted on logout)\n")
 
-            credential_storage = questionary.select(
-                "Select credential storage method:",
-                choices=[
-                    questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
-                    questionary.Choice("Session Files (Temporary storage)", value="session"),
-                ],
-                default=config.get("credential_storage", "session"),
-            ).ask()
+            if keyring_available and not wsl_detected:
+                credential_storage = questionary.select(
+                    "Select credential storage method:",
+                    choices=[
+                        questionary.Choice("Keyring (Secure OS storage)", value="keyring"),
+                        questionary.Choice("Session Files (Temporary storage)", value="session"),
+                    ],
+                    default=config.get("credential_storage", "session"),
+                ).ask()
+            else:
+                reason = "WSL" if wsl_detected else "no backend"
+                console.print(f"[yellow]Keyring unavailable ({reason}) — using session files.[/yellow]")
+                credential_storage = "session"
 
             if not credential_storage:
                 return None
@@ -701,7 +822,9 @@ class InitCommand(Command):
             if use_custom_port:
                 redirect_port_str = questionary.text(
                     "Enter OAuth callback port:",
-                    validate=lambda x: (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535",
+                    validate=lambda x: (
+                        (x.isdigit() and 1024 <= int(x) <= 65535) or "Must be a number between 1024 and 65535"
+                    ),
                     default=str(config.get("redirect_port", 8400)),
                     instruction="(must match the port in your IdP's registered redirect URI)",
                 ).ask()
@@ -729,18 +852,19 @@ class InitCommand(Command):
                 config["oidc_thumbprint"] = oidc_thumbprint
 
             # Ask about federation type
-            console.print("\n[cyan]Federation Type Selection[/cyan]")
-            console.print("Direct STS.")
-            console.print("Cognito Identity Pool.\n")
+            console.print("\n[cyan]Federation Type[/cyan]")
+            console.print("How OIDC tokens are exchanged for AWS credentials:")
+            console.print("  • Direct STS \u2014 AssumeRoleWithWebIdentity (simpler, 12h sessions)")
+            console.print("  • Cognito Identity Pool \u2014 legacy, use only for existing deployments\n")
 
             # Use existing federation type as default if available
             existing_federation_type = config.get("federation_type", "direct")
 
             federation_type = questionary.select(
-                "Choose federation type:",
+                "Federation type:",
                 choices=[
-                    questionary.Choice("Direct STS", value="direct"),
-                    questionary.Choice("Cognito Identity Pool", value="cognito"),
+                    questionary.Choice("Direct STS (recommended)", value="direct"),
+                    questionary.Choice("Cognito Identity Pool (legacy)", value="cognito"),
                 ],
                 default=existing_federation_type,
             ).ask()
@@ -856,13 +980,13 @@ class InitCommand(Command):
                     "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
                     "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
                     "  [yellow]-[/yellow] Each machine manages its own collector process\n"
-                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
+                    "  [yellow]-[/yellow] Claude Desktop telemetry not supported (cannot reach localhost collector)\n"
                 )
                 console.print(
                     "[cyan]Central:[/cyan]\n"
                     "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
                     "  [green]+[/green] Single collector for all users — centralized management\n"
-                    "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
+                    "  [green]+[/green] Supports Claude Desktop telemetry\n"
                     "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
                     "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
                     "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
@@ -894,6 +1018,24 @@ class InitCommand(Command):
                         return None
                     config["monitoring"]["vpc_config"] = vpc_config
 
+                    # ALB scheme: internet-facing (default) or internal (private network)
+                    existing_alb_scheme = config["monitoring"].get("alb_scheme", "internet-facing")
+                    alb_scheme = questionary.select(
+                        "Load balancer network exposure:",
+                        choices=[
+                            questionary.Choice(
+                                "Internet-facing (default — accessible from public internet)",
+                                value="internet-facing",
+                            ),
+                            questionary.Choice(
+                                "Internal (private — only accessible via VPN/Direct Connect/internal network)",
+                                value="internal",
+                            ),
+                        ],
+                        default=existing_alb_scheme,
+                    ).ask()
+                    config["monitoring"]["alb_scheme"] = alb_scheme
+
                     # Optional: Configure HTTPS with custom domain
                     console.print("\n[yellow]Optional: Configure HTTPS for secure telemetry[/yellow]")
 
@@ -920,8 +1062,7 @@ class InitCommand(Command):
                         hosted_zones, zones_error = self._get_hosted_zones()
                         if hosted_zones:
                             zone_choices = [
-                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})"
-                                for zone in hosted_zones
+                                f"{zone['Name'].rstrip('.')} ({zone['Id'].split('/')[-1]})" for zone in hosted_zones
                             ]
 
                             default_zone = None
@@ -939,9 +1080,7 @@ class InitCommand(Command):
 
                             zone_id = selected_zone.split("(")[-1].rstrip(")")
                             config["monitoring"]["hosted_zone_id"] = zone_id
-                            console.print(
-                                f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}"
-                            )
+                            console.print(f"[green]✓[/green] HTTPS will be enabled with domain: {custom_domain}")
                         else:
                             if zones_error:
                                 console.print(f"[yellow]Could not list Route53 hosted zones: {zones_error}[/yellow]")
@@ -954,18 +1093,22 @@ class InitCommand(Command):
                             ).ask()
                             if manual_zone_id and manual_zone_id.strip():
                                 config["monitoring"]["hosted_zone_id"] = manual_zone_id.strip()
-                                console.print(f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})")
+                                console.print(
+                                    f"[green]✓[/green] HTTPS configured: {custom_domain} (zone: {manual_zone_id.strip()})"
+                                )
                             else:
-                                console.print("[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying.")
+                                console.print(
+                                    "[yellow]⚠[/yellow] Domain saved but no zone ID set. Update before deploying."
+                                )
                     else:
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
 
-                    # Analytics configuration (central mode only)
-                    console.print("\n[bold]Analytics Pipeline[/bold]")
-                    console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
+                    # Historical usage analytics (central mode only — S3 data lake + Athena)
+                    console.print("\n[bold]Historical Usage Analytics[/bold]")
+                    console.print("Query historical per-user usage with SQL via AWS Athena (S3 data lake, ~$5/month)")
                     enable_analytics = questionary.confirm(
-                        "Enable analytics?",
+                        "Enable historical usage analytics?",
                         default=config.get("analytics", {}).get("enabled", True),
                     ).ask()
 
@@ -975,14 +1118,12 @@ class InitCommand(Command):
 
                     if enable_analytics:
                         console.print(
-                            "[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack"
+                            "[green]✓[/green] Historical analytics (S3 + Athena) will be deployed with your monitoring stack"
                         )
 
                 else:
-                    # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
-                    console.print(
-                        "[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar"
-                    )
+                    # Sidecar mode: no VPC, no HTTPS, no historical analytics (PromQL dashboards still work)
+                    console.print("[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar")
                     config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
                     config["monitoring"]["hosted_zone_id"] = None
@@ -991,26 +1132,46 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = False
 
                 # Quota monitoring configuration (both modes)
-                # Quota enforcement requires per-user JWT tokens from an OIDC provider —
-                # the API Gateway authorizer cannot validate requests without one.
-                # Skip the prompt entirely when SSO is disabled (issue #454).
-                if not config.get("sso_enabled", True):
+                # IDC path: quota enforcement works via credential-process binary
+                # (SigV4-signed requests to quota API). Show the option with clear tradeoff.
+                # None path: no per-user identity → cannot enforce quotas.
+                if config.get("auth_type") == "none":
                     if "quota" not in config:
                         config["quota"] = {}
                     config["quota"]["enabled"] = False
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print(
-                        "[dim]Skipped — quota monitoring requires SSO authentication "
-                        "(per-user JWT tokens) and is disabled in this profile.[/dim]"
+                        "[dim]Skipped — quota enforcement requires per-user identity "
+                        "(OIDC or IAM Identity Center) and is not available with anonymous auth.[/dim]"
                     )
+                elif config.get("auth_type") == "idc":
+                    console.print("\n[bold]Quota Monitoring[/bold]")
+                    console.print("Track per-user token consumption, set limits, and receive alerts")
+                    console.print("when users approach or exceed their quotas.")
+                    console.print()
+                    console.print(
+                        "⚠️  Quota enforcement on AWS IAM Identity Center requires the credential-process binary."
+                    )
+                    console.print("    Without it: monitoring only (usage visible, no blocking)")
+                    console.print("    With it: full enforcement (blocks when over limit)")
+                    console.print()
+                    enable_quota_monitoring = questionary.confirm(
+                        "Enable quota enforcement?",
+                        default=config.get("quota", {}).get("enabled", False),
+                    ).ask()
+
+                    if "quota" not in config:
+                        config["quota"] = {}
+                    config["quota"]["enabled"] = enable_quota_monitoring
+
+                    if enable_quota_monitoring:
+                        console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
                 else:
                     console.print("\n[bold]Quota Monitoring[/bold]")
                     console.print("Track per-user token consumption, set limits, and receive alerts")
                     console.print("when users approach or exceed their quotas.")
                     console.print("[dim]Features: per-user/group limits, SNS alerts, access blocking[/dim]")
-                    console.print(
-                        "[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]"
-                    )
+                    console.print("[dim]Note: Quota monitoring requires the monitoring stack (enabled above)[/dim]")
                     enable_quota_monitoring = questionary.confirm(
                         "Enable quota monitoring?",
                         default=config.get("quota", {}).get("enabled", True),
@@ -1024,8 +1185,62 @@ class InitCommand(Command):
                     if enable_quota_monitoring:
                         console.print("\n[yellow]Configure quota limits and thresholds[/yellow]")
 
-                    # Monthly token limit
-                    console.print("\n[bold]Monthly Limit[/bold]")
+                    # Limit type selection
+                    limit_type = questionary.select(
+                        "How do you want to limit usage?",
+                        choices=[
+                            questionary.Choice("Cost-based ($ budget per user) [recommended]", value="cost"),
+                            questionary.Choice("Token-based (raw token count per user)", value="token"),
+                        ],
+                        default=config.get("quota", {}).get("limit_type", "cost"),
+                    ).ask()
+                    config["quota"]["limit_type"] = limit_type
+
+                    if limit_type == "cost":
+                        # Cost-based limits
+                        console.print("\n[bold]Monthly Budget[/bold]")
+                        console.print("[dim]Cost is calculated server-side from per-model Bedrock pricing rates.[/dim]")
+
+                        monthly_cost_limit_str = questionary.text(
+                            "Monthly budget per user (USD):",
+                            default=str(config.get("quota", {}).get("monthly_cost_limit", 50)),
+                            validate=lambda x: (
+                                (x.replace(".", "", 1).isdigit() and float(x) > 0) or "Must be a positive number"
+                            ),
+                        ).ask()
+                        config["quota"]["monthly_cost_limit"] = (
+                            float(monthly_cost_limit_str) if monthly_cost_limit_str else 50
+                        )
+
+                        daily_cost_limit_str = questionary.text(
+                            "Daily budget per user (USD, 0 for no daily cap):",
+                            default=str(config.get("quota", {}).get("daily_cost_limit", 0)),
+                            validate=lambda x: (
+                                (x.replace(".", "", 1).isdigit() and float(x) >= 0) or "Must be a non-negative number"
+                            ),
+                        ).ask()
+                        config["quota"]["daily_cost_limit"] = float(daily_cost_limit_str) if daily_cost_limit_str else 0
+
+                        console.print(f"  \u2192 Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user")
+                        if config["quota"]["daily_cost_limit"] > 0:
+                            console.print(f"  \u2192 Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user")
+                        console.print(
+                            "[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]"
+                        )
+
+                        # Set token limits to 0 (disabled) when using cost mode
+                        config["quota"]["monthly_limit"] = 0
+                        config["quota"]["daily_limit"] = 0
+                        monthly_limit = 0
+
+                    else:
+                        # Token-based limits (existing behavior)
+                        config["quota"]["monthly_cost_limit"] = 0
+                        config["quota"]["daily_cost_limit"] = 0
+
+                    # Monthly token limit (only prompted for token mode)
+                    if limit_type == "token":
+                        console.print("\n[bold]Monthly Limit[/bold]")
                     monthly_limit_millions = questionary.text(
                         "Monthly token limit per user (in millions):",
                         default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
@@ -1108,7 +1323,6 @@ class InitCommand(Command):
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
-                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
@@ -1171,12 +1385,93 @@ class InitCommand(Command):
         if enable_codebuild:
             console.print("[green]✓[/green] CodeBuild for Windows builds will be deployed")
 
-        # Claude Cowork 3P MDM configuration
-        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
-        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
-        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
+            # The Windows Server 2022 container fleet only exists in some regions.
+            # CodeBuild is build-only tooling (not user-facing), so when the main
+            # region is unsupported we let the user pick a nearby supported region
+            # here in the wizard — deploy then just executes that choice.
+            from claude_code_with_bedrock.cli.utils.helpers import (
+                CODEBUILD_WINDOWS_REGIONS,
+                find_nearest_codebuild_region,
+            )
+
+            selected_region = config.get("aws", {}).get("region")
+            if selected_region and selected_region not in CODEBUILD_WINDOWS_REGIONS:
+                nearest = find_nearest_codebuild_region(selected_region)
+                # "nearest" can cross continents when no supported region shares the
+                # main region's continent (e.g. af-*/me-* -> us-east-1). Surface that
+                # explicitly so a data-residency-sensitive user doesn't accept a
+                # cross-continent deployment by reflexively pressing Enter.
+                cross_continent = nearest.split("-", 1)[0] != selected_region.split("-", 1)[0]
+                console.print(
+                    f"\n[yellow]⚠ Windows CodeBuild containers are not available in {selected_region}.[/yellow]"
+                )
+                console.print(
+                    "[dim]CodeBuild is build-only tooling (not user-facing), so deploying it to a "
+                    "nearby region is fine — your main infrastructure stays put.[/dim]"
+                )
+                if cross_continent:
+                    console.print(
+                        f"[yellow]Note: no supported region shares your continent, so the nearest is "
+                        f"{nearest} (different geography). Your source code is uploaded to an S3 bucket "
+                        f"there during builds — confirm this is acceptable for data-residency.[/yellow]"
+                    )
+                nearest_label = (
+                    f"{nearest} (nearest supported — DIFFERENT continent)"
+                    if cross_continent
+                    else f"{nearest} (nearest supported)"
+                )
+                cb_choice = questionary.select(
+                    "Which region should CodeBuild deploy to?",
+                    choices=[
+                        questionary.Choice(nearest_label, value=nearest),
+                        *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                    ],
+                ).ask()
+
+                prior_region = config["codebuild"].get("region")
+                config["codebuild"]["region"] = cb_choice
+                if cb_choice:
+                    console.print(
+                        f"[green]✓[/green] CodeBuild will deploy to {cb_choice} "
+                        f"(main infrastructure stays in {selected_region})"
+                    )
+                    if prior_region and prior_region != cb_choice:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                else:
+                    # Skipping/disabling CodeBuild. If a stack was already deployed
+                    # cross-region, record it so destroy still cleans it up — otherwise
+                    # disabling here orphans it (destroy can't reach a region the config
+                    # no longer names).
+                    if prior_region:
+                        _remember_prior_codebuild_region(config, prior_region)
+                        console.print(
+                            f"[yellow]⚠ A CodeBuild stack may still exist in {prior_region}; "
+                            f"it will be cleaned up on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                        )
+                    config["codebuild"]["enabled"] = False
+                    console.print("[yellow]CodeBuild disabled — build Windows binaries manually.[/yellow]")
+            else:
+                # Supported region: CodeBuild deploys alongside the main stacks.
+                prior_region = config["codebuild"].get("region")
+                if prior_region and prior_region != selected_region:
+                    _remember_prior_codebuild_region(config, prior_region)
+                    console.print(
+                        f"[yellow]⚠ CodeBuild now deploys to the main region {selected_region}. "
+                        f"A CodeBuild stack may still exist in {prior_region}; it will be cleaned up "
+                        f"on the next [cyan]ccwb destroy[/cyan].[/yellow]"
+                    )
+                config["codebuild"]["region"] = None
+
+        # Claude Desktop MDM configuration
+        console.print("\n[bold]Claude Desktop Support[/bold]")
+        console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
         enable_cowork = questionary.confirm(
-            "Generate CoWork 3P MDM configuration during packaging?",
+            "Enable Claude Desktop support?",
             default=config.get("cowork_3p", {}).get("enabled", True),
         ).ask()
 
@@ -1185,7 +1480,77 @@ class InitCommand(Command):
         config["cowork_3p"]["enabled"] = enable_cowork
 
         if enable_cowork:
-            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
+            console.print("[green]✓[/green] Claude Desktop MDM config will be generated during packaging")
+
+            # Preserve existing custom MDM keys; advise JSON editing for additions
+            existing_extra = config.get("cowork_3p", {}).get("extra_keys", {})
+            if existing_extra:
+                console.print(f"[dim]Custom MDM keys configured: {len(existing_extra)} key(s)[/dim]")
+            else:
+                console.print(
+                    "[dim]To add custom MDM keys (e.g. coworkWebSearchEnabled), edit your profile JSON directly.[/dim]"
+                )
+                console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
+            config["cowork_3p"]["extra_keys"] = existing_extra
+
+            # Generate Claude Desktop service token for ALB auth bypass (central mode only).
+            # Claude Desktop can't do OIDC, so this static token in X-Cowork-Token header
+            # bypasses JWT validation on the ALB listener.
+            monitoring_mode = config.get("monitoring", {}).get("mode", "central")
+            if monitoring_mode == "central":
+                existing_token = config.get("cowork_3p", {}).get("service_token", "")
+                if not existing_token:
+                    import uuid
+
+                    token = str(uuid.uuid4())
+                    config["cowork_3p"]["service_token"] = token
+                    console.print("[green]✓[/green] Generated Claude Desktop service token for ALB auth bypass")
+                    console.print(
+                        "[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]"
+                    )
+                else:
+                    console.print("[dim]Claude Desktop service token already configured[/dim]")
+
+        # Settings deployment target
+        console.print("\n[bold]Settings Deployment Target[/bold]")
+        console.print("Choose where Claude Code settings are installed on user machines:")
+        console.print("  • User scope: ~/.claude/settings.json (users can override)")
+        console.print("  • Managed (org enforcement): OS-level path (highest precedence, non-overridable)")
+
+        saved_target = config.get("settings_target", "user")
+        # --managed flag overrides the wizard default
+        if self._io and self.option("managed"):
+            saved_target = "managed"
+
+        settings_target_choices = [
+            questionary.Choice("User scope (~/.claude/settings.json)", value="user"),
+            questionary.Choice("Managed (organization-wide enforcement, requires sudo/admin)", value="managed"),
+        ]
+        settings_target = questionary.select(
+            "Settings deployment target:",
+            choices=settings_target_choices,
+            default=saved_target,
+        ).ask()
+        config["settings_target"] = settings_target or "user"
+
+        if config["settings_target"] == "managed":
+            console.print("[green]✓[/green] Settings will be deployed to OS-level managed path")
+            console.print("[dim]  Users will need sudo (Unix) or Administrator (Windows) to install[/dim]")
+
+            # Ask whether to lock model selection in managed settings
+            console.print()
+            saved_lock = config.get("lock_default_model", False)
+            lock_model = questionary.confirm(
+                "Lock default model for all users? (Prevents users from changing model via /model)",
+                default=saved_lock,
+            ).ask()
+            config["lock_default_model"] = lock_model if lock_model is not None else False
+            if not config["lock_default_model"]:
+                console.print("[green]✓[/green] Users can freely select models via /model (CRIS routing still applied)")
+            else:
+                console.print("[yellow]![/yellow] Default model will be enforced for all users via managed-settings")
+        else:
+            console.print("[green]✓[/green] Settings will be deployed to user-scope path")
 
         # Package distribution support
         console.print("\n[bold]Package Distribution[/bold]")
@@ -1231,6 +1596,7 @@ class InitCommand(Command):
                 questionary.Choice("Auth0", value="auth0"),
                 questionary.Choice("AWS Cognito User Pool", value="cognito"),
                 questionary.Choice("Google", value="google"),
+                questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
             ]
 
             idp_provider = questionary.select(
@@ -1315,21 +1681,110 @@ class InitCommand(Command):
             # Only prompt for manual configuration if not auto-configured
             if not cognito_auto_configured:
                 # IdP domain
+                # Use `or ""`, not just the .get default: a reloaded profile stores these
+                # keys with an explicit None (see _build_config_from_profile), so the key
+                # is present and .get returns None — and questionary.text(default=None)
+                # crashes with "object of type 'NoneType' has no len()".
                 idp_domain = questionary.text(
                     "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
-                    default=config.get("distribution", {}).get("idp_domain", ""),
+                    default=config.get("distribution", {}).get("idp_domain") or "",
                 ).ask()
 
                 # Web app client ID
                 idp_client_id = questionary.text(
                     "Web application client ID (separate from CLI native app):",
-                    default=config.get("distribution", {}).get("idp_client_id", ""),
+                    default=config.get("distribution", {}).get("idp_client_id") or "",
                 ).ask()
 
                 # Web app client secret
                 idp_client_secret = questionary.password(
                     "Web application client secret:",
                 ).ask()
+
+            # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP) can't have
+            # their ALB authenticate-oidc endpoints derived from a single domain the way
+            # Okta/Azure/Auth0/Cognito can, so collect each one explicitly. Try OIDC discovery
+            # first (mirrors the SSO generic flow) and fall back to manual entry.
+            dist_oidc_issuer = None
+            dist_oidc_authorization_endpoint = None
+            dist_oidc_token_endpoint = None
+            dist_oidc_userinfo_endpoint = None
+            if idp_provider == "generic":
+                from claude_code_with_bedrock.cli.utils.oidc_discovery import (
+                    OidcDiscoveryError,
+                    discover_oidc_endpoints,
+                )
+
+                console.print("\n[bold]Generic OIDC Landing Page Configuration[/bold]")
+                console.print(
+                    "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
+                    "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
+                )
+
+                # Use the domain entered above as the default issuer; let the user override.
+                default_issuer = (
+                    idp_domain
+                    if idp_domain and idp_domain.startswith(("http://", "https://"))
+                    else (f"https://{idp_domain}" if idp_domain else "")
+                ).rstrip("/")
+
+                dist_oidc_issuer = questionary.text(
+                    "OIDC issuer URL:",
+                    validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
+                    default=config.get("distribution", {}).get("idp_issuer", default_issuer),
+                    instruction="(must match the 'iss' claim in tokens)",
+                ).ask()
+                if not dist_oidc_issuer:
+                    return None
+                dist_oidc_issuer = dist_oidc_issuer.rstrip("/")
+
+                discovered: dict[str, str] = {}
+                console.print(f"[dim]Querying {dist_oidc_issuer}/.well-known/openid-configuration ...[/dim]")
+                try:
+                    discovered = discover_oidc_endpoints(dist_oidc_issuer)
+                    console.print("[green]✓ Discovery succeeded.[/green]")
+                except OidcDiscoveryError as e:
+                    console.print(f"[yellow]Discovery failed: {e}[/yellow]")
+                    console.print("[dim]Falling back to manual entry.[/dim]")
+
+                dist_oidc_authorization_endpoint = questionary.text(
+                    "Authorization endpoint:",
+                    validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
+                    default=(
+                        discovered.get("authorization_endpoint")
+                        or config.get("distribution", {}).get("idp_authorization_endpoint")
+                        or f"{dist_oidc_issuer}/as/authorization.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_authorization_endpoint:
+                    return None
+
+                dist_oidc_token_endpoint = questionary.text(
+                    "Token endpoint:",
+                    validate=lambda x: bool(x) or "Token endpoint cannot be empty",
+                    default=(
+                        discovered.get("token_endpoint")
+                        or config.get("distribution", {}).get("idp_token_endpoint")
+                        or f"{dist_oidc_issuer}/as/token.oauth2"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_token_endpoint:
+                    return None
+
+                dist_oidc_userinfo_endpoint = questionary.text(
+                    "UserInfo endpoint:",
+                    validate=lambda x: bool(x) or "UserInfo endpoint cannot be empty",
+                    default=(
+                        discovered.get("userinfo_endpoint")
+                        or config.get("distribution", {}).get("idp_userinfo_endpoint")
+                        or f"{dist_oidc_issuer}/idp/userinfo.openid"
+                    ),
+                    instruction="(full URL)",
+                ).ask()
+                if not dist_oidc_userinfo_endpoint:
+                    return None
 
             # Store secret in AWS Secrets Manager (only if not auto-configured)
             import boto3
@@ -1341,29 +1796,31 @@ class InitCommand(Command):
 
                     secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
 
-                    # Try to create or update secret
-                    try:
-                        secret_response = secrets_client.create_secret(
-                            Name=secret_name,
-                            SecretString=idp_client_secret,
-                            Description=f"IdP client secret for "
-                            f"{config['aws']['identity_pool_name']} distribution landing page",
-                        )
-                        secret_arn = secret_response["ARN"]
-                    except secrets_client.exceptions.ResourceExistsException:
-                        # Secret already exists, update it
-                        secret_response = secrets_client.update_secret(
-                            SecretId=secret_name,
-                            SecretString=idp_client_secret,
-                        )
-                        secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                    secret_arn = self._store_idp_secret(
+                        secrets_client,
+                        secret_name,
+                        idp_client_secret,
+                        description=f"IdP client secret for "
+                        f"{config['aws']['identity_pool_name']} distribution landing page",
+                    )
 
                     console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
 
                 except Exception as e:
                     console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
                     console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
-                    secret_arn = f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"
+                    # Storing failed, so we have no API response. Recover the real
+                    # ARN (with its random suffix) via describe_secret if the secret
+                    # exists; only fall back to a hand-built ARN as a last resort.
+                    try:
+                        secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
+                    except Exception:
+                        # Partition-aware so the fallback ARN is valid in GovCloud
+                        # (aws-us-gov) and China (aws-cn), not just commercial AWS.
+                        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+                        partition = aws_partition_for_region(region)
+                        secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -1374,9 +1831,10 @@ class InitCommand(Command):
 
             custom_domain = questionary.text(
                 "Custom domain (e.g., downloads.company.com):",
-                default=config.get("distribution", {}).get("custom_domain", ""),
-                validate=lambda text: len(text.strip()) > 0
-                or "Custom domain is required for authenticated landing page",
+                default=config.get("distribution", {}).get("custom_domain") or "",
+                validate=lambda text: (
+                    len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
+                ),
             ).ask()
 
             # Check for Route53 hosted zones
@@ -1437,6 +1895,17 @@ class InitCommand(Command):
                     "hosted_zone_id": hosted_zone_id,
                 }
             )
+
+            # Generic OIDC: persist the explicit endpoints (only set for provider == "generic")
+            if idp_provider == "generic":
+                config["distribution"].update(
+                    {
+                        "idp_issuer": dist_oidc_issuer,
+                        "idp_authorization_endpoint": dist_oidc_authorization_endpoint,
+                        "idp_token_endpoint": dist_oidc_token_endpoint,
+                        "idp_userinfo_endpoint": dist_oidc_userinfo_endpoint,
+                    }
+                )
 
             console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
@@ -1725,6 +2194,30 @@ class InitCommand(Command):
 
         return config
 
+    @staticmethod
+    def _store_idp_secret(secrets_client, secret_name: str, secret_value: str, description: str = "") -> str:
+        """Create or update the distribution IdP client secret; return its full ARN.
+
+        Always returns the ARN from the Secrets Manager API response. Secrets
+        Manager appends a random 6-char suffix to every secret ARN (e.g.
+        ``-FhLi4n``); a hand-built ``arn:...:secret:<name>`` omits it, and the
+        ``{{resolve:secretsmanager:<arn>}}`` reference in the landing-page ALB
+        HTTPS listener then fails with ResourceNotFoundException. Using the
+        response ARN keeps create and update paths consistent.
+        """
+        try:
+            response = secrets_client.create_secret(
+                Name=secret_name,
+                SecretString=secret_value,
+                Description=description,
+            )
+        except secrets_client.exceptions.ResourceExistsException:
+            response = secrets_client.update_secret(
+                SecretId=secret_name,
+                SecretString=secret_value,
+            )
+        return response["ARN"]
+
     def _review_configuration(self, config: dict[str, Any]) -> bool:
         """Review configuration with user."""
         console = Console()
@@ -1746,11 +2239,7 @@ class InitCommand(Command):
             table.add_row("OIDC Provider", okta_domain or "—")
             table.add_row(
                 "OIDC Client ID",
-                (
-                    okta_client_id[:20] + "..."
-                    if len(okta_client_id) > 20
-                    else (okta_client_id or "—")
-                ),
+                (okta_client_id[:20] + "..." if len(okta_client_id) > 20 else (okta_client_id or "—")),
             )
         else:
             table.add_row("Authentication", "AWS SSO / IAM Identity Center (no OIDC)")
@@ -1794,7 +2283,10 @@ class InitCommand(Command):
                 table.add_row("Athena SQL Pipeline", "N/A (sidecar mode — PromQL dashboards included)")
 
         # Show VPC config if monitoring is enabled in central mode
-        if config.get("monitoring", {}).get("enabled") and config.get("monitoring", {}).get("mode", "sidecar") == "central":
+        if (
+            config.get("monitoring", {}).get("enabled")
+            and config.get("monitoring", {}).get("mode", "sidecar") == "central"
+        ):
             vpc_config = config.get("monitoring", {}).get("vpc_config", {})
             if vpc_config.get("create_vpc"):
                 table.add_row("Monitoring VPC", "New VPC will be created")
@@ -1807,12 +2299,17 @@ class InitCommand(Command):
         # Show selected model
         selected_model = config["aws"].get("selected_model", "")
         from claude_code_with_bedrock.models import get_all_model_display_names
+
         model_display = get_all_model_display_names()
         if selected_model:
             table.add_row("Claude Model", model_display.get(selected_model, selected_model))
 
         # Show application inference profiles if configured
-        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+        for tier, key in [
+            ("Opus", "inference_profile_opus_arn"),
+            ("Sonnet", "inference_profile_sonnet_arn"),
+            ("Haiku", "inference_profile_haiku_arn"),
+        ]:
             arn = config["aws"].get(key)
             if arn:
                 table.add_row(f"{tier} Inference Profile", arn)
@@ -1837,6 +2334,11 @@ class InitCommand(Command):
         if config.get("tags"):
             table.add_row("Resource Tags", ", ".join(f"{k}={v}" for k, v in config["tags"].items()))
 
+        # Show custom MDM keys
+        extra_keys = config.get("cowork_3p", {}).get("extra_keys", {})
+        if extra_keys:
+            table.add_row("Custom MDM Keys", ", ".join(f"{k}={v}" for k, v in extra_keys.items()))
+
         console.print(table)
 
         # Show what will be created
@@ -1853,9 +2355,9 @@ class InitCommand(Command):
                 console.print("• OpenTelemetry collector for metrics aggregation")
                 console.print("• ECS cluster and load balancer for collector")
                 if config.get("analytics", {}).get("enabled", True):
-                    console.print("• Kinesis Firehose for analytics data streaming")
-                    console.print("• S3 bucket for analytics data storage")
-                    console.print("• Glue catalog and Athena tables for analytics")
+                    console.print("• Kinesis Firehose for historical usage data streaming")
+                    console.print("• S3 bucket for historical usage data storage")
+                    console.print("• Glue catalog and Athena tables for historical usage analytics")
             else:
                 console.print("• Local OTEL Collector sidecar (no server infrastructure)")
                 console.print("• CloudWatch PromQL dashboard for metrics visualization")
@@ -2057,10 +2559,17 @@ class InitCommand(Command):
             "federation_type": config_data.get("federation_type", "cognito"),
             "max_session_duration": config_data.get("max_session_duration", 28800),
             "sso_enabled": config_data.get("sso_enabled", True),
+            "auth_type": config_data.get("auth_type", "oidc"),
+            "idc_start_url": config_data.get("idc_start_url"),
+            "idc_account_id": config_data.get("idc_account_id"),
+            "idc_permission_set_name": config_data.get("idc_permission_set_name"),
+            "sso_region": config_data.get("sso_region"),
             "azure_auth_mode": config_data.get("azure_auth_mode"),
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
+            "codebuild_region": config_data.get("codebuild", {}).get("region"),
+            "codebuild_prior_regions": config_data.get("codebuild", {}).get("prior_regions", []),
             "enable_distribution": config_data.get("distribution", {}).get("enabled", False),
             "distribution_type": config_data.get("distribution", {}).get("type"),
             "distribution_idp_provider": config_data.get("distribution", {}).get("idp_provider"),
@@ -2069,6 +2578,12 @@ class InitCommand(Command):
             "distribution_idp_client_secret_arn": config_data.get("distribution", {}).get("idp_client_secret_arn"),
             "distribution_custom_domain": config_data.get("distribution", {}).get("custom_domain"),
             "distribution_hosted_zone_id": config_data.get("distribution", {}).get("hosted_zone_id"),
+            "distribution_idp_issuer": config_data.get("distribution", {}).get("idp_issuer"),
+            "distribution_idp_authorization_endpoint": config_data.get("distribution", {}).get(
+                "idp_authorization_endpoint"
+            ),
+            "distribution_idp_token_endpoint": config_data.get("distribution", {}).get("idp_token_endpoint"),
+            "distribution_idp_userinfo_endpoint": config_data.get("distribution", {}).get("idp_userinfo_endpoint"),
             "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -2084,6 +2599,16 @@ class InitCommand(Command):
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
+            "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
+            "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
+            "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
+            "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
+                "chat_advanced_file_analysis", True
+            ),
+            "settings_target": "managed"
+            if (self._io and self.option("managed"))
+            else config_data.get("settings_target", "user"),
+            "lock_default_model": config_data.get("lock_default_model", False),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
         }
@@ -2417,21 +2942,42 @@ class InitCommand(Command):
             if hasattr(profile, "selected_model") and profile.selected_model:
                 existing_config["aws"]["selected_model"] = profile.selected_model
 
+            # Add lock_default_model if present
+            if hasattr(profile, "lock_default_model"):
+                existing_config["lock_default_model"] = profile.lock_default_model
+
             # Add cross-region profile if present
             if hasattr(profile, "cross_region_profile") and profile.cross_region_profile:
                 existing_config["aws"]["cross_region_profile"] = profile.cross_region_profile
 
             # Add application inference profile ARNs if present
-            for arn_key in ["inference_profile_opus_arn", "inference_profile_sonnet_arn", "inference_profile_haiku_arn"]:
+            for arn_key in [
+                "inference_profile_opus_arn",
+                "inference_profile_sonnet_arn",
+                "inference_profile_haiku_arn",
+            ]:
                 if getattr(profile, arn_key, None):
                     existing_config["aws"][arn_key] = getattr(profile, arn_key)
 
             # Add CodeBuild configuration if present
             if hasattr(profile, "enable_codebuild"):
                 existing_config["codebuild"] = {"enabled": profile.enable_codebuild}
+                if getattr(profile, "codebuild_region", None):
+                    existing_config["codebuild"]["region"] = profile.codebuild_region
+                if getattr(profile, "codebuild_prior_regions", None):
+                    existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
-            # Add CoWork 3P configuration
-            existing_config["cowork_3p"] = {"enabled": profile.cowork_3p_enabled}
+            # Add Claude Desktop (cowork_3p) configuration
+            cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
+            if profile.cowork_3p_extra_keys:
+                cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys
+            if profile.cowork_service_token:
+                cowork_3p_config["service_token"] = profile.cowork_service_token
+            if profile.cowork_chat_tab_enabled:
+                cowork_3p_config["chat_tab_enabled"] = True
+            if profile.cowork_chat_advanced_file_analysis:
+                cowork_3p_config["chat_advanced_file_analysis"] = True
+            existing_config["cowork_3p"] = cowork_3p_config
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
@@ -2444,15 +2990,30 @@ class InitCommand(Command):
                     "idp_client_secret_arn": getattr(profile, "distribution_idp_client_secret_arn", None),
                     "custom_domain": getattr(profile, "distribution_custom_domain", None),
                     "hosted_zone_id": getattr(profile, "distribution_hosted_zone_id", None),
+                    "idp_issuer": getattr(profile, "distribution_idp_issuer", None),
+                    "idp_authorization_endpoint": getattr(profile, "distribution_idp_authorization_endpoint", None),
+                    "idp_token_endpoint": getattr(profile, "distribution_idp_token_endpoint", None),
+                    "idp_userinfo_endpoint": getattr(profile, "distribution_idp_userinfo_endpoint", None),
                 }
 
-            # Add quota monitoring configuration if present
+            # Add quota monitoring configuration if present.
+            # Must mirror every quota field that _save_configuration persists, or a
+            # re-run of `ccwb init` silently resets the omitted fields to their prompt
+            # defaults (e.g. quota_check_interval -> 30). Note the key-name mapping:
+            # the config dict uses "check_interval" while the Profile attribute is
+            # "quota_check_interval" (see _save_configuration), so reverse it here.
             if hasattr(profile, "quota_monitoring_enabled"):
                 existing_config["quota"] = {
                     "enabled": profile.quota_monitoring_enabled,
                     "monthly_limit": getattr(profile, "monthly_token_limit", 300000000),
                     "warning_threshold_80": getattr(profile, "warning_threshold_80", 240000000),
                     "warning_threshold_90": getattr(profile, "warning_threshold_90", 270000000),
+                    "daily_limit": getattr(profile, "daily_token_limit", None),
+                    "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
+                    "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
+                    "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "check_interval": getattr(profile, "quota_check_interval", 30),
+                    "enable_bypass_detection": getattr(profile, "enable_bypass_detection", False),
                 }
 
             # Add analytics configuration if present
@@ -2504,11 +3065,16 @@ class InitCommand(Command):
         selected_model = config["aws"].get("selected_model")
         if selected_model:
             from claude_code_with_bedrock.models import get_all_model_display_names
+
             model_names = get_all_model_display_names()
             console.print(f"• Claude Model: [cyan]{model_names.get(selected_model, selected_model)}[/cyan]")
 
         # Show application inference profiles if configured
-        for tier, key in [("Opus", "inference_profile_opus_arn"), ("Sonnet", "inference_profile_sonnet_arn"), ("Haiku", "inference_profile_haiku_arn")]:
+        for tier, key in [
+            ("Opus", "inference_profile_opus_arn"),
+            ("Sonnet", "inference_profile_sonnet_arn"),
+            ("Haiku", "inference_profile_haiku_arn"),
+        ]:
             arn = config["aws"].get(key)
             if arn:
                 console.print(f"• {tier} Inference Profile: [cyan]{arn}[/cyan]")
@@ -2774,7 +3340,7 @@ class InitCommand(Command):
             # Validate profile name
             if not Config._is_valid_profile_name(profile_name):
                 console.print(
-                    "[red]Invalid profile name.[/red] " "Must be alphanumeric with hyphens only, max 64 characters.\n"
+                    "[red]Invalid profile name.[/red] Must be alphanumeric with hyphens only, max 64 characters.\n"
                 )
                 continue
 

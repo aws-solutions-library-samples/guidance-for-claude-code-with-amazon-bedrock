@@ -24,7 +24,7 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404
 import sys
 import time
 from pathlib import Path
@@ -32,6 +32,7 @@ from pathlib import Path
 try:
     import boto3
     from botocore.config import Config as BotocoreConfig
+
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
@@ -106,6 +107,27 @@ def parse_args():
 # This prevents macOS keychain permission prompts for the OTEL helper
 
 
+def is_token_expired(token, buffer_seconds=60):
+    """Check if a JWT token's exp claim has passed.
+
+    Returns True if the token is expired or unparseable (fail-safe: treat
+    bad tokens as expired so they fall through to re-authentication).
+    """
+    try:
+        _, payload_b64, _ = token.split(".")
+        padding_needed = len(payload_b64) % 4
+        if padding_needed:
+            payload_b64 += "=" * (4 - padding_needed)
+        payload_b64 = payload_b64.replace("-", "+").replace("_", "/")
+        payload = json.loads(base64.b64decode(payload_b64))
+        exp = payload.get("exp")
+        if exp is None:
+            return True  # No exp claim = treat as expired
+        return time.time() > (exp - buffer_seconds)
+    except Exception:
+        return True  # Unparseable = treat as expired
+
+
 def decode_jwt_payload(token):
     """Decode the payload portion of a JWT token"""
     try:
@@ -175,7 +197,11 @@ def extract_user_info(payload):
                 # Check for exact domain match or subdomain match
                 # Using endswith with leading dot prevents bypass attacks
                 okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                    "okta.com",
+                    "oktapreview.com",
+                    "okta-emea.com",
+                ):
                     org_id = "okta"
                 elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                     org_id = "auth0"
@@ -190,12 +216,55 @@ def extract_user_info(payload):
 
     # Extract team/department information - these fields vary by IdP
     # Provide defaults for consistent metric dimensions
-    department = payload.get("custom:department") or payload.get("department") or payload.get("dept") or payload.get("division") or "unspecified"
-    team = payload.get("custom:team") or payload.get("team") or payload.get("team_id") or payload.get("group") or "default-team"
-    cost_center = payload.get("custom:cost_center") or payload.get("cost_center") or payload.get("costCenter") or payload.get("cost_code") or "general"
+    department = (
+        payload.get("custom:department")
+        or payload.get("department")
+        or payload.get("dept")
+        or payload.get("division")
+        or "unspecified"
+    )
+    team = (
+        payload.get("custom:team")
+        or payload.get("team")
+        or payload.get("team_id")
+        or payload.get("group")
+        or "default-team"
+    )
+    cost_center = (
+        payload.get("custom:cost_center")
+        or payload.get("cost_center")
+        or payload.get("costCenter")
+        or payload.get("cost_code")
+        or "general"
+    )
     manager = payload.get("custom:manager") or payload.get("manager") or payload.get("manager_email") or "unassigned"
-    location = payload.get("custom:location") or payload.get("location") or payload.get("office_location") or payload.get("office") or "remote"
-    role = payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    location = (
+        payload.get("custom:location")
+        or payload.get("location")
+        or payload.get("office_location")
+        or payload.get("office")
+        or "remote"
+    )
+    role = (
+        payload.get("custom:role") or payload.get("role") or payload.get("job_title") or payload.get("title") or "user"
+    )
+
+    # AWS Session Tags — generic extraction from https://aws.amazon.com/tags claim.
+    # If the IdP emits session tags, ALL principal_tags flow through as OTEL dimensions
+    # automatically. No configuration required — whatever tags the admin configured in
+    # their IdP appear as CloudWatch dimensions.
+    # This enables per-project, per-team, per-environment cost attribution without
+    # any code changes when the admin adds new tag keys.
+    aws_tags = payload.get("https://aws.amazon.com/tags", {})
+    principal_tags = aws_tags.get("principal_tags", {}) if isinstance(aws_tags, dict) else {}
+    session_tags = {}
+    if isinstance(principal_tags, dict):
+        for key, value in principal_tags.items():
+            # Session tag values are arrays in Auth0/Okta format, strings in Entra ID
+            if isinstance(value, list) and value and value[0]:
+                session_tags[key] = value[0]
+            elif isinstance(value, str) and value:
+                session_tags[key] = value
 
     return {
         "email": email,
@@ -205,6 +274,7 @@ def extract_user_info(payload):
         "department": department,
         "team": team,
         "cost_center": cost_center,
+        "session_tags": session_tags,
         "manager": manager,
         "location": location,
         "role": role,
@@ -236,7 +306,22 @@ def format_as_headers_dict(attributes):
         if attr_key in attributes and attributes[attr_key]:
             headers[header_name] = attributes[attr_key]
 
+    # Emit session tags as x-tag-<key> headers (generic, no fixed list)
+    session_tags = attributes.get("session_tags", {})
+    if isinstance(session_tags, dict):
+        for key, value in session_tags.items():
+            if value:  # Skip empty values
+                # Normalize key to lowercase, replace spaces/special chars
+                safe_key = key.lower().replace(" ", "-")
+                headers[f"x-tag-{safe_key}"] = str(value)
+
     return headers
+
+
+def _attach_bearer(headers, token):
+    """Set the Authorization header. Exp-AGNOSTIC by design — see attachBearer in main.go."""
+    if token:
+        headers["authorization"] = f"Bearer {token}"
 
 
 def get_cache_path():
@@ -389,8 +474,8 @@ def get_aws_caller_identity():
 
     try:
         sts_client = boto3.client(
-            'sts',
-            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={'max_attempts': 0}),
+            "sts",
+            config=BotocoreConfig(connect_timeout=2, read_timeout=2, retries={"max_attempts": 0}),
         )
         identity = sts_client.get_caller_identity()
 
@@ -437,17 +522,17 @@ def _parse_arn_identity(arn):
         # Case 1: SSO assumed role
         # Pattern: assumed-role/AWSReservedSSO_<PermissionSet>_<hash>/<session-name>
         if resource.startswith("assumed-role/AWSReservedSSO_"):
-            role_and_session = resource[len("assumed-role/"):]
+            role_and_session = resource[len("assumed-role/") :]
             slash_idx = role_and_session.find("/")
             if slash_idx == -1:
                 return None
 
             role_name = role_and_session[:slash_idx]
-            session_name = role_and_session[slash_idx + 1:]
+            session_name = role_and_session[slash_idx + 1 :]
 
             # Extract permission set name from role: AWSReservedSSO_<Name>_<hash>
             # Remove "AWSReservedSSO_" prefix and trailing "_<hash>" (12 hex chars)
-            perm_set = role_name[len("AWSReservedSSO_"):]
+            perm_set = role_name[len("AWSReservedSSO_") :]
             # The hash suffix is the last segment after underscore
             last_underscore = perm_set.rfind("_")
             if last_underscore > 0:
@@ -468,7 +553,7 @@ def _parse_arn_identity(arn):
         # Case 2: IAM user
         # Pattern: user/<username> or user/<path>/<username>
         if resource.startswith("user/"):
-            user_path = resource[len("user/"):]
+            user_path = resource[len("user/") :]
             # Take the last segment as username (handles path-based users)
             username = user_path.rsplit("/", 1)[-1]
             return {
@@ -507,13 +592,13 @@ def _parse_assumed_role_arn(arn):
         if not resource.startswith("assumed-role/"):
             return None
 
-        role_and_session = resource[len("assumed-role/"):]
+        role_and_session = resource[len("assumed-role/") :]
         slash_idx = role_and_session.find("/")
         if slash_idx == -1:
             return None
 
         role_name = role_and_session[:slash_idx]
-        session_name = role_and_session[slash_idx + 1:]
+        session_name = role_and_session[slash_idx + 1 :]
 
         return {
             "role_name": role_name,
@@ -532,9 +617,9 @@ def create_anonymous_user_info(caller_identity=None):
     For IAM users, the username is extracted from the user ARN.
     For non-SSO assumed roles, a hashed anonymous identifier is generated.
     """
-    if caller_identity and caller_identity.get('Arn'):
-        arn = caller_identity['Arn']
-        account_id = caller_identity.get('Account', 'unknown')
+    if caller_identity and caller_identity.get("Arn"):
+        arn = caller_identity["Arn"]
+        account_id = caller_identity.get("Account", "unknown")
         # SECURITY NOTE: 'aws-{account_id}' exposes the AWS account ID in metrics.
         # This is acceptable for internal observability but should be reviewed if
         # metrics are exported to external or third-party monitoring systems.
@@ -633,7 +718,10 @@ def build_proxy_user_headers() -> dict:
     """
     token = None
     if not ANONYMOUS_MODE:
-        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+        token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+        if token and is_token_expired(token):
+            token = None
+        token = token or get_token_via_credential_process()
 
     if token:
         payload = decode_jwt_payload(token)
@@ -644,7 +732,7 @@ def build_proxy_user_headers() -> dict:
 
     headers = format_as_headers_dict(user_info)
     if token:
-        headers["authorization"] = f"Bearer {token}"
+        _attach_bearer(headers, token)
     return headers
 
 
@@ -664,9 +752,23 @@ def run_proxy(target_url: str, port: int = 4318):
     target_url = target_url.rstrip("/")
     logger.info(f"Starting OTLP proxy on port {port}, forwarding to {target_url}")
 
+    # Warm the header cache at startup so the first CoWork requests already
+    # carry user.email attribution. Without this, early requests would be
+    # unattributed until the periodic refresh (up to 5 minutes).
+    try:
+        startup_headers = build_proxy_user_headers()
+        if "x-user-email" not in startup_headers:
+            logger.warning(
+                "Attribution headers missing x-user-email at startup. "
+                "Dashboard metrics will lack user identity until authentication completes."
+            )
+    except Exception as e:
+        logger.warning(f"Could not warm attribution cache at startup: {e}")
+        startup_headers = {}
+
     # Pre-fetch headers once at startup; refresh on each request so token
     # rotations are picked up without restarting the proxy.
-    _header_cache = {"headers": {}, "fetched_at": 0}
+    _header_cache = {"headers": startup_headers, "fetched_at": time.time() if startup_headers else 0}
     _HEADER_REFRESH_SECONDS = 300
 
     def fresh_user_headers():
@@ -741,6 +843,7 @@ def run_proxy(target_url: str, port: int = 4318):
 
     import signal
     import threading as _threading
+
     if _threading.current_thread() is _threading.main_thread():
         signal.signal(signal.SIGTERM, shutdown_on_signal)
         signal.signal(signal.SIGINT, shutdown_on_signal)
@@ -773,7 +876,8 @@ def ensure_collector_running():
                 # os.kill(pid, 0) raises OSError on Windows even for running processes
                 result = subprocess.run(
                     ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 if str(pid) in result.stdout:
                     return  # already running
@@ -820,15 +924,22 @@ def main():
     # Ensure collector sidecar is running (no-op if not installed)
     ensure_collector_running()
 
-    # Layer 1: Check file cache first (avoids credential-process entirely)
+    # Layer 1: Serve attribution from the file cache. The cache stores
+    # attribution headers only, never the token, so the Bearer is still
+    # resolved below (env var, then credential-process). credential-process
+    # is the correct fallback here — it owns token refresh, keyring storage,
+    # and serve-past-expiry, none of which a direct monitoring.json read does.
     if not TEST_MODE:
         cached_headers = read_cached_headers()
         if cached_headers is not None:
             # Resolve Bearer fresh — the cache stores attribution headers only,
             # never the token itself. Try env var (free) then credential-process (~20ms).
-            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN") or get_token_via_credential_process()
+            _bearer_token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+            if _bearer_token and is_token_expired(_bearer_token):
+                _bearer_token = None
+            _bearer_token = _bearer_token or get_token_via_credential_process()
             if _bearer_token:
-                cached_headers["authorization"] = f"Bearer {_bearer_token}"
+                _attach_bearer(cached_headers, _bearer_token)
             else:
                 # No token from env var or credential-process. Emit cached attribution
                 # anyway (otelHeadersHelper contract), but log so an ALB 401 is
@@ -845,6 +956,11 @@ def main():
     token = None
     if not ANONYMOUS_MODE:
         token = os.environ.get("CLAUDE_CODE_MONITORING_TOKEN")
+        if token and is_token_expired(token):
+            logger.info(
+                "Environment token CLAUDE_CODE_MONITORING_TOKEN is expired, falling through to credential-process"
+            )
+            token = None
         if token:
             logger.info("Using token from environment variable CLAUDE_CODE_MONITORING_TOKEN")
         else:
@@ -875,7 +991,7 @@ def main():
             # it before printTestOutput). Added only on this branch — test mode never
             # writes the cache, so the token stays off disk.
             if token:
-                headers_dict["authorization"] = f"Bearer {token}"
+                _attach_bearer(headers_dict, token)
             print("===== TEST MODE OUTPUT =====\n")
             if token:
                 print("Mode: Authenticated (JWT Token)")
@@ -925,7 +1041,7 @@ def main():
                 # Anonymous mode: cache with a synthetic TTL (5 minutes)
                 write_cached_headers(headers_dict, int(time.time()) + _STS_CACHE_TTL_SECONDS)
             if token:
-                headers_dict["authorization"] = f"Bearer {token}"
+                _attach_bearer(headers_dict, token)
             print(json.dumps(headers_dict))
 
         if DEBUG_MODE or TEST_MODE:

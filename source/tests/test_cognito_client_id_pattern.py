@@ -5,7 +5,6 @@ from pathlib import Path
 
 import yaml
 
-
 INFRA_DIR = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure"
 
 
@@ -39,15 +38,9 @@ class TestCognitoClientIdPattern:
         pattern = param["AllowedPattern"]
 
         # Must accept IDs shorter and longer than 26 chars
-        assert re.match(pattern, "a" * 25), (
-            f"Pattern {pattern!r} rejects 25-char client IDs (AWS allows 1-128)"
-        )
-        assert re.match(pattern, "a" * 26), (
-            f"Pattern {pattern!r} rejects 26-char client IDs"
-        )
-        assert re.match(pattern, "a" * 64), (
-            f"Pattern {pattern!r} rejects 64-char client IDs (AWS allows up to 128)"
-        )
+        assert re.match(pattern, "a" * 25), f"Pattern {pattern!r} rejects 25-char client IDs (AWS allows 1-128)"
+        assert re.match(pattern, "a" * 26), f"Pattern {pattern!r} rejects 26-char client IDs"
+        assert re.match(pattern, "a" * 64), f"Pattern {pattern!r} rejects 64-char client IDs (AWS allows up to 128)"
 
     def test_pattern_rejects_invalid_chars(self):
         """Pattern must still reject uppercase, special chars."""
@@ -58,12 +51,6 @@ class TestCognitoClientIdPattern:
         param = template["Parameters"]["CognitoUserPoolClientId"]
         pattern = param["AllowedPattern"]
 
-        assert not re.match(pattern, "UPPERCASE123"), (
-            "Pattern should reject uppercase characters"
-        )
-        assert not re.match(pattern, "has-dashes-123"), (
-            "Pattern should reject dashes"
-        )
-        assert not re.match(pattern, ""), (
-            "Pattern should reject empty string"
-        )
+        assert not re.match(pattern, "UPPERCASE123"), "Pattern should reject uppercase characters"
+        assert not re.match(pattern, "has-dashes-123"), "Pattern should reject dashes"
+        assert not re.match(pattern, ""), "Pattern should reject empty string"

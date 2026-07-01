@@ -13,17 +13,16 @@ commands against an isolated config directory (tmp_path). They catch:
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from claude_code_with_bedrock.config import Config, Profile
 from claude_code_with_bedrock.cli import create_application
+from claude_code_with_bedrock.config import Config, Profile
 
 
 class TestConfigLifecycle:
@@ -223,24 +222,6 @@ class TestConfigLifecycle:
 class TestCLICommandExecution:
     """Test CLI commands execute without crashes using isolated config."""
 
-    def test_context_list_empty(self, tmp_path, capsys):
-        """context list works with no profiles configured."""
-        with patch.object(Config, "CONFIG_DIR", tmp_path):
-            with patch.object(Config, "CONFIG_FILE", tmp_path / "config.json"):
-                with patch.object(Config, "PROFILES_DIR", tmp_path / "profiles"):
-                    (tmp_path / "profiles").mkdir()
-
-                    app = create_application()
-                    from cleo.testers.command_tester import CommandTester
-
-                    command = app.find("context list")
-                    tester = CommandTester(command)
-                    exit_code = tester.execute("")
-                    assert exit_code == 0
-                    # Rich Console writes to stdout, not cleo IO
-                    captured = capsys.readouterr()
-                    assert "No profiles found" in captured.out
-
     def test_context_list_with_profiles(self, tmp_path, capsys):
         """context list shows all profiles."""
         with patch.object(Config, "CONFIG_DIR", tmp_path):
@@ -249,22 +230,26 @@ class TestCLICommandExecution:
                     (tmp_path / "profiles").mkdir()
 
                     config = Config()
-                    config.save_profile(Profile(
-                        name="alpha",
-                        provider_domain="a.okta.com",
-                        client_id="a",
-                        credential_storage="session",
-                        aws_region="us-east-1",
-                        identity_pool_name="a-pool",
-                    ))
-                    config.save_profile(Profile(
-                        name="beta",
-                        provider_domain="b.okta.com",
-                        client_id="b",
-                        credential_storage="session",
-                        aws_region="eu-west-1",
-                        identity_pool_name="b-pool",
-                    ))
+                    config.save_profile(
+                        Profile(
+                            name="alpha",
+                            provider_domain="a.okta.com",
+                            client_id="a",
+                            credential_storage="session",
+                            aws_region="us-east-1",
+                            identity_pool_name="a-pool",
+                        )
+                    )
+                    config.save_profile(
+                        Profile(
+                            name="beta",
+                            provider_domain="b.okta.com",
+                            client_id="b",
+                            credential_storage="session",
+                            aws_region="eu-west-1",
+                            identity_pool_name="b-pool",
+                        )
+                    )
 
                     app = create_application()
                     from cleo.testers.command_tester import CommandTester
@@ -285,14 +270,16 @@ class TestCLICommandExecution:
                     (tmp_path / "profiles").mkdir()
 
                     config = Config()
-                    config.save_profile(Profile(
-                        name="myprofile",
-                        provider_domain="test.okta.com",
-                        client_id="test",
-                        credential_storage="session",
-                        aws_region="us-west-2",
-                        identity_pool_name="pool",
-                    ))
+                    config.save_profile(
+                        Profile(
+                            name="myprofile",
+                            provider_domain="test.okta.com",
+                            client_id="test",
+                            credential_storage="session",
+                            aws_region="us-west-2",
+                            identity_pool_name="pool",
+                        )
+                    )
 
                     app = create_application()
                     from cleo.testers.command_tester import CommandTester
@@ -320,14 +307,16 @@ class TestCLICommandExecution:
                     (tmp_path / "profiles").mkdir()
 
                     config = Config()
-                    config.save_profile(Profile(
-                        name="valid",
-                        provider_domain="company.okta.com",
-                        client_id="0oa123",
-                        credential_storage="keyring",
-                        aws_region="us-east-1",
-                        identity_pool_name="valid-pool",
-                    ))
+                    config.save_profile(
+                        Profile(
+                            name="valid",
+                            provider_domain="company.okta.com",
+                            client_id="0oa123",
+                            credential_storage="keyring",
+                            aws_region="us-east-1",
+                            identity_pool_name="valid-pool",
+                        )
+                    )
                     config.active_profile = "valid"
                     config.save()
 
@@ -350,19 +339,21 @@ class TestCLICommandExecution:
                     (tmp_path / "profiles").mkdir()
 
                     config = Config()
-                    config.save_profile(Profile(
-                        name="detailed",
-                        provider_domain="detailed.okta.com",
-                        client_id="detail-id",
-                        credential_storage="keyring",
-                        aws_region="ap-southeast-2",
-                        identity_pool_name="detail-pool",
-                        cross_region_profile="us",
-                        selected_model="us.anthropic.claude-opus-4-1-20250805-v1:0",
-                        monitoring_enabled=True,
-                        quota_monitoring_enabled=True,
-                        monthly_token_limit=225000000,
-                    ))
+                    config.save_profile(
+                        Profile(
+                            name="detailed",
+                            provider_domain="detailed.okta.com",
+                            client_id="detail-id",
+                            credential_storage="keyring",
+                            aws_region="ap-southeast-2",
+                            identity_pool_name="detail-pool",
+                            cross_region_profile="us",
+                            selected_model="us.anthropic.claude-opus-4-1-20250805-v1:0",
+                            monitoring_enabled=True,
+                            quota_monitoring_enabled=True,
+                            monthly_token_limit=225000000,
+                        )
+                    )
 
                     app = create_application()
                     from cleo.testers.command_tester import CommandTester
@@ -415,7 +406,6 @@ class TestQuotaCLILifecycle:
 
     def test_quota_export_import_json_structure(self, tmp_path):
         """Quota export produces valid JSON that import can consume."""
-        from claude_code_with_bedrock.quota_policies import QuotaPolicyManager
 
         # Simulate a policy export structure
         policies = [

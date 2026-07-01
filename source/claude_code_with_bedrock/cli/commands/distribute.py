@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
 from claude_code_with_bedrock.config import Config
 
 
@@ -216,6 +217,13 @@ class DistributeCommand(Command):
             console.print("\n[green]Auto-selecting only available build[/green]")
             return build_map[choices[0]]
 
+        # Non-interactive: auto-select latest build
+        import sys as _sys
+
+        if not _sys.stdin.isatty():
+            console.print("\n[dim]Non-interactive mode: selecting latest build[/dim]")
+            return build_map[choices[0]]
+
         # Show selection
         console.print()
         selected = questionary.select(
@@ -259,7 +267,9 @@ class DistributeCommand(Command):
 
                 result = subprocess.run(
                     ["tasklist", "/FI", "IMAGENAME eq ZSATunnel.exe", "/NH"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if "ZSATunnel" in result.stdout:
                     corporate_proxy_detected = True
@@ -267,7 +277,9 @@ class DistributeCommand(Command):
                 else:
                     result = subprocess.run(
                         ["tasklist", "/FI", "IMAGENAME eq nscommon.exe", "/NH"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
                     if "nscommon" in result.stdout:
                         corporate_proxy_detected = True
@@ -280,8 +292,12 @@ class DistributeCommand(Command):
                 f"\n[yellow]Note: {proxy_name} detected. If S3 uploads fail with 'Access Denied' or SSL errors, "
                 f"use one of these fixes:[/yellow]"
             )
-            console.print(f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)")
-            console.print(f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)")
+            console.print(
+                f"  Option 1: [cyan]pip install truststore[/cyan]  (makes Python trust the {proxy_name} CA from the OS store)"
+            )
+            console.print(
+                f"  Option 2: [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\{proxy_name}RootCA.pem[/cyan]  (ask IT for the .pem file)"
+            )
             console.print()
 
     def handle(self) -> int:
@@ -529,7 +545,7 @@ class DistributeCommand(Command):
             # Check if Windows build is completed and download it
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -570,6 +586,8 @@ class DistributeCommand(Command):
             "windows": [
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
+                ("otel-helper.ps1", "otel-helper.ps1"),
+                ("otel-helper.cmd", "otel-helper.cmd"),
                 ("otelcol-windows.exe", "otelcol-windows.exe"),
                 ("collector-config.yaml", "collector-config.yaml"),
                 ("install.bat", "install.bat"),
@@ -582,8 +600,11 @@ class DistributeCommand(Command):
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
                 ("credential-process-linux-arm64", "credential-process-linux-arm64"),
+                # Accept generic linux binary (maps to x64 for compat with install.sh)
+                ("credential-process-linux", "credential-process-linux-x64"),
                 ("otel-helper-linux-x64", "otel-helper-linux-x64"),
                 ("otel-helper-linux-arm64", "otel-helper-linux-arm64"),
+                ("otel-helper-linux", "otel-helper-linux-x64"),
                 ("otelcol-linux-x64", "otelcol-linux-x64"),
                 ("otelcol-linux-arm64", "otelcol-linux-arm64"),
                 ("otel-helper.sh", "otel-helper.sh"),
@@ -691,7 +712,9 @@ class DistributeCommand(Command):
                     for source_file, archive_name in files:
                         source_path = package_path / source_file
                         if source_path.exists():
-                            zipf.writestr(f"claude-code-package/{archive_name}", self._read_file_with_retry(source_path))
+                            zipf.writestr(
+                                f"claude-code-package/{archive_name}", self._read_file_with_retry(source_path)
+                            )
 
                     # Include claude-settings if it exists
                     settings_dir = package_path / "claude-settings"
@@ -699,7 +722,9 @@ class DistributeCommand(Command):
                         for file in settings_dir.rglob("*"):
                             if file.is_file():
                                 rel_path = file.relative_to(package_path)
-                                zipf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file))
+                                zipf.writestr(
+                                    f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file)
+                                )
 
                 # Upload to S3 at packages/{platform}/latest.zip
                 s3_key = f"packages/{platform}/latest.zip"
@@ -790,7 +815,7 @@ class DistributeCommand(Command):
             try:
                 # Get CodeBuild project name from profile
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -831,7 +856,7 @@ class DistributeCommand(Command):
             # First check for any completed builds
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -873,7 +898,7 @@ class DistributeCommand(Command):
 
                     # Check build status
                     try:
-                        codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                        codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
                         response = codebuild.batch_get_builds(ids=[build_info["build_id"]])
                         if response.get("builds"):
                             build = response["builds"][0]
@@ -934,12 +959,18 @@ class DistributeCommand(Command):
 
         if "windows" not in found_platforms:
             console.print("\n[yellow]Warning: Windows support not included in this distribution[/yellow]")
-            from questionary import confirm
+            import sys as _sys
 
-            proceed = confirm("Continue without Windows support?", default=False).ask()
-            if not proceed:
-                console.print("Distribution cancelled.")
-                return 0
+            if _sys.stdin.isatty():
+                from questionary import confirm
+
+                proceed = confirm("Continue without Windows support?", default=False).ask()
+                if not proceed:
+                    console.print("Distribution cancelled.")
+                    return 0
+            else:
+                # Non-interactive: proceed with default (skip Windows)
+                console.print("[dim]Non-interactive mode: proceeding without Windows support[/dim]")
 
         console.print(f"\n[green]Ready to distribute for: {', '.join(found_platforms)}[/green]")
 
@@ -1245,7 +1276,9 @@ class DistributeCommand(Command):
             if s3 and bucket_name:
                 package_key = f"packages/{timestamp}/{filename}"
                 try:
-                    self._upload_file_with_retry(s3, str(archive_path), bucket_name, package_key, config=self.S3_TRANSFER_CONFIG)
+                    self._upload_file_with_retry(
+                        s3, str(archive_path), bucket_name, package_key, config=self.S3_TRANSFER_CONFIG
+                    )
                     url = s3.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": bucket_name, "Key": package_key},
@@ -1305,11 +1338,11 @@ class DistributeCommand(Command):
             )
             console.print("[yellow]Fixes:[/yellow]")
             console.print("  1. [cyan]pip install truststore[/cyan]  (makes Python trust your corporate CA)")
-            console.print("  2. [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/cyan]  (ask IT for the .pem file)")
-        elif "access denied" in error_str or "accessdenied" in error_str or isinstance(error, PermissionError):
             console.print(
-                "\n[yellow]This may be caused by:[/yellow]"
+                "  2. [cyan]set AWS_CA_BUNDLE=C:\\path\\to\\corporate-root-ca.pem[/cyan]  (ask IT for the .pem file)"
             )
+        elif "access denied" in error_str or "accessdenied" in error_str or isinstance(error, PermissionError):
+            console.print("\n[yellow]This may be caused by:[/yellow]")
             console.print("  1. Corporate security tool (Zscaler, Netskope) intercepting S3 traffic")
             console.print("  2. Insufficient S3 permissions")
             console.print("  3. Antivirus scanning the ZIP file")
@@ -1345,7 +1378,16 @@ class DistributeCommand(Command):
                     ) from e
 
     @staticmethod
-    def _upload_file_with_retry(s3_client, file_path: str, bucket: str, key: str, extra_args=None, config=None, callback=None, max_attempts: int = 5):
+    def _upload_file_with_retry(
+        s3_client,
+        file_path: str,
+        bucket: str,
+        key: str,
+        extra_args=None,
+        config=None,
+        callback=None,
+        max_attempts: int = 5,
+    ):
         """Upload a file to S3 with retry for Windows Defender scan locks.
 
         boto3.upload_file internally opens the file for reading. On Windows,
@@ -1409,6 +1451,9 @@ class DistributeCommand(Command):
             "otel-helper-linux-arm64",
             "otel-helper-windows.exe",
             "otel-helper.sh",
+            # Windows otel-helper launcher + AV-resilient fallback (required by install.bat)
+            "otel-helper.ps1",
+            "otel-helper.cmd",
             # OTEL Collector sidecar
             "otelcol-macos-arm64",
             "otelcol-macos-intel",
@@ -1450,7 +1495,7 @@ class DistributeCommand(Command):
     PLATFORM_FILES = {
         "windows": {
             "binaries": ["credential-process-windows.exe", "otel-helper-windows.exe"],
-            "installer": ["install.bat", "ccwb-install.ps1"],
+            "installer": ["install.bat", "ccwb-install.ps1", "otel-helper.ps1", "otel-helper.cmd"],
             "label": "Windows",
         },
         "linux-x64": {
@@ -1619,7 +1664,7 @@ class DistributeCommand(Command):
                 return False
 
             codebuild_stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
-            codebuild_outputs = get_stack_outputs(codebuild_stack_name, profile.aws_region)
+            codebuild_outputs = get_stack_outputs(codebuild_stack_name, get_codebuild_region(profile))
 
             if not codebuild_outputs:
                 console.print("[red]CodeBuild stack not found[/red]")
@@ -1632,8 +1677,8 @@ class DistributeCommand(Command):
                 console.print("[red]Could not get CodeBuild bucket or project name from stack outputs[/red]")
                 return False
 
-            # Download from S3
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            # Download from S3 (CodeBuild BuildBucket, in the codebuild region)
+            s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
             zip_path = package_path / "windows-binaries.zip"
 
             # CodeBuild stores artifacts at root of bucket
@@ -1663,6 +1708,7 @@ class DistributeCommand(Command):
                             except PermissionError:
                                 if attempt < 2:
                                     import time
+
                                     time.sleep(1)
                                 else:
                                     raise

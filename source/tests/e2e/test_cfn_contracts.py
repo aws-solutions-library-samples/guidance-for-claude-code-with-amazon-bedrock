@@ -13,7 +13,6 @@ Catches issues like:
 - #398: SSM parameter conflicts on stack updates
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -99,14 +98,48 @@ class TestIAMPolicyValidity:
 
     # Valid IAM action prefixes for services used in this project
     VALID_ACTION_PREFIXES = {
-        "bedrock", "cloudtrail", "cognito-identity", "cognito-idp", "sts", "logs",
-        "cloudwatch", "s3", "s3express", "s3-object-lambda", "s3outposts",
-        "dynamodb", "lambda", "iam", "ssm",
-        "firehose", "glue", "athena", "kms", "codebuild", "ec2",
-        "ecs", "ecr", "elasticloadbalancing", "route53", "acm",
-        "secretsmanager", "cloudformation", "events", "sns", "sqs",
-        "tag", "pricing", "oam", "lakeformation", "execute-api",
-        "application-autoscaling", "ce", "cur", "es", "aoss",
+        "bedrock",
+        "bedrock-agentcore",
+        "cloudtrail",
+        "cognito-identity",
+        "cognito-idp",
+        "sts",
+        "logs",
+        "cloudwatch",
+        "s3",
+        "s3express",
+        "s3-object-lambda",
+        "s3outposts",
+        "dynamodb",
+        "lambda",
+        "iam",
+        "ssm",
+        "firehose",
+        "glue",
+        "athena",
+        "kms",
+        "codebuild",
+        "ec2",
+        "ecs",
+        "ecr",
+        "elasticloadbalancing",
+        "route53",
+        "acm",
+        "secretsmanager",
+        "cloudformation",
+        "events",
+        "sns",
+        "sqs",
+        "tag",
+        "pricing",
+        "oam",
+        "lakeformation",
+        "execute-api",
+        "application-autoscaling",
+        "ce",
+        "cur",
+        "es",
+        "aoss",
     }
 
     def _extract_actions(self, template: dict) -> list[str]:
@@ -187,9 +220,7 @@ class TestQuotaMonitoringTemplateContract:
         }
 
         for var in expected_vars:
-            assert var in env_vars, (
-                f"quota_check Lambda missing env var '{var}' that the code reads at import time"
-            )
+            assert var in env_vars, f"quota_check Lambda missing env var '{var}' that the code reads at import time"
 
     def test_quota_monitor_role_has_update_item(self):
         """QuotaMonitorRole must have dynamodb:UpdateItem for atomic counter upserts."""
@@ -255,3 +286,135 @@ class TestDeployCommandStackNames:
             assert "Resources" in content or "AWSTemplateFormatVersion" in content, (
                 f"Template {template_path.name} doesn't look like a valid CloudFormation template"
             )
+
+
+class TestCoWorkLogGroupContract:
+    """Contract: cowork-dashboard MetricFilters target a log group that the
+    monitoring stack actually creates.
+
+    Regression for the fresh-deploy failure "AWS::Logs::MetricFilter
+    (CostMetricFilter): The specified log group does not exist." A MetricFilter
+    requires its target log group to exist at deploy time; the cowork log group
+    must therefore be a managed AWS::Logs::LogGroup resource (in otel-collector),
+    not left to runtime auto-creation by the collector's exporter.
+    """
+
+    COWORK_LOG_GROUP = "/aws/claude-cowork/events"
+
+    def _log_group_names(self, template: dict) -> set:
+        names = set()
+        for resource in template.get("Resources", {}).values():
+            if resource.get("Type") == "AWS::Logs::LogGroup":
+                lg = resource.get("Properties", {}).get("LogGroupName")
+                if isinstance(lg, str):
+                    names.add(lg)
+        return names
+
+    def _metric_filter_log_groups(self, template: dict) -> set:
+        groups = set()
+        for resource in template.get("Resources", {}).values():
+            if resource.get("Type") == "AWS::Logs::MetricFilter":
+                lg = resource.get("Properties", {}).get("LogGroupName")
+                if isinstance(lg, str):
+                    groups.add(lg)
+        return groups
+
+    def test_cowork_dashboard_filters_target_cowork_log_group(self):
+        """Sanity: the cowork-dashboard filters do reference the cowork log group."""
+        dash = _load_template("cowork-dashboard.yaml")
+        assert self.COWORK_LOG_GROUP in self._metric_filter_log_groups(dash)
+
+    def test_cowork_log_group_is_created_by_monitoring_stack(self):
+        """otel-collector must create the cowork log group as a managed resource,
+        so it exists before cowork-dashboard's MetricFilters attach to it."""
+        otel = _load_template("otel-collector.yaml")
+        assert self.COWORK_LOG_GROUP in self._log_group_names(otel), (
+            f"{self.COWORK_LOG_GROUP} is referenced by cowork-dashboard MetricFilters but "
+            f"not created as an AWS::Logs::LogGroup in otel-collector.yaml — a fresh deploy "
+            f"will fail with 'The specified log group does not exist'."
+        )
+
+    def test_every_cowork_filter_group_has_a_creator(self):
+        """Every log group a cowork-dashboard MetricFilter targets must be created
+        somewhere in the monitoring stack (no assume-exists log groups)."""
+        dash_groups = self._metric_filter_log_groups(_load_template("cowork-dashboard.yaml"))
+        created = self._log_group_names(_load_template("otel-collector.yaml"))
+        missing = dash_groups - created
+        assert not missing, f"cowork-dashboard filters target log groups nobody creates: {missing}"
+
+
+class TestOtelCollectorAlbIdleTimeout:
+    """The OTEL collector ALB must raise its idle timeout above the AWS default
+    of 60s.
+
+    Claude Code reuses a pooled keep-alive connection for OTLP metric exports,
+    which only happen after activity. At the 60s default the ALB reaps the
+    connection during idle gaps between turns, so the next export reuses a dead
+    socket and logs a benign-but-noisy "socket hang up". Raising the idle
+    timeout keeps the connection alive across normal in-session pauses.
+    """
+
+    def _load_balancer(self) -> dict:
+        otel = _load_template("otel-collector.yaml")
+        lbs = [
+            body
+            for body in otel["Resources"].values()
+            if body.get("Type") == "AWS::ElasticLoadBalancingV2::LoadBalancer"
+        ]
+        assert len(lbs) == 1, f"expected exactly one ALB, found {len(lbs)}"
+        return lbs[0]
+
+    def _idle_timeout(self) -> int:
+        attrs = self._load_balancer()["Properties"].get("LoadBalancerAttributes", [])
+        for attr in attrs:
+            if attr.get("Key") == "idle_timeout.timeout_seconds":
+                return int(attr["Value"])
+        raise AssertionError("idle_timeout.timeout_seconds not set on the collector ALB")
+
+    def test_idle_timeout_is_set(self):
+        # Raises AssertionError if the attribute is missing.
+        self._idle_timeout()
+
+    def test_idle_timeout_above_default(self):
+        """Must exceed the 60s AWS default (that default is what causes the
+        socket-hang-up reaping)."""
+        assert self._idle_timeout() > 60
+
+    def test_idle_timeout_within_alb_max(self):
+        """ALB idle timeout is capped at 4000s by the service."""
+        assert 1 <= self._idle_timeout() <= 4000
+
+
+class TestArnPartitionPortability:
+    """ARNs must use ${AWS::Partition}, never a hardcoded partition.
+
+    GovCloud uses the `aws-us-gov` partition and China uses `aws-cn`. A literal
+    `arn:aws:` in a template either fails outright (e.g. an IAM trust principal
+    that can't resolve) or silently never matches in those partitions. The repo
+    already uses `${AWS::Partition}` widely; this guard stops new `arn:aws:`
+    literals from creeping back in (regression: GovCloud deploy support).
+    """
+
+    # The only legitimate literal `aws` that is NOT a partition: the AWS-owned
+    # account alias in managed-policy ARNs, e.g. `arn:${AWS::Partition}:iam::aws:policy/...`.
+    # We strip those before scanning so the check targets the partition position only.
+    @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
+    def test_no_hardcoded_arn_partition(self, template_path):
+        raw = template_path.read_text(encoding="utf-8")
+        offenders = [
+            f"{template_path.name}:{i}: {line.strip()}"
+            for i, line in enumerate(raw.splitlines(), start=1)
+            if "arn:aws:" in line
+        ]
+        assert not offenders, (
+            "Hardcoded ARN partition found — use 'arn:${AWS::Partition}:' so the "
+            "template works in GovCloud (aws-us-gov) and China (aws-cn):\n" + "\n".join(offenders)
+        )
+
+    def test_govcloud_regions_in_elb_account_map(self):
+        """ALB access logging uses an unconditional !FindInMap on the ELB account
+        map, so GovCloud regions must be present or the stack fails to deploy."""
+        template = _load_template("landing-page-distribution.yaml")
+        elb_map = template.get("Mappings", {}).get("ELBServiceAccounts", {})
+        for region in ("us-gov-west-1", "us-gov-east-1"):
+            assert region in elb_map, f"ELBServiceAccounts mapping missing GovCloud region {region}"

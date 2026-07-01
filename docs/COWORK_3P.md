@@ -1,0 +1,1 @@
+../assets/docs/COWORK_3P.md

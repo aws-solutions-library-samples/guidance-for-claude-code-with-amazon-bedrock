@@ -23,7 +23,12 @@ Parameters:
   HostedZoneId:
     Type: String
     Default: ''
-    Description: Route53 hosted zone ID for custom domain (required if CustomDomainName is provided)
+    Description: Route53 hosted zone ID for custom domain - required for automatic ACM certificate creation and DNS record. Not needed when using CertificateArn with external DNS (e.g., Cloudflare).
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ARN of an existing ACM certificate for HTTPS. Use this when DNS is managed externally (e.g., Cloudflare) and you cannot use Route53 for automatic certificate validation. When provided, HostedZoneId is not required.
 
   OidcIssuerUrl:
     Type: String
@@ -46,12 +51,54 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable dual-export (OTLP + EMF) for analytics pipeline. When false, only OTLP export is used.
 
+  CoWorkServiceToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Optional static token for CoWork (Claude Desktop) telemetry.
+      When set, a listener rule allows requests with header
+      X-Cowork-Token matching this value to bypass JWT validation.
+      CoWork cannot perform OIDC auth (no browser/helper), so this
+      provides an alternative auth path for its OTLP events.
+
+  ALBScheme:
+    Type: String
+    Default: 'internet-facing'
+    AllowedValues:
+      - 'internet-facing'
+      - 'internal'
+    Description: >-
+      Load balancer scheme. Use 'internal' for private network deployments
+      where users connect via VPN, Direct Connect, or internal office networks.
+      Default: internet-facing (backwards compatible).
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasExternalCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+  CreateAcmCertificate: !And
+    - !Condition HasCustomDomain
+    - !Condition HasHostedZone
+    - !Not [!Condition HasExternalCertificate]
+  CreateDnsRecord: !And
+    - !Condition HasCustomDomain
+    - !Condition HasHostedZone
+  EnableHttps: !And
+    - !Condition HasCustomDomain
+    - !Or
+      - !Condition HasHostedZone
+      - !Condition HasExternalCertificate
   HasJwtAuth: !Not [!Equals [!Ref OidcIssuerUrl, '']]
   HasOidcClientId: !Not [!Equals [!Ref OidcClientId, '']]
+  HasCoWorkToken: !Not [!Equals [!Ref CoWorkServiceToken, '']]
+  HasCoWorkAuthBypass: !And
+    - !Condition HasCustomDomain
+    - !Condition HasJwtAuth
+    - !Condition HasCoWorkToken
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
+  IsInternalALB: !Equals [!Ref ALBScheme, 'internal']
 
 # Rules section removed - validation handled by deployment script
 
@@ -90,6 +137,24 @@ Resources:
         - Key: Stack
           Value: !Ref AWS::StackName
 
+  # CoWork telemetry log group. The collector's awscloudwatchlogs/cowork exporter
+  # writes here, and the cowork-dashboard stack attaches MetricFilters to it. A
+  # MetricFilter requires its target log group to already exist at deploy time,
+  # so this group must be a managed resource (not left to runtime auto-creation by
+  # the exporter) — otherwise the cowork-dashboard deploy fails on a fresh stack
+  # with "The specified log group does not exist". RetentionInDays matches the
+  # exporter's log_retention (30).
+  CoWorkEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/claude-cowork/events
+      RetentionInDays: 30
+      Tags:
+        - Key: Purpose
+          Value: Claude CoWork Telemetry
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
   # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -100,13 +165,45 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: HTTPS access from anywhere
+          CidrIp: !If [IsInternalALB, '10.0.0.0/8', '0.0.0.0/0']
+          Description: !If [IsInternalALB, 'HTTPS from private networks (10.x.x.x)', 'HTTPS access from anywhere']
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: '172.16.0.0/12'
+            Description: 'HTTPS from private networks (172.16.x.x)'
+          - !Ref AWS::NoValue
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: '192.168.0.0/16'
+            Description: 'HTTPS from private networks (192.168.x.x)'
+          - !Ref AWS::NoValue
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP access (redirects to HTTPS)
+          CidrIp: !If [IsInternalALB, '10.0.0.0/8', '0.0.0.0/0']
+          Description: !If [IsInternalALB, 'HTTP from private networks (10.x.x.x)', 'HTTP access (redirects to HTTPS)']
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: '172.16.0.0/12'
+            Description: 'HTTP from private networks (172.16.x.x)'
+          - !Ref AWS::NoValue
+        - !If
+          - IsInternalALB
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: '192.168.0.0/16'
+            Description: 'HTTP from private networks (192.168.x.x)'
+          - !Ref AWS::NoValue
       Tags:
         - Key: Name
           Value: otel-collector-alb-sg
@@ -126,10 +223,10 @@ Resources:
         - Key: Name
           Value: otel-collector-task-sg
 
-  # ACM Certificate (created automatically when domain is provided)
+  # ACM Certificate (created automatically when using Route53 for DNS validation)
   Certificate:
     Type: AWS::CertificateManager::Certificate
-    Condition: HasCustomDomain
+    Condition: CreateAcmCertificate
     Properties:
       DomainName: !Ref CustomDomainName
       DomainValidationOptions:
@@ -143,8 +240,7 @@ Resources:
   # Route53 Record for custom domain
   DNSRecord:
     Type: AWS::Route53::RecordSet
-    Condition: HasCustomDomain
-    DependsOn: Certificate
+    Condition: CreateDnsRecord
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref CustomDomainName
@@ -158,13 +254,20 @@ Resources:
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: !If
-        - HasCustomDomain
-        - otel-collector-https-alb
-        - otel-collector-alb
       Type: application
       IpAddressType: ipv4
-      Scheme: internet-facing
+      Scheme: !Ref ALBScheme
+      LoadBalancerAttributes:
+        # Raise the idle timeout above the AWS default of 60s. Claude Code
+        # reuses a pooled keep-alive connection for OTLP metric exports, which
+        # only happen after activity (e.g. a model response). At 60s the ALB
+        # reaps the connection during idle gaps between turns, so the next
+        # export reuses a dead socket and logs a benign but noisy "socket hang
+        # up". 300s covers typical in-session pauses. (Reduces, but cannot fully
+        # eliminate — arbitrarily long idle gaps still reap the connection; the
+        # root cause is client-side connection reuse.)
+        - Key: idle_timeout.timeout_seconds
+          Value: '300'
       SecurityGroups:
         - !Ref ALBSecurityGroup
       Subnets: !Ref SubnetIds
@@ -178,9 +281,18 @@ Resources:
   HTTPTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      # Name omitted intentionally — CloudFormation auto-generates a unique name
-      # that respects the 32-char limit. Previously used !Sub '${AWS::StackName}-tg'
-      # which failed when stack names exceeded 29 characters (issue #86).
+      # Name is derived from the ALB's unique hex ID (last segment of its ARN).
+      # When the LoadBalancer is replaced its unique ID changes, so this name
+      # changes too — CloudFormation replaces the target group alongside the LB.
+      # Without this coupling, CF tries to attach the old TG to the new LB while
+      # the old LB still owns it, producing:
+      #   "target group cannot be associated with more than one load balancer"
+      # Using the ALB ID keeps the name within the 32-char limit: "tg-" (3) +
+      # 16-char hex ID = 19 chars max. (issue #86 used !Sub '${AWS::StackName}-tg'
+      # which exceeded the limit for long stack names; this approach avoids that.)
+      Name: !Sub
+        - 'tg-${AlbId}'
+        - AlbId: !Select [3, !Split ['/', !Ref LoadBalancer]]
       Port: 4318
       Protocol: HTTP
       TargetType: ip
@@ -196,8 +308,6 @@ Resources:
         HttpCode: '200,404'
 
   # Listeners
-  # IMPORTANT: Enabling HTTPS on an existing HTTP-only stack requires deletion and recreation
-  # due to CloudFormation's inability to atomically switch target groups between listeners
   HTTPListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -205,31 +315,21 @@ Resources:
       Port: 80
       Protocol: HTTP
       DefaultActions:
-        - Type: !If
-            - HasCustomDomain
-            - redirect
-            - forward
-          RedirectConfig: !If
-            - HasCustomDomain
-            - Protocol: HTTPS
-              Port: '443'
-              StatusCode: HTTP_301
-            - !Ref AWS::NoValue
-          TargetGroupArn: !If
-            - HasCustomDomain
-            - !Ref AWS::NoValue
-            - !Ref HTTPTargetGroup
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
 
   HTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: HasCustomDomain
-    DependsOn: HTTPListener  # Ensure HTTP listener updates first to release target group
+    Condition: EnableHttps
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 443
       Protocol: HTTPS
       Certificates:
-        - CertificateArn: !Ref Certificate
+        - CertificateArn: !If
+            - HasExternalCertificate
+            - !Ref CertificateArn
+            - !Ref Certificate
       DefaultActions: !If
         - HasJwtAuth
         - - Type: jwt-validation
@@ -251,6 +351,25 @@ Resources:
             TargetGroupArn: !Ref HTTPTargetGroup
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
 
+  # CoWork auth bypass: allows CoWork traffic (which cannot do OIDC) to reach
+  # the collector by presenting a static service token in a custom header.
+  # Only created when CoWorkServiceToken parameter is set AND JWT auth is enabled.
+  CoWorkListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasCoWorkAuthBypass
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Cowork-Token
+            Values:
+              - !Ref CoWorkServiceToken
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPTargetGroup
+
   # IAM Roles
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -263,7 +382,7 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
       Policies:
         - PolicyName: CloudWatchLogs
           PolicyDocument:
@@ -314,9 +433,12 @@ Resources:
                     - logs:CreateLogStream
                     - logs:PutLogEvents
                     - logs:CreateLogGroup
+                    - logs:PutRetentionPolicy
                   Resource:
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics'
                     - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-code/metrics:*'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events'
+                    - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/claude-cowork/events:*'
                 - !Ref 'AWS::NoValue'
         # We keep the CloudWatch permissions but remove the AssumeRole permission
         # that was related to the overly permissive trust policy
@@ -387,6 +509,32 @@ Resources:
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
+                  # Session tag dimensions (from x-tag-* headers emitted by otel-helper)
+                  # Add entries here for tag keys your organization uses.
+                  - key: tag.project
+                    from_context: metadata.x-tag-project
+                    action: upsert
+                  - key: tag.costcenter
+                    from_context: metadata.x-tag-costcenter
+                    action: upsert
+                  - key: tag.billingcode
+                    from_context: metadata.x-tag-billingcode
+                    action: upsert
+                  - key: tag.environment
+                    from_context: metadata.x-tag-environment
+                    action: upsert
+                  - key: tag.team
+                    from_context: metadata.x-tag-team
+                    action: upsert
+                  - key: tag.department
+                    from_context: metadata.x-tag-department
+                    action: upsert
+                  - key: tag.application
+                    from_context: metadata.x-tag-application
+                    action: upsert
+
+
+
                   - key: organization
                     from_context: metadata.x-organization
                     action: upsert
@@ -399,6 +547,47 @@ Resources:
                   - key: manager
                     from_context: metadata.x-manager
                     action: upsert
+              # Logs-specific processor: extracts the same attribution from HTTP
+              # headers as the metrics 'attributes' processor, PLUS creates
+              # underscore-renamed copies of dotted keys (user.id → user_id,
+              # team.id → team_id) so CloudWatch MetricFilter Dimensions
+              # can reference them (MetricFilter JSON patterns cannot handle dots
+              # in key names).
+              attributes/logs:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  # Underscore-renamed copies for CloudWatch MetricFilter compat
+                  - key: user_id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user_email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: team_id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  # Note: session.id is native in CoWork events (not from headers).
+                  # Use Logs Insights backtick escaping for session queries.
               resource:
                 attributes:
                   - key: aws.account_id
@@ -435,6 +624,8 @@ Resources:
                     metric_name_selectors: [".*"]
                   - dimensions: [[model, OTelLib]]
                     metric_name_selectors: [".*"]
+                  - dimensions: [[user.email, OTelLib]]
+                    metric_name_selectors: ["claude_code.token.usage", "claude_code.cost.usage"]
                   - dimensions: [[cost_center, OTelLib]]
                     metric_name_selectors: ["claude_code.cost.usage", "claude_code.token.usage"]
                   - dimensions: [[type, OTelLib]]
@@ -445,6 +636,12 @@ Resources:
                     metric_name_selectors: ["claude_code.code_edit_tool.*"]
                   - dimensions: [[decision, OTelLib]]
                     metric_name_selectors: ["claude_code.code_edit_tool.decision"]
+
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
 
             service:
               extensions: [health_check, sigv4auth]
@@ -459,6 +656,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp, awsemf]
+                logs:
+                  receivers: [otlp]
+                  processors: [attributes/logs, resource]
+                  exporters: [awscloudwatchlogs/cowork]
         - !Sub |
             extensions:
               health_check:
@@ -501,6 +702,30 @@ Resources:
                   - key: cost_center
                     from_context: metadata.x-cost-center
                     action: upsert
+                  - key: tag.project
+                    from_context: metadata.x-tag-project
+                    action: upsert
+                  - key: tag.costcenter
+                    from_context: metadata.x-tag-costcenter
+                    action: upsert
+                  - key: tag.billingcode
+                    from_context: metadata.x-tag-billingcode
+                    action: upsert
+                  - key: tag.environment
+                    from_context: metadata.x-tag-environment
+                    action: upsert
+                  - key: tag.team
+                    from_context: metadata.x-tag-team
+                    action: upsert
+                  - key: tag.department
+                    from_context: metadata.x-tag-department
+                    action: upsert
+                  - key: tag.application
+                    from_context: metadata.x-tag-application
+                    action: upsert
+
+
+
                   - key: organization
                     from_context: metadata.x-organization
                     action: upsert
@@ -513,6 +738,40 @@ Resources:
                   - key: manager
                     from_context: metadata.x-manager
                     action: upsert
+              attributes/logs:
+                actions:
+                  - key: user.email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: user.id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user.name
+                    from_context: metadata.x-user-name
+                    action: upsert
+                  - key: department
+                    from_context: metadata.x-department
+                    action: upsert
+                  - key: team.id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  - key: cost_center
+                    from_context: metadata.x-cost-center
+                    action: upsert
+                  - key: organization
+                    from_context: metadata.x-organization
+                    action: upsert
+                  - key: user_id
+                    from_context: metadata.x-user-id
+                    action: upsert
+                  - key: user_email
+                    from_context: metadata.x-user-email
+                    action: upsert
+                  - key: team_id
+                    from_context: metadata.x-team-id
+                    action: upsert
+                  # Note: session.id is native in CoWork events (not from headers).
+                  # Use Logs Insights backtick escaping for session queries.
               resource:
                 attributes:
                   - key: aws.account_id
@@ -530,6 +789,12 @@ Resources:
                 auth:
                   authenticator: sigv4auth
 
+              awscloudwatchlogs/cowork:
+                log_group_name: /aws/claude-cowork/events
+                log_stream_name: cowork-telemetry
+                region: ${AWS::Region}
+                log_retention: 30
+
             service:
               extensions: [health_check, sigv4auth]
               telemetry:
@@ -543,6 +808,10 @@ Resources:
                   receivers: [otlp]
                   processors: [attributes, resource, batch/metrics]
                   exporters: [otlphttp]
+                logs:
+                  receivers: [otlp]
+                  processors: [attributes/logs, resource]
+                  exporters: [awscloudwatchlogs/cowork]
 
   # ECS Task Definition
   TaskDefinition:
@@ -588,7 +857,7 @@ Resources:
     DependsOn:
       - HTTPListener
     Properties:
-      ServiceName: otel-collector-service
+
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
       LaunchType: FARGATE
@@ -609,12 +878,12 @@ Resources:
   # association via HTTPSListener is ready before the service registers tasks
   ECSServiceHTTPS:
     Type: AWS::ECS::Service
-    Condition: HasCustomDomain
+    Condition: EnableHttps
     DependsOn:
       - HTTPListener
       - HTTPSListener
     Properties:
-      ServiceName: otel-collector-service
+
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
       LaunchType: FARGATE
@@ -672,7 +941,7 @@ Outputs:
   CollectorEndpoint:
     Description: Endpoint for OTLP metrics
     Value: !If
-      - HasCustomDomain
+      - EnableHttps
       - !Sub 'https://${CustomDomainName}'
       - !Sub 'http://${LoadBalancer.DNSName}'
     Export:
@@ -696,7 +965,7 @@ Outputs:
   Note:
     Description: Important deployment information
     Value: !If
-      - HasCustomDomain
+      - EnableHttps
       - !Sub |
         OTEL collector is available at: https://${CustomDomainName}
         Certificate validation is automatic via Route53.

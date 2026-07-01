@@ -11,15 +11,10 @@ regress, covering:
 """
 
 import json
-import os
-import tempfile
 import time
-import unittest.mock
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # OTEL cache: empty dict {} is a valid cache hit (#441)
@@ -42,11 +37,15 @@ class TestOtelEmptyHeadersCache:
 
         cache_file = tmp_path / "test-otel-headers.json"
         future_exp = int(time.time()) + 3600  # 1 hour from now
-        cache_file.write_text(json.dumps({
-            "headers": {},
-            "token_exp": future_exp,
-            "cached_at": int(time.time()),
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "headers": {},
+                    "token_exp": future_exp,
+                    "cached_at": int(time.time()),
+                }
+            )
+        )
 
         with patch.object(mod, "get_cache_path", return_value=cache_file):
             result = mod.read_cached_headers()
@@ -65,11 +64,15 @@ class TestOtelEmptyHeadersCache:
             import otel_helper.__main__ as mod
 
         cache_file = tmp_path / "test-otel-headers.json"
-        cache_file.write_text(json.dumps({
-            "headers": None,
-            "token_exp": int(time.time()) + 3600,
-            "cached_at": int(time.time()),
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "headers": None,
+                    "token_exp": int(time.time()) + 3600,
+                    "cached_at": int(time.time()),
+                }
+            )
+        )
 
         with patch.object(mod, "get_cache_path", return_value=cache_file):
             result = mod.read_cached_headers()
@@ -87,11 +90,15 @@ class TestOtelEmptyHeadersCache:
             import otel_helper.__main__ as mod
 
         cache_file = tmp_path / "test-otel-headers.json"
-        cache_file.write_text(json.dumps({
-            "headers": {"Authorization": "Bearer token123"},
-            "cached_at": int(time.time()),
-            # No token_exp — old format
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "headers": {"Authorization": "Bearer token123"},
+                    "cached_at": int(time.time()),
+                    # No token_exp — old format
+                }
+            )
+        )
 
         with patch.object(mod, "get_cache_path", return_value=cache_file):
             result = mod.read_cached_headers()
@@ -110,11 +117,15 @@ class TestOtelEmptyHeadersCache:
 
         cache_file = tmp_path / "test-otel-headers.json"
         expired_exp = int(time.time()) + 30  # Only 30s left (within 60s buffer)
-        cache_file.write_text(json.dumps({
-            "headers": {"Authorization": "Bearer token123"},
-            "token_exp": expired_exp,
-            "cached_at": int(time.time()) - 3500,
-        }))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "headers": {"Authorization": "Bearer token123"},
+                    "token_exp": expired_exp,
+                    "cached_at": int(time.time()) - 3500,
+                }
+            )
+        )
 
         with patch.object(mod, "get_cache_path", return_value=cache_file):
             result = mod.read_cached_headers()
@@ -149,8 +160,7 @@ class TestOtelStsTimeout:
             "UserId": "AIDAEXAMPLE",
         }
 
-        with patch.object(mod, "BOTO3_AVAILABLE", True), \
-             patch("otel_helper.__main__.boto3") as mock_boto3:
+        with patch.object(mod, "BOTO3_AVAILABLE", True), patch("otel_helper.__main__.boto3") as mock_boto3:
             mock_boto3.client.return_value = mock_sts
             mod.get_aws_caller_identity()
 
@@ -176,10 +186,10 @@ class TestOtelStsTimeout:
 
         from botocore.exceptions import ConnectTimeoutError
 
-        with patch.object(mod, "BOTO3_AVAILABLE", True), \
-             patch("otel_helper.__main__.boto3") as mock_boto3:
-            mock_boto3.client.return_value.get_caller_identity.side_effect = \
-                ConnectTimeoutError(endpoint_url="https://sts.us-east-1.amazonaws.com")
+        with patch.object(mod, "BOTO3_AVAILABLE", True), patch("otel_helper.__main__.boto3") as mock_boto3:
+            mock_boto3.client.return_value.get_caller_identity.side_effect = ConnectTimeoutError(
+                endpoint_url="https://sts.us-east-1.amazonaws.com"
+            )
             result = mod.get_aws_caller_identity()
 
         assert result is None
@@ -200,8 +210,7 @@ class TestOtelStsTimeout:
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.return_value = identity
 
-        with patch.object(mod, "BOTO3_AVAILABLE", True), \
-             patch("otel_helper.__main__.boto3") as mock_boto3:
+        with patch.object(mod, "BOTO3_AVAILABLE", True), patch("otel_helper.__main__.boto3") as mock_boto3:
             mock_boto3.client.return_value = mock_sts
             result1 = mod.get_aws_caller_identity()
             result2 = mod.get_aws_caller_identity()
@@ -389,10 +398,9 @@ class TestModelAliasResolution:
 
     def test_sonnet_model_returns_sonnet_alias(self):
         """A Sonnet model ID should resolve to 'sonnet' alias."""
-        from claude_code_with_bedrock.models import get_claude_code_alias, CLAUDE_MODELS
-
         # Find any model that's in the sonnet tier
-        from claude_code_with_bedrock.models import MODEL_TIER_PREFERENCES
+        from claude_code_with_bedrock.models import CLAUDE_MODELS, MODEL_TIER_PREFERENCES, get_claude_code_alias
+
         sonnet_keys = MODEL_TIER_PREFERENCES.get("sonnet", [])
         assert len(sonnet_keys) > 0, "No sonnet models defined"
 
@@ -409,8 +417,7 @@ class TestModelAliasResolution:
 
     def test_opus_model_returns_opus_alias(self):
         """An Opus model ID should resolve to 'opus' alias."""
-        from claude_code_with_bedrock.models import get_claude_code_alias, CLAUDE_MODELS
-        from claude_code_with_bedrock.models import MODEL_TIER_PREFERENCES
+        from claude_code_with_bedrock.models import CLAUDE_MODELS, MODEL_TIER_PREFERENCES, get_claude_code_alias
 
         opus_keys = MODEL_TIER_PREFERENCES.get("opus", [])
         assert len(opus_keys) > 0, "No opus models defined"
@@ -427,8 +434,7 @@ class TestModelAliasResolution:
 
     def test_haiku_model_returns_haiku_alias(self):
         """A Haiku model ID should resolve to 'haiku' alias."""
-        from claude_code_with_bedrock.models import get_claude_code_alias, CLAUDE_MODELS
-        from claude_code_with_bedrock.models import MODEL_TIER_PREFERENCES
+        from claude_code_with_bedrock.models import CLAUDE_MODELS, MODEL_TIER_PREFERENCES, get_claude_code_alias
 
         haiku_keys = MODEL_TIER_PREFERENCES.get("haiku", [])
         assert len(haiku_keys) > 0, "No haiku models defined"
@@ -453,7 +459,7 @@ class TestModelAliasResolution:
 
     def test_resolve_model_for_tier_with_alias_prefix(self):
         """resolve_model_for_tier should accept alias prefixes like 'europe' → 'eu'."""
-        from claude_code_with_bedrock.models import resolve_model_for_tier, PROFILE_KEY_ALIASES
+        from claude_code_with_bedrock.models import PROFILE_KEY_ALIASES, resolve_model_for_tier
 
         # Only test if aliases are defined
         if not PROFILE_KEY_ALIASES:
@@ -514,6 +520,7 @@ class TestOAuthPortRace:
                     mock_socket_cls.return_value = mock_socket
                     # First call: port in use (EADDRINUSE), second: port free
                     import errno
+
                     mock_socket.bind.side_effect = [
                         OSError(errno.EADDRINUSE, "Address already in use"),
                         None,  # Port is free
@@ -526,9 +533,9 @@ class TestOAuthPortRace:
 
     def test_wait_for_auth_returns_none_on_timeout(self):
         """If port never frees up within timeout, return None."""
+        import errno
         import importlib
         import sys
-        import errno
 
         mock_keyring = MagicMock()
         mock_keyring.get_password = MagicMock(return_value=None)

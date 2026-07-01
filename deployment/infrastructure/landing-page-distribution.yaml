@@ -31,6 +31,11 @@ Mappings:
     ap-south-1:     { AccountId: '718504428378' }
     me-south-1:     { AccountId: '076674570225' }
     sa-east-1:      { AccountId: '507241528517' }
+    # GovCloud uses the regional ELB account-ID model (not the service principal).
+    # Without these keys the unconditional !FindInMap below fails to resolve and
+    # the whole stack errors out in GovCloud.
+    us-gov-west-1:  { AccountId: '048591011584' }
+    us-gov-east-1:  { AccountId: '190560391635' }
 
 Parameters:
   IdentityPoolName:
@@ -51,7 +56,7 @@ Parameters:
 
   IdPProvider:
     Type: String
-    AllowedValues: [okta, azure, auth0, cognito]
+    AllowedValues: [okta, azure, auth0, cognito, generic]
     Description: Identity provider type
 
   # Okta parameters
@@ -123,6 +128,39 @@ Parameters:
     Default: ''
     Description: Secrets Manager ARN for Cognito client secret
 
+  # Generic OIDC parameters (PingFederate, Keycloak, ForgeRock, etc.)
+  # ALB authenticate-oidc requires each endpoint explicitly because they cannot be
+  # derived from a single domain the way the other providers' endpoints can.
+  GenericIssuer:
+    Type: String
+    Default: ''
+    Description: Generic OIDC issuer URL (e.g., https://auth.example.com)
+
+  GenericAuthorizationEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC authorization endpoint (full URL)
+
+  GenericTokenEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC token endpoint (full URL)
+
+  GenericUserInfoEndpoint:
+    Type: String
+    Default: ''
+    Description: Generic OIDC userinfo endpoint (full URL)
+
+  GenericClientId:
+    Type: String
+    Default: ''
+    Description: Generic OIDC web application client ID
+
+  GenericClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for generic OIDC client secret
+
   # REQUIRED: Custom domain for HTTPS/OIDC authentication
   CustomDomainName:
     Type: String
@@ -145,6 +183,8 @@ Conditions:
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
   IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
   IsCognito: !Equals [!Ref IdPProvider, 'cognito']
+  # Note: 'generic' is the terminal fallback in the AuthenticateOidcConfig !If chains
+  # (the else branch after Okta/Azure/Auth0/Cognito), so no named condition is needed.
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
 
 Resources:
@@ -245,7 +285,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
       Policies:
         - PolicyName: S3ReadAccess
           PolicyDocument:
@@ -858,7 +898,7 @@ Resources:
       FunctionName: !Ref LandingPageFunction
       Action: lambda:InvokeFunction
       Principal: elasticloadbalancing.amazonaws.com
-      SourceArn: !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
 
   # ACM Certificate (required for HTTPS/OIDC)
   Certificate:
@@ -897,7 +937,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}'
-                  - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+                    - !Ref GenericIssuer
             AuthorizationEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/authorize'
@@ -907,7 +950,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/authorize'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+                    - !Ref GenericAuthorizationEndpoint
             TokenEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/token'
@@ -917,7 +963,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/oauth/token'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+                    - !Ref GenericTokenEndpoint
             UserInfoEndpoint: !If
               - IsOkta
               - !Sub 'https://${OktaDomain}/oauth2/v1/userinfo'
@@ -927,7 +976,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub 'https://${Auth0Domain}/userinfo'
-                  - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+                  - !If
+                    - IsCognito
+                    - !Sub 'https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+                    - !Ref GenericUserInfoEndpoint
             ClientId: !If
               - IsOkta
               - !Ref OktaClientId
@@ -937,7 +989,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Ref Auth0ClientId
-                  - !Ref CognitoClientId
+                  - !If
+                    - IsCognito
+                    - !Ref CognitoClientId
+                    - !Ref GenericClientId
             ClientSecret: !If
               - IsOkta
               - !Sub '{{resolve:secretsmanager:${OktaClientSecretArn}:SecretString}}'
@@ -947,7 +1002,10 @@ Resources:
                 - !If
                   - IsAuth0
                   - !Sub '{{resolve:secretsmanager:${Auth0ClientSecretArn}:SecretString}}'
-                  - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+                  - !If
+                    - IsCognito
+                    - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
+                    - !Sub '{{resolve:secretsmanager:${GenericClientSecretArn}:SecretString}}'
             SessionTimeout: 43200  # 12 hours
             Scope: 'openid email profile'
             OnUnauthenticatedRequest: authenticate
@@ -956,18 +1014,29 @@ Resources:
           Order: 2
           TargetGroupArn: !Ref LambdaTargetGroup
 
-  # Route53 A Record (if custom domain with Route53)
-  DomainARecord:
+  # Route53 record for the custom domain (if custom domain with Route53).
+  # Use a CNAME (not an A alias) so the host resolves through the custom
+  # domain name rather than the ALB's IP addresses. With an A alias, OIDC
+  # callbacks can be sent to/from the resolved IP instead of the configured
+  # custom domain, producing a "Callback URL mismatch" error at the IdP.
+  #
+  # UPGRADE NOTE: earlier versions created an A-alias record named DomainARecord.
+  # Renaming the logical ID here makes CloudFormation create this CNAME before
+  # deleting the old A record, and Route53 rejects a CNAME that coexists with a
+  # same-name A record ("conflicting RRSet"). Existing custom-domain deployments
+  # must therefore delete the old Route53 A record for CustomDomainName (or
+  # delete/recreate the landing-page stack) before applying this update. Fresh
+  # deployments are unaffected. See the PR / docs for the migration steps.
+  CustomDomainRecord:
     Type: AWS::Route53::RecordSet
     Condition: HasRoute53Zone
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref CustomDomainName
-      Type: A
-      AliasTarget:
-        HostedZoneId: !GetAtt DistributionALB.CanonicalHostedZoneID
-        DNSName: !GetAtt DistributionALB.DNSName
-        EvaluateTargetHealth: false
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt DistributionALB.DNSName
 
   # Lambda function to update Cognito User Pool Client callback URLs
   CognitoCallbackUpdaterRole:
@@ -982,7 +1051,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: UpdateCognitoClient
           PolicyDocument:
@@ -993,7 +1062,7 @@ Resources:
                   - cognito-idp:UpdateUserPoolClient
                   - cognito-idp:DescribeUserPoolClient
                 Resource:
-                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+                  - !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
 
   CognitoCallbackUpdaterFunction:
     Type: AWS::Lambda::Function

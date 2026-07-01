@@ -5,7 +5,6 @@ based on provider type and okta_auth_server configuration.
 """
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,8 +40,10 @@ class TestOktaAuthServerRouting:
         # Directly patch _load_config to return our config
         from credential_provider.__main__ import MultiProviderAuth
 
-        with patch.object(MultiProviderAuth, "_load_config", return_value=config_data), \
-             patch.object(MultiProviderAuth, "_init_credential_storage"):
+        with (
+            patch.object(MultiProviderAuth, "_load_config", return_value=config_data),
+            patch.object(MultiProviderAuth, "_init_credential_storage"),
+        ):
             auth = MultiProviderAuth(profile=profile_name)
 
         return auth
@@ -123,8 +124,10 @@ class TestProviderTypeRouting:
 
         from credential_provider.__main__ import MultiProviderAuth
 
-        with patch.object(MultiProviderAuth, "_load_config", return_value=config_data), \
-             patch.object(MultiProviderAuth, "_init_credential_storage"):
+        with (
+            patch.object(MultiProviderAuth, "_load_config", return_value=config_data),
+            patch.object(MultiProviderAuth, "_init_credential_storage"),
+        ):
             auth = MultiProviderAuth(profile=profile_name)
 
         return auth
@@ -190,8 +193,10 @@ class TestProviderTypeRouting:
 
         from credential_provider.__main__ import MultiProviderAuth
 
-        with patch.object(MultiProviderAuth, "_load_config", return_value=config_data), \
-             patch.object(MultiProviderAuth, "_init_credential_storage"):
+        with (
+            patch.object(MultiProviderAuth, "_load_config", return_value=config_data),
+            patch.object(MultiProviderAuth, "_init_credential_storage"),
+        ):
             with pytest.raises(ValueError, match="(Unknown provider type|Unable to auto-detect)"):
                 MultiProviderAuth(profile="TestProfile")
 

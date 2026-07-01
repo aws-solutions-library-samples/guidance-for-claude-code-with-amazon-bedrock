@@ -10,8 +10,6 @@ from botocore.exceptions import ClientError
 
 from claude_code_with_bedrock.quota_policies import (
     PolicyAlreadyExistsError,
-    PolicyNotFoundError,
-    QuotaPolicyError,
     QuotaPolicyManager,
     _format_tokens,
     _parse_tokens,
@@ -108,7 +106,7 @@ class TestQuotaPolicyManagerCreatePolicy:
 
     @patch("claude_code_with_bedrock.quota_policies.boto3")
     def test_create_policy_success(self, mock_boto3):
-        from claude_code_with_bedrock.models import EnforcementMode, PolicyType
+        from claude_code_with_bedrock.models import PolicyType
 
         mock_table = MagicMock()
         mock_boto3.resource.return_value.Table.return_value = mock_table
@@ -125,6 +123,37 @@ class TestQuotaPolicyManagerCreatePolicy:
         assert policy.warning_threshold_80 == 240_000_000
         assert policy.warning_threshold_90 == 270_000_000
         mock_table.put_item.assert_called_once()
+
+    @patch("claude_code_with_bedrock.quota_policies.boto3")
+    def test_create_policy_persists_daily_enforcement_mode(self, mock_boto3):
+        """A daily-enforcement=block policy must persist daily_enforcement_mode so the
+        check Lambda can hard-block a daily breach independently of the monthly mode."""
+        from claude_code_with_bedrock.models import EnforcementMode, PolicyType
+
+        mock_table = MagicMock()
+        mock_boto3.resource.return_value.Table.return_value = mock_table
+
+        manager = QuotaPolicyManager("test-table", region="us-east-1")
+        policy = manager.create_policy(
+            policy_type=PolicyType.USER,
+            identifier="alice@example.com",
+            monthly_token_limit=300_000_000,
+            daily_token_limit=1_000,
+            enforcement_mode=EnforcementMode.ALERT,
+            daily_enforcement_mode=EnforcementMode.BLOCK,
+        )
+
+        assert policy.daily_enforcement_mode == EnforcementMode.BLOCK
+        # Default when unspecified stays alert (backward compatible).
+        default_policy = manager.create_policy(
+            policy_type=PolicyType.DEFAULT,
+            identifier="default",
+            monthly_token_limit=225_000_000,
+        )
+        assert default_policy.daily_enforcement_mode == EnforcementMode.ALERT
+        # And it is written to the DynamoDB item.
+        written_item = mock_table.put_item.call_args_list[0].kwargs["Item"]
+        assert written_item["daily_enforcement_mode"] == "block"
 
     @patch("claude_code_with_bedrock.quota_policies.boto3")
     def test_create_policy_already_exists(self, mock_boto3):

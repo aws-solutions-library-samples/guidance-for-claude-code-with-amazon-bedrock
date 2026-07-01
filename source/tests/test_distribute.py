@@ -5,8 +5,7 @@
 
 import hashlib
 import zipfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -44,6 +43,9 @@ def package_dir(tmp_path):
         "otel-helper-windows.exe",
     ]:
         (pkg / platform).write_bytes(b"\x00" * 100)
+    # Windows otel-helper launcher + AV-resilient fallback (required by install.bat)
+    (pkg / "otel-helper.ps1").write_text("# otel-helper.ps1")
+    (pkg / "otel-helper.cmd").write_text("@echo off\nREM otel-helper.cmd")
     return pkg
 
 
@@ -190,6 +192,14 @@ class TestCreateArchive:
             assert "claude-code-package/install.sh" in names
             assert "claude-code-package/credential-process-macos-arm64" in names
 
+    def test_zip_contains_windows_otel_helper_scripts(self, cmd, package_dir):
+        """otel-helper.cmd/.ps1 are required by install.bat and must ship in the zip."""
+        archive = cmd._create_archive(package_dir)
+        with zipfile.ZipFile(archive, "r") as zf:
+            names = zf.namelist()
+            assert "claude-code-package/otel-helper.ps1" in names
+            assert "claude-code-package/otel-helper.cmd" in names
+
     def test_zip_includes_settings_dir(self, cmd, package_dir):
         settings = package_dir / "claude-settings"
         settings.mkdir()
@@ -228,7 +238,7 @@ class TestCreatePerOsArchives:
 
     def test_each_archive_contains_platform_binary(self, cmd, package_dir):
         archives = cmd._create_per_os_archives(package_dir)
-        for platform, label, archive_path in archives:
+        for _platform, _label, archive_path in archives:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 names = zf.namelist()
                 # Should have config.json in every platform archive
@@ -244,6 +254,9 @@ class TestCreatePerOsArchives:
             names = zf.namelist()
             assert "claude-code-package/install.bat" in names
             assert "claude-code-package/ccwb-install.ps1" in names
+            # AV-resilient otel-helper launcher + fallback (required by install.bat)
+            assert "claude-code-package/otel-helper.ps1" in names
+            assert "claude-code-package/otel-helper.cmd" in names
 
     def test_skips_platform_without_binary(self, cmd, tmp_path):
         """Only Linux x64 binary present → only 1 archive."""
@@ -299,4 +312,8 @@ class TestGenerateRestrictedUrl:
 
         cmd._generate_restricted_url(mock_s3, "b", "k", "1.1.1.1", 24)
         call_args = mock_s3.generate_presigned_url.call_args
-        assert call_args[1]["ExpiresIn"] == 24 * 3600 if "ExpiresIn" in call_args[1] else call_args[0][1]["ExpiresIn"] == 24 * 3600
+        assert (
+            call_args[1]["ExpiresIn"] == 24 * 3600
+            if "ExpiresIn" in call_args[1]
+            else call_args[0][1]["ExpiresIn"] == 24 * 3600
+        )

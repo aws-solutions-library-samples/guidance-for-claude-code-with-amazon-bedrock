@@ -19,3 +19,6 @@ The `bedrock-runtime:` prefix doesn't exist in IAM. It's been a persistent sourc
 
 ## Related Issues
 #375, #63
+
+## See Also
+.claude/rules/aws-identifiers.md

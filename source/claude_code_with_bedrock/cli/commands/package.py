@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -19,15 +20,48 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
+from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
+from claude_code_with_bedrock.cli.validators import validate_profile_for_packaging
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
 )
 
+
+def _is_interactive() -> bool:
+    """Return True when stdin is a TTY and prompts can be displayed."""
+    return sys.stdin.isatty()
+
+
 # Runtime packages bundled into the credential provider binary.
 _CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "cryptography"]
 _OTEL_HELPER_RUNTIME_DEPS: list[str] = []  # otel_helper uses only stdlib
 _PYINSTALLER_PIN = "pyinstaller==6.*"
+
+# Single source of truth for Go cross-compilation targets, shared by the auth-binary
+# build (_build_go_binaries) and the collector sidecar build (_build_otelcol). Keeping
+# this in one place prevents the two paths from drifting (e.g. one learning about a new
+# arch the other doesn't). Maps a package platform key → (GOOS, GOARCH).
+_GO_PLATFORM_MAP: dict[str, tuple[str, str]] = {
+    "macos-arm64": ("darwin", "arm64"),
+    "macos-intel": ("darwin", "amd64"),
+    "macos": ("darwin", "arm64"),  # generic macos defaults to arm64
+    "linux-x64": ("linux", "amd64"),
+    "linux-arm64": ("linux", "arm64"),
+    "linux": ("linux", "amd64"),  # generic linux defaults to amd64
+    "windows": ("windows", "amd64"),
+}
+
+
+def _go_ldflags(goos: str) -> str:
+    """Return the ldflags for a Go build targeting goos.
+
+    Windows binaries must NOT be stripped: Defender cloud ML (Wacatac.B!ml) flags
+    stripped Go binaries in subprocess/non-interactive contexts. Everywhere else we
+    strip (-s -w) for size. This rule applies identically to credential-process,
+    otel-helper, and the otelcol sidecar — hence one shared helper.
+    """
+    return "" if goos == "windows" else "-s -w"
 
 
 def _find_universal2_python() -> Path | None:
@@ -77,6 +111,7 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
             return venv_dir
         # Wrong arch — rebuild
         import shutil
+
         console.print(f"[yellow]Rebuilding {arch} build venv (wrong architecture detected)[/yellow]")
         shutil.rmtree(venv_dir, ignore_errors=True)
 
@@ -85,7 +120,8 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
 
     create = subprocess.run(  # nosec B603 B607
         ["/usr/bin/arch", f"-{arch}", str(universal2_python), "-m", "venv", str(venv_dir)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if create.returncode != 0:
         raise RuntimeError(f"Failed to create {arch} build venv: {create.stderr}")
@@ -93,7 +129,8 @@ def _ensure_cross_arch_venv(arch: str, universal2_python: Path, runtime_packages
     pip = venv_dir / "bin" / "pip"
     install = subprocess.run(  # nosec B603 B607
         ["/usr/bin/arch", f"-{arch}", str(pip), "install", "--quiet", _PYINSTALLER_PIN, *runtime_packages],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if install.returncode != 0:
         raise RuntimeError(f"Failed to install deps into {arch} build venv: {install.stderr or install.stdout}")
@@ -141,7 +178,7 @@ class PackageCommand(Command):
     Build distribution packages for your organization
 
     package
-        {--target-platform=macos : Target platform (macos, linux, all)}
+        {--target-platform=all : Target platform(s), comma-separated (macos-arm64, linux-x64, windows, all)}
     """
 
     name = "package"
@@ -149,7 +186,10 @@ class PackageCommand(Command):
 
     options = [
         option(
-            "target-platform", description="Target platform for binary (macos, linux, all)", flag=False, default="all"
+            "target-platform",
+            description="Target platform(s): macos-arm64, macos-intel, linux-x64, linux-arm64, windows, all. Comma-separated for multiple.",
+            flag=False,
+            default="all",
         ),
         option(
             "profile", description="Configuration profile to use (defaults to active profile)", flag=False, default=None
@@ -163,8 +203,26 @@ class PackageCommand(Command):
         option("build-local", description="Build binaries locally instead of downloading pre-built", flag=True),
         option("no-cache", description="Force re-download of pre-built binaries", flag=True),
         option("build-verbose", description="Enable verbose logging for build processes", flag=True),
-        option("regenerate-installers", description="Regenerate installer scripts using existing binaries from latest dist", flag=True),
-        option("go", description="Build binaries using Go cross-compilation (native binaries, no AV false positives)", flag=True),
+        option(
+            "regenerate-installers",
+            description="Regenerate installer scripts using existing binaries from latest dist",
+            flag=True,
+        ),
+        option(
+            "go",
+            description="Build using Go (default; kept for backwards compatibility)",
+            flag=True,
+        ),
+        option(
+            "legacy",
+            description="Use legacy PyInstaller/Nuitka build instead of Go (deprecated)",
+            flag=True,
+        ),
+        option(
+            "skip-validation",
+            description="Skip configuration validation checks",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -194,16 +252,66 @@ class PackageCommand(Command):
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
 
+        # Run configuration validation (unless skipped)
+        if not self.option("skip-validation"):
+            validation_errors = validate_profile_for_packaging(profile)
+            if validation_errors:
+                has_errors = False
+                for err in validation_errors:
+                    if err.severity == "error":
+                        console.print(f"[red]✗ [{err.field}] {err.message}[/red]")
+                        has_errors = True
+                    else:
+                        console.print(f"[yellow]⚠ [{err.field}] {err.message}[/yellow]")
+                if has_errors:
+                    console.print(
+                        "\n[red]Configuration validation failed. "
+                        "Fix the errors above or re-run with --skip-validation to bypass.[/red]"
+                    )
+                    return 1
+                console.print()  # blank line after warnings
+
         # Regenerate installers from existing binaries (no rebuild needed)
         if self.option("regenerate-installers"):
             return self._regenerate_installers(profile, profile_name, console)
 
-        # Go build mode: all platforms always available via cross-compilation
-        use_go = self.option("go")
+        # Go build mode: default unless --legacy is explicitly passed
+        use_legacy = self.option("legacy")
+        use_go = not use_legacy  # Go is now the default
+
+        if self.option("go") and use_legacy:
+            console.print("[yellow]Both --go and --legacy passed; using --legacy.[/yellow]")
+
+        # Check Go availability and version when using Go path
+        if use_go:
+            try:
+                go_result = subprocess.run(["go", "version"], capture_output=True, text=True, check=True)
+                version_str = go_result.stdout.strip().split()[2].lstrip("go")  # e.g. "1.24.2"
+                major_minor = tuple(int(x) for x in version_str.split(".")[:2])
+                if major_minor < (1, 24):
+                    console.print(
+                        f"[yellow]Go {version_str} found but >= 1.24 required. "
+                        f"Falling back to legacy build mode.[/yellow]"
+                    )
+                    console.print("[dim]Update Go: https://go.dev/dl/[/dim]")
+                    use_go = False
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                console.print("[yellow]Go not found. Falling back to legacy build mode.[/yellow]")
+                console.print("[dim]Install Go from https://go.dev/dl/ for faster, more reliable builds.[/dim]")
+                use_go = False
+            except (IndexError, ValueError):
+                pass  # Could not parse version — proceed anyway
 
         # Interactive prompts if not provided via CLI
         target_platform = self.option("target-platform")
-        if target_platform == "all":  # Default value, prompt user
+
+        # Support comma-separated platforms: --target-platform=linux-x64,macos-arm64,windows
+        if target_platform and target_platform != "all" and "," in target_platform:
+            target_platform = [p.strip() for p in target_platform.split(",")]
+        elif target_platform == "all" and use_go:
+            # With Go, "all" builds all 5 platforms without prompting
+            target_platform = ["macos-arm64", "macos-intel", "linux-x64", "linux-arm64", "windows"]
+        elif target_platform == "all":
             # Build list of available platform choices
             # Note: "macos" is omitted because it's just a smart alias for the current architecture
             # Users should explicitly choose macos-arm64 or macos-intel for clarity
@@ -221,28 +329,41 @@ class PackageCommand(Command):
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
-            selected_platforms = questionary.checkbox(
-                "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
-                choices=platform_choices,
-                validate=lambda x: len(x) > 0 or "You must select at least one platform",
-            ).ask()
+            if _is_interactive():
+                selected_platforms = questionary.checkbox(
+                    "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
+                    choices=platform_choices,
+                    validate=lambda x: len(x) > 0 or "You must select at least one platform",
+                ).ask()
+            else:
+                # Non-interactive: build all available platforms
+                selected_platforms = platform_choices
+                console.print(
+                    f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]"
+                )
 
             # Use the selected platforms (guaranteed to have at least one due to validation)
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
 
         # Prompt for co-authorship preference (default to No - opt-in approach)
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?",
-            default=False,
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?",
+                default=False,
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         # Prompt for custom OTel resource attributes (only when monitoring is enabled)
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes? (department, team, cost center)",
-                default=False,
-            ).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm(
+                    "Customize telemetry resource attributes? (department, team, cost center)",
+                    default=False,
+                ).ask()
+            else:
+                customize_otel = False
 
             if customize_otel:
                 console.print(
@@ -254,8 +375,7 @@ class PackageCommand(Command):
                 cost_center = questionary.text("Cost center:", default="default").ask()
                 organization = questionary.text("Organization:", default="default").ask()
                 otel_resource_attributes = (
-                    f"department={department},team.id={team_id},"
-                    f"cost_center={cost_center},organization={organization}"
+                    f"department={department},team.id={team_id},cost_center={cost_center},organization={organization}"
                 )
 
         # Validate platform
@@ -272,6 +392,24 @@ class PackageCommand(Command):
                 f"[red]Invalid platform: {target_platform}. Valid options: {', '.join(valid_platforms)}[/red]"
             )
             return 1
+
+        # Normalize generic platform tokens to their arch-specific canonical names.
+        # This ensures binary naming is consistent with what distribute and install.sh expect.
+        # See #682 Bug 4: generic 'linux' produces 'credential-process-linux' which
+        # distribute silently drops and install.sh can't find.
+        _PLATFORM_CANONICAL = {
+            "linux": "linux-x64",
+            "macos": "macos-arm64",
+        }
+        if use_go:
+            if isinstance(target_platform, list):
+                target_platform = [_PLATFORM_CANONICAL.get(p, p) for p in target_platform]
+            elif target_platform in _PLATFORM_CANONICAL:
+                canonical = _PLATFORM_CANONICAL[target_platform]
+                console.print(
+                    f"[dim]Normalizing platform '{target_platform}' → '{canonical}' for consistent binary naming[/dim]"
+                )
+                target_platform = canonical
 
         # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
         # for Cognito). See _resolve_federation: Cognito ALWAYS reads the pool ID
@@ -324,6 +462,58 @@ class PackageCommand(Command):
         # Show what will be packaged using shared display utility
         display_configuration_info(profile, identity_pool_id or federated_role_arn, format_type="simple")
 
+        # Determine if this is a zero-binary IDC deployment
+        # IDC users authenticate via 'aws sso login' (no credential-process) and
+        # get static identity baked into the collector config (no otel-helper).
+        # Exception: if quota enforcement is configured, credential-process IS needed.
+        _is_idc_auth = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
+        _has_quota = bool(getattr(profile, "quota_api_endpoint", None))
+        is_idc_zero_binary = _is_idc_auth and not _has_quota
+        idc_user_email = None
+        if _is_idc_auth and _has_quota:
+            console.print(
+                "\n[dim]IDC auth + quota enforcement detected — credential-process binary will be included[/dim]"
+            )
+        elif is_idc_zero_binary:
+            console.print("\n[bold]IDC zero-binary package mode:[/bold]")
+            console.print("  ✅ Authentication: aws sso login (no binary needed)")
+            console.print("  ✅ Monitoring: static identity in collector config")
+            console.print("  ⚠️  Quota enforcement: disabled (requires credential-process binary)")
+            console.print("[dim]To enable quota enforcement, run: ccwb init → enable quota monitoring[/dim]")
+            console.print()
+
+            # Auto-detect user email from STS caller identity (IDC ARN session name = email)
+            try:
+                import boto3
+
+                sts = boto3.client("sts", region_name=profile.aws_region)
+                identity = sts.get_caller_identity()
+                arn = identity.get("Arn", "")
+                # IDC ARN format: arn:aws:sts::ACCOUNT:assumed-role/RoleName/user@company.com
+                session_name = arn.rsplit("/", 1)[-1] if "/" in arn else ""
+                if "@" in session_name:
+                    idc_user_email = session_name
+                    console.print(f"[dim]Detected user email from IDC: {idc_user_email}[/dim]")
+                elif _is_interactive():
+                    # Prompt if we can't auto-detect
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution (IDC session name):",
+                        default=session_name or "",
+                    ).ask()
+                else:
+                    idc_user_email = session_name or ""
+            except Exception:
+                if _is_interactive():
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution:",
+                        default="",
+                    ).ask()
+                else:
+                    idc_user_email = ""
+
+            if not idc_user_email:
+                console.print("[yellow]Warning: No user email — OTEL attribution will be anonymous[/yellow]")
+
         # Build package
         console.print("\n[bold]Building package...[/bold]")
 
@@ -349,7 +539,6 @@ class PackageCommand(Command):
                     if current_os == "darwin":
                         host_arch = current_machine  # arm64 or x86_64
                         platforms_to_build.append(f"macos-{'arm64' if host_arch == 'arm64' else 'intel'}")
-                        cross_arch = "x86_64" if host_arch == "arm64" else "arm64"
                         cross_platform = "macos-intel" if host_arch == "arm64" else "macos-arm64"
                         if _universal2_python:
                             platforms_to_build.append(cross_platform)
@@ -421,13 +610,27 @@ class PackageCommand(Command):
 
         console.print()
 
-        if use_go:
+        if is_idc_zero_binary:
+            # IDC path: no binaries needed — skip all Go/Python builds
+            console.print("[dim]Skipping binary builds (IDC zero-binary mode)[/dim]")
+        elif use_go:
             # Go cross-compilation: build all selected platforms at once
             console.print("[cyan]Building Go binaries (cross-compilation)...[/cyan]")
             try:
                 go_results = self._build_go_binaries(output_dir, platforms_to_build, profile.monitoring_enabled)
                 built_executables = go_results["executables"]
                 built_otel_helpers = go_results["otel_helpers"]
+
+                # Include PowerShell otel-helper fallback for Windows (AV-safe alternative to .exe)
+                if any(plat == "windows" for plat, _ in built_otel_helpers):
+                    import shutil
+
+                    source_dir = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+                    for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                        script_src = source_dir / script_name
+                        if script_src.exists():
+                            shutil.copy2(script_src, output_dir / script_name)
+                            console.print(f"[dim]  Included {script_name} (AV-safe fallback)[/dim]")
             except Exception as e:
                 console.print(f"[red]Go build failed: {e}[/red]")
                 return 1
@@ -447,7 +650,9 @@ class PackageCommand(Command):
                     else:
                         built_executables.append((platform_name, executable_path))
                 except Exception as e:
-                    console.print(f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]")
+                    console.print(
+                        f"[yellow]Warning: Could not build credential process for {platform_name}: {e}[/yellow]"
+                    )
 
                 # Build OTEL helper if monitoring is enabled
                 if profile.monitoring_enabled:
@@ -462,19 +667,89 @@ class PackageCommand(Command):
                             if otel_helper_path is not None:
                                 built_otel_helpers.append((platform_name, otel_helper_path))
                         except Exception as e:
-                            console.print(f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]")
+                            console.print(
+                                f"[yellow]Warning: Could not build OTEL helper for {platform_name}: {e}[/yellow]"
+                            )
 
-        # Check if any binaries were built
-        if not built_executables:
-            console.print("\n[red]Error: No binaries were successfully built.[/red]")
-            console.print("Please check the error messages above.")
-            return 1
+        # Sidecar mode ships a local OTEL Collector (otelcol-{os}-{arch}) for ALL target
+        # platforms. The collector is always OCB/Go cross-compiled regardless of how the
+        # auth binaries were built (--go or PyInstaller), so it runs once here for both
+        # paths — keeping macOS, Linux, and Windows at parity. Without it, a generated
+        # collector-config.yaml points at a collector that doesn't exist. Degrade gracefully:
+        # a failed/skipped collector build (e.g. no Go on the admin machine) must not fail
+        # packaging — only local telemetry forwarding is affected, and the installer warns.
+        #
+        # IDC zero-binary mode is intentionally EXCLUDED: its contract is no build tools on
+        # the admin machine, and OCB needs Go. IDC monitoring routes to the central collector
+        # instead of a local sidecar.
+        if (
+            not is_idc_zero_binary
+            and profile.monitoring_enabled
+            and getattr(profile, "monitoring_mode", "central") == "sidecar"
+        ):
+            console.print("[cyan]Building OTEL Collector sidecar (OCB)...[/cyan]")
+            try:
+                self._build_otelcol(output_dir, platforms_to_build)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not build OTEL Collector sidecar: {e}[/yellow]")
+                console.print("[dim]Sidecar telemetry will not work until the collector is built.[/dim]")
+
+        # A Windows build runs asynchronously in CodeBuild and produces no local
+        # binary now (_build_executable returns None), so built_executables can be
+        # empty even though the build was submitted successfully. Treat that as a
+        # success and still generate the config/installer for distribution.
+        windows_codebuild_pending = any(
+            platform_name == "windows" and platform_name not in [p for p, _ in built_executables]
+            for platform_name in platforms_to_build
+        ) and bool(profile and getattr(profile, "enable_codebuild", False))
+
+        # Check if any binaries were built (or are pending in CodeBuild)
+        # IDC zero-binary mode intentionally skips all binary builds.
+        build_failed = False
+        if not built_executables and not windows_codebuild_pending and not is_idc_zero_binary:
+            console.print("\n[yellow]Warning: No binaries were successfully built.[/yellow]")
+            console.print("Configuration files will still be generated.")
+            console.print("Fix the issue above and re-run [cyan]ccwb package[/cyan].\n")
+            build_failed = True
+
+        if windows_codebuild_pending and not built_executables:
+            console.print("\n[bold cyan]Windows binaries are building in AWS CodeBuild[/bold cyan]")
+            console.print("Local configuration files will be generated now for distribution.")
+            console.print("\nTo check build status:")
+            console.print("  [cyan]poetry run ccwb builds[/cyan]")
+            console.print("\nOnce complete, retrieve binaries with:")
+            console.print("  [cyan]poetry run ccwb distribute[/cyan]\n")
 
         # Create configuration
         console.print("\n[cyan]Creating configuration...[/cyan]")
         # Pass the appropriate identifier based on federation type
         federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
         self._create_config(output_dir, profile, federation_identifier, federation_type, profile_name, console)
+
+        # Generate IDC-specific collector config with static identity
+        _is_sidecar = getattr(profile, "monitoring_mode", "central") == "sidecar"
+        _is_idc_auth = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
+        _is_oidc_auth = not _is_idc_auth
+
+        if profile.monitoring_enabled and _is_sidecar:
+            if _is_idc_auth:
+                # IDC sidecar: bake static identity into collector config (no otel-helper at runtime).
+                # Applies to both zero-binary (no quota) and IDC+quota paths.
+                self._generate_collector_config(
+                    output_dir=output_dir,
+                    template_name="collector-config-idc.yaml",
+                    region=profile.aws_region or "us-east-1",
+                    idc_user_email=idc_user_email,
+                    otel_resource_attributes=otel_resource_attributes,
+                )
+            else:
+                # OIDC sidecar: otelHeadersHelper injects user identity at runtime via HTTP headers,
+                # so no identity is baked in — substitute only ${REGION}.
+                self._generate_collector_config(
+                    output_dir=output_dir,
+                    template_name="collector-config.yaml",
+                    region=profile.aws_region or "us-east-1",
+                )
 
         # Create installer
         console.print("[cyan]Creating installer script...[/cyan]")
@@ -486,7 +761,14 @@ class PackageCommand(Command):
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            is_idc_zero_binary=is_idc_zero_binary,
+        )
 
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
@@ -514,6 +796,8 @@ class PackageCommand(Command):
             console.print("  • claude-settings/settings.json - Claude Code telemetry settings")
             for platform_name, otel_helper_path in built_otel_helpers:
                 console.print(f"  • {otel_helper_path.name} - OTEL helper executable for {platform_name}")
+        if (output_dir / "claude-settings" / "managed-settings.json").exists():
+            console.print("  • claude-settings/managed-settings.json - Organization-wide enforcement settings")
         if profile.cowork_3p_enabled:
             if (output_dir / "cowork-3p-config.json").exists():
                 console.print("  • cowork-3p-config.json - CoWork 3P MDM configuration (JSON)")
@@ -540,6 +824,10 @@ class PackageCommand(Command):
             console.print("To create a distribution package: [cyan]poetry run ccwb distribute[/cyan]")
         else:
             console.print("Share the dist folder with your users for installation")
+
+        if build_failed:
+            console.print("\n[yellow]⚠ Package generated without binaries. Fix the build issue and re-run.[/yellow]")
+            return 1
 
         return 0
 
@@ -572,7 +860,7 @@ class PackageCommand(Command):
                 console.print("[red]No configuration found. Run 'poetry run ccwb init' first.[/red]")
                 return 1
 
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
             response = codebuild.batch_get_builds(ids=[build_id])
 
             if not response.get("builds"):
@@ -637,19 +925,8 @@ class PackageCommand(Command):
             self.line(f"  <info>{result.stdout.strip()}</info>")
         except (FileNotFoundError, subprocess.CalledProcessError):
             raise RuntimeError(
-                "Go is not installed or not in PATH. Install from https://go.dev/dl/ "
-                "or run: brew install go"
+                "Go is not installed or not in PATH. Install from https://go.dev/dl/ or run: brew install go"
             )
-
-        platform_map = {
-            "macos-arm64": ("darwin", "arm64"),
-            "macos-intel": ("darwin", "amd64"),
-            "macos": ("darwin", "arm64"),  # Default to arm64 for generic macos
-            "linux-x64": ("linux", "amd64"),
-            "linux-arm64": ("linux", "arm64"),
-            "linux": ("linux", "amd64"),  # Default to amd64 for generic linux
-            "windows": ("windows", "amd64"),
-        }
 
         executables = []
         otel_helpers = []
@@ -659,10 +936,10 @@ class PackageCommand(Command):
             binaries_to_build.append("otel-helper")
 
         for plat in platforms:
-            if plat not in platform_map:
+            if plat not in _GO_PLATFORM_MAP:
                 raise ValueError(f"Unsupported platform for Go build: {plat}")
 
-            goos, goarch = platform_map[plat]
+            goos, goarch = _GO_PLATFORM_MAP[plat]
 
             for binary in binaries_to_build:
                 if plat == "windows":
@@ -675,21 +952,28 @@ class PackageCommand(Command):
 
                 self.line(f"  Building <comment>{output_name}</comment>...")
 
-                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
-                # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml)
-                # flags stripped Go binaries. The .syso PE version-info files in
-                # cmd/*/ are auto-linked by the Go compiler to help further.
-                ldflags = "" if plat == "windows" else "-s -w"
+                # macOS credential-process needs CGO_ENABLED=1 for keychain access
+                # (99designs/keyring's keychain backend requires cgo).
+                cgo = "1" if goos == "darwin" and binary == "credential-process" else "0"
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": cgo}
+                # The .syso PE version-info files in cmd/*/ are auto-linked by the Go
+                # compiler on Windows to further reduce AV false positives.
+                ldflags = _go_ldflags(goos)
                 cmd = [
-                    "go", "build",
+                    "go",
+                    "build",
                     "-trimpath",
-                    "-ldflags", ldflags,
-                    "-o", str(output_path),
+                    "-ldflags",
+                    ldflags,
+                    "-o",
+                    str(output_path),
                     f"./cmd/{binary}/",
                 ]
                 result = subprocess.run(cmd, cwd=str(go_src), env=env, capture_output=True, text=True)
                 if result.returncode != 0:
-                    raise RuntimeError(f"Go build failed for {output_name}:\n{result.stderr}")
+                    last_line = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
+                    self.line(f"  <error>Failed: {output_name} — {last_line}</error>")
+                    continue  # Skip this binary, try remaining platforms
 
                 if binary == "credential-process":
                     executables.append((plat, output_path))
@@ -698,6 +982,180 @@ class PackageCommand(Command):
 
         self.line(f"  <info>Built {len(executables) + len(otel_helpers)} binaries</info>")
         return {"executables": executables, "otel_helpers": otel_helpers}
+
+    def _generate_collector_config(
+        self,
+        output_dir: Path,
+        template_name: str,
+        region: str,
+        idc_user_email: str | None = None,
+        otel_resource_attributes: str | None = None,
+    ) -> None:
+        """Write collector-config.yaml to output_dir from the named otel_helper template.
+
+        Called for all three sidecar paths:
+          - OIDC sidecar     → collector-config.yaml (runtime header injection)
+          - IDC zero-binary  → collector-config-idc.yaml (static identity baked in)
+          - IDC+quota sidecar → collector-config-idc.yaml (static identity baked in)
+        """
+        console = Console()
+        template_src = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper" / template_name
+        if not template_src.exists():
+            console.print(f"[yellow]Warning: {template_name} template not found[/yellow]")
+            return
+
+        content = template_src.read_text(encoding="utf-8")
+        content = content.replace("${REGION}", region)
+
+        if idc_user_email is not None:
+            attrs: dict[str, str] = {}
+            if otel_resource_attributes:
+                for pair in otel_resource_attributes.split(","):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        attrs[k.strip()] = v.strip()
+            content = content.replace("${USER_EMAIL}", idc_user_email or "unknown@example.com")
+            content = content.replace("${USER_NAME}", (idc_user_email or "unknown").split("@")[0])
+            content = content.replace("${DEPARTMENT}", attrs.get("department", "default"))
+            content = content.replace("${TEAM_ID}", attrs.get("team.id", "default"))
+            content = content.replace("${COST_CENTER}", attrs.get("cost_center", "default"))
+            content = content.replace("${ORGANIZATION}", attrs.get("organization", "default"))
+
+        (output_dir / "collector-config.yaml").write_text(content, encoding="utf-8")
+        label = f"IDC (identity: {idc_user_email})" if idc_user_email is not None else "OIDC"
+        console.print(f"[dim]Generated {label} sidecar collector config[/dim]")
+
+    def _build_otelcol(self, output_dir: Path, platforms_to_build: list[str]) -> None:
+        """Build the minimal OTEL Collector sidecar via OCB for all target platforms.
+
+        Produces otelcol-{os}-{arch} binaries that are shipped IN the package, the same
+        model as credential-process and otel-helper. distribute.py, test.py, status.py and
+        the otel-helper.sh/.ps1 wrappers all expect these bundled binaries to exist.
+
+        Network + Go 1.23+ are required on the PACKAGING (admin) machine only — end users
+        never download the collector. Skips gracefully when Go is missing or too old.
+
+        Restores behavior dropped during the Go rewrite (PR #338), which removed this
+        method and its call site as collateral damage of the build-path restructure.
+        """
+        import re
+        import shutil
+        import urllib.request
+
+        console = Console()
+        host_os = platform.system().lower()
+        host_arch = platform.machine().lower()
+
+        result = subprocess.run(["go", "version"], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[yellow]Go not found — skipping collector build[/yellow]")
+            console.print("[dim]Install Go 1.23+ from https://go.dev/dl/ to build the collector sidecar[/dim]")
+            return
+        go_match = re.search(r"go(\d+)\.(\d+)", result.stdout)
+        if not go_match or (int(go_match.group(1)), int(go_match.group(2))) < (1, 23):
+            console.print("[yellow]Go 1.23+ required — skipping collector build[/yellow]")
+            console.print(f"[dim]Found: {result.stdout.strip()}. Install Go 1.23+ from https://go.dev/dl/[/dim]")
+            return
+
+        OCB_VERSION = "0.120.0"
+        if host_os == "darwin":
+            ocb_os = "darwin"
+        elif host_os == "windows":
+            ocb_os = "windows"
+        else:
+            ocb_os = "linux"
+        ocb_arch = "arm64" if host_arch in ["arm64", "aarch64"] else "amd64"
+        ocb_dir = Path.home() / ".cache" / "ocb"
+        ocb_dir.mkdir(parents=True, exist_ok=True)
+        ocb_suffix = ".exe" if ocb_os == "windows" else ""
+        ocb_path = ocb_dir / f"ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
+
+        if not ocb_path.exists():
+            url = (
+                f"https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/"
+                f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
+            )
+            console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
+            urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            if ocb_os != "windows":
+                ocb_path.chmod(0o755)
+
+        manifest = Path(__file__).parent.parent.parent.parent / "otel_helper" / "ocb-manifest.yaml"
+        if not manifest.exists():
+            raise FileNotFoundError(f"OCB manifest not found: {manifest}")
+
+        # Resolve each platform to (GOOS, GOARCH, output-binary-name). GOOS/GOARCH come
+        # from the shared _GO_PLATFORM_MAP; only the otelcol-specific output name lives
+        # here. "macos-universal" maps to arm64 (no fat binary — sidecar is per-arch).
+        def _otelcol_name(goos: str, goarch: str) -> str:
+            if goos == "windows":
+                return "otelcol-windows.exe"
+            if goos == "darwin":
+                return "otelcol-macos-arm64" if goarch == "arm64" else "otelcol-macos-intel"
+            return "otelcol-linux-arm64" if goarch == "arm64" else "otelcol-linux-x64"
+
+        targets = []
+        seen = set()
+        for plat in platforms_to_build:
+            resolved = _GO_PLATFORM_MAP.get("macos-arm64" if plat == "macos-universal" else plat)
+            if not resolved:
+                continue
+            goos, goarch = resolved
+            binary_name = _otelcol_name(goos, goarch)
+            if binary_name not in seen:
+                targets.append((goos, goarch, binary_name))
+                seen.add(binary_name)
+
+        if not targets:
+            return
+
+        build_dir = output_dir / "_otelcol_build"
+        build_dir.mkdir(exist_ok=True)
+
+        try:
+            manifest_text = manifest.read_text().replace("output_path: ./build/otelcol", f"output_path: {build_dir}")
+            temp_manifest = build_dir / "manifest.yaml"
+            temp_manifest.write_text(manifest_text)
+
+            console.print("[dim]Generating collector source code...[/dim]")
+            result = subprocess.run(
+                [str(ocb_path), "--config", str(temp_manifest), "--skip-compilation"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"OCB source generation failed: {result.stderr}")
+
+            console.print("[dim]Downloading Go modules...[/dim]")
+            dl_result = subprocess.run(
+                ["go", "mod", "download"],
+                capture_output=True,
+                text=True,
+                cwd=build_dir,
+            )
+            if dl_result.returncode != 0:
+                raise RuntimeError(f"go mod download failed: {dl_result.stderr}")
+
+            for goos, goarch, binary_name in targets:
+                console.print(f"[dim]Compiling collector for {goos}/{goarch}...[/dim]")
+                output_binary = (output_dir / binary_name).resolve()
+                env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
+                ldflags = _go_ldflags(goos)
+                result = subprocess.run(
+                    ["go", "build", "-trimpath", f"-ldflags={ldflags}", "-o", str(output_binary), "."],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    cwd=build_dir,
+                )
+                if result.returncode != 0:
+                    console.print(f"[yellow]Warning: Failed to build {binary_name}: {result.stderr[:200]}[/yellow]")
+                    continue
+                if goos != "windows":
+                    output_binary.chmod(0o755)
+                console.print(f"[green]✓ {binary_name}[/green]")
+        finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
     def _build_executable(self, output_dir: Path, target_platform: str) -> Path:
         """Build executable for target platform using appropriate tool."""
@@ -977,9 +1435,12 @@ class PackageCommand(Command):
             work_root = Path.home() / ".ccwb" / "build-work"
             work_root.mkdir(parents=True, exist_ok=True)
             cmd = [
-                "/usr/bin/arch", f"-{arch}",
+                "/usr/bin/arch",
+                f"-{arch}",
                 str(venv_dir / "bin" / "pyinstaller"),
-                "--onefile", "--clean", "--noconfirm",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 f"--workpath={str(work_root / arch)}",
@@ -995,8 +1456,12 @@ class PackageCommand(Command):
         else:
             # Native build: use Poetry environment directly
             cmd = [
-                "poetry", "run", "pyinstaller",
-                "--onefile", "--clean", "--noconfirm",
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--target-arch={arch}",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
@@ -1490,7 +1955,7 @@ RUN pyinstaller \
 
             if profile:
                 project_name = f"{profile.identity_pool_name}-windows-build"
-                codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+                codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
 
                 # List recent builds
                 response = codebuild.list_builds_for_project(projectName=project_name, sortOrder="DESCENDING")
@@ -1528,7 +1993,7 @@ RUN pyinstaller \
         # Get CodeBuild stack outputs
         stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
         try:
-            stack_outputs = get_stack_outputs(stack_name, profile.aws_region)
+            stack_outputs = get_stack_outputs(stack_name, get_codebuild_region(profile))
         except Exception:
             console.print(f"[red]CodeBuild stack not found: {stack_name}[/red]")
             console.print("Run: poetry run ccwb deploy codebuild")
@@ -1550,7 +2015,7 @@ RUN pyinstaller \
 
             # Upload to S3
             progress.update(task, description="Uploading source to S3...")
-            s3 = boto3.client("s3", region_name=profile.aws_region)
+            s3 = boto3.client("s3", region_name=get_codebuild_region(profile))
             try:
                 s3.upload_file(str(source_zip), bucket_name, "source.zip")
             except ClientError as e:
@@ -1559,7 +2024,7 @@ RUN pyinstaller \
 
             # Start build
             progress.update(task, description="Starting CodeBuild project...")
-            codebuild = boto3.client("codebuild", region_name=profile.aws_region)
+            codebuild = boto3.client("codebuild", region_name=get_codebuild_region(profile))
             try:
                 response = codebuild.start_build(projectName=project_name)
                 build_id = response["build"]["id"]
@@ -1740,15 +2205,20 @@ RUN pyinstaller \
             # Cross-arch build: need a per-arch venv seeded from a universal2 Python
             universal2_python = _find_universal2_python()
             if universal2_python is None:
-                console.print(f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires universal2 Python (not found)[/yellow]")
+                console.print(
+                    f"[yellow]Warning: Skipping {binary_name} — cross-arch build requires universal2 Python (not found)[/yellow]"
+                )
                 return output_dir / binary_name
             venv_dir = _ensure_cross_arch_venv(arch, universal2_python, _OTEL_HELPER_RUNTIME_DEPS, console)
             work_root = Path.home() / ".ccwb" / "build-work"
             work_root.mkdir(parents=True, exist_ok=True)
             cmd = [
-                "/usr/bin/arch", f"-{arch}",
+                "/usr/bin/arch",
+                f"-{arch}",
                 str(venv_dir / "bin" / "pyinstaller"),
-                "--onefile", "--clean", "--noconfirm",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 f"--workpath={str(work_root / arch)}",
@@ -1758,8 +2228,12 @@ RUN pyinstaller \
             ]
         else:
             cmd = [
-                "poetry", "run", "pyinstaller",
-                "--onefile", "--clean", "--noconfirm",
+                "poetry",
+                "run",
+                "pyinstaller",
+                "--onefile",
+                "--clean",
+                "--noconfirm",
                 f"--name={binary_name}",
                 f"--distpath={str(output_dir)}",
                 "--workpath=/tmp/pyinstaller",
@@ -1954,7 +2428,7 @@ RUN pyinstaller \
             return 1
 
         console.print(f"[green]Found {len(built_executables)} binaries, {len(built_otel_helpers)} OTEL helpers[/green]")
-        for plat, path in built_executables:
+        for _plat, path in built_executables:
             console.print(f"  • {path.name}")
 
         # Create new timestamped output directory
@@ -1964,10 +2438,18 @@ RUN pyinstaller \
 
         # Copy existing binaries to new output dir
         console.print("\n[cyan]Copying binaries...[/cyan]")
-        for plat, binary_path in built_executables:
+        for _plat, binary_path in built_executables:
             shutil.copy2(binary_path, output_dir / binary_path.name)
-        for plat, helper_path in built_otel_helpers:
+        for _plat, helper_path in built_otel_helpers:
             shutil.copy2(helper_path, output_dir / helper_path.name)
+
+        # Include PowerShell otel-helper fallback for Windows
+        if any(plat == "windows" for plat, _ in built_otel_helpers):
+            otel_src = Path(__file__).resolve().parent.parent.parent.parent / "otel_helper"
+            for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                script_src = otel_src / script_name
+                if script_src.exists():
+                    shutil.copy2(script_src, output_dir / script_name)
 
         # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
         # for Cognito) — see _resolve_federation. Cognito ALWAYS reads the pool ID
@@ -1980,23 +2462,26 @@ RUN pyinstaller \
             return 1
 
         # Prompt for co-authorship and OTEL attributes
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?", default=False
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?", default=False
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes?", default=False
-            ).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            else:
+                customize_otel = False
             if customize_otel:
                 department = questionary.text("Department:", default="engineering").ask()
                 team_id = questionary.text("Team ID:", default="default").ask()
                 cost_center = questionary.text("Cost center:", default="default").ask()
                 organization = questionary.text("Organization:", default="default").ask()
                 otel_resource_attributes = (
-                    f"department={department},team.id={team_id},"
-                    f"cost_center={cost_center},organization={organization}"
+                    f"department={department},team.id={team_id},cost_center={cost_center},organization={organization}"
                 )
 
         # Regenerate config.json
@@ -2016,7 +2501,7 @@ RUN pyinstaller \
         self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
 
         # Summary
-        console.print(f"\n[green]✓ Installers regenerated successfully![/green]")
+        console.print("\n[green]✓ Installers regenerated successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
         console.print("\nRegenerated files:")
         console.print("  • config.json")
@@ -2028,7 +2513,9 @@ RUN pyinstaller \
         if (output_dir / "claude-settings" / "settings.json").exists():
             console.print("  • claude-settings/settings.json")
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
-        console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
+        console.print(
+            "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]"
+        )
         return 0
 
     def _resolve_federation(self, profile, console):
@@ -2121,7 +2608,20 @@ RUN pyinstaller \
 
         # Add the appropriate federation field based on type
         if not sso_enabled:
-            pass  # No OIDC/Cognito fields needed — credential-process uses ambient chain
+            # IDC path: include IDC fields so credential-process can drive SSO auth.
+            auth_type = getattr(profile, "auth_type", None)
+            if auth_type == "idc":
+                config[profile_name]["auth_type"] = "idc"
+                if getattr(profile, "idc_start_url", None):
+                    config[profile_name]["idc_start_url"] = profile.idc_start_url
+                if getattr(profile, "idc_account_id", None):
+                    config[profile_name]["idc_account_id"] = profile.idc_account_id
+                if getattr(profile, "idc_permission_set_name", None):
+                    config[profile_name]["idc_permission_set_name"] = profile.idc_permission_set_name
+                idc_region = (
+                    getattr(profile, "sso_region", None) or getattr(profile, "idc_region", None) or profile.aws_region
+                )
+                config[profile_name]["idc_region"] = idc_region
         elif federation_type == "direct":
             config[profile_name]["federated_role_arn"] = federation_identifier
             config[profile_name]["federation_type"] = "direct"
@@ -2160,9 +2660,7 @@ RUN pyinstaller \
                     "\n[yellow]Warning: certificate paths in config.json are absolute and will not "
                     "resolve on machines where the files are stored elsewhere.[/yellow]"
                 )
-                console.print(
-                    "[yellow]Instruct end users to set the following environment variables:[/yellow]"
-                )
+                console.print("[yellow]Instruct end users to set the following environment variables:[/yellow]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_PATH=<path/to/cert.pem>[/dim]")
                 console.print("[dim]  AZURE_CLIENT_CERTIFICATE_KEY_PATH=<path/to/key.pem>[/dim]\n")
 
@@ -2220,7 +2718,11 @@ RUN pyinstaller \
             # Check for exact domain match or subdomain match
             # Using endswith with leading dot prevents bypass attacks
             okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-            if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+            if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                "okta.com",
+                "oktapreview.com",
+                "okta-emea.com",
+            ):
                 return "okta"
             elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                 return "auth0"
@@ -2252,6 +2754,122 @@ RUN pyinstaller \
             self.line("  <info>Using existing installer scripts (install.sh, ccwb-install.ps1)</info>")
             return installer_path
 
+        # IDC zero-binary mode: no credential-process binary, auth via aws sso login
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc")) == "idc"
+        _has_quota = bool(getattr(profile, "quota_api_endpoint", None))
+        if _is_idc and not _has_quota and not built_executables:
+            idc_start_url = getattr(profile, "idc_start_url", "") or ""
+            idc_account_id = getattr(profile, "idc_account_id", "") or ""
+            idc_permission_set = (
+                getattr(profile, "idc_permission_set_name", "BedrockDeveloperAccess") or "BedrockDeveloperAccess"
+            )
+            aws_region = getattr(profile, "aws_region", "us-east-1") or "us-east-1"
+            sso_region = getattr(profile, "sso_region", aws_region) or aws_region
+            idc_content = f"""#!/bin/bash
+# Claude Code with Bedrock — IAM Identity Center Installer
+# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo "~$SUDO_USER")
+else
+    ACTUAL_USER="$USER"
+    ACTUAL_HOME="$HOME"
+fi
+
+echo "======================================"
+echo "Claude Code with Bedrock — IDC Setup"
+echo "======================================"
+echo
+
+# Prerequisites
+if ! command -v aws &>/dev/null; then
+    echo "ERROR: AWS CLI v2 is required."
+    echo "       Install from: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    exit 1
+fi
+echo "✓ AWS CLI found"
+
+# Write config.json
+mkdir -p "$ACTUAL_HOME/claude-code-with-bedrock"
+cp config.json "$ACTUAL_HOME/claude-code-with-bedrock/"
+if [ -n "$SUDO_USER" ]; then
+    chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
+fi
+echo "✓ Configuration installed"
+
+# Install collector sidecar if present
+if [ -f "collector-config.yaml" ]; then
+    mkdir -p "$ACTUAL_HOME/.ccwb"
+    cp collector-config.yaml "$ACTUAL_HOME/.ccwb/"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.ccwb/collector-config.yaml"; fi
+    echo "✓ OTel collector config installed"
+fi
+
+# Configure AWS SSO profile
+echo
+echo "Configuring AWS SSO profile 'ClaudeCode'..."
+mkdir -p "$ACTUAL_HOME/.aws"
+touch "$ACTUAL_HOME/.aws/config"
+
+# Remove old ClaudeCode entries if present
+sed -i.bak '/^\\[profile ClaudeCode\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+sed -i.bak '/^\\[sso-session ClaudeCode-session\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+rm -f "$ACTUAL_HOME/.aws/config.bak"
+
+cat >> "$ACTUAL_HOME/.aws/config" << 'AWSCONFIG'
+[profile ClaudeCode]
+sso_session = ClaudeCode-session
+sso_account_id = {idc_account_id}
+sso_role_name = {idc_permission_set}
+region = {aws_region}
+
+[sso-session ClaudeCode-session]
+sso_start_url = {idc_start_url}
+sso_region = {sso_region}
+sso_registration_scopes = sso:account:access
+AWSCONFIG
+
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
+echo "✓ AWS profile 'ClaudeCode' configured"
+
+# Install Claude Code settings
+if [ -d "claude-settings" ] && [ -f "claude-settings/settings.json" ]; then
+    mkdir -p "$ACTUAL_HOME/.claude"
+    if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+        cp "$ACTUAL_HOME/.claude/settings.json" "$ACTUAL_HOME/.claude/settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+    fi
+    cp "claude-settings/settings.json" "$ACTUAL_HOME/.claude/settings.json"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/settings.json"; fi
+    echo "✓ Claude Code settings installed"
+fi
+
+echo
+echo "======================================"
+echo "Installation complete!"
+echo "======================================"
+echo
+echo "Next step — authenticate with AWS SSO:"
+echo
+echo "  aws sso login --profile ClaudeCode"
+echo
+echo "Then verify:"
+echo
+echo "  aws sts get-caller-identity --profile ClaudeCode"
+echo
+echo "Claude Code will use the ClaudeCode profile automatically."
+echo "Re-run 'aws sso login --profile ClaudeCode' when your session expires (every 8 hours)."
+"""
+            with open(installer_path, "w", encoding="utf-8") as f:
+                f.write(idc_content)
+            installer_path.chmod(0o755)
+            return installer_path
+
         # Determine which binaries were built
         platforms_built = [platform for platform, _ in built_executables]
         [platform for platform, _ in built_otel_helpers] if built_otel_helpers else []
@@ -2265,6 +2883,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# Resolve the real invoking user — safe whether or not run with sudo.
+# If run as: sudo ./install.sh  →  SUDO_USER is set; use that for home-dir writes.
+# If run as: ./install.sh       →  use $USER / $HOME directly.
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo "~$SUDO_USER")
+else
+    ACTUAL_USER="$USER"
+    ACTUAL_HOME="$HOME"
+fi
 
 echo "======================================"
 echo "Claude Code Authentication Installer"
@@ -2306,7 +2935,7 @@ if [ "$HAS_ERRORS" = "true" ]; then
     exit 1
 fi
 
-if [ ! -f "claude-settings/settings.json" ]; then
+if [ ! -f "claude-settings/settings.json" ] && [ ! -f "claude-settings/managed-settings.json" ]; then
     echo "WARNING: claude-settings/settings.json not found"
     echo "         Claude Code IDE settings will not be configured automatically"
     echo ""
@@ -2358,20 +2987,25 @@ fi
 # Create directory
 echo
 echo "Installing authentication tools..."
-mkdir -p ~/claude-code-with-bedrock
+mkdir -p "$ACTUAL_HOME/claude-code-with-bedrock"
 
 # Copy appropriate binary
-cp "$CREDENTIAL_BINARY" ~/claude-code-with-bedrock/credential-process
+cp "$CREDENTIAL_BINARY" "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 
 # Copy config
-cp config.json ~/claude-code-with-bedrock/
-chmod +x ~/claude-code-with-bedrock/credential-process
+cp config.json "$ACTUAL_HOME/claude-code-with-bedrock/"
+chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
+
+# Fix ownership when invoked via sudo so files belong to the real user, not root
+if [ -n "$SUDO_USER" ]; then
+    chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
+fi
 
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
     # Without this, Gatekeeper blocks execution with "Apple could not verify..." dialog.
-    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/credential-process 2>/dev/null || true
+    xattr -d com.apple.quarantine "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" 2>/dev/null || true
     echo
     echo "⚠️  macOS Keychain Access:"
     echo "   On first use, macOS will ask for permission to access the keychain."
@@ -2383,42 +3017,120 @@ fi
 if [ -d "claude-settings" ]; then
     echo
     echo "Installing Claude Code settings..."
-    mkdir -p ~/.claude
+    mkdir -p "$ACTUAL_HOME/.claude"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude"; fi
 
-    # Copy settings and replace placeholders
+    # Install managed-settings.json (OS-level enforcement) if present
+    if [ -f "claude-settings/managed-settings.json" ]; then
+        echo "Managed settings detected (organization-wide enforcement)..."
+
+        # Determine OS-appropriate managed-settings path
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            MANAGED_DIR="/Library/Application Support/ClaudeCode"
+        else
+            MANAGED_DIR="/etc/claude-code"
+        fi
+
+        # Escalate only for the managed-settings write — don't require the whole script to run as root
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "  Managed settings require root — running: sudo mkdir / sudo tee"
+            sudo mkdir -p "$MANAGED_DIR"
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/managed-settings.json" | sudo tee "$MANAGED_DIR/managed-settings.json" > /dev/null
+        else
+            mkdir -p "$MANAGED_DIR"
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/managed-settings.json" > "$MANAGED_DIR/managed-settings.json"
+        fi
+
+        # Verify placeholders were replaced
+        if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' "$MANAGED_DIR/managed-settings.json" 2>/dev/null; then
+            echo "WARNING: Some path placeholders were not replaced in managed-settings.json"
+        else
+            echo "OK Managed settings installed: $MANAGED_DIR/managed-settings.json"
+            echo "   These settings have highest precedence and cannot be overridden by users."
+        fi
+    fi
+
+    # Copy user-scope settings.json if present
     if [ -f "claude-settings/settings.json" ]; then
         # Check if settings file already exists
-        if [ -f ~/.claude/settings.json ]; then
+        if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
             echo "Existing Claude Code settings found"
             # Backup existing settings
             BACKUP_NAME="settings.json.backup-$(date +%Y%m%d-%H%M%S)"
-            cp ~/.claude/settings.json ~/.claude/$BACKUP_NAME
-            echo "  Backed up to: ~/.claude/$BACKUP_NAME"
-            read -p "Overwrite with new settings? (Y/n): " -n 1 -r
-            echo
-            # Default to Yes if user just presses enter (empty REPLY)
-            if [[ -z "$REPLY" ]]; then
-                REPLY="y"
-            fi
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "Skipping Claude Code settings..."
-                SKIP_SETTINGS=true
+            cp "$ACTUAL_HOME/.claude/settings.json" "$ACTUAL_HOME/.claude/$BACKUP_NAME"
+            if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/$BACKUP_NAME"; fi
+            echo "  Backed up to: $ACTUAL_HOME/.claude/$BACKUP_NAME"
+
+            # Merge new settings into existing (preserves user customizations)
+            $PYTHON -c "
+import json, sys
+try:
+    with open('$ACTUAL_HOME/.claude/$BACKUP_NAME') as f:
+        existing = json.load(f)
+except (json.JSONDecodeError, FileNotFoundError):
+    existing = {{}}
+
+with open('claude-settings/settings.json') as f:
+    incoming = json.load(f)
+
+# Deep merge: incoming overwrites existing keys, but existing keys not in incoming are preserved
+def deep_merge(base, override):
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+merged = deep_merge(existing, incoming)
+with open('$ACTUAL_HOME/.claude/settings.json', 'w') as f:
+    json.dump(merged, f, indent=2)
+" 2>/dev/null
+
+            if [ $? -eq 0 ]; then
+                echo "OK Claude Code settings merged: $ACTUAL_HOME/.claude/settings.json"
+                echo "   (existing user settings preserved, new Bedrock config added)"
+            else
+                # Fallback: overwrite if merge fails
+                read -p "Merge failed. Overwrite with new settings? (Y/n): " -n 1 -r
+                echo
+                if [[ -z "$REPLY" ]]; then REPLY="y"; fi
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "Skipping Claude Code settings..."
+                    SKIP_SETTINGS=true
+                fi
             fi
         fi
 
-        if [ "$SKIP_SETTINGS" != "true" ]; then
-            # Replace placeholders and write settings
-            sed -e "s|__OTEL_HELPER_PATH__|$HOME/claude-code-with-bedrock/otel-helper|g" \
-                -e "s|__CREDENTIAL_PROCESS_PATH__|$HOME/claude-code-with-bedrock/credential-process|g" \
-                "claude-settings/settings.json" > ~/.claude/settings.json
+        if [ "$SKIP_SETTINGS" != "true" ] && [ ! -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+            # No existing settings — just write directly
+            sed -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                "claude-settings/settings.json" > "$ACTUAL_HOME/.claude/settings.json"
+            echo "OK Claude Code settings configured: $ACTUAL_HOME/.claude/settings.json"
+        fi
+
+        # Replace placeholders in the final settings file
+        if [ -f "$ACTUAL_HOME/.claude/settings.json" ] && [ "$SKIP_SETTINGS" != "true" ]; then
+            sed -i.tmp -e "s|__OTEL_HELPER_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/otel-helper|g" \
+                       -e "s|__CREDENTIAL_PROCESS_PATH__|$ACTUAL_HOME/claude-code-with-bedrock/credential-process|g" \
+                       "$ACTUAL_HOME/.claude/settings.json"
+            rm -f "$ACTUAL_HOME/.claude/settings.json.tmp"
 
             # Verify placeholders were replaced
-            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' ~/.claude/settings.json 2>/dev/null; then
+            if grep -q '__CREDENTIAL_PROCESS_PATH__\\|__OTEL_HELPER_PATH__' "$ACTUAL_HOME/.claude/settings.json" 2>/dev/null; then
                 echo "WARNING: Some path placeholders were not replaced in settings.json"
-                echo "         You may need to edit the file manually: ~/.claude/settings.json"
-            else
-                echo "OK Claude Code settings configured: ~/.claude/settings.json"
+                echo "         You may need to edit the file manually: $ACTUAL_HOME/.claude/settings.json"
             fi
+        fi
+
+        if [ -n "$SUDO_USER" ] && [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+            chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/settings.json"
         fi
     fi
 fi
@@ -2427,23 +3139,60 @@ fi
 if [ -f "$OTEL_BINARY" ]; then
     echo
     echo "Installing OTEL helper..."
-    cp "$OTEL_BINARY" ~/claude-code-with-bedrock/otel-helper
-    chmod +x ~/claude-code-with-bedrock/otel-helper
-    xattr -d com.apple.quarantine ~/claude-code-with-bedrock/otel-helper 2>/dev/null || true
+    cp "$OTEL_BINARY" "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"
+    chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper"; fi
+    xattr -d com.apple.quarantine "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper" 2>/dev/null || true
     echo "✓ OTEL helper installed"
 fi
 
 # Add debug info if OTEL helper was installed
-if [ -f ~/claude-code-with-bedrock/otel-helper ]; then
+if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/otel-helper" ]; then
     echo "The OTEL helper will extract user attributes from authentication tokens"
     echo "and include them in metrics. To test the helper, run:"
-    echo "  ~/claude-code-with-bedrock/otel-helper --test"
+    echo "  $ACTUAL_HOME/claude-code-with-bedrock/otel-helper --test"
+fi
+
+# Install otelcol sidecar collector (present only in sidecar-mode packages).
+# The collector binary is built via OCB and SHIPPED in the package as
+# otelcol-$BINARY_SUFFIX, the same model as credential-process and otel-helper —
+# end users never download it. It receives OTLP from Claude Code on localhost:4318,
+# injects the user-attribution headers written by otel-helper, and forwards to
+# CloudWatch with SigV4.
+OTELCOL_BINARY="otelcol-$BINARY_SUFFIX"
+if [ -f "collector-config.yaml" ] && [ -f "$OTELCOL_BINARY" ]; then
+    echo
+    echo "Installing OTEL Collector sidecar..."
+
+    OTELCOL_DEST="$ACTUAL_HOME/claude-code-with-bedrock/otelcol"
+    cp "$OTELCOL_BINARY" "$OTELCOL_DEST"
+    chmod +x "$OTELCOL_DEST"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$OTELCOL_DEST"; fi
+    xattr -d com.apple.quarantine "$OTELCOL_DEST" 2>/dev/null || true
+    echo "✓ otelcol installed: $OTELCOL_DEST"
+
+    # Install collector config alongside the binary
+    cp "collector-config.yaml" "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml"; fi
+    echo "✓ Collector config installed"
+
+    # A dedicated <profile>-collector AWS profile is registered in the AWS profiles
+    # section below. otelcol resolves CloudWatch credentials through it via
+    # credential_process. The separate profile is needed because a user's static
+    # ~/.aws/credentials would otherwise shadow credential_process and cannot
+    # auto-refresh (see otel-helper.sh).
+elif [ -f "collector-config.yaml" ] && [ ! -f "$OTELCOL_BINARY" ]; then
+    echo
+    echo "⚠️  Sidecar config present but collector binary '$OTELCOL_BINARY' is missing."
+    echo "   The admin must run 'ccwb package' with Go 1.23+ installed to build the collector."
+    echo "   Telemetry will not be forwarded until the collector is installed."
 fi
 
 # Update AWS config
 echo
 echo "Configuring AWS profiles..."
-mkdir -p ~/.aws
+mkdir -p "$ACTUAL_HOME/.aws"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws"; fi
 
 # Read all profiles from config.json
 PROFILES=$($PYTHON -c "import json; profiles = list(json.load(open('config.json')).keys()); print(' '.join(profiles))")
@@ -2462,6 +3211,11 @@ if [ -f "claude-settings/settings.json" ]; then
 import json
 print(json.load(open('claude-settings/settings.json'))['env']['AWS_REGION'])
 " 2>/dev/null || echo "{profile.aws_region}")
+elif [ -f "claude-settings/managed-settings.json" ]; then
+    DEFAULT_REGION=$($PYTHON -c "
+import json
+print(json.load(open('claude-settings/managed-settings.json'))['env']['AWS_REGION'])
+" 2>/dev/null || echo "{profile.aws_region}")
 else
     DEFAULT_REGION="{profile.aws_region}"
 fi
@@ -2471,7 +3225,7 @@ for PROFILE_NAME in $PROFILES; do
     echo "Configuring AWS profile: $PROFILE_NAME"
 
     # Remove old profile if exists
-    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" ~/.aws/config 2>/dev/null || true
+    sed -i.bak "/\\[profile $PROFILE_NAME\\]/,/^$/d" "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
 
     # Get profile-specific region from config.json
     PROFILE_REGION=$($PYTHON -c "
@@ -2480,27 +3234,70 @@ print(json.load(open('config.json')).get('$PROFILE_NAME', {{}}).get('aws_region'
 ")
 
     # Add new profile with --profile flag (cross-platform, no shell required)
-    cat >> ~/.aws/config << EOF
+    cat >> "$ACTUAL_HOME/.aws/config" << EOF
 [profile $PROFILE_NAME]
-credential_process = $HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+credential_process = $ACTUAL_HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
 region = $PROFILE_REGION
 EOF
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
     echo "  ✓ Created AWS profile '$PROFILE_NAME'"
+
+    # Create a <profile>-collector profile for the otelcol sidecar (sidecar packages only).
+    # otelcol needs CloudWatch write access and resolves it via credential_process. A
+    # dedicated profile is used because a user's static ~/.aws/credentials would shadow
+    # credential_process on the main profile and cannot auto-refresh (see otel-helper.sh).
+    if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/collector-config.yaml" ]; then
+        sed -i.bak "/\\[profile ${{PROFILE_NAME}}-collector\\]/,/^$/d" "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+        cat >> "$ACTUAL_HOME/.aws/config" << EOF
+[profile ${{PROFILE_NAME}}-collector]
+credential_process = $ACTUAL_HOME/claude-code-with-bedrock/credential-process --profile $PROFILE_NAME
+region = $PROFILE_REGION
+EOF
+        echo "  ✓ Created AWS profile '${{PROFILE_NAME}}-collector' (otelcol SigV4 auth)"
+    fi
 done
 
 # Post-install validation
 echo
 echo "Validating installation..."
-if [ -f ~/claude-code-with-bedrock/credential-process ]; then
-    echo "  OK credential-process: ~/claude-code-with-bedrock/credential-process"
+if [ -f "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" ]; then
+    echo "  OK credential-process: $ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 else
-    echo "  FAIL credential-process not found at: ~/claude-code-with-bedrock/credential-process"
+    echo "  FAIL credential-process not found at: $ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 fi
-if [ -f ~/.claude/settings.json ]; then
-    echo "  OK settings.json: ~/.claude/settings.json"
+if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+    echo "  OK settings.json: $ACTUAL_HOME/.claude/settings.json"
 else
-    echo "  WARN settings.json not found at: ~/.claude/settings.json"
+    echo "  WARN settings.json not found at: $ACTUAL_HOME/.claude/settings.json"
 fi
+"""
+
+        # IDC auth needs a launcher wrapper that signs in before launching Claude.
+        # OIDC auth handles sign-in transparently, so no launcher is needed.
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
+        if _is_idc:
+            installer_content += """
+# Generate a 'claude-bedrock' launcher wrapper.
+# It signs in (a no-op when the session is still valid) so the verification URL
+# is shown live in the user's terminal, THEN launches Claude Code. This avoids
+# the "run claude \u2192 silent hang" trap for IDC: the interactive sign-in can't be
+# surfaced through Claude Code's own credential refresh, so we front-run it here
+# where stdout/stderr go straight to the terminal.
+CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
+LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
+FIRST_PROFILE=$(echo $PROFILES | awk '{print $1}')
+cat > "$LAUNCHER" << EOF
+#!/bin/bash
+# Launch Claude Code with Bedrock authentication.
+# Signs in first (no-op if already signed in), then runs claude.
+PROFILE="\\${AWS_PROFILE:-$FIRST_PROFILE}"
+"$CRED_PROC" --login --profile "\\$PROFILE" || exit 1
+export AWS_PROFILE="\\$PROFILE"
+exec claude "\\$@"
+EOF
+chmod +x "$LAUNCHER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$LAUNCHER"; fi
+echo "  \u2713 Created launcher: $LAUNCHER"
 
 echo
 echo "======================================"
@@ -2512,16 +3309,41 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo "To use Claude Code authentication:"
-echo "  export AWS_PROFILE=<profile-name>"
-echo "  aws sts get-caller-identity"
+echo ">>> Start Claude Code with the launcher, NOT 'claude' directly:"
+echo "      $LAUNCHER"
 echo
-echo "Example:"
-FIRST_PROFILE=$(echo $PROFILES | awk '{{print $1}}')
-echo "  export AWS_PROFILE=$FIRST_PROFILE"
-echo "  aws sts get-caller-identity"
+echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
+echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
+echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
+echo "    retrying \u2014 easy to miss. The launcher avoids that."
 echo
-echo "Note: Authentication will automatically open your browser when needed."
+echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
+echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
+echo
+echo "To use a non-default profile, set AWS_PROFILE before launching:"
+echo "  AWS_PROFILE=<profile-name> $LAUNCHER"
+echo
+"""
+        else:
+            installer_content += """
+echo
+echo "======================================"
+echo "Installation complete!"
+echo "======================================"
+echo
+echo "Available profiles:"
+for PROFILE_NAME in $PROFILES; do
+    echo "  - $PROFILE_NAME"
+done
+echo
+echo ">>> Start Claude Code:"
+echo "      claude"
+echo
+echo "    Authentication is handled automatically via your configured credential"
+echo "    process. Simply run 'claude' to start."
+echo
+echo "To use a non-default profile, set AWS_PROFILE before launching:"
+echo "  AWS_PROFILE=<profile-name> claude"
 echo
 """
 
@@ -2538,6 +3360,14 @@ echo
 
     def _create_windows_installer(self, output_dir: Path, profile) -> Path:
         """Create Windows batch installer script."""
+
+        # When monitoring is enabled, Claude Code's otelHeadersHelper points at
+        # otel-helper.cmd (which falls back to otel-helper.ps1 if AV blocks the
+        # .exe). Those files are then REQUIRED: a missing .cmd silently breaks all
+        # telemetry export. So the installer must fail loudly if they're absent.
+        # When monitoring is off, the helper isn't referenced, so their absence is
+        # harmless and the copy stays best-effort.
+        _otel_missing_is_fatal = bool(profile.monitoring_enabled)
 
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
@@ -2556,11 +3386,13 @@ echo.
 REM Check prerequisites
 echo Checking prerequisites...
 
+set HAS_AWS_CLI=0
 where aws >nul 2>&1
 if %errorlevel% neq 0 (
-    echo INFO: AWS CLI not found -- not required. The credential process binary handles authentication directly.
+    echo INFO: AWS CLI not found -- not required. Profiles will be configured directly.
 ) else (
-    echo OK AWS CLI found [optional]
+    set HAS_AWS_CLI=1
+    echo OK AWS CLI found
 )
 
 echo OK Prerequisites found
@@ -2585,6 +3417,70 @@ if exist "otel-helper-windows.exe" (
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
 )
 
+REM Copy the OTEL helper wrapper (.cmd) and its PowerShell fallback (.ps1).
+REM Claude Code's otelHeadersHelper points at otel-helper.cmd, which runs the
+REM fast .exe and falls back to the .ps1 if antivirus blocks the binary. When
+REM monitoring is enabled these files are REQUIRED — a missing .cmd makes Claude
+REM Code fail every telemetry export with "is not recognized as an internal or
+REM external command" and silently drops all metrics, so we fail the install
+REM loudly rather than leave a broken telemetry config.
+if exist "otel-helper.cmd" (
+    copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper.cmd
+        pause
+        exit /b 1
+    )
+) else (
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.cmd not found in package.
+{
+            '''    echo        Claude Code needs it to send telemetry [otelHeadersHelper].
+    echo        Re-extract the full package [including .cmd and .ps1 files] and retry.
+    pause
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - helper not required."
+        }
+)
+if exist "otel-helper.ps1" (
+    copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper.ps1
+        pause
+        exit /b 1
+    )
+) else (
+    echo {"ERROR" if _otel_missing_is_fatal else "INFO"}: otel-helper.ps1 not found in package.
+{
+            '''    echo        It is the antivirus fallback for otel-helper.cmd and is required.
+    echo        Re-extract the full package and run install.bat again.
+    pause
+    exit /b 1'''
+            if _otel_missing_is_fatal
+            else "    REM Monitoring disabled - fallback not required."
+        }
+)
+
+REM Install OTEL Collector sidecar (sidecar-mode packages only). otelcol is built
+REM via OCB and SHIPPED in the package as otelcol-windows.exe (same model as the
+REM other binaries) — never downloaded at install time. otel-helper.ps1 launches it
+REM from %USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe under the
+REM <profile>-collector AWS profile created below.
+if exist "collector-config.yaml" (
+    if exist "otelcol-windows.exe" (
+        echo Installing OTEL Collector sidecar...
+        copy /Y "otelcol-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe" >nul
+        copy /Y "collector-config.yaml" "%USERPROFILE%\\claude-code-with-bedrock\\collector-config.yaml" >nul
+        REM Unblock the downloaded binary so SmartScreen doesn't block subprocess launch
+        powershell -NoProfile -Command "Get-ChildItem '%USERPROFILE%\\claude-code-with-bedrock\\otelcol.exe' | Unblock-File" >nul 2>&1
+        echo OK OTEL Collector sidecar installed
+    ) else (
+        echo WARNING: Sidecar config present but otelcol-windows.exe is missing.
+        echo          The admin must run 'ccwb package' with Go 1.23+ to build the collector.
+        echo          Telemetry will not be forwarded until the collector is installed.
+    )
+)
+
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
@@ -2594,21 +3490,51 @@ if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
     if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"
 
-    REM Copy settings and replace placeholders
+    REM Install managed-settings.json (organization-wide enforcement) if present
+    if exist "claude-settings\\managed-settings.json" (
+        echo Managed settings detected [organization-wide enforcement]...
+
+        REM Check for Administrator privileges
+        net session >nul 2>&1
+        if %errorlevel% neq 0 (
+            echo ERROR: Managed settings require Administrator privileges.
+            echo        Right-click install.bat and select "Run as administrator"
+            echo        [Target: C:\\Program Files\\ClaudeCode\\managed-settings.json]
+            pause
+            exit /b 1
+        )
+
+        REM Create managed-settings directory
+        if not exist "C:\\Program Files\\ClaudeCode" mkdir "C:\\Program Files\\ClaudeCode"
+
+        REM Replace placeholders and write managed settings
+        powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\managed-settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content 'C:\\Program Files\\ClaudeCode\\managed-settings.json'"
+        echo OK Managed settings installed: C:\\Program Files\\ClaudeCode\\managed-settings.json
+        echo    These settings have highest precedence and cannot be overridden by users.
+    )
+
+    REM Copy user-scope settings.json if present (with merge support)
     if exist "claude-settings\\settings.json" (
         set SKIP_SETTINGS=false
         if exist "%USERPROFILE%\\.claude\\settings.json" (
-            echo Existing Claude Code settings found
-            set /p OVERWRITE="Overwrite with new settings? (y/n): "
-            if /i not "%OVERWRITE%"=="y" (
-                echo Skipping Claude Code settings...
-                set SKIP_SETTINGS=true
+            echo Existing Claude Code settings found - merging...
+
+            REM Merge new settings into existing (preserves user customizations)
+            powershell -NoProfile -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+            if %errorlevel% equ 0 (
+                echo OK Claude Code settings merged [user settings preserved]
+            ) else (
+                set /p OVERWRITE="Merge failed. Overwrite with new settings? (y/n): "
+                if /i not "%OVERWRITE%"=="y" (
+                    echo Skipping Claude Code settings...
+                    set SKIP_SETTINGS=true
+                )
             )
         )
 
-        if not "%SKIP_SETTINGS%"=="true" (
-            REM Use PowerShell to replace placeholders
-            powershell -Command "$otelPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.exe' -replace '\\\\', '/'; $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
+        if not "%SKIP_SETTINGS%"=="true" if not exist "%USERPROFILE%\\.claude\\settings.json" (
+            REM No existing settings - write directly
+            powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
     )
@@ -2625,20 +3551,82 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
     REM Get profile-specific region
     for /f %%r in ('powershell -NoProfile -Command "$c=Get-Content config.json|ConvertFrom-Json;$c.'"'"'%%p'"'"'.aws_region"') do set PROFILE_REGION=%%r
 
+    if "!HAS_AWS_CLI!"=="1" (
+        REM Use AWS CLI to configure profiles
+        aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+        if !errorlevel! neq 0 (
+            echo   ERROR: Failed to configure profile '%%p' via AWS CLI
+        ) else (
+            REM Set region
+            if defined PROFILE_REGION (
+                aws configure set region !PROFILE_REGION! --profile %%p
+            ) else (
+                aws configure set region {profile.aws_region} --profile %%p
+            )
+            echo   OK Created AWS profile '%%p'
 
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
-
-
-    REM Set region
-    if defined PROFILE_REGION (
-        aws configure set region !PROFILE_REGION! --profile %%p
+            REM Create a <profile>-collector profile for the otelcol sidecar. Runs only
+            REM inside the HAS_AWS_CLI=1 branch above. otelcol resolves CloudWatch
+            REM credentials via credential_process; a dedicated profile is used because a
+            REM user's static ~/.aws/credentials would shadow credential_process on the
+            REM main profile and cannot auto-refresh (see otel-helper.ps1).
+            if exist "%USERPROFILE%\\claude-code-with-bedrock\\collector-config.yaml" (
+                aws configure set credential_process "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p-collector
+                if defined PROFILE_REGION (
+                    aws configure set region !PROFILE_REGION! --profile %%p-collector
+                ) else (
+                    aws configure set region {profile.aws_region} --profile %%p-collector
+                )
+                echo   OK Created AWS profile '%%p-collector' [otelcol SigV4 auth]
+            )
+        )
     ) else (
-        aws configure set region {profile.aws_region} --profile %%p
+        REM No AWS CLI — write directly to ~/.aws/config using PowerShell.
+        REM Also writes a <profile>-collector profile when a sidecar collector config is
+        REM present, so otelcol can resolve CloudWatch creds via credential_process (the
+        REM main profile's static ~/.aws/credentials would shadow it; see otel-helper.ps1).
+        powershell -NoProfile -Command ^
+            "$configDir = Join-Path $env:USERPROFILE '.aws';" ^
+            "if (-not (Test-Path $configDir)) {{ New-Item -ItemType Directory -Path $configDir -Force | Out-Null }};" ^
+            "$configFile = Join-Path $configDir 'config';" ^
+            "$profileName = '%%p';" ^
+            "$region = if ('!PROFILE_REGION!' -ne '') {{ '!PROFILE_REGION!' }} else {{ '{profile.aws_region}' }};" ^
+            "$credProc = ($env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe --profile ' + $profileName) -replace '\\', '/';" ^
+            "$section = \"`n[profile $profileName]`nregion = $region`ncredential_process = $credProc`n\";" ^
+            "$existing = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }};" ^
+            "if ($existing -notmatch \"\\[profile $profileName\\]\") {{ Add-Content -Path $configFile -Value $section; Write-Host '  OK Created AWS profile ''$profileName''' }} else {{ Write-Host '  OK AWS profile ''$profileName'' already exists' }};" ^
+            "$collectorConfig = Join-Path $env:USERPROFILE 'claude-code-with-bedrock\\collector-config.yaml';" ^
+            "if (Test-Path $collectorConfig) {{ $collProfile = $profileName + '-collector'; $collSection = \"`n[profile $collProfile]`nregion = $region`ncredential_process = $credProc`n\"; $existing2 = if (Test-Path $configFile) {{ Get-Content $configFile -Raw }} else {{ '' }}; if ($existing2 -notmatch \"\\[profile $collProfile\\]\") {{ Add-Content -Path $configFile -Value $collSection; Write-Host '  OK Created AWS profile ''$collProfile'' [otelcol SigV4 auth]' }} }}"
     )
-
-    echo   OK Created AWS profile '%%p'
 )
+
+"""
+
+        # IDC auth needs a launcher wrapper; OIDC auth handles sign-in transparently.
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
+        if _is_idc:
+            installer_content += """
+REM Generate a 'claude-bedrock.cmd' launcher.
+REM It signs in first (no-op if the session is still valid) so the verification
+REM URL is shown live in the user's console, THEN launches Claude Code. This
+REM avoids the "run claude -> silent hang" trap for IDC, whose interactive
+REM sign-in cannot be surfaced through Claude Code's own credential refresh.
+REM
+REM Written with plain batch 'echo' redirection (NOT PowerShell) so the embedded
+REM quotes survive. In this script %%X%% becomes literal %X% in the .cmd, and
+REM %%* becomes %*, so the launcher's own runtime expansion is deferred.
+echo.
+echo Creating launcher...
+set "LAUNCHER=%USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd"
+set "CRED_PROC=%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe"
+set "FIRST_PROFILE="
+for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do set "FIRST_PROFILE=%%p"
+> "%LAUNCHER%" echo @echo off
+>> "%LAUNCHER%" echo if "%%AWS_PROFILE%%"=="" set AWS_PROFILE=!FIRST_PROFILE!
+>> "%LAUNCHER%" echo "%CRED_PROC%" --login --profile %%AWS_PROFILE%%
+>> "%LAUNCHER%" echo if errorlevel 1 exit /b 1
+>> "%LAUNCHER%" echo claude %%*
+echo   OK Created launcher: %LAUNCHER%
 
 echo.
 echo ======================================
@@ -2650,17 +3638,43 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
     echo   - %%p
 )
 echo.
-echo To use Claude Code authentication:
-echo   set AWS_PROFILE=^<profile-name^>
-echo   aws sts get-caller-identity
+echo ^>^>^> Start Claude Code with the launcher, NOT 'claude' directly:
+echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
 echo.
-echo Example:
-for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1"') do (
-    echo   set AWS_PROFILE=%%p
-    echo   aws sts get-caller-identity
+echo     The launcher signs you in (shows the sign-in URL in your terminal when
+echo     needed) and then starts Claude Code. If you run 'claude' directly without
+echo     an active sign-in, it can briefly flash a sign-in error and then keep
+echo     retrying - easy to miss. The launcher avoids that.
+echo.
+echo Tip: add that folder to your PATH so you can just run 'claude-bedrock'.
+echo.
+echo To use a non-default profile, set AWS_PROFILE before launching:
+echo   set AWS_PROFILE=^<profile-name^>
+echo   %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo.
+pause
+"""
+        else:
+            installer_content += """
+echo.
+echo ======================================
+echo Installation complete!
+echo ======================================
+echo.
+echo Available profiles:
+for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).PSObject.Properties.Name"') do (
+    echo   - %%p
 )
 echo.
-echo Note: Authentication will automatically open your browser when needed.
+echo ^>^>^> Start Claude Code:
+echo       claude
+echo.
+echo     Authentication is handled automatically via your configured credential
+echo     process. Simply run 'claude' to start.
+echo.
+echo To use a non-default profile, set AWS_PROFILE before launching:
+echo   set AWS_PROFILE=^<profile-name^>
+echo   claude
 echo.
 pause
 """
@@ -2834,7 +3848,7 @@ Available metrics include:
 """
             readme_content += analytics_section
 
-        readme_content += "\n" ""
+        readme_content += "\n"
 
         with open(output_dir / "README.md", "w", encoding="utf-8") as f:
             f.write(readme_content)
@@ -2846,6 +3860,7 @@ Available metrics include:
         include_coauthored_by: bool = True,
         profile_name: str = "ClaudeCode",
         otel_resource_attributes: str | None = None,
+        is_idc_zero_binary: bool = False,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -2863,25 +3878,82 @@ Available metrics include:
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     # AWS_PROFILE is used by both AWS SDK and otel-helper
                     "AWS_PROFILE": profile_name,
-                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
-                    # directly without requiring the AWS CLI or ~/.aws/config.
-                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
-                    # install.sh/install.bat with the actual binary path at install time.
-                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
                 }
             }
+            # IDC zero-binary: AWS_PROFILE + ~/.aws/config SSO profile handle creds
+            # directly — no credential-process binary exists to reference.
+            if not is_idc_zero_binary:
+                # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                # install.sh/install.bat with the actual binary path at install time.
+                settings["env"]["AWS_CREDENTIAL_PROCESS"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
             # Only add the field if the user wants it disabled
             if not include_coauthored_by:
                 settings["includeCoAuthoredBy"] = False
 
-            # Add awsAuthRefresh for session-based credential storage
-            if profile.credential_storage == "session":
+            # For IDC, disable the EC2 instance-metadata credential provider. If a
+            # credential refresh ever fails, the AWS SDK credential chain would
+            # otherwise fall through to the instance role on EC2 — silently running
+            # Claude Code as the wrong identity (breaking cost attribution and quota,
+            # and masking the failure). With IMDS disabled, a refresh failure surfaces
+            # as a clear credentials error instead. IDC identity comes solely from the
+            # credential-process binary, so nothing legitimately needs IMDS here.
+            if profile.effective_auth_type == "idc":
+                settings["env"]["AWS_EC2_METADATA_DISABLED"] = "true"
+
+            # Credential refresh on expiry. AWS_CREDENTIAL_PROCESS (set above) is
+            # ignored by Claude Code once a hook below is set, and on its own it is
+            # resolved only at startup — so a long session would retry stale
+            # credentials (and on EC2 the SDK chain falls back to the instance role —
+            # wrong identity). Claude Code offers two hooks, which behave differently
+            # and (verified empirically) are COMPLEMENTARY when both are set:
+            #
+            #   awsCredentialExport — output captured SILENTLY as credential JSON; the
+            #                         primary resolver, re-invoked automatically ~5 min
+            #                         before the Expiration we emit (Claude Code
+            #                         >= 2.1.176; flat credential_process JSON accepted
+            #                         >= 2.1.181). Drives the silent hourly STS refresh.
+            #   awsAuthRefresh      — output is DISPLAYED to the user; fires on the FIRST
+            #                         credential failure (not on every retry). This is the
+            #                         only channel that surfaces our sign-in message —
+            #                         awsCredentialExport discards stderr.
+            #
+            # IDC needs BOTH:
+            #   - awsCredentialExport for the silent ~hourly role-credential refresh
+            #     (SSO session still valid -> re-mint via STS, no browser); and
+            #   - awsAuthRefresh so that when there is NO valid SSO session, the binary's
+            #     fail-fast message ("relaunch with claude-bedrock") is shown to the user
+            #     instead of a silent retry loop. The fail-fast guard makes the binary
+            #     exit immediately here, so awsAuthRefresh does NOT hang (the original
+            #     reason it was dropped for IDC). The ~8h SSO-session re-login itself
+            #     still happens out-of-band via the claude-bedrock launcher.
+            #
+            # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
+            # can be interactive (browser), which is exactly what that hook is for.
+            if profile.effective_auth_type == "idc" and not is_idc_zero_binary:
+                # IDC+quota path: credential-process binary handles STS refresh + quota.
+                settings["awsCredentialExport"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
+                settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --login --profile {profile_name}"
+            elif profile.effective_auth_type == "idc" and is_idc_zero_binary:
+                # IDC zero-binary: no credential-process. AWS SDK resolves via the
+                # ClaudeCode SSO profile in ~/.aws/config written by install.sh.
+                # Session expiry is handled out-of-band via `aws sso login`.
+                pass
+            elif profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
-            # Add ANTHROPIC_MODEL if user selected a model during init
-            if hasattr(profile, "selected_model") and profile.selected_model:
+            # Add ANTHROPIC_MODEL if user selected a model during init.
+            # For managed-settings: only write when lock_default_model is True (admin opt-in).
+            # For user-scope settings: always write (users can override via /model).
+            settings_target = getattr(profile, "settings_target", "user")
+            lock_model = getattr(profile, "lock_default_model", False)
+            should_write_model = (
+                hasattr(profile, "selected_model")
+                and profile.selected_model
+                and (settings_target != "managed" or lock_model)
+            )
+            if should_write_model:
                 from claude_code_with_bedrock.models import get_claude_code_alias, resolve_model_for_tier
 
                 # Use a Claude Code alias (sonnet/opus/opusplan/haiku) so ANTHROPIC_MODEL
@@ -2911,16 +3983,35 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Try profile first (saved by ccwb deploy), fall back to CloudFormation query
-                endpoint = getattr(profile, "otel_collector_endpoint", None)
+                _monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
-                if not endpoint:
+                # Sidecar mode: Claude Code always sends to the local otelcol on
+                # localhost:4318. There is no central monitoring stack to read a
+                # CollectorEndpoint from, so resolve the endpoint up front and skip
+                # the profile/CloudFormation/prompt resolution below (which only
+                # applies to central mode). Doing this here — rather than as an
+                # override after resolution — is what actually configures telemetry
+                # for sidecar packages: real sidecar deploys have no saved
+                # otel_collector_endpoint, so the old post-resolution override never
+                # ran and telemetry was silently left unconfigured.
+                if _monitoring_mode == "sidecar":
+                    endpoint = "http://localhost:4318"
+                else:
+                    # Central mode: try profile first (saved by ccwb deploy), then
+                    # fall back to CloudFormation query.
+                    endpoint = getattr(profile, "otel_collector_endpoint", None)
+
+                if not endpoint and _monitoring_mode != "sidecar":
                     # Fall back to reading from CloudFormation stack outputs
                     # Try multiple possible stack name patterns
                     possible_stacks = [
                         profile.stack_names.get("monitoring"),
-                        f"{profile.identity_pool_name}-otel-collector" if hasattr(profile, "identity_pool_name") and profile.identity_pool_name else None,
-                        f"{profile.stack_names.get('auth', '')}-otel-collector" if profile.stack_names.get("auth") else None,
+                        f"{profile.identity_pool_name}-otel-collector"
+                        if hasattr(profile, "identity_pool_name") and profile.identity_pool_name
+                        else None,
+                        f"{profile.stack_names.get('auth', '')}-otel-collector"
+                        if profile.stack_names.get("auth")
+                        else None,
                     ]
                     # Remove None/empty entries
                     possible_stacks = [s for s in possible_stacks if s]
@@ -2956,19 +4047,27 @@ Available metrics include:
                             profile.otel_collector_endpoint = endpoint
                             try:
                                 from claude_code_with_bedrock.config import Config
+
                                 config = Config.load()
                                 config.save_profile(profile)
-                                console.print(f"[dim]Found endpoint from stack '{monitoring_stack}', saved to profile[/dim]")
+                                console.print(
+                                    f"[dim]Found endpoint from stack '{monitoring_stack}', saved to profile[/dim]"
+                                )
                             except Exception:
                                 pass
                             break
 
                 if not endpoint:
                     # Monitoring stack not deployed or endpoint not found
-                    console.print("[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]")
-                    console.print("[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]")
+                    console.print(
+                        "[yellow]Warning: No OTel collector endpoint found in profile or CloudFormation.[/yellow]"
+                    )
+                    console.print(
+                        "[yellow]Run 'ccwb deploy' to deploy the monitoring stack, or enter the endpoint manually.[/yellow]"
+                    )
                     try:
                         import questionary
+
                         endpoint = questionary.text(
                             "OTel collector endpoint URL (leave blank to skip telemetry):",
                             default="",
@@ -2980,39 +4079,61 @@ Available metrics include:
                             profile.otel_collector_endpoint = endpoint
                             try:
                                 from claude_code_with_bedrock.config import Config
+
                                 config = Config.load()
                                 config.save_profile(profile)
-                                console.print(f"[dim]Saved endpoint to profile[/dim]")
+                                console.print("[dim]Saved endpoint to profile[/dim]")
                             except Exception:
                                 pass
                     except Exception:
                         pass
 
                 if endpoint:
-                    # Add monitoring configuration
+                    # Add monitoring configuration. In sidecar mode `endpoint` was
+                    # already resolved to http://localhost:4318 above; in central
+                    # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
                         "department=engineering,team.id=default,"
                         "cost_center=default,organization=default,"
                         "project=default"
                     )
+
                     settings["env"].update(
                         {
                             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                             "OTEL_METRICS_EXPORTER": "otlp",
-                            "OTEL_LOGS_EXPORTER": "otlp",
+                            # The collector defines only a metrics pipeline, so /v1/logs is
+                            # dropped (4xx). Explicitly disable logs export rather than deleting
+                            # the key so a global/user default can't re-enable "otlp".
+                            "OTEL_LOGS_EXPORTER": "none",
                             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                             "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
                             "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
                         }
                     )
 
-                    # Add the helper executable for generating OTEL headers with user attributes
-                    # Use a placeholder that will be replaced by the installer script based on platform
-                    settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                    # Add the helper executable for generating per-user OTEL headers.
+                    # The placeholder is replaced by the installer with the platform path.
+                    #
+                    # When IS this needed?
+                    #   - OIDC: always — the helper extracts user attributes from the JWT.
+                    #   - IDC with the credential-process binary (e.g. quota enabled): the
+                    #     binary resolves the user's email from the IAM ARN session name and
+                    #     caches it (writeOtelCacheFromIDC / writeOtelCacheFromSTS); the helper
+                    #     serves that cache as x-user-email so the collector attributes metrics
+                    #     PER USER. Without the helper, IDC dashboards collapse to a single
+                    #     static identity.
+                    #   - IDC zero-binary (no credential-process): there's no binary to compute
+                    #     identity at runtime, so attribution comes from the static identity
+                    #     baked into the collector config — no helper to wire here.
+                    _is_idc = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
+                    _idc_zero_binary = _is_idc and not bool(getattr(profile, "quota_api_endpoint", None))
+                    if not _idc_zero_binary:
+                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
 
                     is_https = endpoint.startswith("https://")
                     console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")
-                    if not is_https:
+                    if not is_https and _monitoring_mode != "sidecar":
                         console.print(
                             "[dim]WARNING: Using HTTP endpoint - consider enabling HTTPS for production[/dim]"
                         )
@@ -3020,8 +4141,15 @@ Available metrics include:
                     console.print("[red]ERROR: Monitoring enabled but no OTel endpoint configured.[/red]")
                     console.print("[red]Run 'ccwb deploy' first or set otel_collector_endpoint in the profile.[/red]")
 
-            # Save settings.json
-            settings_path = claude_dir / "settings.json"
+            # Determine output filename based on settings_target
+            settings_target = getattr(profile, "settings_target", "user")
+            if settings_target == "managed":
+                settings_filename = "managed-settings.json"
+                console.print("[dim]Writing to managed-settings.json (OS-level enforcement)[/dim]")
+            else:
+                settings_filename = "settings.json"
+
+            settings_path = claude_dir / settings_filename
             with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
 
@@ -3029,7 +4157,6 @@ Available metrics include:
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create Claude Code settings: {e}[/yellow]")
-
 
     def _generate_cowork_3p_mdm_config(
         self,
@@ -3059,7 +4186,18 @@ Available metrics include:
                 bedrock_region=bedrock_region,
                 model_aliases=model_aliases,
                 profile_name=profile_name,
+                extra_keys=profile.cowork_3p_extra_keys or None,
+                credential_mode=getattr(profile, "cowork_credential_mode", "helper"),
+                credential_helper_ttl_sec=getattr(profile, "cowork_credential_helper_ttl_sec", 3500),
             )
+
+            # Beta features (per-feature managed configuration keys)
+            if getattr(profile, "cowork_chat_tab_enabled", False):
+                mdm_config["chatTabEnabled"] = True
+            if getattr(profile, "cowork_chat_advanced_file_analysis", False):
+                mdm_config["chatAdvancedFileAnalysisEnabled"] = True
+            if getattr(profile, "cowork_inference_session_lifetime_sec", None):
+                mdm_config["inferenceSessionLifetimeSec"] = profile.cowork_inference_session_lifetime_sec
 
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)

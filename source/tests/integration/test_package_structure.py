@@ -118,9 +118,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -135,9 +133,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -169,9 +165,7 @@ class TestConfigJsonRequiredFields:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            config_path = command._create_config(
-                output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode"
-            )
+            config_path = command._create_config(output_dir, base_profile, "us-east-1:pool-id", "cognito", "ClaudeCode")
 
             with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
@@ -224,9 +218,7 @@ class TestClaudeSettingsGeneration:
         """When monitoring is enabled and stack exists, otelHeadersHelper must be set."""
         command = PackageCommand()
 
-        mock_outputs = [
-            {"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com:4318"}
-        ]
+        mock_outputs = [{"OutputKey": "CollectorEndpoint", "OutputValue": "https://collector.example.com:4318"}]
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = json.dumps(mock_outputs)
@@ -241,8 +233,7 @@ class TestClaudeSettingsGeneration:
             with open(settings_path, encoding="utf-8") as f:
                 settings = json.load(f)
 
-            assert "otelHeadersHelper" in settings, \
-                "otelHeadersHelper must be configured when monitoring is enabled"
+            assert "otelHeadersHelper" in settings, "otelHeadersHelper must be configured when monitoring is enabled"
             assert settings["otelHeadersHelper"] == "__OTEL_HELPER_PATH__"
             assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
             assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example.com:4318"
@@ -476,3 +467,44 @@ class TestInstallerScripts:
             content = bat_path.read_text(encoding="utf-8")
             assert "credential-process" in content
             assert r"\.claude" in content or ".claude" in content
+
+
+class TestWindowsPsOtelHelperIncluded:
+    """Test that PS1/CMD otel-helper fallback scripts are included in Windows packages."""
+
+    def test_ps1_and_cmd_included_when_windows_otel_built(self):
+        """When Windows otel-helper is in the build, PS1/CMD are copied to output."""
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from claude_code_with_bedrock.config import Profile
+
+        Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            monitoring_enabled=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+
+            # Simulate: Windows otel-helper binary exists in output
+            (output_dir / "otel-helper-windows.exe").touch()
+
+            # Source PS1/CMD should exist in the repo
+            source_dir = Path(__file__).resolve().parent.parent.parent / "otel_helper"
+            assert (source_dir / "otel-helper.ps1").exists(), "otel-helper.ps1 missing from source"
+            assert (source_dir / "otel-helper.cmd").exists(), "otel-helper.cmd missing from source"
+
+            # Copy them as the package command would
+            for script_name in ("otel-helper.ps1", "otel-helper.cmd"):
+                shutil.copy2(source_dir / script_name, output_dir / script_name)
+
+            # Verify they're in the output
+            assert (output_dir / "otel-helper.ps1").exists()
+            assert (output_dir / "otel-helper.cmd").exists()

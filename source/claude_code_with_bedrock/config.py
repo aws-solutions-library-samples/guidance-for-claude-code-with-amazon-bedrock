@@ -5,7 +5,7 @@
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +34,17 @@ class Profile:
     cross_region_profile: str | None = None  # Cross-region profile: "us", "europe", "apac"
     selected_model: str | None = None  # Selected Claude model ID (e.g., "us.anthropic.claude-3-7-sonnet-20250805-v1:0")
     model_alias: str | None = None  # Claude Code alias for ANTHROPIC_MODEL: "sonnet", "opus", "opusplan", "haiku"
+    lock_default_model: bool = (
+        False  # Write ANTHROPIC_MODEL + DEFAULT_*_MODEL into managed-settings (locks users to admin's choice)
+    )
     selected_source_region: str | None = None  # User-selected source region for AWS config and Claude Code settings
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     provider_type: str | None = None  # Auto-detected: "okta", "auth0", "azure", "cognito", "google", "generic"
     cognito_user_pool_id: str | None = None  # Only for Cognito User Pool providers
-    okta_auth_server: str = ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    okta_auth_server: str = (
+        ""  # Okta authorization server ID ("default" for dev/free plans, empty for Org server on paid plans)
+    )
 
     # Generic OIDC provider configuration (provider_type == "generic")
     # Required when the IdP isn't Okta/Auth0/Azure/Cognito (e.g. PingFederate, Keycloak, ForgeRock).
@@ -49,17 +54,32 @@ class Profile:
     oidc_token_endpoint: str | None = None  # Full URL or path appended to issuer
     oidc_jwks_uri: str | None = None  # Full URL to JWKS endpoint
     oidc_thumbprint: str | None = None  # SHA-1 thumbprint of root cert in JWKS TLS chain
+    oidc_prompt: str | None = None  # OIDC prompt param for Azure auth (default "select_account", "" to skip)
     enable_codebuild: bool = False  # Enable CodeBuild for Windows binary builds
+    codebuild_region: str | None = None  # Region for CodeBuild stack/builds; falls back to aws_region when unset
+    codebuild_prior_regions: list[str] = field(
+        default_factory=list
+    )  # Regions a CodeBuild stack was previously deployed to (so destroy can clean orphans after a region change)
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
     distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
-    distribution_idp_provider: str | None = None  # "okta" | "azure" | "auth0" | "cognito" (for landing-page only)
+    distribution_idp_provider: str | None = None  # okta|azure|auth0|cognito|generic (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+
+    # Generic OIDC distribution config (distribution_idp_provider == "generic").
+    # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,
+    # Keycloak, ForgeRock). Unlike those providers, ALB authenticate-oidc endpoints cannot be
+    # derived from a single domain, so each must be supplied explicitly. The ALB runs the OAuth
+    # authorization-code flow (not JWT signature validation), so no JWKS/thumbprint is needed here.
+    distribution_idp_issuer: str | None = None  # OIDC issuer URL (must match the 'iss' claim)
+    distribution_idp_authorization_endpoint: str | None = None  # Full authorization endpoint URL
+    distribution_idp_token_endpoint: str | None = None  # Full token endpoint URL
+    distribution_idp_userinfo_endpoint: str | None = None  # Full userinfo endpoint URL
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
@@ -87,6 +107,18 @@ class Profile:
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
     sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
+    # Authentication type — explicit three-way classification
+    # "oidc"  = OIDC/Direct IdP path (Okta, Azure AD, Auth0, Cognito, Google) — default
+    # "idc"   = AWS IAM Identity Center path
+    # "none"  = no SSO, use existing AWS credentials directly
+    auth_type: str = "oidc"
+
+    # IAM Identity Center specific fields (only populated when auth_type == "idc")
+    idc_start_url: str | None = None  # e.g. https://company.awsapps.com/start
+    idc_account_id: str | None = None  # AWS account ID for IDC access
+    idc_permission_set_name: str | None = None  # Permission set / role name
+    sso_region: str | None = None  # AWS region where Identity Center is configured
+
     # Confidential client authentication (Azure AD / Entra ID)
     # If neither is set, public client flow is used (current default).
     # If azure_auth_mode == "secret", the client secret is stored in the OS keyring
@@ -111,8 +143,26 @@ class Profile:
     # Claude Code settings configuration
     include_coauthored_by: bool = True  # Whether to include "co-authored-by Claude" in git commits
 
+    # Settings deployment target
+    # "user" = ~/.claude/settings.json (default, lowest precedence)
+    # "managed" = OS-level managed-settings.json (highest precedence, non-overridable)
+    settings_target: str = "user"
+
     # Claude Cowork 3P MDM configuration
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
+    cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
+    cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
+    cowork_credential_mode: str = (
+        "helper"  # "helper" (inferenceCredentialHelper) or "profile" (inferenceBedrockProfile)
+    )
+    cowork_credential_helper_ttl_sec: int = 3500  # inferenceCredentialHelperTtlSec (refresh before 1h STS expiry)
+
+    # Cowork beta features (managed configuration keys)
+    cowork_chat_tab_enabled: bool = True  # chatTabEnabled — enables the Chat tab
+    cowork_chat_advanced_file_analysis: bool = (
+        True  # chatAdvancedFileAnalysisEnabled — code execution for file analysis
+    )
+    cowork_inference_session_lifetime_sec: int | None = None  # inferenceSessionLifetimeSec — re-auth reminder timer
 
     # Legacy field support
     @property
@@ -124,6 +174,13 @@ class Profile:
     def okta_client_id(self) -> str:
         """Legacy property for backward compatibility."""
         return self.client_id
+
+    @property
+    def effective_auth_type(self) -> str:
+        """Resolve auth_type with backward compatibility for sso_enabled."""
+        if hasattr(self, "auth_type") and self.auth_type:
+            return self.auth_type
+        return "oidc" if self.sso_enabled else "none"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary."""
@@ -149,6 +206,13 @@ class Profile:
         # Provide default for credential_storage if not present
         if "credential_storage" not in data:
             data["credential_storage"] = "session"
+
+        # Derive auth_type from sso_enabled for backward compatibility
+        if "auth_type" not in data:
+            if data.get("sso_enabled", True):
+                data["auth_type"] = "oidc"
+            else:
+                data["auth_type"] = "none"
 
         # Infer sso_enabled for profiles saved before PR #71 introduced the field:
         # if provider_domain is set to a real value, SSO was enabled.
@@ -176,7 +240,11 @@ class Profile:
                         # Check for exact domain match or subdomain match
                         # Using endswith with leading dot prevents bypass attacks
                         okta_domains = (".okta.com", ".oktapreview.com", ".okta-emea.com")
-                        if hostname_lower.endswith(okta_domains) or hostname_lower in ("okta.com", "oktapreview.com", "okta-emea.com"):
+                        if hostname_lower.endswith(okta_domains) or hostname_lower in (
+                            "okta.com",
+                            "oktapreview.com",
+                            "okta-emea.com",
+                        ):
                             data["provider_type"] = "okta"
                         elif hostname_lower.endswith(".auth0.com") or hostname_lower == "auth0.com":
                             data["provider_type"] = "auth0"
@@ -322,12 +390,11 @@ class Config:
         # Validate profile name
         if not self._is_valid_profile_name(profile.name):
             raise ValueError(
-                f"Invalid profile name: {profile.name}. "
-                "Name must be alphanumeric with hyphens only, max 64 characters."
+                f"Invalid profile name: {profile.name}. Name must be alphanumeric with hyphens only, max 64 characters."
             )
 
         # Update timestamp
-        profile.updated_at = datetime.utcnow().isoformat()
+        profile.updated_at = datetime.now(timezone.utc).isoformat()
 
         # Ensure profile directory exists
         self.PROFILES_DIR.mkdir(parents=True, exist_ok=True)

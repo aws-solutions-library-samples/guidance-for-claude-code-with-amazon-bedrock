@@ -36,7 +36,9 @@ class TestModelConfiguration:
     def test_claude_models_structure(self):
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
+            "fable-5",
             "sonnet-4-6",
+            "opus-4-8",
             "opus-4-7",
             "opus-4-6",
             "opus-4-5",
@@ -95,6 +97,9 @@ class TestModelConfiguration:
     def test_get_available_profiles_for_model(self):
         """Test getting available profiles for each model."""
         # Test valid models
+        fable_5_profiles = get_available_profiles_for_model("fable-5")
+        assert set(fable_5_profiles) == {"us", "eu", "global"}
+
         opus_4_6_profiles = get_available_profiles_for_model("opus-4-6")
         assert set(opus_4_6_profiles) == {"us", "eu", "au", "global"}  # Opus 4.6 has global and regional profiles
 
@@ -124,6 +129,11 @@ class TestModelConfiguration:
 
     def test_get_model_id_for_profile(self):
         """Test getting model IDs for specific profiles."""
+        # Test Fable profiles
+        assert get_model_id_for_profile("fable-5", "us") == "us.anthropic.claude-fable-5"
+        assert get_model_id_for_profile("fable-5", "global") == "global.anthropic.claude-fable-5"
+        assert get_model_id_for_profile("fable-5", "eu") == "eu.anthropic.claude-fable-5"
+
         # Test US profiles
         assert get_model_id_for_profile("opus-4-6", "us") == "us.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("opus-4-1", "us") == "us.anthropic.claude-opus-4-1-20250805-v1:0"
@@ -207,6 +217,9 @@ class TestModelConfiguration:
         assert set(display_names.keys()) == expected_entries
 
         # Test specific display names
+        assert display_names["global.anthropic.claude-fable-5"] == "Claude Fable 5 (GLOBAL)"
+        assert display_names["us.anthropic.claude-fable-5"] == "Claude Fable 5"
+        assert display_names["eu.anthropic.claude-fable-5"] == "Claude Fable 5 (EU)"
         assert display_names["global.anthropic.claude-opus-4-6-v1"] == "Claude Opus 4.6 (GLOBAL)"
         assert display_names["us.anthropic.claude-opus-4-6-v1"] == "Claude Opus 4.6"
         assert display_names["us.anthropic.claude-opus-4-1-20250805-v1:0"] == "Claude Opus 4.1"
@@ -342,11 +355,13 @@ class TestGetAllBedrockRegions:
 
     def test_returns_sorted_list(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         assert regions == sorted(regions)
 
     def test_contains_major_regions(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         # Must include key commercial regions
         assert "us-east-1" in regions
@@ -357,20 +372,24 @@ class TestGetAllBedrockRegions:
 
     def test_no_duplicates(self):
         from claude_code_with_bedrock.models import get_all_bedrock_regions
+
         regions = get_all_bedrock_regions()
         assert len(regions) == len(set(regions))
 
     def test_all_regions_valid_format(self):
         """All regions should match AWS region format."""
         import re
+
         from claude_code_with_bedrock.models import get_all_bedrock_regions
-        pattern = re.compile(r'^[a-z]{2}(-gov)?-(north|south|east|west|central|northeast|southeast)-\d+$')
+
+        pattern = re.compile(r"^[a-z]{2}(-gov)?-(north|south|east|west|central|northeast|southeast)-\d+$")
         for region in get_all_bedrock_regions():
             assert pattern.match(region), f"Invalid region format: {region}"
 
     def test_consistent_with_model_data(self):
         """Every destination region in CLAUDE_MODELS should appear (excluding sentinels)."""
         from claude_code_with_bedrock.models import CLAUDE_MODELS, get_all_bedrock_regions
+
         regions = set(get_all_bedrock_regions())
         for model_config in CLAUDE_MODELS.values():
             for profile_config in model_config.get("profiles", {}).values():
@@ -477,9 +496,22 @@ class TestResolveModelForTier:
         """Haiku CRIS model IDs resolve to 'haiku' alias."""
         assert get_claude_code_alias("us.anthropic.claude-haiku-4-5-20251001-v1:0") == "haiku"
 
+    def test_get_claude_code_alias_fable(self):
+        """Fable CRIS model IDs resolve to 'fable' alias."""
+        assert get_claude_code_alias("us.anthropic.claude-fable-5") == "fable"
+        assert get_claude_code_alias("eu.anthropic.claude-fable-5") == "fable"
+
     def test_get_claude_code_alias_unknown(self):
         """Unknown model IDs return None."""
         assert get_claude_code_alias("us.anthropic.claude-unknown-99") is None
+
+    def test_fable_tier_resolves(self):
+        """Fable tier resolves to correct CRIS model IDs."""
+        from claude_code_with_bedrock.models import resolve_model_for_tier
+
+        assert resolve_model_for_tier("fable", "eu") == "eu.anthropic.claude-fable-5"
+        assert resolve_model_for_tier("fable", "us") == "us.anthropic.claude-fable-5"
+        assert resolve_model_for_tier("fable", "global") == "global.anthropic.claude-fable-5"
 
     def test_data_residency_prefixes_match_api(self):
         """Every prefix from the live API should resolve all available tiers."""
@@ -487,8 +519,9 @@ class TestResolveModelForTier:
 
         # These must resolve to their own prefix (not global/us)
         for prefix in ["us", "eu", "au", "global"]:
-            for tier in ["haiku", "sonnet", "opus"]:
+            for tier in ["haiku", "sonnet", "opus", "fable"]:
                 result = resolve_model_for_tier(tier, prefix)
                 if result is not None:
-                    assert f"{prefix}." in result, \
+                    assert f"{prefix}." in result, (
                         f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    )

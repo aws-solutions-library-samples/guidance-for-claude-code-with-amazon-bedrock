@@ -5,8 +5,6 @@ provider domain URLs, not pass the full URL as AzureTenantId. The auth
 deploy path was fixed in #53, but the distribution path was missed.
 """
 
-import re
-
 import pytest
 
 from claude_code_with_bedrock.cli.commands.deploy import _extract_azure_tenant_id
@@ -32,8 +30,7 @@ class TestAzureTenantIdExtraction:
         """Tenant GUID is correctly extracted from all supported URL formats."""
         result = _extract_azure_tenant_id(input_domain)
         assert result == self.VALID_GUID, (
-            f"Expected bare GUID '{self.VALID_GUID}' but got '{result}' "
-            f"from input '{input_domain}'"
+            f"Expected bare GUID '{self.VALID_GUID}' but got '{result}' from input '{input_domain}'"
         )
 
     def test_result_is_bare_guid_not_url(self):
@@ -73,7 +70,7 @@ class TestAzureTenantIdExtraction:
         for i, line in enumerate(lines):
             if "AzureTenantId=" in line and "profile." in line and "_domain" in line:
                 assert "_extract_azure_tenant_id" in line, (
-                    f"Line {i+1}: AzureTenantId parameter passes raw domain directly.\n"
+                    f"Line {i + 1}: AzureTenantId parameter passes raw domain directly.\n"
                     f"  Found: {line.strip()}\n"
                     f"  Must use _extract_azure_tenant_id() to extract GUID.\n"
                     f"  This prevents issue #351 (URL duplication in distribution path)."

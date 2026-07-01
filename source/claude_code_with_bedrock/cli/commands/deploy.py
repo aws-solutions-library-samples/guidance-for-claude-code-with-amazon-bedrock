@@ -24,15 +24,18 @@ from claude_code_with_bedrock.cli.utils.cf_exceptions import (
     StackRollbackError,
 )
 from claude_code_with_bedrock.cli.utils.cloudformation import CloudFormationManager
+from claude_code_with_bedrock.cli.utils.helpers import (
+    CODEBUILD_WINDOWS_REGIONS,
+    find_nearest_codebuild_region,
+    get_codebuild_region,
+)
 from claude_code_with_bedrock.config import Config
 
 # Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
 #   login.microsoftonline.com/{tenant-id}/v2.0
 #   https://login.microsoftonline.com/{tenant-id}
 #   {tenant-id} (bare GUID)
-_AZURE_GUID_PATTERN = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+_AZURE_GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _extract_azure_tenant_id(domain: str) -> str:
@@ -113,23 +116,33 @@ class DeployCommand(Command):
         if stack_arg:
             # Deploy specific stack
             if stack_arg == "auth":
-                if not getattr(profile, "sso_enabled", True):
-                    console.print("[yellow]SSO authentication is disabled in your configuration.[/yellow]")
-                    console.print("Enable it by running: [cyan]poetry run ccwb init[/cyan]")
+                if profile.effective_auth_type == "none":
+                    console.print("[yellow]Authentication stack is disabled for 'none' auth type.[/yellow]")
+                    console.print("Enable authentication by running: [cyan]poetry run ccwb init[/cyan]")
                     return 1
                 stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
             elif stack_arg == "networking":
-                if profile.monitoring_enabled:
-                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-                else:
+                if not profile.monitoring_enabled:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+                if getattr(profile, "monitoring_mode", "central") == "sidecar":
+                    console.print(
+                        "[yellow]Networking stack is not used in sidecar monitoring mode "
+                        "(the local OTEL collector needs no VPC/subnets).[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
             elif stack_arg == "monitoring":
-                if profile.monitoring_enabled:
-                    stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
-                else:
+                if not profile.monitoring_enabled:
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
+                if getattr(profile, "monitoring_mode", "central") == "sidecar":
+                    console.print(
+                        "[yellow]The central OTEL collector stack is not used in sidecar mode "
+                        "(telemetry is sent to CloudWatch by the local collector).[/yellow]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
             elif stack_arg == "dashboard":
                 if profile.monitoring_enabled:
                     stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
@@ -141,7 +154,9 @@ class DeployCommand(Command):
                     console.print("[yellow]Monitoring is not enabled in your configuration.[/yellow]")
                     return 1
                 if getattr(profile, "monitoring_mode", "central") == "sidecar":
-                    console.print("[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]")
+                    console.print(
+                        "[yellow]CoWork dashboard requires central monitoring mode (Cowork cannot export telemetry in sidecar mode).[/yellow]"
+                    )
                     return 1
                 stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
             elif stack_arg == "analytics":
@@ -151,13 +166,13 @@ class DeployCommand(Command):
                     console.print("[yellow]Analytics requires monitoring to be enabled in your configuration.[/yellow]")
                     return 1
             elif stack_arg == "quota":
-                if not getattr(profile, "sso_enabled", True):
+                if profile.effective_auth_type not in ("oidc", "idc"):
                     console.print(
-                        "[yellow]Quota monitoring requires SSO authentication "
-                        "(per-user JWT tokens) and cannot be deployed when SSO is disabled.[/yellow]"
+                        "[yellow]Quota monitoring requires user authentication "
+                        "(OIDC or IAM Identity Center) and cannot be deployed without it.[/yellow]"
                     )
                     console.print(
-                        "[dim]See issue #454. Re-run 'ccwb init' with SSO enabled to use quota monitoring.[/dim]"
+                        "[dim]See issue #454. Enable OIDC or IDC authentication to deploy quota monitoring.[/dim]"
                     )
                     return 1
                 if profile.monitoring_enabled:
@@ -194,62 +209,7 @@ class DeployCommand(Command):
                 return 1
         else:
             # Deploy all configured stacks in dependency order.
-            #
-            # Ordering constraints:
-            # - auth always comes first (produces the IAM role + OIDC provider
-            #   every other stack may reference). Skipped when sso_enabled=False
-            #   (anonymous mode).
-            # - networking must precede any stack that needs VPC/subnet
-            #   outputs: monitoring (OTel ECS ALB) and landing-page
-            #   distribution (distribution ALB).
-            # - distribution comes after networking to satisfy the
-            #   landing-page variant; the presigned-s3 variant doesn't need
-            #   networking but scheduling it here is harmless.
-            # - dashboard / analytics / quota all follow monitoring.
-            # - codebuild is independent and can trail.
-            if getattr(profile, "sso_enabled", True):
-                stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
-
-            # Networking first so any downstream stack can read its outputs.
-            need_networking = profile.monitoring_enabled or profile.enable_distribution
-            if need_networking:
-                vpc_config = profile.monitoring_config or {}
-                if vpc_config.get("create_vpc", True):
-                    stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
-
-            # Distribution (landing-page reads networking outputs; presigned-s3
-            # doesn't, but the scheduling order is a no-op either way).
-            if profile.enable_distribution:
-                stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
-
-            # Monitoring and its dependents.
-            if profile.monitoring_enabled:
-                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
-                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
-                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
-                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
-                # Check if analytics is enabled (default to True for backward compatibility)
-                if getattr(profile, "analytics_enabled", True):
-                    stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
-                # Check if quota monitoring is enabled
-                # Quota enforcement requires SSO — the API Gateway JWT authorizer
-                # has no valid issuer URL otherwise. Skip with a warning rather
-                # than letting CloudFormation fail mid-deploy (issue #454).
-                if getattr(profile, "quota_monitoring_enabled", False):
-                    if getattr(profile, "sso_enabled", True):
-                        stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
-                    else:
-                        console.print(
-                            "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
-                            "SSO authentication (per-user JWT tokens) but SSO is disabled in this profile.[/yellow]"
-                        )
-                        console.print(
-                            "[dim]Re-run 'ccwb init' with SSO enabled to deploy quota monitoring. "
-                            "See issue #454.[/dim]"
-                        )
-            # Check if CodeBuild is enabled
-            if getattr(profile, "enable_codebuild", False):
-                stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+            stacks_to_deploy = self._select_full_deploy_stacks(profile, console)
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -263,7 +223,13 @@ class DeployCommand(Command):
 
         for stack_type, description in stacks_to_deploy:
             stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-            status = cf_manager.get_stack_status(stack_name)
+            # CodeBuild may live in a different region than the main infrastructure.
+            status_manager = cf_manager
+            if stack_type == "codebuild":
+                cb_region = get_codebuild_region(profile)
+                if cb_region != profile.aws_region:
+                    status_manager = CloudFormationManager(region=cb_region)
+            status = status_manager.get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
             else:
@@ -293,7 +259,13 @@ class DeployCommand(Command):
                 for stack_type, stack_name, _status in reversed(orphaned_stacks):
                     try:
                         console.print(f"[yellow]Deleting {stack_type} stack: {stack_name}...[/yellow]")
-                        cf_manager.delete_stack(stack_name)
+                        # CodeBuild may be cross-region; delete it where it lives.
+                        del_mgr = cf_manager
+                        if stack_type == "codebuild":
+                            cb_region = get_codebuild_region(profile)
+                            if cb_region != profile.aws_region:
+                                del_mgr = CloudFormationManager(region=cb_region)
+                        del_mgr.delete_stack(stack_name)
                         console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
                     except Exception as e:
                         console.print(f"[red]✗ Failed to delete {stack_type} stack: {e}[/red]")
@@ -334,6 +306,92 @@ class DeployCommand(Command):
 
         return 0
 
+    def _select_full_deploy_stacks(self, profile, console: Console) -> list:
+        """Return the ordered ``(stack_type, description)`` list for a full ``ccwb deploy``.
+
+        Pure selection logic with no AWS calls so it can be unit-tested. The only
+        side effect is a warning printed via ``console`` when quota is enabled but
+        the auth type cannot support it.
+
+        Ordering constraints:
+        - auth always comes first (produces the IAM role + OIDC provider every
+          other stack may reference). Skipped when auth_type == "none".
+        - networking must precede any stack that reads its VPC/subnet outputs:
+          central monitoring (OTel ECS ALB) and landing-page distribution.
+        - distribution follows networking for the landing-page variant; the
+          presigned-s3 variant doesn't need networking but the order is harmless.
+        - dashboard / analytics / quota all follow monitoring.
+        - codebuild is independent and can trail.
+
+        Monitoring mode is the key gate: sidecar runs a local OTEL collector that
+        ships metrics straight to CloudWatch, so it needs no VPC/ECS/ALB and no
+        Athena pipeline — only the CloudWatch dashboard. The #338 Go-rewrite
+        refactor dropped this gate, so sidecar profiles were deploying the entire
+        central stack (VPC + ECS + ALB + Athena), which fails in accounts that
+        disallow new VPCs.
+        """
+        stacks_to_deploy = []
+
+        if profile.effective_auth_type != "none":
+            stacks_to_deploy.append(("auth", "Authentication Stack (Cognito + IAM)"))
+
+        monitoring_mode = getattr(profile, "monitoring_mode", "central")
+        central_monitoring = profile.monitoring_enabled and monitoring_mode == "central"
+
+        # Networking first so any downstream stack can read its outputs.
+        need_networking = central_monitoring or profile.enable_distribution
+        if need_networking:
+            vpc_config = profile.monitoring_config or {}
+            if vpc_config.get("create_vpc", True):
+                stacks_to_deploy.append(("networking", "VPC Networking for OTEL Collector"))
+
+        # Distribution (landing-page reads networking outputs; presigned-s3
+        # doesn't, but the scheduling order is a no-op either way).
+        if profile.enable_distribution:
+            stacks_to_deploy.append(("distribution", "Distribution infrastructure (S3 + IAM)"))
+
+        # Monitoring and its dependents.
+        if profile.monitoring_enabled:
+            if central_monitoring:
+                stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                stacks_to_deploy.append(("monitoring", "OpenTelemetry Collector"))
+                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+                stacks_to_deploy.append(("cowork-dashboard", "CoWork CloudWatch Dashboard"))
+                # Analytics defaults to True for backward compatibility.
+                if getattr(profile, "analytics_enabled", True):
+                    stacks_to_deploy.append(("analytics", "Analytics Pipeline (Kinesis Firehose + Athena)"))
+            else:
+                # Sidecar mode: metrics reach CloudWatch via the local collector,
+                # so the only server-side stack is the CloudWatch dashboard
+                # (PromQL). No networking/ECS, no Athena pipeline, and CoWork
+                # cannot export telemetry in this mode.
+                stacks_to_deploy.append(("dashboard", "CloudWatch Dashboard"))
+
+            # Quota enforcement works in both monitoring modes. It needs the
+            # s3bucket stack for Lambda packaging; central scheduled it above, so
+            # add it here for sidecar before the quota stack. Quota requires OIDC
+            # or IDC (per-user identity); skip with a warning rather than letting
+            # CloudFormation fail mid-deploy (issue #454).
+            if getattr(profile, "quota_monitoring_enabled", False):
+                if profile.effective_auth_type in ("oidc", "idc"):
+                    if not central_monitoring:
+                        stacks_to_deploy.append(("s3bucket", "S3 Bucket"))
+                    stacks_to_deploy.append(("quota", "Quota Monitoring (Per-User Token Limits)"))
+                else:
+                    console.print(
+                        "[yellow]⚠ Skipping quota monitoring stack: quota enforcement requires "
+                        "user authentication (OIDC or IAM Identity Center).[/yellow]"
+                    )
+                    console.print(
+                        "[dim]Re-run 'ccwb init' with OIDC or IDC authentication to deploy "
+                        "quota monitoring. See issue #454.[/dim]"
+                    )
+
+        if getattr(profile, "enable_codebuild", False):
+            stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
+
+        return stacks_to_deploy
+
     def _convert_params_to_boto3(self, params: list) -> list:
         """Convert CLI parameter format to boto3 format.
 
@@ -356,9 +414,14 @@ class DeployCommand(Command):
         ) as progress:
             # Common deployment function
             def deploy_with_cf(
-                template_path, stack_name, params, capabilities=None, task_description="Deploying stack..."
+                template_path, stack_name, params, capabilities=None, task_description="Deploying stack...", cf=None
             ):
-                """Helper function to deploy a stack with CloudFormation manager."""
+                """Helper function to deploy a stack with CloudFormation manager.
+
+                ``cf`` overrides the shared region-bound manager (used for the
+                CodeBuild stack when it deploys to a different region).
+                """
+                manager = cf or cf_manager
                 task = progress.add_task(task_description, total=None)
 
                 try:
@@ -366,11 +429,11 @@ class DeployCommand(Command):
                     boto3_params = self._convert_params_to_boto3(params) if params else None
 
                     # Deploy stack
-                    result = cf_manager.deploy_stack(
+                    result = manager.deploy_stack(
                         stack_name=stack_name,
                         template_path=template_path,
                         parameters=boto3_params,
-                        capabilities=capabilities or ["CAPABILITY_IAM"],
+                        capabilities=capabilities or ["CAPABILITY_NAMED_IAM"],
                         on_event=lambda e: progress.update(
                             task,
                             description=f"{e.get('LogicalResourceId', 'Stack')} - {e.get('ResourceStatus', '')}"
@@ -413,7 +476,33 @@ class DeployCommand(Command):
 
             # Deploy based on stack type
             if stack_type == "auth":
-                # Select template based on provider type
+                # IAM Identity Center uses a dedicated template
+                if profile.effective_auth_type == "idc":
+                    template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
+                    stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
+
+                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+
+                    bedrock_regions = profile.allowed_bedrock_regions
+                    if not bedrock_regions:
+                        bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+
+                    idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
+                    params = [
+                        f"FederatedRoleName={idc_role_name}",
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+                    return deploy_with_cf(
+                        template,
+                        stack_name,
+                        params,
+                        ["CAPABILITY_NAMED_IAM"],
+                        task_description="Deploying IAM Identity Center auth stack...",
+                    )
+
+                # Select template based on provider type (OIDC)
                 provider_type = profile.provider_type or "okta"
                 template_map = {
                     "okta": "bedrock-auth-okta.yaml",
@@ -504,6 +593,7 @@ class DeployCommand(Command):
                 bedrock_regions = profile.allowed_bedrock_regions
                 if not bedrock_regions:
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
                 params.extend(
@@ -600,6 +690,20 @@ class DeployCommand(Command):
                                 f"CognitoClientSecretArn={profile.distribution_idp_client_secret_arn}",
                             ]
                         )
+                    elif profile.distribution_idp_provider == "generic":
+                        # Generic OIDC (PingFederate, Keycloak, etc.): endpoints can't be derived
+                        # from a domain, so pass each explicitly. Client ID + secret reuse the
+                        # shared distribution fields.
+                        params.extend(
+                            [
+                                f"GenericIssuer={profile.distribution_idp_issuer or ''}",
+                                f"GenericAuthorizationEndpoint={profile.distribution_idp_authorization_endpoint or ''}",
+                                f"GenericTokenEndpoint={profile.distribution_idp_token_endpoint or ''}",
+                                f"GenericUserInfoEndpoint={profile.distribution_idp_userinfo_endpoint or ''}",
+                                f"GenericClientId={profile.distribution_idp_client_id}",
+                                f"GenericClientSecretArn={profile.distribution_idp_client_secret_arn}",
+                            ]
+                        )
 
                     # Add optional custom domain parameters
                     if profile.distribution_custom_domain:
@@ -608,9 +712,9 @@ class DeployCommand(Command):
                         params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
 
                     # Add deployment timestamp to force custom resource re-execution
-                    import datetime
+                    from datetime import datetime, timezone
 
-                    deployment_timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    deployment_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
                     params.append(f"DeploymentTimestamp={deployment_timestamp}")
 
                     result = deploy_with_cf(
@@ -696,8 +800,14 @@ class DeployCommand(Command):
                 # Add HTTPS domain parameters if configured
                 monitoring_config = getattr(profile, "monitoring_config", {})
                 if monitoring_config.get("custom_domain"):
-                    params.append(f"CustomDomainName={monitoring_config['custom_domain']}")
-                    params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
+                    domain = (
+                        monitoring_config["custom_domain"].replace("https://", "").replace("http://", "").rstrip("/")
+                    )
+                    params.append(f"CustomDomainName={domain}")
+                    if monitoring_config.get("hosted_zone_id"):
+                        params.append(f"HostedZoneId={monitoring_config['hosted_zone_id']}")
+                    if monitoring_config.get("certificate_arn"):
+                        params.append(f"CertificateArn={monitoring_config['certificate_arn']}")
                     # Add OIDC JWT validation parameters for ALB (all IdP types)
                     provider_type = profile.provider_type or ""
                     provider_domain = profile.provider_domain
@@ -735,14 +845,53 @@ class DeployCommand(Command):
                             params.append(f"OidcJwksEndpoint={oidc_jwks}")
                             params.append(f"OidcClientId={profile.client_id}")
 
+                # Pass CoWork service token for ALB auth bypass (if configured)
+                cowork_token = getattr(profile, "cowork_service_token", "") or ""
+                if cowork_token:
+                    params.append(f"CoWorkServiceToken={cowork_token}")
+
                 # Pass analytics flag to control dual-export (OTLP + EMF)
                 analytics_enabled = "true" if getattr(profile, "analytics_enabled", True) else "false"
                 params.append(f"EnableAnalytics={analytics_enabled}")
+
+                # Pass ALB scheme (internet-facing or internal) for private network deployments
+                alb_scheme = monitoring_config.get("alb_scheme", "internet-facing")
+                if alb_scheme == "internal":
+                    params.append("ALBScheme=internal")
 
                 console.print(f"[dim]Using parameters: {params}[/dim]")
                 result = deploy_with_cf(
                     template, stack_name, params, task_description="Deploying monitoring collector..."
                 )
+
+                # Force ECS service redeploy so the collector picks up the new config.
+                # The collector config is stored in SSM and resolved at container start;
+                # a CFN update alone won't restart the running task.
+                if result == 0:
+                    try:
+                        import boto3
+
+                        ecs_client = boto3.client("ecs", region_name=profile.aws_region)
+                        cluster = "claude-code-otel-cluster"
+                        services = ecs_client.list_services(cluster=cluster)["serviceArns"]
+                        if services:
+                            ecs_client.update_service(
+                                cluster=cluster,
+                                service=services[0],
+                                forceNewDeployment=True,
+                            )
+                            console.print("[dim]Forced ECS service redeploy to load new collector config[/dim]")
+                        else:
+                            console.print(
+                                "[dim]No ECS service found in cluster (first deploy — service starting)[/dim]"
+                            )
+                    except Exception as e:
+                        # Non-fatal: stack deployed fine, just couldn't force redeploy
+                        console.print(
+                            f"[yellow]⚠ Stack deployed but could not force ECS redeploy: {e}[/yellow]\n"
+                            "[dim]  Run: aws ecs list-services --cluster claude-code-otel-cluster "
+                            "to find the service name, then force redeploy[/dim]"
+                        )
 
                 # Save OTel collector endpoint to profile immediately after deploy
                 if result == 0:
@@ -755,7 +904,7 @@ class DeployCommand(Command):
                                 Config.load().save_profile(profile)
                                 console.print(f"[dim]Saved OTel endpoint to profile: {endpoint}[/dim]")
                             except Exception:
-                                pass
+                                pass  # nosec B110
 
                 return result
 
@@ -775,9 +924,7 @@ class DeployCommand(Command):
                 params = [
                     f"MetricsRegion={profile.aws_region}",
                 ]
-                return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CoWork dashboard..."
-                )
+                return deploy_with_cf(template, stack_name, params, task_description="Deploying CoWork dashboard...")
 
             elif stack_type == "analytics":
                 template = project_root / "deployment" / "infrastructure" / "analytics-pipeline.yaml"
@@ -881,6 +1028,19 @@ class DeployCommand(Command):
                     if result == 0:
                         self._create_default_quota_policy(profile, stack_name, console)
 
+                        # If using IAM auth (IDC/non-OIDC), remind about execute-api:Invoke permission
+                        if profile.effective_auth_type == "idc":
+                            quota_outputs = get_stack_outputs(stack_name, profile.aws_region)
+                            policy_arn = (quota_outputs or {}).get("QuotaApiInvokePolicyArn", "")
+                            if policy_arn:
+                                console.print(
+                                    f"\n[yellow]\u26a0 IAM Auth Mode: Attach this policy to your IDC permission set "
+                                    f"(or the IAM role used by Claude Code users):[/yellow]\n"
+                                    f"[bold]{policy_arn}[/bold]\n"
+                                    f"[dim]This grants execute-api:Invoke on the quota API. "
+                                    f"Without it, quota checks will return 403.[/dim]"
+                                )
+
                     return result
 
                 finally:
@@ -889,27 +1049,43 @@ class DeployCommand(Command):
                         try:
                             os.unlink(packaged_template_path)
                         except Exception:
-                            pass
+                            pass  # nosec B110
 
             elif stack_type == "codebuild":
-                # WINDOWS_SERVER_2022_CONTAINER is only available in select regions
-                codebuild_supported_regions = [
-                    "us-east-1", "us-east-2", "us-west-2",
-                    "eu-central-1", "eu-west-1",
-                    "ap-northeast-1", "ap-southeast-2",
-                    "sa-east-1",
-                ]
-                if profile.aws_region not in codebuild_supported_regions:
+                # CodeBuild region is chosen in `ccwb init` (the Windows container
+                # fleet only exists in some regions). Deploy just executes that
+                # choice. If a legacy profile still resolves to an unsupported
+                # region — e.g. it predates the init region picker — skip with a
+                # pointer to init rather than failing the whole deploy.
+                codebuild_region = get_codebuild_region(profile)
+                if codebuild_region not in CODEBUILD_WINDOWS_REGIONS:
+                    nearest = find_nearest_codebuild_region(profile.aws_region)
                     console.print(
-                        f"[red]Windows CodeBuild is not available in {profile.aws_region}.[/red]\n"
-                        f"Supported regions: {', '.join(codebuild_supported_regions)}"
+                        f"[yellow]⚠ Skipping CodeBuild: Windows containers aren't available in "
+                        f"{codebuild_region}.[/yellow]"
                     )
-                    return 1
+                    console.print(
+                        f"[dim]Re-run [cyan]ccwb init[/cyan] to pick a supported CodeBuild region "
+                        f"(nearest: {nearest}), then deploy again.[/dim]"
+                    )
+                    return 0
+
+                # Deploy to the (possibly cross-region) CodeBuild region. Build a
+                # dedicated manager when it differs from the main region.
+                cf = (
+                    cf_manager
+                    if codebuild_region == profile.aws_region
+                    else CloudFormationManager(region=codebuild_region)
+                )
                 template = project_root / "deployment" / "infrastructure" / "codebuild-windows.yaml"
                 stack_name = profile.stack_names.get("codebuild", f"{profile.identity_pool_name}-codebuild")
                 params = [f"ProjectNamePrefix={profile.identity_pool_name}"]
                 return deploy_with_cf(
-                    template, stack_name, params, task_description="Deploying CodeBuild for Windows builds..."
+                    template,
+                    stack_name,
+                    params,
+                    task_description=f"Deploying CodeBuild for Windows builds in {codebuild_region}...",
+                    cf=cf,
                 )
 
             else:
@@ -926,12 +1102,14 @@ class DeployCommand(Command):
     def _show_deployment_commands(self, stack_type: str, profile, console: Console) -> None:
         """Show AWS CLI commands for manual deployment."""
         project_root = Path(__file__).parents[4]
-        region = profile.aws_region
+        # CodeBuild may deploy to a different region than the main infrastructure;
+        # print the command for the region it actually deploys to.
+        region = get_codebuild_region(profile) if stack_type == "codebuild" else profile.aws_region
 
         def print_deploy_cmd(template, stack_name, params, capabilities=None):
-            caps_str = " ".join(capabilities or ["CAPABILITY_IAM"])
+            caps_str = " ".join(capabilities or ["CAPABILITY_NAMED_IAM"])
             lines = [
-                f"aws cloudformation deploy \\",
+                "aws cloudformation deploy \\",
                 f"    --template-file {template} \\",
                 f"    --stack-name {stack_name} \\",
             ]
@@ -946,10 +1124,11 @@ class DeployCommand(Command):
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
                 from claude_code_with_bedrock.models import get_all_bedrock_regions
+
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
-            auth_type = getattr(profile, "auth_type", "oidc" if getattr(profile, "sso_enabled", True) else "none")
+            auth_type = profile.effective_auth_type
 
             if auth_type == "idc":
                 template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
@@ -987,16 +1166,20 @@ class DeployCommand(Command):
                         if "." in profile.provider_domain
                         else profile.provider_domain
                     )
-                    params.extend([
-                        f"CognitoUserPoolId={profile.cognito_user_pool_id}",
-                        f"CognitoUserPoolClientId={profile.client_id}",
-                        f"CognitoUserPoolDomain={cognito_domain}",
-                    ])
-                params.extend([
-                    f"IdentityPoolName={profile.identity_pool_name}",
-                    f"AllowedBedrockRegions={','.join(bedrock_regions)}",
-                    f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
-                ])
+                    params.extend(
+                        [
+                            f"CognitoUserPoolId={profile.cognito_user_pool_id}",
+                            f"CognitoUserPoolClientId={profile.client_id}",
+                            f"CognitoUserPoolDomain={cognito_domain}",
+                        ]
+                    )
+                params.extend(
+                    [
+                        f"IdentityPoolName={profile.identity_pool_name}",
+                        f"AllowedBedrockRegions={','.join(bedrock_regions)}",
+                        f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
+                    ]
+                )
                 print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         elif stack_type == "networking":
@@ -1039,7 +1222,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/claude-code-dashboard-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             print_deploy_cmd(
                 "/tmp/claude-code-dashboard-packaged.yaml",
                 stack_name,
@@ -1068,7 +1251,7 @@ class DeployCommand(Command):
         elif stack_type == "quota":
             template = project_root / "deployment" / "infrastructure" / "quota-monitoring.yaml"
             stack_name = profile.stack_names.get("quota", f"{profile.identity_pool_name}-quota")
-            dashboard_stack = profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
+            profile.stack_names.get("dashboard", f"{profile.identity_pool_name}-dashboard")
             s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
             console.print(
                 f"\n[cyan]# Step 1: Package Lambda functions\n"
@@ -1079,7 +1262,7 @@ class DeployCommand(Command):
                 f"    --output-template-file /tmp/quota-monitoring-packaged.yaml \\\n"
                 f"    --region {region}[/cyan]"
             )
-            console.print(f"\n[dim]# Step 2: Deploy packaged template[/dim]")
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
             monthly_limit = getattr(profile, "monthly_token_limit", 225000000)
             daily_limit = getattr(profile, "daily_token_limit", None)
             params = [
@@ -1280,9 +1463,16 @@ class DeployCommand(Command):
         orphaned = []
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
-                # This stack type is not being deployed - check if it exists
+                # This stack type is not being deployed - check if it exists.
+                # CodeBuild may live in a different region (cross-region builds), so
+                # check it there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-                status = cf_manager.get_stack_status(stack_name)
+                mgr = cf_manager
+                if stack_type == "codebuild":
+                    cb_region = get_codebuild_region(profile)
+                    if cb_region != profile.aws_region:
+                        mgr = CloudFormationManager(region=cb_region)
+                status = mgr.get_stack_status(stack_name)
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
                     orphaned.append((stack_type, stack_name, status))
@@ -1308,6 +1498,7 @@ class DeployCommand(Command):
                     console.print("[green]✓ ECS service linked role created[/green]")
                     # Wait for IAM propagation before proceeding with ECS cluster creation
                     import time
+
                     console.print("[dim]Waiting for IAM role propagation...[/dim]")
                     time.sleep(10)
                 except iam_client.exceptions.InvalidInputException as e:
@@ -1328,7 +1519,13 @@ class DeployCommand(Command):
         Returns ("", "") when SSO is disabled — the CF template's HasJwtAuth
         condition will disable the JWT authorizer and use an open route instead.
         """
-        if not getattr(profile, "sso_enabled", True):
+        # For real Profile objects, use the new auth_type system
+        # For mocks and legacy code, fall back to sso_enabled
+        from claude_code_with_bedrock.config import Profile
+
+        if isinstance(profile, Profile) and profile.effective_auth_type != "oidc":
+            return "", ""
+        elif not isinstance(profile, Profile) and not getattr(profile, "sso_enabled", True):
             return "", ""
 
         if profile.provider_type == "cognito":
@@ -1344,6 +1541,13 @@ class DeployCommand(Command):
             issuer_url = profile.provider_domain
             if issuer_url and not issuer_url.startswith(("http://", "https://")):
                 issuer_url = f"https://{issuer_url}"
+
+        # Okta authenticates via its default custom authorization server, so issued
+        # tokens carry iss=https://<domain>/oauth2/default. The quota JWT authorizer
+        # must match that exact issuer or every /check request 401s (and, with
+        # fail-open, silently disables enforcement).
+        if profile.provider_type == "okta" and issuer_url and not issuer_url.rstrip("/").endswith("/oauth2/default"):
+            issuer_url = f"{issuer_url.rstrip('/')}/oauth2/default"
 
         # Auth0 tokens include trailing slash in iss claim, so authorizer must match
         if profile.provider_type == "auth0" and issuer_url and not issuer_url.endswith("/"):

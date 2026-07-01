@@ -76,6 +76,7 @@ poetry run ccwb init [options]
 **Options:**
 
 - `--profile <name>` - Configuration profile name (optional, will prompt if not specified)
+- `--managed` - Deploy settings to OS-level managed-settings.json (highest precedence, non-overridable by users)
 
 **What it does:**
 
@@ -254,7 +255,7 @@ poetry run ccwb package [options]
 
 1. Cross-compiles native Go binaries for all selected platforms (with `--go`)
 2. Creates `config.json` with federation config read from the admin profile
-3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint
+3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint (or `managed-settings.json` if `--managed` was used during init)
 4. Creates installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
 5. Outputs to `dist/{profile}/{timestamp}/`
 

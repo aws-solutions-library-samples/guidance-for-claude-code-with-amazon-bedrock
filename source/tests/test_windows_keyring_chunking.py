@@ -1,7 +1,7 @@
 """Unit tests for Windows keyring chunked monitoring token storage."""
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,7 +148,9 @@ class TestWindowsKeyringChunking:
         """If no chunked meta exists but legacy single entry does, should read it."""
         auth, mock_keyring = auth_instance
 
-        legacy_data = json.dumps({"token": "legacy-token", "expires": 8888888888, "email": "old@corp.com", "profile": "TestProfile"})
+        legacy_data = json.dumps(
+            {"token": "legacy-token", "expires": 8888888888, "email": "old@corp.com", "profile": "TestProfile"}
+        )
 
         def mock_get(service, key):
             if key == "TestProfile-monitoring-meta":

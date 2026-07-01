@@ -15,6 +15,9 @@ Complete deployment walkthrough for IT administrators deploying Claude Code with
 - Poetry (dependency management)
 - AWS CLI v2
 - Git
+- Go 1.24+ (optional — only for `ccwb package --go` builds; [pre-built binaries](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases) available from v2.4.0+)
+
+> **End users** need only Claude Code or Claude Desktop installed. No Python, Poetry, Go, or AWS account required — IT distributes pre-built packages.
 
 **macOS admins — check your machine architecture before building:**
 

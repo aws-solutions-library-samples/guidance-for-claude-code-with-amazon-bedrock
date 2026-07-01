@@ -501,9 +501,9 @@ class CloudFormationManager:
                                 resource["Properties"]["TemplateURL"] = f"https://{s3_bucket}.{s3_domain}/{s3_key}"
                             except Exception:
                                 # Fallback to path-style URL which works across partitions
-                                resource["Properties"][
-                                    "TemplateURL"
-                                ] = f"https://s3.{self.region}.amazonaws.com/{s3_bucket}/{s3_key}"
+                                resource["Properties"]["TemplateURL"] = (
+                                    f"https://s3.{self.region}.amazonaws.com/{s3_bucket}/{s3_key}"
+                                )
 
         # Return packaged template as YAML with CloudFormation intrinsic functions preserved
         return cfn_flip.dump_yaml(template)

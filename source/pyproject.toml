@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "claude-code-with-bedrock"
-version = "2.4.0"
+version = "2.5.0"
 description = "Deploy and manage Claude Code on Amazon Bedrock"
 authors = ["Claude Code Team <claude-code@example.com>"]
 readme = "../README.md"
@@ -64,6 +64,8 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -73,6 +75,14 @@ select = [
     "C4", # flake8-comprehensions
     "UP", # pyupgrade
 ]
+ignore = [
+    "E501",  # line too long — enforced by formatter, not linter
+    "E741",  # ambiguous variable name — pre-existing in tests, cosmetic
+    "B904",  # raise from err — requires careful behavioral review
+]
+
+[tool.ruff.lint.per-file-ignores]
+"credential_provider/__main__.py" = ["E501", "F841"]  # Pre-existing issues in HTML templates and quota page
 
 [tool.black]
 line-length = 120

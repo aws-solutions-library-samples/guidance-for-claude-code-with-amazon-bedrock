@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
+	"ccwb-go/internal/browser"
 	"ccwb-go/internal/jwt"
 	"ccwb-go/internal/provider"
-	"github.com/pkg/browser"
 )
 
 // AuthResult holds the result of a successful OIDC authentication.
@@ -37,7 +36,7 @@ type GenericEndpoints struct {
 //
 // generic carries absolute endpoint URLs for Generic OIDC providers (CyberArk,
 // PingFederate, Keycloak, ForgeRock, etc.). Pass nil for named providers.
-func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth, generic *GenericEndpoints) (*AuthResult, error) {
+func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID string, redirectPort int, confidential *ConfidentialAuth, generic *GenericEndpoints, oidcPrompt *string) (*AuthResult, error) {
 	provCfg := provider.ConfigFor(providerType, oktaAuthServerID)
 	if provCfg.Name == "" {
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
@@ -72,7 +71,13 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 	}
 	if providerType == "azure" {
 		params.Set("response_mode", "query")
-		params.Set("prompt", "select_account")
+		prompt := "select_account"
+		if oidcPrompt != nil {
+			prompt = *oidcPrompt
+		}
+		if prompt != "" {
+			params.Set("prompt", prompt)
+		}
 	}
 
 	var authURL, tokenURL string
@@ -80,13 +85,13 @@ func Authenticate(providerDomain, clientID, providerType, oktaAuthServerID strin
 		authURL = generic.AuthorizeURL + "?" + params.Encode()
 		tokenURL = generic.TokenURL
 	} else {
-		domain := providerDomain
-		if providerType == "azure" && strings.HasSuffix(domain, "/v2.0") {
-			domain = domain[:len(domain)-5]
-		}
-		baseURL := "https://" + domain
+		// Normalize once (e.g. strip Azure's trailing /v2.0) so the authorize
+		// and token URLs are built from the same base. TokenEndpointURL applies
+		// the identical normalization, keeping this flow and the refresh_token
+		// exchange in lockstep.
+		baseURL := "https://" + provider.NormalizeDomain(providerType, providerDomain)
 		authURL = baseURL + provCfg.AuthorizeEndpoint + "?" + params.Encode()
-		tokenURL = baseURL + provCfg.TokenEndpoint
+		tokenURL = provider.TokenEndpointURL(providerType, oktaAuthServerID, providerDomain)
 	}
 
 	// Start callback server

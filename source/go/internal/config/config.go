@@ -62,6 +62,12 @@ type ProfileConfig struct {
 	// Custom OAuth callback port (default 8400). REDIRECT_PORT env var takes precedence.
 	RedirectPort int `json:"redirect_port,omitempty"`
 
+	// OIDC prompt parameter sent during the authorization request.
+	// Default "select_account" for Azure (shows account picker).
+	// Set to "" to let the IdP reuse the existing browser session silently —
+	// useful for single-tenant enterprise deployments with one account.
+	OIDCPrompt *string `json:"oidc_prompt,omitempty"`
+
 	// Azure AD confidential-client auth. "" or "public" -> PKCE-only public client.
 	// "secret" -> look up client_secret from OS keyring at token-exchange time.
 	// "certificate" -> sign a JWT client assertion with a PEM cert + private key.
@@ -77,6 +83,20 @@ type ProfileConfig struct {
 	// Pointer so we can distinguish "missing" (legacy bundles, default true)
 	// from "explicitly false" (passthrough mode).
 	SsoEnabled *bool `json:"sso_enabled,omitempty"`
+
+	// Non-confidential client secret read from config.json (e.g. Google Desktop
+	// OAuth requires a client_secret for token exchange, but Google documents it
+	// as non-confidential for installed/native apps). Empty means PKCE-only.
+	ClientSecret string `json:"client_secret,omitempty"`
+
+	// IAM Identity Center fields (populated when auth_type == "idc").
+	// When present, credential-process drives the SSO OIDC device-auth flow
+	// directly (auto-opens browser) instead of relying on ambient credentials.
+	AuthType             string `json:"auth_type,omitempty"`               // "oidc" | "idc" | ""
+	IDCStartURL          string `json:"idc_start_url,omitempty"`           // e.g. https://d-xxxxxxxxxx.awsapps.com/start
+	IDCAccountID         string `json:"idc_account_id,omitempty"`          // AWS account ID for role assumption
+	IDCPermissionSetName string `json:"idc_permission_set_name,omitempty"` // IAM role name / permission set
+	IDCRegion            string `json:"idc_region,omitempty"`              // SSO endpoint region (defaults to aws_region)
 
 	// Legacy field names
 	OktaDomain   string `json:"okta_domain"`
@@ -271,4 +291,14 @@ func (p *ProfileConfig) IsSsoEnabled() bool {
 		return true
 	}
 	return *p.SsoEnabled
+}
+
+// IsIDC reports whether the profile uses IAM Identity Center active auth.
+// True when auth_type is explicitly "idc", or when SSO is disabled but IDC
+// fields are present (indicating an IDC deployment rather than pure passthrough).
+func (p *ProfileConfig) IsIDC() bool {
+	if p == nil {
+		return false
+	}
+	return p.AuthType == "idc" || (!p.IsSsoEnabled() && p.IDCStartURL != "")
 }

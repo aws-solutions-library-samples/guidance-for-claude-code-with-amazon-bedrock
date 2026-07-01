@@ -1,0 +1,10 @@
+{
+  "ClaudeCode": {
+    "okta_domain": "acme-corp.okta.com",
+    "okta_client_id": "0oalegacy123456789",
+    "aws_region": "us-west-2",
+    "federated_role_arn": "arn:aws:iam::999888777666:role/LegacyOktaRole",
+    "max_session_duration": 43200,
+    "quota_fail_mode": "open"
+  }
+}

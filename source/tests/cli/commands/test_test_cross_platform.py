@@ -19,13 +19,7 @@ import pytest
 # than re-implementing it.
 from botocore.compat import compat_shell_split
 
-TEST_SOURCE = (
-    Path(__file__).resolve().parents[3]
-    / "claude_code_with_bedrock"
-    / "cli"
-    / "commands"
-    / "test.py"
-)
+TEST_SOURCE = Path(__file__).resolve().parents[3] / "claude_code_with_bedrock" / "cli" / "commands" / "test.py"
 
 
 def _build_command(credential_binary: str, test_profile_name: str) -> str:
@@ -48,7 +42,7 @@ class TestNoShellWrapper:
     def test_both_call_sites_use_helper_format(self):
         # Both credential_command assignments use the quoted --profile form.
         source = TEST_SOURCE.read_text(encoding="utf-8")
-        assert source.count('credential_command = f\'"{credential_binary}" --profile {test_profile_name}\'') == 2
+        assert source.count("credential_command = f'\"{credential_binary}\" --profile {test_profile_name}'") == 2
 
 
 class TestCredentialCommandParsing:

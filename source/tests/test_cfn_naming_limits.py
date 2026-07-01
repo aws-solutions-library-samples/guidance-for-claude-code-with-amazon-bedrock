@@ -17,25 +17,47 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 INFRA_DIR = Path(__file__).parent.parent.parent / "deployment" / "infrastructure"
 
 # AWS resource types with strict naming limits
 RESOURCE_NAME_LIMITS = {
     "AWS::ElasticLoadBalancingV2::TargetGroup": 32,
-    # Add more as discovered:
-    # "AWS::ElasticLoadBalancingV2::LoadBalancer": 32,
 }
+
+# Resources where explicit naming causes replace/AlreadyExists on stack updates.
+# ALB Name: condition-dependent values trigger ALB replacement (create-and-replace semantics).
+# ECS ServiceName: conditional logical IDs sharing a name cause AlreadyExists — CloudFormation
+# creates the new resource before deleting the old.
+RESOURCES_NO_EXPLICIT_NAME = {
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": "Name",
+    "AWS::ECS::Service": "ServiceName",
+}
+
+OTEL_COLLECTOR_TEMPLATE = INFRA_DIR / "otel-collector.yaml"
 
 
 class CFLoader(yaml.SafeLoader):
     """YAML loader that handles CloudFormation intrinsic functions."""
+
     pass
 
 
 # Register CF intrinsic constructors
-for tag in ["!Ref", "!Sub", "!GetAtt", "!If", "!Equals", "!Not", "!Select",
-            "!Join", "!Split", "!FindInMap", "!Condition", "!Or", "!And"]:
+for tag in [
+    "!Ref",
+    "!Sub",
+    "!GetAtt",
+    "!If",
+    "!Equals",
+    "!Not",
+    "!Select",
+    "!Join",
+    "!Split",
+    "!FindInMap",
+    "!Condition",
+    "!Or",
+    "!And",
+]:
     CFLoader.add_constructor(
         tag,
         lambda loader, node: (
@@ -65,11 +87,15 @@ class TestCFResourceNamingLimits:
             pytest.skip("No CF templates found")
         return templates
 
-    def test_no_explicit_target_group_name(self, templates):
-        """Target groups must NOT have explicit Name (32-char limit too easy to exceed).
+    def test_no_stack_name_derived_target_group_name(self, templates):
+        """Target groups must NOT derive Name from ${AWS::StackName} (32-char overflow).
 
         With stack names like 'claude-code-auth-otel-collector' (31 chars),
-        any suffix pushes past 32. Let CloudFormation auto-generate.
+        any suffix pushes past 32. Names derived from other sources (e.g. an
+        ALB's unique hex ID via !Sub) are acceptable when provably within limits.
+
+        Allowed: !Sub with resource-ID references (bounded length, no StackName).
+        Forbidden: plain strings or !Sub '${AWS::StackName}-*' patterns.
         """
         violations = []
         for template_path in templates:
@@ -86,18 +112,59 @@ class TestCFResourceNamingLimits:
                 if not isinstance(resource, dict):
                     continue
                 rtype = resource.get("Type", "")
-                if rtype in RESOURCE_NAME_LIMITS:
-                    props = resource.get("Properties", {})
-                    if isinstance(props, dict) and "Name" in props:
-                        violations.append(
-                            f"{template_path.name}:{logical_id} ({rtype}) has explicit Name "
-                            f"— limit is {RESOURCE_NAME_LIMITS[rtype]} chars, "
-                            f"remove Name to let CloudFormation auto-generate"
-                        )
+                if rtype not in RESOURCE_NAME_LIMITS:
+                    continue
+                props = resource.get("Properties", {})
+                if not isinstance(props, dict) or "Name" not in props:
+                    continue
 
-        assert not violations, (
-            "CF templates have explicit Name on length-limited resources:\n"
-            + "\n".join(f"  • {v}" for v in violations)
+                name_val = props["Name"]
+                # Allow intrinsic-function-derived names (!Sub, !Join, etc.)
+                # that do NOT reference AWS::StackName. These are loaded by
+                # CFLoader as lists (sequence nodes) or dicts (mapping nodes).
+                # The dangerous pattern is ${AWS::StackName} which can overflow.
+                if isinstance(name_val, (list, dict)):
+                    # Check the template string for StackName references
+                    template_str = name_val[0] if isinstance(name_val, list) else str(name_val)
+                    if "${AWS::StackName}" not in str(template_str):
+                        continue
+                # Plain string Name or stack-name-derived — flag it
+                violations.append(
+                    f"{template_path.name}:{logical_id} ({rtype}) has explicit Name "
+                    f"that may exceed {RESOURCE_NAME_LIMITS[rtype]} chars "
+                    f"— use a bounded derivation or let CloudFormation auto-generate"
+                )
+
+        assert not violations, "CF templates have unsafe explicit Name on length-limited resources:\n" + "\n".join(
+            f"  • {v}" for v in violations
+        )
+
+    def test_otel_collector_no_hardcoded_names(self):
+        """otel-collector.yaml must not have explicit ALB Name or ECS ServiceName.
+
+        ALB Name with conditional values triggers ALB replacement on condition toggle.
+        ECS ServiceName on conditional resources causes AlreadyExists — CloudFormation
+        creates the new resource before deleting the old when logical IDs change.
+        """
+        if not OTEL_COLLECTOR_TEMPLATE.exists():
+            pytest.skip("otel-collector.yaml not found")
+
+        with open(OTEL_COLLECTOR_TEMPLATE, encoding="utf-8") as f:
+            doc = yaml.load(f, Loader=CFLoader)
+
+        violations = []
+        for logical_id, resource in doc["Resources"].items():
+            if not isinstance(resource, dict):
+                continue
+            rtype = resource.get("Type", "")
+            if rtype in RESOURCES_NO_EXPLICIT_NAME:
+                prop_name = RESOURCES_NO_EXPLICIT_NAME[rtype]
+                props = resource.get("Properties", {})
+                if isinstance(props, dict) and prop_name in props:
+                    violations.append(f"{logical_id} ({rtype}) has explicit {prop_name}")
+
+        assert not violations, "otel-collector.yaml has hardcoded names that break stack updates:\n" + "\n".join(
+            f"  • {v}" for v in violations
         )
 
     def test_stack_name_suffix_inventory(self):
@@ -111,6 +178,7 @@ class TestCFResourceNamingLimits:
             with open(template_path, encoding="utf-8") as f:
                 content = f.read()
             import re
+
             matches = re.findall(r"\$\{AWS::StackName\}([^'\"}\s]+)", content)
             for suffix in set(matches):
                 patterns.append((template_path.name, suffix))
@@ -139,22 +207,19 @@ class TestIdentityPoolNameOverflow:
     def test_default_name_fits_all_stacks(self):
         """The default 'claude-code-auth' must work with all stack suffixes."""
         default_name = "claude-code-auth"
-        for stack_type, suffix in self.STACK_SUFFIXES.items():
+        for _, suffix in self.STACK_SUFFIXES.items():
             stack_name = f"{default_name}{suffix}"
             # CF stack name limit is 128
             assert len(stack_name) <= 128, (
-                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) "
-                f"exceeds CF stack name limit"
+                f"Default name + '{suffix}' = '{stack_name}' ({len(stack_name)} chars) exceeds CF stack name limit"
             )
 
     def test_max_validated_name_fits_all_stacks(self):
         """A 20-char name (max allowed by validation) must work with all stacks."""
         max_name = "a" * 20
-        for stack_type, suffix in self.STACK_SUFFIXES.items():
+        for _, suffix in self.STACK_SUFFIXES.items():
             stack_name = f"{max_name}{suffix}"
-            assert len(stack_name) <= 128, (
-                f"20-char name + '{suffix}' = {len(stack_name)} chars exceeds limit"
-            )
+            assert len(stack_name) <= 128, f"20-char name + '{suffix}' = {len(stack_name)} chars exceeds limit"
 
     def test_no_target_group_overflow_with_max_name(self):
         """Even if someone re-adds a -tg suffix, 20-char name fits in 32.
