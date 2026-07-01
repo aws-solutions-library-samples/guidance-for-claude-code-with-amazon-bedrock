@@ -3,6 +3,11 @@
 
 """Tests for IDC zero-binary packaging logic."""
 
+import json
+import tempfile
+from pathlib import Path
+
+from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
 
 
@@ -181,3 +186,92 @@ class TestIDCOtelHeadersHelper:
         )
         _is_idc = profile.effective_auth_type == "idc"
         assert _is_idc is False
+
+
+class TestIDCZeroBinarySettings:
+    """Regression tests: IDC zero-binary settings.json must not reference credential-process."""
+
+    def _make_idc_profile(self, quota_endpoint=None):
+        return Profile(
+            name="test-idc",
+            provider_domain="",
+            client_id="",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="",
+            auth_type="idc",
+            monitoring_enabled=False,
+            quota_api_endpoint=quota_endpoint or "",
+            idc_start_url="https://d-123456.awsapps.com/start",
+            idc_account_id="123456789012",
+            idc_permission_set_name="BedrockAccess",
+        )
+
+    def _load_settings(self, output_dir: Path) -> dict:
+        settings_path = output_dir / "claude-settings" / "settings.json"
+        with open(settings_path) as f:
+            return json.load(f)
+
+    def test_zero_binary_settings_no_credential_process_placeholder(self):
+        """IDC zero-binary settings.json must not contain __CREDENTIAL_PROCESS_PATH__."""
+        command = PackageCommand()
+        profile = self._make_idc_profile(quota_endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile, is_idc_zero_binary=True)
+            settings = self._load_settings(output_dir)
+
+        settings_str = json.dumps(settings)
+        assert "__CREDENTIAL_PROCESS_PATH__" not in settings_str
+
+    def test_zero_binary_settings_no_aws_credential_process(self):
+        """IDC zero-binary settings.json must not set AWS_CREDENTIAL_PROCESS."""
+        command = PackageCommand()
+        profile = self._make_idc_profile(quota_endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile, is_idc_zero_binary=True)
+            settings = self._load_settings(output_dir)
+
+        assert "AWS_CREDENTIAL_PROCESS" not in settings.get("env", {})
+
+    def test_zero_binary_settings_no_credential_hooks(self):
+        """IDC zero-binary settings.json must not set awsCredentialExport or awsAuthRefresh."""
+        command = PackageCommand()
+        profile = self._make_idc_profile(quota_endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile, is_idc_zero_binary=True)
+            settings = self._load_settings(output_dir)
+
+        assert "awsCredentialExport" not in settings
+        assert "awsAuthRefresh" not in settings
+
+    def test_zero_binary_settings_has_aws_profile(self):
+        """IDC zero-binary settings.json must still set AWS_PROFILE for SSO resolution."""
+        command = PackageCommand()
+        profile = self._make_idc_profile(quota_endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile, is_idc_zero_binary=True)
+            settings = self._load_settings(output_dir)
+
+        assert settings["env"]["AWS_PROFILE"] == "ClaudeCode"
+
+    def test_idc_with_quota_settings_keeps_credential_process(self):
+        """IDC+quota (non-zero-binary) settings.json must still have credential-process references."""
+        command = PackageCommand()
+        profile = self._make_idc_profile(quota_endpoint="https://api.example.com/quota")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile, is_idc_zero_binary=False)
+            settings = self._load_settings(output_dir)
+
+        assert "__CREDENTIAL_PROCESS_PATH__" in settings["env"]["AWS_CREDENTIAL_PROCESS"]
+        assert "__CREDENTIAL_PROCESS_PATH__" in settings.get("awsCredentialExport", "")
+        assert "__CREDENTIAL_PROCESS_PATH__" in settings.get("awsAuthRefresh", "")
