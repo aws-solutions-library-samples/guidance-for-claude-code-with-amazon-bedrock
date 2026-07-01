@@ -273,45 +273,13 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get federation identifier — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        identity_pool_id = None
-        federated_role_arn = None
-
-        if not getattr(profile, "sso_enabled", True):
-            # SSO disabled — no auth stack to query, no federation needed
-            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
-        elif federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federated_role_arn = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federated_role_arn}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            identity_pool_id = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {identity_pool_id}[/dim]")
-        else:
-            # Fall back to CloudFormation stack outputs
-            console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-
-            if federation_type == "direct":
-                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                    return 1
-            else:
-                identity_pool_id = stack_outputs.get("IdentityPoolId")
-                if not identity_pool_id:
-                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
-                    return 1
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito). See _resolve_federation: Cognito ALWAYS reads the pool ID
+        # from CloudFormation stack outputs because identity_pool_name is only a
+        # name, not the "<region>:<uuid>" pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        if getattr(profile, "sso_enabled", True) and not (identity_pool_id or federated_role_arn):
+            return 1
 
         # Welcome
         console.print(
@@ -2001,30 +1969,11 @@ RUN pyinstaller \
         for plat, helper_path in built_otel_helpers:
             shutil.copy2(helper_path, output_dir / helper_path.name)
 
-        # Get federation info — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        federation_identifier = None
-
-        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federation_identifier = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federation_identifier}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            federation_identifier = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {federation_identifier}[/dim]")
-        else:
-            console.print("[cyan]Fetching deployment information from CloudFormation...[/cyan]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-            if federation_type == "direct":
-                federation_identifier = stack_outputs.get("DirectSTSRoleArn") or stack_outputs.get("FederatedRoleArn")
-            else:
-                federation_identifier = stack_outputs.get("IdentityPoolId")
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito) — see _resolve_federation. Cognito ALWAYS reads the pool ID
+        # from stack outputs; identity_pool_name is a name, not the pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
 
         if not federation_identifier or federation_identifier == "N/A":
             console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
@@ -2081,6 +2030,63 @@ RUN pyinstaller \
         console.print(f"\nBinaries copied from: [dim]{source_dir}[/dim]")
         console.print("\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]")
         return 0
+
+    def _resolve_federation(self, profile, console):
+        r"""Resolve federation details for packaging.
+
+        Returns a ``(federation_type, identity_pool_id, federated_role_arn)``
+        tuple. On success exactly one of ``identity_pool_id`` /
+        ``federated_role_arn`` is set; both are ``None`` when SSO is disabled or
+        when resolution fails (the caller is expected to handle the failure).
+
+        IMPORTANT — Cognito Identity Pool federation ALWAYS resolves the pool ID
+        from the deployed CloudFormation stack outputs. ``profile.identity_pool_name``
+        holds only a human-readable name (e.g. ``"claude-code-auth"``); the real
+        pool ID has the form ``"<region>:<uuid>"`` and is created by
+        ``ccwb deploy``. Using the name as the identity pool ID produces a
+        ``config.json`` that fails Cognito ``GetId`` validation
+        (``[\w-]+:[0-9a-f-]+``), breaking authentication for every distributed
+        user. Direct STS keeps a profile shortcut because the profile stores the
+        real role ARN.
+        """
+        federation_type = profile.federation_type
+
+        if not getattr(profile, "sso_enabled", True):
+            # SSO disabled — no auth stack to query, no federation needed.
+            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
+            return federation_type, None, None
+
+        # Direct STS: the profile stores the real role ARN, so it is a safe shortcut.
+        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+            console.print(f"[dim]Using role ARN from profile: {profile.federated_role_arn}[/dim]")
+            return federation_type, None, profile.federated_role_arn
+
+        # Cognito (and direct without a cached ARN) must read from the stack: the
+        # profile never holds the real identity pool ID, only its name.
+        console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
+        stack_outputs = get_stack_outputs(
+            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+        )
+        if not stack_outputs:
+            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+            return federation_type, None, None
+
+        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+        if federation_type == "direct":
+            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                federated_role_arn = stack_outputs.get("FederatedRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                return federation_type, None, None
+            return federation_type, None, federated_role_arn
+
+        identity_pool_id = stack_outputs.get("IdentityPoolId")
+        if not identity_pool_id:
+            console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            return federation_type, None, None
+        return federation_type, identity_pool_id, None
 
     def _create_config(
         self,
