@@ -85,6 +85,7 @@ The architecture is modular — start with authentication, then optionally add [
 | **Quota enforcement** (optional) | Quota check API + DynamoDB policies + per-user/team limits | `ccwb deploy --stack quota` |
 | **Analytics** (optional) | S3 data lake + Athena for historical SQL queries on usage data | `ccwb deploy --stack analytics` |
 | **Distribution** (optional) | S3 presigned URLs or self-service landing page with IdP auth | `ccwb deploy --stack distribution` |
+| **Diagnostics** | Installation health checks + resolved config dump | `ccwb doctor` |
 
 See [Monitoring Guide](assets/docs/MONITORING.md), [Quota Guide](assets/docs/QUOTA_MONITORING.md), [Analytics Guide](assets/docs/ANALYTICS.md), and [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup.
 ### Authentication Modes

@@ -59,14 +59,19 @@ func main() {
 	testMode := flag.Bool("test", false, "Run in test mode with verbose output")
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
 	versionFlag := flag.Bool("version", false, "Show version")
+	statusFlag := flag.Bool("status", false, "Print current otel-helper status as JSON and exit (proxy running? port? mode?)")
 	proxyMode := flag.Bool("proxy", false, "Run as SigV4 signing proxy for CoWork OTLP logs")
 	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the signing proxy (default 4318)")
 	proxyRegion := flag.String("proxy-region", "", "AWS region for CloudWatch OTLP (default: AWS_REGION env)")
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Printf("otel-helper %s\n", version.Version)
+		fmt.Printf("otel-helper %s (%s)\n", version.Version, version.Commit)
 		os.Exit(0)
+	}
+
+	if *statusFlag {
+		os.Exit(runStatus(*proxyPort))
 	}
 
 	verbose = *verboseFlag || *testMode
