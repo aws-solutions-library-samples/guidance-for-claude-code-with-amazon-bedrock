@@ -151,15 +151,14 @@ def test_preflight_blocks_cognito_without_pool():
 def test_discovery_url_cognito_uses_pool_region():
     url = _websearch_discovery_url(_cognito_profile())
     assert url == (
-        "https://cognito-idp.eu-central-1.amazonaws.com/" "eu-central-1_AbCdEf/.well-known/openid-configuration"
+        "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_AbCdEf/.well-known/openid-configuration"
     )
 
 
 def test_discovery_url_azure_uses_tenant():
     url = _websearch_discovery_url(_azure_profile())
     assert url == (
-        "https://login.microsoftonline.com/"
-        "11111111-2222-3333-4444-555555555555/v2.0/.well-known/openid-configuration"
+        "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0/.well-known/openid-configuration"
     )
 
 
