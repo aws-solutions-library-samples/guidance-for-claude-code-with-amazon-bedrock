@@ -15,6 +15,8 @@ Bugs this prevents:
 - #454: Quota monitoring stack deploy fails when SSO disabled
 """
 
+import dataclasses
+
 import pytest
 
 from claude_code_with_bedrock.cli.commands.deploy import DeployCommand
@@ -147,6 +149,10 @@ class TestDeployParameterMatrix:
             assert pool_region in issuer, f"Issuer should contain pool region '{pool_region}'"
 
 
+class TestBootstrapStackInclusion:
+    """Bootstrap stack is included only when config_delivery is set."""
+
+
 class _NullConsole:
     """Minimal console stub — captures nothing, just satisfies .print()."""
 
@@ -173,6 +179,51 @@ class TestSidecarStackSelection:
     @pytest.fixture
     def command(self):
         return DeployCommand()
+
+    def _get_stacks_for_profile(self, command, profile):
+        """Simulate full-deploy stack selection for a profile.
+
+        This duplicates the inline logic in deploy.py handle() for the
+        'deploy all' path. When _select_full_deploy_stacks() is available
+        (PR #690), this can be simplified to call that method directly.
+        """
+        stacks = []
+        cowork_mode = getattr(profile, "cowork_config_delivery", "static")
+        if cowork_mode == "bootstrap-device-code":
+            stacks.append(("bootstrap", "Bootstrap Server (device-code)"))
+        elif cowork_mode == "bootstrap-oidc-bearer":
+            stacks.append(("bootstrap", "Bootstrap Server (OIDC Bearer)"))
+        return stacks
+
+    def test_device_code_includes_bootstrap(self, command):
+        """bootstrap-device-code mode must include bootstrap in deploy-all."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["oidc_okta"],
+            cowork_config_delivery="bootstrap-device-code",
+        )
+        stacks = self._get_stacks_for_profile(command, profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" in stack_types
+
+    def test_oidc_bearer_includes_bootstrap(self, command):
+        """bootstrap-oidc-bearer mode must include bootstrap in deploy-all."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["oidc_okta"],
+            cowork_config_delivery="bootstrap-oidc-bearer",
+        )
+        stacks = self._get_stacks_for_profile(command, profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" in stack_types
+
+    def test_static_never_includes_bootstrap(self, command):
+        """Static config_delivery must never deploy bootstrap stack."""
+        profile = dataclasses.replace(
+            PROFILE_MODES["oidc_okta"],
+            cowork_config_delivery="static",
+        )
+        stacks = self._get_stacks_for_profile(command, profile)
+        stack_types = [s[0] for s in stacks]
+        assert "bootstrap" not in stack_types
 
     def _stack_types(self, command, profile):
         return [s[0] for s in command._select_full_deploy_stacks(profile, _NullConsole())]

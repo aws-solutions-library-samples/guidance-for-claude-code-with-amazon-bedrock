@@ -17,6 +17,7 @@ from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
 # All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
 # Keep in sync with deploy.py's stack types when adding new stacks.
 DESTROYABLE_STACKS = [
+    "bootstrap",
     "websearch",
     "codebuild",
     "analytics",

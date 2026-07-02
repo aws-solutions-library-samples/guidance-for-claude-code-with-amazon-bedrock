@@ -1511,6 +1511,45 @@ class InitCommand(Command):
                 else:
                     console.print("[dim]Claude Desktop service token already configured[/dim]")
 
+            # Claude Desktop configuration delivery mode (OIDC only)
+            if config.get("auth_type", "oidc") == "oidc":
+                console.print("\n[bold]Claude Desktop Configuration Delivery[/bold]")
+                console.print("How should Claude Desktop clients receive their configuration?")
+                console.print("  • Static: MDM profile with inline config (default)")
+                console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
+
+                config_delivery_choices = [
+                    questionary.Choice("Static (default \u2014 MDM profile with inline config)", value="static"),
+                    questionary.Choice(
+                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)",
+                        value="bootstrap-device-code",
+                    ),
+                    questionary.Choice(
+                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)",
+                        value="bootstrap-oidc-bearer",
+                    ),
+                ]
+                saved_config_delivery = config.get("cowork", {}).get("config_delivery", "static")
+                config_delivery = questionary.select(
+                    "Claude Desktop config delivery:",
+                    choices=config_delivery_choices,
+                    default=saved_config_delivery,
+                ).ask()
+
+                if "cowork" not in config:
+                    config["cowork"] = {}
+                config["cowork"]["config_delivery"] = config_delivery
+
+                if config_delivery in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
+                    console.print(
+                        "[green]\u2713[/green] Bootstrap server will be deployed with [cyan]ccwb deploy bootstrap[/cyan]"
+                    )
+                    console.print(
+                        "[dim]  Clients receive per-user config dynamically at sign-in via OIDC token exchange[/dim]"
+                    )
+                else:
+                    console.print("[green]\u2713[/green] Static MDM configuration (default)")
+
         # Settings deployment target
         console.print("\n[bold]Settings Deployment Target[/bold]")
         console.print("Choose where Claude Code settings are installed on user machines:")
@@ -2601,6 +2640,7 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
+            "cowork_config_delivery": config_data.get("cowork", {}).get("config_delivery", "static"),
             "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
             "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
                 "chat_advanced_file_analysis", True
@@ -2978,6 +3018,12 @@ class InitCommand(Command):
             if profile.cowork_chat_advanced_file_analysis:
                 cowork_3p_config["chat_advanced_file_analysis"] = True
             existing_config["cowork_3p"] = cowork_3p_config
+
+            # Add CoWork dynamic config mode
+            if profile.cowork_config_delivery and profile.cowork_config_delivery != "static":
+                if "cowork" not in existing_config:
+                    existing_config["cowork"] = {}
+                existing_config["cowork"]["config_delivery"] = profile.cowork_config_delivery
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):
