@@ -71,14 +71,37 @@ Parameters:
       HTTPS listener on port 443. Required for production (IdPs reject
       HTTP callback URLs).
 
+  LogsKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional KMS key ARN for encrypting CloudWatch Logs. When omitted,
+      logs use the default service encryption.
+
+  ALBAccessLogsBucket:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional S3 bucket name for ALB access logs. When provided, enables
+      access logging on the load balancer.
+
 Conditions:
   HasPrivateSubnets: !Not [!Equals [!Join ['', !Ref PrivateSubnetIds], '']]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+  HasKmsKey: !Not [!Equals [!Ref LogsKmsKeyArn, '']]
+  HasALBAccessLogs: !Not [!Equals [!Ref ALBAccessLogsBucket, '']]
 
 Resources:
   # Security Groups
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W2
+            reason: ALB must accept inbound traffic from developers (internal VPN or internet-facing)
+          - id: W9
+            reason: ALB ingress intentionally open — access controlled by OIDC authentication at the gateway
     Properties:
       GroupDescription: Claude Apps Gateway ALB
       VpcId: !Ref VpcId
@@ -92,27 +115,71 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
 
+  AlbToTaskEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref GatewayPort
+      ToPort: !Ref GatewayPort
+      DestinationSecurityGroupId: !Ref TaskSecurityGroup
+      Description: ALB to Gateway tasks
+
   TaskSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Claude Apps Gateway tasks
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: !Ref GatewayPort
-          ToPort: !Ref GatewayPort
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  TaskFromAlbIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref GatewayPort
+      ToPort: !Ref GatewayPort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Allow traffic from ALB
+
+  TaskToDbEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+      Description: Tasks to RDS PostgreSQL
+
+  TaskToHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: HTTPS to Bedrock API and OIDC issuer
 
   DbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Claude Apps Gateway RDS
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref TaskSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 127.0.0.1/32
+          Description: Deny all outbound (RDS managed, egress not needed)
+
+  DbFromTaskIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+      Description: Allow PostgreSQL from Gateway tasks
 
   # RDS PostgreSQL
   DbSubnetGroup:
@@ -139,13 +206,13 @@ Resources:
       DBInstanceClass: !Ref DbInstanceClass
       AllocatedStorage: 20
       StorageEncrypted: true
-      MasterUsername: gateway
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DbPassword}:SecretString:username}}'
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbPassword}:SecretString:password}}'
       DBSubnetGroupName: !Ref DbSubnetGroup
       VPCSecurityGroups:
         - !Ref DbSecurityGroup
       BackupRetentionPeriod: 7
-      DeletionProtection: false
+      DeletionProtection: true
       PubliclyAccessible: false
       Tags:
         - Key: Name
@@ -157,12 +224,19 @@ Resources:
     Properties:
       ClusterName: !Sub '${AWS::StackName}-cluster'
       CapacityProviders: [FARGATE]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-cluster'
 
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/ecs/${AWS::StackName}'
       RetentionInDays: 14
+      KmsKeyId: !If
+        - HasKmsKey
+        - !Ref LogsKmsKeyArn
+        - !Ref AWS::NoValue
 
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -189,6 +263,11 @@ Resources:
 
   TaskRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: Bedrock InvokeModel scoped to foundation-model/* — specific model ARNs unknown at deploy time
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -206,7 +285,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
-                Resource: '*'
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${BedrockRegion}::foundation-model/*'
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -281,6 +360,11 @@ Resources:
   # CodeBuild project — builds the gateway container image automatically
   GatewayBuildRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: ecr:GetAuthorizationToken requires Resource '*' — does not support resource-level permissions
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -296,7 +380,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: ecr:GetAuthorizationToken
-                Resource: '*'
+                Resource: '*'  # cfn_nag:W12 — ecr:GetAuthorizationToken does not support resource-level permissions
               - Effect: Allow
                 Action:
                   - ecr:BatchCheckLayerAvailability
@@ -310,10 +394,17 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codebuild/${AWS::StackName}-build:*'
 
   GatewayBuildProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: Build artifacts are Docker images pushed to ECR; no S3 artifacts to encrypt
+          - id: W28
+            reason: Name uses !Sub with stack name — unique per deployment, replacement safe
     Properties:
       Name: !Sub '${AWS::StackName}-build'
       ServiceRole: !GetAtt GatewayBuildRole.Arn
@@ -411,11 +502,27 @@ Resources:
   # ALB
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W52
+            reason: Access logging is opt-in via ALBAccessLogsBucket parameter
     Properties:
       Type: application
       Scheme: !Ref ALBScheme
       SecurityGroups: [!Ref AlbSecurityGroup]
       Subnets: !Ref SubnetIds
+      LoadBalancerAttributes:
+        - !If
+          - HasALBAccessLogs
+          - Key: access_logs.s3.enabled
+            Value: 'true'
+          - !Ref AWS::NoValue
+        - !If
+          - HasALBAccessLogs
+          - Key: access_logs.s3.bucket
+            Value: !Ref ALBAccessLogsBucket
+          - !Ref AWS::NoValue
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -429,6 +536,11 @@ Resources:
 
   HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W56
+            reason: HTTP listener redirects to HTTPS when certificate provided; without cert this is dev/internal only
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 80
@@ -451,6 +563,7 @@ Resources:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 443
       Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
       Certificates:
         - CertificateArn: !Ref CertificateArn
       DefaultActions:
