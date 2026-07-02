@@ -151,6 +151,6 @@ class TestGenerateJsonCredentialHelper:
         )
         json_path = generate_json(tmp_path, config)
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        assert data["inferenceCredentialHelper"] == "~/claude-code-with-bedrock/credential-process --profile MyProfile"
+        assert data["inferenceCredentialHelper"] == "~/claude-code-with-bedrock/credential-process --desktop --profile MyProfile"
         assert data["inferenceCredentialHelperTtlSec"] == "3500"
         assert data["inferenceCredentialHelperSilentRefreshEnabled"] == "true"
