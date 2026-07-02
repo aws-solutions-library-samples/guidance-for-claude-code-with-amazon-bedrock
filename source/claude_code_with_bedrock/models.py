@@ -296,6 +296,26 @@ _CLAUDE_MODELS_RAW = {
                     "sa-east-1",
                 ],
             },
+            "eu": {
+                "model_id": "eu.anthropic.claude-opus-4-8",
+                "description": "EU CRIS - European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
+            },
         },
     },
     "opus-4-7": {
@@ -396,6 +416,26 @@ _CLAUDE_MODELS_RAW = {
                     "il-central-1",
                     # South America
                     "sa-east-1",
+                ],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-opus-4-7",
+                "description": "EU CRIS - European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
                 ],
             },
         },
