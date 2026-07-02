@@ -637,6 +637,7 @@ class DeployCommand(Command):
                         template_path=template_path,
                         parameters=boto3_params,
                         capabilities=capabilities or ["CAPABILITY_NAMED_IAM"],
+                        tags=profile.tags if profile.tags else None,
                         on_event=lambda e: progress.update(
                             task,
                             description=f"{e.get('LogicalResourceId', 'Stack')} - {e.get('ResourceStatus', '')}"
