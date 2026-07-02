@@ -42,13 +42,16 @@ func (a *credentialApp) runDesktopHelper() int {
 		}
 
 		if creds == nil && allowInteractive {
-			// Interactive allowed — run full auth flow
-			debugPrint("No cached credentials, running interactive auth")
+			// Interactive allowed — run full auth flow.
+			// Redirect stdout to suppress credential JSON output (run() prints to stdout).
+			origStdout := os.Stdout
+			os.Stdout, _ = os.Open(os.DevNull)
 			exitCode := a.run()
+			os.Stdout = origStdout
 			if exitCode != 0 {
 				return exitCode
 			}
-			// After successful auth, read the credentials
+			// After successful auth, read the credentials from cache
 			creds = a.getCachedCredentials()
 		}
 
@@ -72,7 +75,10 @@ func (a *credentialApp) runDesktopHelper() int {
 		}
 		if creds == nil || storage.ParseExpirationSeconds(creds.Expiration) <= 30 {
 			if allowInteractive {
+				origStdout := os.Stdout
+				os.Stdout, _ = os.Open(os.DevNull)
 				exitCode := a.run()
+				os.Stdout = origStdout
 				if exitCode != 0 {
 					return exitCode
 				}
