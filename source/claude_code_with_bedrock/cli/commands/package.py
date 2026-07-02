@@ -3300,17 +3300,33 @@ else
 fi
 """
 
-        # IDC auth needs a launcher wrapper that signs in before launching Claude.
+        # IDC auth keeps a launcher wrapper that signs in before launching Claude.
         # OIDC auth handles sign-in transparently, so no launcher is needed.
+        #
+        # As of the awsAuthRefresh --login gate fix (credential-process now polls
+        # device-auth and surfaces the verification URL/code live when invoked via
+        # awsAuthRefresh), in-session recovery DOES work: an expired SSO session
+        # can be renewed from inside a running `claude` via the credential hook.
+        # The launcher is nonetheless kept for now because:
+        #   1. Claude Code does not auto-invoke awsAuthRefresh on a 401 yet
+        #      (anthropics/claude-code#67529, open) \u2014 recovery is manual via
+        #      /login -> "Claude Platform on AWS - refresh credentials" (v2.1.186+).
+        #      The launcher's pre-flight signs in BEFORE the first prompt, so the
+        #      user never hits the manual-recovery step.
+        #   2. Session-start behavior when the SSO session is fully dead (silent
+        #      awsCredentialExport fails, then whether Claude Code falls through to
+        #      awsAuthRefresh) is not yet verified across OSes.
+        # Revisit removing the launcher once #67529 lands and start-up fallback is
+        # confirmed; track via LOCAL_TESTING.md's "why a launcher" note.
         _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
         if _is_idc:
             installer_content += """
 # Generate a 'claude-bedrock' launcher wrapper.
 # It signs in (a no-op when the session is still valid) so the verification URL
-# is shown live in the user's terminal, THEN launches Claude Code. This avoids
-# the "run claude \u2192 silent hang" trap for IDC: the interactive sign-in can't be
-# surfaced through Claude Code's own credential refresh, so we front-run it here
-# where stdout/stderr go straight to the terminal.
+# is shown live in the user's terminal, THEN launches Claude Code. In-session
+# recovery via the awsAuthRefresh hook now works too, but Claude Code does not
+# auto-trigger it on a 401 yet (anthropics/claude-code#67529) \u2014 front-running the
+# sign-in here means the user is authenticated before the first prompt.
 CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
 FIRST_PROFILE=$(echo $PROFILES | awk '{print $1}')
@@ -3337,13 +3353,17 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo ">>> Start Claude Code with the launcher, NOT 'claude' directly:"
-echo "      $LAUNCHER"
+echo ">>> Start Claude Code the usual way:"
+echo "      claude"
 echo
-echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
-echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
-echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
-echo "    retrying \u2014 easy to miss. The launcher avoids that."
+echo "    It signs you in automatically when needed \u2014 opening your browser, or"
+echo "    showing a sign-in link on headless/SSH hosts \u2014 and refreshes your session"
+echo "    on its own after that."
+echo
+echo "    Optional: a 'claude-bedrock' launcher is also installed. It signs you in"
+echo "    first, then starts Claude Code, which can make the very first sign-in"
+echo "    smoother (no time limit on the sign-in step). Use it if you prefer:"
+echo "      $LAUNCHER"
 echo
 echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
 echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
@@ -3636,9 +3656,11 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
             installer_content += """
 REM Generate a 'claude-bedrock.cmd' launcher.
 REM It signs in first (no-op if the session is still valid) so the verification
-REM URL is shown live in the user's console, THEN launches Claude Code. This
-REM avoids the "run claude -> silent hang" trap for IDC, whose interactive
-REM sign-in cannot be surfaced through Claude Code's own credential refresh.
+REM URL is shown live in the user's console, THEN launches Claude Code.
+REM In-session recovery via the awsAuthRefresh hook now works too, but Claude Code
+REM does not auto-trigger it on a 401 yet (anthropics/claude-code#67529) --
+REM front-running the sign-in here means the user is authenticated before the
+REM first prompt.
 REM
 REM Written with plain batch 'echo' redirection (NOT PowerShell) so the embedded
 REM quotes survive. In this script %%X%% becomes literal %X% in the .cmd, and
@@ -3666,13 +3688,17 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
     echo   - %%p
 )
 echo.
-echo ^>^>^> Start Claude Code with the launcher, NOT 'claude' directly:
-echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo ^>^>^> Start Claude Code the usual way:
+echo       claude
 echo.
-echo     The launcher signs you in (shows the sign-in URL in your terminal when
-echo     needed) and then starts Claude Code. If you run 'claude' directly without
-echo     an active sign-in, it can briefly flash a sign-in error and then keep
-echo     retrying - easy to miss. The launcher avoids that.
+echo     It signs you in automatically when needed - opening your browser, or
+echo     showing a sign-in link on headless/SSH hosts - and refreshes your session
+echo     on its own after that.
+echo.
+echo     Optional: a 'claude-bedrock' launcher is also installed. It signs you in
+echo     first, then starts Claude Code, which can make the very first sign-in
+echo     smoother ^(no time limit on the sign-in step^). Use it if you prefer:
+echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
 echo.
 echo Tip: add that folder to your PATH so you can just run 'claude-bedrock'.
 echo.
@@ -3950,12 +3976,16 @@ Available metrics include:
             # IDC needs BOTH:
             #   - awsCredentialExport for the silent ~hourly role-credential refresh
             #     (SSO session still valid -> re-mint via STS, no browser); and
-            #   - awsAuthRefresh so that when there is NO valid SSO session, the binary's
-            #     fail-fast message ("relaunch with claude-bedrock") is shown to the user
-            #     instead of a silent retry loop. The fail-fast guard makes the binary
-            #     exit immediately here, so awsAuthRefresh does NOT hang (the original
-            #     reason it was dropped for IDC). The ~8h SSO-session re-login itself
-            #     still happens out-of-band via the claude-bedrock launcher.
+            #   - awsAuthRefresh (--login) so that when there is NO valid SSO session,
+            #     the device-auth flow runs IN-SESSION: the credential-process --login
+            #     gate now polls device authorization and surfaces the verification
+            #     URL/code live (Claude Code streams the hook's stderr), so the ~8h
+            #     SSO re-login can complete from inside a running `claude`. On headless
+            #     hosts with discarded stderr (the silent awsCredentialExport path) the
+            #     binary still fails fast rather than hanging. NOTE: Claude Code does
+            #     not auto-invoke awsAuthRefresh on a 401 yet (anthropics/claude-code
+            #     #67529) — until it does, the claude-bedrock launcher front-runs the
+            #     sign-in so the user is authenticated before the first prompt.
             #
             # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
             # can be interactive (browser), which is exactly what that hook is for.
