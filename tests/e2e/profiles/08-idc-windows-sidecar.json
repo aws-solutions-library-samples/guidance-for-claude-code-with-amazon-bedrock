@@ -1,0 +1,10 @@
+{
+  "name": "08-idc-windows-sidecar",
+  "description": "IDC + Windows + Sidecar monitoring",
+  "auth": {"type": "idc", "federation": "none"},
+  "platform": "windows-x64",
+  "monitoring": {"mode": "sidecar"},
+  "config_delivery": "static",
+  "quota": {"enabled": false},
+  "tests": ["auth_flow", "credential_output", "binary_platform"]
+}

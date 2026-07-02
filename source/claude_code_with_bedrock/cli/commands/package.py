@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -20,10 +21,17 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 from claude_code_with_bedrock.cli.utils.display import display_configuration_info
 from claude_code_with_bedrock.cli.utils.helpers import get_codebuild_region
+from claude_code_with_bedrock.cli.validators import validate_profile_for_packaging
 from claude_code_with_bedrock.config import Config
 from claude_code_with_bedrock.models import (
     get_source_region_for_profile,
 )
+
+
+def _is_interactive() -> bool:
+    """Return True when stdin is a TTY and prompts can be displayed."""
+    return sys.stdin.isatty()
+
 
 # Runtime packages bundled into the credential provider binary.
 _CREDENTIAL_PROVIDER_RUNTIME_DEPS = ["boto3", "requests", "PyJWT", "keyring", "cryptography"]
@@ -52,8 +60,35 @@ def _go_ldflags(goos: str) -> str:
     stripped Go binaries in subprocess/non-interactive contexts. Everywhere else we
     strip (-s -w) for size. This rule applies identically to credential-process,
     otel-helper, and the otelcol sidecar — hence one shared helper.
+
+    Always injects version and commit via -X flags so --version and --explain
+    report the build origin (critical for beta vs release troubleshooting).
     """
-    return "" if goos == "windows" else "-s -w"
+    import subprocess
+
+    # Resolve version from git tags
+    try:
+        ver = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        ver = "dev"
+
+    # Resolve commit SHA
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        commit = "unknown"
+
+    version_flags = f"-X ccwb-go/internal/version.Version={ver} -X ccwb-go/internal/version.Commit={commit}"
+    strip_flags = "" if goos == "windows" else "-s -w"
+    return f"{strip_flags} {version_flags}".strip()
 
 
 def _find_universal2_python() -> Path | None:
@@ -210,6 +245,11 @@ class PackageCommand(Command):
             description="Use legacy PyInstaller/Nuitka build instead of Go (deprecated)",
             flag=True,
         ),
+        option(
+            "skip-validation",
+            description="Skip configuration validation checks",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -238,6 +278,25 @@ class PackageCommand(Command):
         if not profile:
             console.print("[red]No deployment found. Run 'poetry run ccwb init' first.[/red]")
             return 1
+
+        # Run configuration validation (unless skipped)
+        if not self.option("skip-validation"):
+            validation_errors = validate_profile_for_packaging(profile)
+            if validation_errors:
+                has_errors = False
+                for err in validation_errors:
+                    if err.severity == "error":
+                        console.print(f"[red]✗ [{err.field}] {err.message}[/red]")
+                        has_errors = True
+                    else:
+                        console.print(f"[yellow]⚠ [{err.field}] {err.message}[/yellow]")
+                if has_errors:
+                    console.print(
+                        "\n[red]Configuration validation failed. "
+                        "Fix the errors above or re-run with --skip-validation to bypass.[/red]"
+                    )
+                    return 1
+                console.print()  # blank line after warnings
 
         # Regenerate installers from existing binaries (no rebuild needed)
         if self.option("regenerate-installers"):
@@ -297,28 +356,41 @@ class PackageCommand(Command):
                 platform_choices.append("windows")
 
             # Use checkbox for multiple selection (require at least one)
-            selected_platforms = questionary.checkbox(
-                "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
-                choices=platform_choices,
-                validate=lambda x: len(x) > 0 or "You must select at least one platform",
-            ).ask()
+            if _is_interactive():
+                selected_platforms = questionary.checkbox(
+                    "Which platform(s) do you want to build for? (Use space to select, enter to confirm)",
+                    choices=platform_choices,
+                    validate=lambda x: len(x) > 0 or "You must select at least one platform",
+                ).ask()
+            else:
+                # Non-interactive: build all available platforms
+                selected_platforms = platform_choices
+                console.print(
+                    f"[dim]Non-interactive mode: building all platforms ({', '.join(selected_platforms)})[/dim]"
+                )
 
             # Use the selected platforms (guaranteed to have at least one due to validation)
             target_platform = selected_platforms if len(selected_platforms) > 1 else selected_platforms[0]
 
         # Prompt for co-authorship preference (default to No - opt-in approach)
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?",
-            default=False,
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?",
+                default=False,
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         # Prompt for custom OTel resource attributes (only when monitoring is enabled)
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm(
-                "Customize telemetry resource attributes? (department, team, cost center)",
-                default=False,
-            ).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm(
+                    "Customize telemetry resource attributes? (department, team, cost center)",
+                    default=False,
+                ).ask()
+            else:
+                customize_otel = False
 
             if customize_otel:
                 console.print(
@@ -348,45 +420,31 @@ class PackageCommand(Command):
             )
             return 1
 
-        # Get federation identifier — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        identity_pool_id = None
-        federated_role_arn = None
+        # Normalize generic platform tokens to their arch-specific canonical names.
+        # This ensures binary naming is consistent with what distribute and install.sh expect.
+        # See #682 Bug 4: generic 'linux' produces 'credential-process-linux' which
+        # distribute silently drops and install.sh can't find.
+        _PLATFORM_CANONICAL = {
+            "linux": "linux-x64",
+            "macos": "macos-arm64",
+        }
+        if use_go:
+            if isinstance(target_platform, list):
+                target_platform = [_PLATFORM_CANONICAL.get(p, p) for p in target_platform]
+            elif target_platform in _PLATFORM_CANONICAL:
+                canonical = _PLATFORM_CANONICAL[target_platform]
+                console.print(
+                    f"[dim]Normalizing platform '{target_platform}' → '{canonical}' for consistent binary naming[/dim]"
+                )
+                target_platform = canonical
 
-        if not getattr(profile, "sso_enabled", True):
-            # SSO disabled — no auth stack to query, no federation needed
-            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
-        elif federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federated_role_arn = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federated_role_arn}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            identity_pool_id = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {identity_pool_id}[/dim]")
-        else:
-            # Fall back to CloudFormation stack outputs
-            console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-
-            if federation_type == "direct":
-                federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    federated_role_arn = stack_outputs.get("FederatedRoleArn")
-                if not federated_role_arn or federated_role_arn == "N/A":
-                    console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
-                    return 1
-            else:
-                identity_pool_id = stack_outputs.get("IdentityPoolId")
-                if not identity_pool_id:
-                    console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
-                    return 1
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito). See _resolve_federation: Cognito ALWAYS reads the pool ID
+        # from CloudFormation stack outputs because identity_pool_name is only a
+        # name, not the "<region>:<uuid>" pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        if getattr(profile, "sso_enabled", True) and not (identity_pool_id or federated_role_arn):
+            return 1
 
         # Welcome
         console.print(
@@ -463,17 +521,22 @@ class PackageCommand(Command):
                 if "@" in session_name:
                     idc_user_email = session_name
                     console.print(f"[dim]Detected user email from IDC: {idc_user_email}[/dim]")
-                else:
+                elif _is_interactive():
                     # Prompt if we can't auto-detect
                     idc_user_email = questionary.text(
                         "User email for OTEL attribution (IDC session name):",
                         default=session_name or "",
                     ).ask()
+                else:
+                    idc_user_email = session_name or ""
             except Exception:
-                idc_user_email = questionary.text(
-                    "User email for OTEL attribution:",
-                    default="",
-                ).ask()
+                if _is_interactive():
+                    idc_user_email = questionary.text(
+                        "User email for OTEL attribution:",
+                        default="",
+                    ).ask()
+                else:
+                    idc_user_email = ""
 
             if not idc_user_email:
                 console.print("[yellow]Warning: No user email — OTEL attribution will be anonymous[/yellow]")
@@ -725,7 +788,14 @@ class PackageCommand(Command):
 
         # Always create Claude Code settings (required for Bedrock configuration)
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            is_idc_zero_binary=is_idc_zero_binary,
+        )
 
         # Generate CoWork 3P MDM configuration if enabled
         if profile.cowork_3p_enabled:
@@ -775,6 +845,7 @@ class PackageCommand(Command):
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
+        console.print("After installation, verify with: [cyan]poetry run ccwb doctor[/cyan]")
 
         # Only show distribute command if distribution is enabled
         if profile.enable_distribution:
@@ -2408,43 +2479,30 @@ RUN pyinstaller \
                 if script_src.exists():
                     shutil.copy2(script_src, output_dir / script_name)
 
-        # Get federation info — try profile first, fall back to CloudFormation
-        federation_type = profile.federation_type
-        federation_identifier = None
-
-        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
-            federation_identifier = profile.federated_role_arn
-            console.print(f"[dim]Using role ARN from profile: {federation_identifier}[/dim]")
-        elif federation_type != "direct" and getattr(profile, "identity_pool_name", None):
-            federation_identifier = profile.identity_pool_name
-            console.print(f"[dim]Using identity pool from profile: {federation_identifier}[/dim]")
-        else:
-            console.print("[cyan]Fetching deployment information from CloudFormation...[/cyan]")
-            stack_outputs = get_stack_outputs(
-                profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
-            )
-            if not stack_outputs:
-                console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
-                return 1
-
-            federation_type = stack_outputs.get("FederationType", profile.federation_type)
-            if federation_type == "direct":
-                federation_identifier = stack_outputs.get("DirectSTSRoleArn") or stack_outputs.get("FederatedRoleArn")
-            else:
-                federation_identifier = stack_outputs.get("IdentityPoolId")
+        # Resolve federation identifier (role ARN for direct STS, Identity Pool ID
+        # for Cognito) — see _resolve_federation. Cognito ALWAYS reads the pool ID
+        # from stack outputs; identity_pool_name is a name, not the pool ID.
+        federation_type, identity_pool_id, federated_role_arn = self._resolve_federation(profile, console)
+        federation_identifier = federated_role_arn if federation_type == "direct" else identity_pool_id
 
         if not federation_identifier or federation_identifier == "N/A":
             console.print("[red]Federation identifier not found in profile or stack outputs.[/red]")
             return 1
 
         # Prompt for co-authorship and OTEL attributes
-        include_coauthored_by = questionary.confirm(
-            "Include 'Co-Authored-By: Claude' in git commits?", default=False
-        ).ask()
+        if _is_interactive():
+            include_coauthored_by = questionary.confirm(
+                "Include 'Co-Authored-By: Claude' in git commits?", default=False
+            ).ask()
+        else:
+            include_coauthored_by = False
 
         otel_resource_attributes = None
         if profile.monitoring_enabled:
-            customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            if _is_interactive():
+                customize_otel = questionary.confirm("Customize telemetry resource attributes?", default=False).ask()
+            else:
+                customize_otel = False
             if customize_otel:
                 department = questionary.text("Department:", default="engineering").ask()
                 team_id = questionary.text("Team ID:", default="default").ask()
@@ -2487,6 +2545,63 @@ RUN pyinstaller \
             "\n[bold]Next: Run '[cyan]poetry run ccwb distribute --per-os[/cyan]' to create distribution packages.[/bold]"
         )
         return 0
+
+    def _resolve_federation(self, profile, console):
+        r"""Resolve federation details for packaging.
+
+        Returns a ``(federation_type, identity_pool_id, federated_role_arn)``
+        tuple. On success exactly one of ``identity_pool_id`` /
+        ``federated_role_arn`` is set; both are ``None`` when SSO is disabled or
+        when resolution fails (the caller is expected to handle the failure).
+
+        IMPORTANT — Cognito Identity Pool federation ALWAYS resolves the pool ID
+        from the deployed CloudFormation stack outputs. ``profile.identity_pool_name``
+        holds only a human-readable name (e.g. ``"claude-code-auth"``); the real
+        pool ID has the form ``"<region>:<uuid>"`` and is created by
+        ``ccwb deploy``. Using the name as the identity pool ID produces a
+        ``config.json`` that fails Cognito ``GetId`` validation
+        (``[\w-]+:[0-9a-f-]+``), breaking authentication for every distributed
+        user. Direct STS keeps a profile shortcut because the profile stores the
+        real role ARN.
+        """
+        federation_type = profile.federation_type
+
+        if not getattr(profile, "sso_enabled", True):
+            # SSO disabled — no auth stack to query, no federation needed.
+            console.print("[dim]SSO disabled — skipping auth stack lookup[/dim]")
+            return federation_type, None, None
+
+        # Direct STS: the profile stores the real role ARN, so it is a safe shortcut.
+        if federation_type == "direct" and getattr(profile, "federated_role_arn", None):
+            console.print(f"[dim]Using role ARN from profile: {profile.federated_role_arn}[/dim]")
+            return federation_type, None, profile.federated_role_arn
+
+        # Cognito (and direct without a cached ARN) must read from the stack: the
+        # profile never holds the real identity pool ID, only its name.
+        console.print("[yellow]Fetching deployment information from CloudFormation...[/yellow]")
+        stack_outputs = get_stack_outputs(
+            profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack"), profile.aws_region
+        )
+        if not stack_outputs:
+            console.print("[red]Could not fetch stack outputs. Is the stack deployed?[/red]")
+            return federation_type, None, None
+
+        federation_type = stack_outputs.get("FederationType", profile.federation_type)
+
+        if federation_type == "direct":
+            federated_role_arn = stack_outputs.get("DirectSTSRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                federated_role_arn = stack_outputs.get("FederatedRoleArn")
+            if not federated_role_arn or federated_role_arn == "N/A":
+                console.print("[red]Direct STS Role ARN not found in stack outputs.[/red]")
+                return federation_type, None, None
+            return federation_type, None, federated_role_arn
+
+        identity_pool_id = stack_outputs.get("IdentityPoolId")
+        if not identity_pool_id:
+            console.print("[red]Identity Pool ID not found in stack outputs.[/red]")
+            return federation_type, None, None
+        return federation_type, identity_pool_id, None
 
     def _create_config(
         self,
@@ -2665,6 +2780,122 @@ RUN pyinstaller \
         external_ps1 = output_dir / "ccwb-install.ps1"
         if installer_path.exists() and external_ps1.exists():
             self.line("  <info>Using existing installer scripts (install.sh, ccwb-install.ps1)</info>")
+            return installer_path
+
+        # IDC zero-binary mode: no credential-process binary, auth via aws sso login
+        _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc")) == "idc"
+        _has_quota = bool(getattr(profile, "quota_api_endpoint", None))
+        if _is_idc and not _has_quota and not built_executables:
+            idc_start_url = getattr(profile, "idc_start_url", "") or ""
+            idc_account_id = getattr(profile, "idc_account_id", "") or ""
+            idc_permission_set = (
+                getattr(profile, "idc_permission_set_name", "BedrockDeveloperAccess") or "BedrockDeveloperAccess"
+            )
+            aws_region = getattr(profile, "aws_region", "us-east-1") or "us-east-1"
+            sso_region = getattr(profile, "sso_region", aws_region) or aws_region
+            idc_content = f"""#!/bin/bash
+# Claude Code with Bedrock — IAM Identity Center Installer
+# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo "~$SUDO_USER")
+else
+    ACTUAL_USER="$USER"
+    ACTUAL_HOME="$HOME"
+fi
+
+echo "======================================"
+echo "Claude Code with Bedrock — IDC Setup"
+echo "======================================"
+echo
+
+# Prerequisites
+if ! command -v aws &>/dev/null; then
+    echo "ERROR: AWS CLI v2 is required."
+    echo "       Install from: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    exit 1
+fi
+echo "✓ AWS CLI found"
+
+# Write config.json
+mkdir -p "$ACTUAL_HOME/claude-code-with-bedrock"
+cp config.json "$ACTUAL_HOME/claude-code-with-bedrock/"
+if [ -n "$SUDO_USER" ]; then
+    chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
+fi
+echo "✓ Configuration installed"
+
+# Install collector sidecar if present
+if [ -f "collector-config.yaml" ]; then
+    mkdir -p "$ACTUAL_HOME/.ccwb"
+    cp collector-config.yaml "$ACTUAL_HOME/.ccwb/"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.ccwb/collector-config.yaml"; fi
+    echo "✓ OTel collector config installed"
+fi
+
+# Configure AWS SSO profile
+echo
+echo "Configuring AWS SSO profile 'ClaudeCode'..."
+mkdir -p "$ACTUAL_HOME/.aws"
+touch "$ACTUAL_HOME/.aws/config"
+
+# Remove old ClaudeCode entries if present
+sed -i.bak '/^\\[profile ClaudeCode\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+sed -i.bak '/^\\[sso-session ClaudeCode-session\\]/,/^$/d' "$ACTUAL_HOME/.aws/config" 2>/dev/null || true
+rm -f "$ACTUAL_HOME/.aws/config.bak"
+
+cat >> "$ACTUAL_HOME/.aws/config" << 'AWSCONFIG'
+[profile ClaudeCode]
+sso_session = ClaudeCode-session
+sso_account_id = {idc_account_id}
+sso_role_name = {idc_permission_set}
+region = {aws_region}
+
+[sso-session ClaudeCode-session]
+sso_start_url = {idc_start_url}
+sso_region = {sso_region}
+sso_registration_scopes = sso:account:access
+AWSCONFIG
+
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.aws/config"; fi
+echo "✓ AWS profile 'ClaudeCode' configured"
+
+# Install Claude Code settings
+if [ -d "claude-settings" ] && [ -f "claude-settings/settings.json" ]; then
+    mkdir -p "$ACTUAL_HOME/.claude"
+    if [ -f "$ACTUAL_HOME/.claude/settings.json" ]; then
+        cp "$ACTUAL_HOME/.claude/settings.json" "$ACTUAL_HOME/.claude/settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+    fi
+    cp "claude-settings/settings.json" "$ACTUAL_HOME/.claude/settings.json"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/.claude/settings.json"; fi
+    echo "✓ Claude Code settings installed"
+fi
+
+echo
+echo "======================================"
+echo "Installation complete!"
+echo "======================================"
+echo
+echo "Next step — authenticate with AWS SSO:"
+echo
+echo "  aws sso login --profile ClaudeCode"
+echo
+echo "Then verify:"
+echo
+echo "  aws sts get-caller-identity --profile ClaudeCode"
+echo
+echo "Claude Code will use the ClaudeCode profile automatically."
+echo "Re-run 'aws sso login --profile ClaudeCode' when your session expires (every 8 hours)."
+"""
+            with open(installer_path, "w", encoding="utf-8") as f:
+                f.write(idc_content)
+            installer_path.chmod(0o755)
             return installer_path
 
         # Determine which binaries were built
@@ -3069,17 +3300,33 @@ else
 fi
 """
 
-        # IDC auth needs a launcher wrapper that signs in before launching Claude.
+        # IDC auth keeps a launcher wrapper that signs in before launching Claude.
         # OIDC auth handles sign-in transparently, so no launcher is needed.
+        #
+        # As of the awsAuthRefresh --login gate fix (credential-process now polls
+        # device-auth and surfaces the verification URL/code live when invoked via
+        # awsAuthRefresh), in-session recovery DOES work: an expired SSO session
+        # can be renewed from inside a running `claude` via the credential hook.
+        # The launcher is nonetheless kept for now because:
+        #   1. Claude Code does not auto-invoke awsAuthRefresh on a 401 yet
+        #      (anthropics/claude-code#67529, open) \u2014 recovery is manual via
+        #      /login -> "Claude Platform on AWS - refresh credentials" (v2.1.186+).
+        #      The launcher's pre-flight signs in BEFORE the first prompt, so the
+        #      user never hits the manual-recovery step.
+        #   2. Session-start behavior when the SSO session is fully dead (silent
+        #      awsCredentialExport fails, then whether Claude Code falls through to
+        #      awsAuthRefresh) is not yet verified across OSes.
+        # Revisit removing the launcher once #67529 lands and start-up fallback is
+        # confirmed; track via LOCAL_TESTING.md's "why a launcher" note.
         _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
         if _is_idc:
             installer_content += """
 # Generate a 'claude-bedrock' launcher wrapper.
 # It signs in (a no-op when the session is still valid) so the verification URL
-# is shown live in the user's terminal, THEN launches Claude Code. This avoids
-# the "run claude \u2192 silent hang" trap for IDC: the interactive sign-in can't be
-# surfaced through Claude Code's own credential refresh, so we front-run it here
-# where stdout/stderr go straight to the terminal.
+# is shown live in the user's terminal, THEN launches Claude Code. In-session
+# recovery via the awsAuthRefresh hook now works too, but Claude Code does not
+# auto-trigger it on a 401 yet (anthropics/claude-code#67529) \u2014 front-running the
+# sign-in here means the user is authenticated before the first prompt.
 CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
 FIRST_PROFILE=$(echo $PROFILES | awk '{print $1}')
@@ -3106,13 +3353,17 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo ">>> Start Claude Code with the launcher, NOT 'claude' directly:"
-echo "      $LAUNCHER"
+echo ">>> Start Claude Code the usual way:"
+echo "      claude"
 echo
-echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
-echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
-echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
-echo "    retrying \u2014 easy to miss. The launcher avoids that."
+echo "    It signs you in automatically when needed \u2014 opening your browser, or"
+echo "    showing a sign-in link on headless/SSH hosts \u2014 and refreshes your session"
+echo "    on its own after that."
+echo
+echo "    Optional: a 'claude-bedrock' launcher is also installed. It signs you in"
+echo "    first, then starts Claude Code, which can make the very first sign-in"
+echo "    smoother (no time limit on the sign-in step). Use it if you prefer:"
+echo "      $LAUNCHER"
 echo
 echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
 echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
@@ -3405,9 +3656,11 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
             installer_content += """
 REM Generate a 'claude-bedrock.cmd' launcher.
 REM It signs in first (no-op if the session is still valid) so the verification
-REM URL is shown live in the user's console, THEN launches Claude Code. This
-REM avoids the "run claude -> silent hang" trap for IDC, whose interactive
-REM sign-in cannot be surfaced through Claude Code's own credential refresh.
+REM URL is shown live in the user's console, THEN launches Claude Code.
+REM In-session recovery via the awsAuthRefresh hook now works too, but Claude Code
+REM does not auto-trigger it on a 401 yet (anthropics/claude-code#67529) --
+REM front-running the sign-in here means the user is authenticated before the
+REM first prompt.
 REM
 REM Written with plain batch 'echo' redirection (NOT PowerShell) so the embedded
 REM quotes survive. In this script %%X%% becomes literal %X% in the .cmd, and
@@ -3435,13 +3688,17 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
     echo   - %%p
 )
 echo.
-echo ^>^>^> Start Claude Code with the launcher, NOT 'claude' directly:
-echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo ^>^>^> Start Claude Code the usual way:
+echo       claude
 echo.
-echo     The launcher signs you in (shows the sign-in URL in your terminal when
-echo     needed) and then starts Claude Code. If you run 'claude' directly without
-echo     an active sign-in, it can briefly flash a sign-in error and then keep
-echo     retrying - easy to miss. The launcher avoids that.
+echo     It signs you in automatically when needed - opening your browser, or
+echo     showing a sign-in link on headless/SSH hosts - and refreshes your session
+echo     on its own after that.
+echo.
+echo     Optional: a 'claude-bedrock' launcher is also installed. It signs you in
+echo     first, then starts Claude Code, which can make the very first sign-in
+echo     smoother ^(no time limit on the sign-in step^). Use it if you prefer:
+echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
 echo.
 echo Tip: add that folder to your PATH so you can just run 'claude-bedrock'.
 echo.
@@ -3657,6 +3914,7 @@ Available metrics include:
         include_coauthored_by: bool = True,
         profile_name: str = "ClaudeCode",
         otel_resource_attributes: str | None = None,
+        is_idc_zero_binary: bool = False,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -3674,13 +3932,14 @@ Available metrics include:
                     "AWS_REGION": self._get_bedrock_region_for_profile(profile),
                     # AWS_PROFILE is used by both AWS SDK and otel-helper
                     "AWS_PROFILE": profile_name,
-                    # AWS_CREDENTIAL_PROCESS allows the AWS SDK to obtain credentials
-                    # directly without requiring the AWS CLI or ~/.aws/config.
-                    # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
-                    # install.sh/install.bat with the actual binary path at install time.
-                    "AWS_CREDENTIAL_PROCESS": f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}",
                 }
             }
+            # IDC zero-binary: AWS_PROFILE + ~/.aws/config SSO profile handle creds
+            # directly — no credential-process binary exists to reference.
+            if not is_idc_zero_binary:
+                # The __CREDENTIAL_PROCESS_PATH__ placeholder is replaced by
+                # install.sh/install.bat with the actual binary path at install time.
+                settings["env"]["AWS_CREDENTIAL_PROCESS"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
             # Add includeCoAuthoredBy setting if user wants to disable it (Claude Code defaults to true)
             # Only add the field if the user wants it disabled
@@ -3717,18 +3976,28 @@ Available metrics include:
             # IDC needs BOTH:
             #   - awsCredentialExport for the silent ~hourly role-credential refresh
             #     (SSO session still valid -> re-mint via STS, no browser); and
-            #   - awsAuthRefresh so that when there is NO valid SSO session, the binary's
-            #     fail-fast message ("relaunch with claude-bedrock") is shown to the user
-            #     instead of a silent retry loop. The fail-fast guard makes the binary
-            #     exit immediately here, so awsAuthRefresh does NOT hang (the original
-            #     reason it was dropped for IDC). The ~8h SSO-session re-login itself
-            #     still happens out-of-band via the claude-bedrock launcher.
+            #   - awsAuthRefresh (--login) so that when there is NO valid SSO session,
+            #     the device-auth flow runs IN-SESSION: the credential-process --login
+            #     gate now polls device authorization and surfaces the verification
+            #     URL/code live (Claude Code streams the hook's stderr), so the ~8h
+            #     SSO re-login can complete from inside a running `claude`. On headless
+            #     hosts with discarded stderr (the silent awsCredentialExport path) the
+            #     binary still fails fast rather than hanging. NOTE: Claude Code does
+            #     not auto-invoke awsAuthRefresh on a 401 yet (anthropics/claude-code
+            #     #67529) — until it does, the claude-bedrock launcher front-runs the
+            #     sign-in so the user is authenticated before the first prompt.
             #
             # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
             # can be interactive (browser), which is exactly what that hook is for.
-            if profile.effective_auth_type == "idc":
+            if profile.effective_auth_type == "idc" and not is_idc_zero_binary:
+                # IDC+quota path: credential-process binary handles STS refresh + quota.
                 settings["awsCredentialExport"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --login --profile {profile_name}"
+            elif profile.effective_auth_type == "idc" and is_idc_zero_binary:
+                # IDC zero-binary: no credential-process. AWS SDK resolves via the
+                # ClaudeCode SSO profile in ~/.aws/config written by install.sh.
+                # Session expiry is handled out-of-band via `aws sso login`.
+                pass
             elif profile.credential_storage == "session":
                 settings["awsAuthRefresh"] = f"__CREDENTIAL_PROCESS_PATH__ --profile {profile_name}"
 
@@ -3772,10 +4041,25 @@ Available metrics include:
 
             # If monitoring is enabled, add telemetry configuration
             if profile.monitoring_enabled:
-                # Try profile first (saved by ccwb deploy), fall back to CloudFormation query
-                endpoint = getattr(profile, "otel_collector_endpoint", None)
+                _monitoring_mode = getattr(profile, "monitoring_mode", "central")
 
-                if not endpoint:
+                # Sidecar mode: Claude Code always sends to the local otelcol on
+                # localhost:4318. There is no central monitoring stack to read a
+                # CollectorEndpoint from, so resolve the endpoint up front and skip
+                # the profile/CloudFormation/prompt resolution below (which only
+                # applies to central mode). Doing this here — rather than as an
+                # override after resolution — is what actually configures telemetry
+                # for sidecar packages: real sidecar deploys have no saved
+                # otel_collector_endpoint, so the old post-resolution override never
+                # ran and telemetry was silently left unconfigured.
+                if _monitoring_mode == "sidecar":
+                    endpoint = "http://localhost:4318"
+                else:
+                    # Central mode: try profile first (saved by ccwb deploy), then
+                    # fall back to CloudFormation query.
+                    endpoint = getattr(profile, "otel_collector_endpoint", None)
+
+                if not endpoint and _monitoring_mode != "sidecar":
                     # Fall back to reading from CloudFormation stack outputs
                     # Try multiple possible stack name patterns
                     possible_stacks = [
@@ -3863,19 +4147,14 @@ Available metrics include:
                         pass
 
                 if endpoint:
-                    # Add monitoring configuration
+                    # Add monitoring configuration. In sidecar mode `endpoint` was
+                    # already resolved to http://localhost:4318 above; in central
+                    # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
                         "department=engineering,team.id=default,"
                         "cost_center=default,organization=default,"
                         "project=default"
                     )
-
-                    # Sidecar mode: Claude Code sends to local otelcol, not directly to the ALB.
-                    # Override whatever endpoint the profile stores (which is the ALB address) so
-                    # users don't have to edit settings.json manually after running ccwb package.
-                    _monitoring_mode = getattr(profile, "monitoring_mode", "central")
-                    if _monitoring_mode == "sidecar":
-                        endpoint = "http://localhost:4318"
 
                     settings["env"].update(
                         {

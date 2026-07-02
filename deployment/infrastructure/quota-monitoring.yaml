@@ -202,7 +202,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: QuotaMonitorPolicy
           PolicyDocument:
@@ -308,7 +308,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: BypassDetectionPolicy
           PolicyDocument:
@@ -403,7 +403,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: QuotaCheckPolicy
           PolicyDocument:
@@ -482,25 +482,17 @@ Resources:
       IntegrationUri: !GetAtt QuotaCheckFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # Route for GET /check — JWT when OIDC configured, IAM auth when IDC/none
-  QuotaCheckRouteWithAuth:
+  # Route for GET /check — single resource to avoid route-key conflict on
+  # in-place updates (two resources sharing the same RouteKey causes CFN 409).
+  # Uses !If to switch between JWT auth (OIDC) and IAM auth (IDC/none).
+  QuotaCheckRoute:
     Type: AWS::ApiGatewayV2::Route
-    Condition: HasJwtAuth
     Properties:
       ApiId: !Ref QuotaCheckApi
       RouteKey: 'GET /check'
       Target: !Sub 'integrations/${QuotaCheckIntegration}'
-      AuthorizerId: !Ref QuotaCheckAuthorizer
-      AuthorizationType: JWT
-
-  QuotaCheckRouteIAM:
-    Type: AWS::ApiGatewayV2::Route
-    Condition: NoJwtAuth
-    Properties:
-      ApiId: !Ref QuotaCheckApi
-      RouteKey: 'GET /check'
-      Target: !Sub 'integrations/${QuotaCheckIntegration}'
-      AuthorizationType: AWS_IAM
+      AuthorizerId: !If [HasJwtAuth, !Ref QuotaCheckAuthorizer, !Ref 'AWS::NoValue']
+      AuthorizationType: !If [HasJwtAuth, 'JWT', 'AWS_IAM']
 
   # Default stage with auto-deploy
   QuotaCheckStage:
@@ -517,7 +509,7 @@ Resources:
       FunctionName: !Ref QuotaCheckFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
 
   # ============================================
   # End Quota Check API
@@ -540,7 +532,7 @@ Resources:
           - Sid: AllowQuotaApiInvoke
             Effect: Allow
             Action: 'execute-api:Invoke'
-            Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
+            Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${QuotaCheckApi}/*'
 
 Outputs:
   QuotaTableName:

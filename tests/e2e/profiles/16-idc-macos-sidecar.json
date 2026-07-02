@@ -1,0 +1,10 @@
+{
+  "name": "16-idc-macos-sidecar",
+  "description": "macOS + IDC + Sidecar (tests device auth + sidecar on macOS)",
+  "auth": {"type": "idc", "federation": null, "provider": null},
+  "platform": "macos-arm64",
+  "monitoring": {"mode": "sidecar"},
+  "config_delivery": "static",
+  "quota": {"enabled": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "binary_platform"]
+}

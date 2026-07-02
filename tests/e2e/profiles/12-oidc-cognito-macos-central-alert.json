@@ -1,0 +1,10 @@
+{
+  "name": "12-oidc-cognito-macos-central-alert",
+  "description": "macOS + Cognito + Central + Alert-only quota",
+  "auth": {"type": "oidc", "federation": "cognito", "provider": "cognito"},
+  "platform": "macos-arm64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "alert", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement"]
+}

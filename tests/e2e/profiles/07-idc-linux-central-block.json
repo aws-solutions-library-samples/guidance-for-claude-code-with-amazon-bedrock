@@ -1,0 +1,10 @@
+{
+  "name": "07-idc-linux-central-block",
+  "description": "IDC: device auth + Central monitoring + SigV4 quota",
+  "auth": {"type": "idc", "federation": "none"},
+  "platform": "linux-x64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "block", "fine_grained": false, "auth_method": "sigv4"},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement"]
+}

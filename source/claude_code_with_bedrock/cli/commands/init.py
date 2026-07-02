@@ -852,18 +852,19 @@ class InitCommand(Command):
                 config["oidc_thumbprint"] = oidc_thumbprint
 
             # Ask about federation type
-            console.print("\n[cyan]Federation Type Selection[/cyan]")
-            console.print("Direct STS.")
-            console.print("Cognito Identity Pool.\n")
+            console.print("\n[cyan]Federation Type[/cyan]")
+            console.print("How OIDC tokens are exchanged for AWS credentials:")
+            console.print("  • Direct STS \u2014 AssumeRoleWithWebIdentity (simpler, 12h sessions)")
+            console.print("  • Cognito Identity Pool \u2014 legacy, use only for existing deployments\n")
 
             # Use existing federation type as default if available
             existing_federation_type = config.get("federation_type", "direct")
 
             federation_type = questionary.select(
-                "Choose federation type:",
+                "Federation type:",
                 choices=[
-                    questionary.Choice("Direct STS", value="direct"),
-                    questionary.Choice("Cognito Identity Pool", value="cognito"),
+                    questionary.Choice("Direct STS (recommended)", value="direct"),
+                    questionary.Choice("Cognito Identity Pool (legacy)", value="cognito"),
                 ],
                 default=existing_federation_type,
             ).ask()
@@ -979,13 +980,13 @@ class InitCommand(Command):
                     "  [green]+[/green] Works offline — each dev machine runs its own collector\n"
                     "  [yellow]-[/yellow] No Athena SQL query pipeline (PromQL dashboards still included)\n"
                     "  [yellow]-[/yellow] Each machine manages its own collector process\n"
-                    "  [yellow]-[/yellow] Claude Cowork (desktop) telemetry not supported (cannot reach localhost collector)\n"
+                    "  [yellow]-[/yellow] Claude Desktop telemetry not supported (cannot reach localhost collector)\n"
                 )
                 console.print(
                     "[cyan]Central:[/cyan]\n"
                     "  [green]+[/green] Optional Athena SQL pipeline (EMF → Firehose → S3 → Athena)\n"
                     "  [green]+[/green] Single collector for all users — centralized management\n"
-                    "  [green]+[/green] Supports Claude Cowork (desktop) telemetry\n"
+                    "  [green]+[/green] Supports Claude Desktop telemetry\n"
                     "  [green]+[/green] Recommended if IT policies prevent users running a local OTel collector on localhost\n"
                     "  [yellow]-[/yellow] Requires VPC/ECS Fargate infrastructure\n"
                     "  [yellow]-[/yellow] Higher cost (ECS tasks, NAT gateways, load balancer)\n"
@@ -1103,11 +1104,11 @@ class InitCommand(Command):
                         config["monitoring"]["custom_domain"] = None
                         config["monitoring"]["hosted_zone_id"] = None
 
-                    # Analytics configuration (central mode only)
-                    console.print("\n[bold]Analytics Pipeline[/bold]")
-                    console.print("Advanced user metrics and reporting through AWS Athena (~$5/month)")
+                    # Historical usage analytics (central mode only — S3 data lake + Athena)
+                    console.print("\n[bold]Historical Usage Analytics[/bold]")
+                    console.print("Query historical per-user usage with SQL via AWS Athena (S3 data lake, ~$5/month)")
                     enable_analytics = questionary.confirm(
-                        "Enable analytics?",
+                        "Enable historical usage analytics?",
                         default=config.get("analytics", {}).get("enabled", True),
                     ).ask()
 
@@ -1116,10 +1117,12 @@ class InitCommand(Command):
                     config["analytics"]["enabled"] = enable_analytics
 
                     if enable_analytics:
-                        console.print("[green]✓[/green] Analytics pipeline will be deployed with your monitoring stack")
+                        console.print(
+                            "[green]✓[/green] Historical analytics (S3 + Athena) will be deployed with your monitoring stack"
+                        )
 
                 else:
-                    # Sidecar mode: no VPC, no HTTPS, no Athena pipeline (PromQL dashboards still deployed)
+                    # Sidecar mode: no VPC, no HTTPS, no historical analytics (PromQL dashboards still work)
                     console.print("[green]✓[/green] Metrics will be sent directly to CloudWatch via local OTEL sidecar")
                     config["monitoring"]["vpc_config"] = None
                     config["monitoring"]["custom_domain"] = None
@@ -1464,12 +1467,11 @@ class InitCommand(Command):
                     )
                 config["codebuild"]["region"] = None
 
-        # Claude Cowork 3P MDM configuration
-        console.print("\n[bold]Claude Cowork (Desktop) Support[/bold]")
-        console.print("Generate MDM configuration for Claude Cowork with third-party platforms")
-        console.print("Enables Claude Desktop to use the same credential helper for Amazon Bedrock")
+        # Claude Desktop MDM configuration
+        console.print("\n[bold]Claude Desktop Support[/bold]")
+        console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
         enable_cowork = questionary.confirm(
-            "Generate CoWork 3P MDM configuration during packaging?",
+            "Enable Claude Desktop support?",
             default=config.get("cowork_3p", {}).get("enabled", True),
         ).ask()
 
@@ -1478,7 +1480,7 @@ class InitCommand(Command):
         config["cowork_3p"]["enabled"] = enable_cowork
 
         if enable_cowork:
-            console.print("[green]✓[/green] CoWork 3P configs will be generated during packaging")
+            console.print("[green]✓[/green] Claude Desktop MDM config will be generated during packaging")
 
             # Preserve existing custom MDM keys; advise JSON editing for additions
             existing_extra = config.get("cowork_3p", {}).get("extra_keys", {})
@@ -1491,8 +1493,8 @@ class InitCommand(Command):
                 console.print("[dim]See: assets/docs/COWORK_3P.md → Custom MDM Keys[/dim]")
             config["cowork_3p"]["extra_keys"] = existing_extra
 
-            # Generate CoWork service token for ALB auth bypass (central mode only).
-            # CoWork can't do OIDC, so this static token in X-Cowork-Token header
+            # Generate Claude Desktop service token for ALB auth bypass (central mode only).
+            # Claude Desktop can't do OIDC, so this static token in X-Cowork-Token header
             # bypasses JWT validation on the ALB listener.
             monitoring_mode = config.get("monitoring", {}).get("mode", "central")
             if monitoring_mode == "central":
@@ -1502,12 +1504,12 @@ class InitCommand(Command):
 
                     token = str(uuid.uuid4())
                     config["cowork_3p"]["service_token"] = token
-                    console.print("[green]✓[/green] Generated CoWork service token for ALB auth bypass")
+                    console.print("[green]✓[/green] Generated Claude Desktop service token for ALB auth bypass")
                     console.print(
                         "[dim]  Pass this as CoWorkServiceToken parameter when deploying the monitoring stack[/dim]"
                     )
                 else:
-                    console.print("[dim]CoWork service token already configured[/dim]")
+                    console.print("[dim]Claude Desktop service token already configured[/dim]")
 
             # Claude Desktop configuration delivery mode (OIDC only)
             if config.get("auth_type", "oidc") == "oidc":
@@ -1852,9 +1854,12 @@ class InitCommand(Command):
                     try:
                         secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
                     except Exception:
-                        secret_arn = (
-                            f"arn:aws:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
-                        )
+                        # Partition-aware so the fallback ARN is valid in GovCloud
+                        # (aws-us-gov) and China (aws-cn), not just commercial AWS.
+                        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+                        partition = aws_partition_for_region(region)
+                        secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
 
             # Custom domain (REQUIRED for authenticated landing page)
             console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
@@ -2389,9 +2394,9 @@ class InitCommand(Command):
                 console.print("• OpenTelemetry collector for metrics aggregation")
                 console.print("• ECS cluster and load balancer for collector")
                 if config.get("analytics", {}).get("enabled", True):
-                    console.print("• Kinesis Firehose for analytics data streaming")
-                    console.print("• S3 bucket for analytics data storage")
-                    console.print("• Glue catalog and Athena tables for analytics")
+                    console.print("• Kinesis Firehose for historical usage data streaming")
+                    console.print("• S3 bucket for historical usage data storage")
+                    console.print("• Glue catalog and Athena tables for historical usage analytics")
             else:
                 console.print("• Local OTEL Collector sidecar (no server infrastructure)")
                 console.print("• CloudWatch PromQL dashboard for metrics visualization")
@@ -3002,7 +3007,7 @@ class InitCommand(Command):
                 if getattr(profile, "codebuild_prior_regions", None):
                     existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
-            # Add CoWork 3P configuration
+            # Add Claude Desktop (cowork_3p) configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
             if profile.cowork_3p_extra_keys:
                 cowork_3p_config["extra_keys"] = profile.cowork_3p_extra_keys

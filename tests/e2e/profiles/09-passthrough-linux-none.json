@@ -1,0 +1,10 @@
+{
+  "name": "09-passthrough-linux-none",
+  "description": "Minimal: ambient credentials, no monitoring, no quota",
+  "auth": {"type": "passthrough", "federation": "none"},
+  "platform": "linux-x64",
+  "monitoring": {"mode": "none"},
+  "config_delivery": "static",
+  "quota": {"enabled": false},
+  "tests": ["auth_flow", "credential_output"]
+}

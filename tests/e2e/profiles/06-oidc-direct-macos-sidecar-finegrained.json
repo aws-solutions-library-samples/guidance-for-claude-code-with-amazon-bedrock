@@ -1,0 +1,10 @@
+{
+  "name": "06-oidc-direct-macos-sidecar-finegrained",
+  "description": "macOS + Sidecar + Fine-grained quota (DynamoDB policies)",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "macos-arm64",
+  "monitoring": {"mode": "sidecar"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "block", "fine_grained": true},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement"]
+}

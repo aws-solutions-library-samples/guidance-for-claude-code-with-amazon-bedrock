@@ -12,7 +12,9 @@ from claude_code_with_bedrock.cli.commands.package import PackageCommand
 from claude_code_with_bedrock.config import Profile
 
 
-def _make_oidc_profile(monitoring_mode="sidecar", monitoring_enabled=True, endpoint="https://alb.example.com"):
+def _make_oidc_profile(
+    monitoring_mode="sidecar", monitoring_enabled=True, endpoint: str | None = "https://alb.example.com"
+):
     return Profile(
         name="test-oidc",
         provider_domain="auth.example.com",
@@ -42,6 +44,25 @@ class TestSidecarEndpointOverride:
             settings_path = output_dir / "claude-settings" / "settings.json"
             settings = json.loads(settings_path.read_text())
             assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
+
+    def test_sidecar_without_saved_endpoint_still_configures_localhost(self):
+        """Regression: real sidecar deploys have NO saved otel_collector_endpoint
+        (there is no central monitoring stack to read one from). Telemetry must
+        still be configured to http://localhost:4318 — the previous code only
+        applied the localhost override *after* resolving a non-empty endpoint, so
+        a None endpoint fell through to the 'no endpoint found' path and telemetry
+        was silently left unconfigured."""
+        command = PackageCommand()
+        profile = _make_oidc_profile(monitoring_mode="sidecar", endpoint=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            command._create_claude_settings(output_dir, profile)
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            settings = json.loads(settings_path.read_text())
+            assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
+            assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
 
     def test_central_mode_preserves_profile_endpoint(self):
         """Central mode must NOT override the ALB endpoint with localhost."""
@@ -229,14 +250,23 @@ class TestBuildOtelcolTargets:
         """Windows binaries must NOT be stripped (Defender Wacatac.B!ml on stripped Go)."""
         from claude_code_with_bedrock.cli.commands.package import _go_ldflags
 
-        assert _go_ldflags("windows") == ""
+        flags = _go_ldflags("windows")
+        assert "-s" not in flags.split()
+        assert "-w" not in flags.split()
+        # Version injection must still be present
+        assert "-X" in flags
 
     def test_non_windows_ldflags_stripped(self):
         """macOS/Linux binaries are stripped (-s -w) for size."""
         from claude_code_with_bedrock.cli.commands.package import _go_ldflags
 
-        assert _go_ldflags("darwin") == "-s -w"
-        assert _go_ldflags("linux") == "-s -w"
+        darwin_flags = _go_ldflags("darwin")
+        linux_flags = _go_ldflags("linux")
+        assert "-s" in darwin_flags and "-w" in darwin_flags
+        assert "-s" in linux_flags and "-w" in linux_flags
+        # Version injection must also be present
+        assert "-X" in darwin_flags
+        assert "-X" in linux_flags
 
     def test_build_otelcol_method_exists(self):
         """_build_otelcol must be restored on PackageCommand (regression for PR #338 removal)."""

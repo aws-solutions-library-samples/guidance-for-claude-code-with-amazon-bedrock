@@ -1,0 +1,10 @@
+{
+  "auth_type": "passthrough",
+  "region": "us-east-1",
+  "monitoring": {
+    "mode": "none"
+  },
+  "quota": {
+    "enabled": false
+  }
+}

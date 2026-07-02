@@ -31,6 +31,11 @@ Mappings:
     ap-south-1:     { AccountId: '718504428378' }
     me-south-1:     { AccountId: '076674570225' }
     sa-east-1:      { AccountId: '507241528517' }
+    # GovCloud uses the regional ELB account-ID model (not the service principal).
+    # Without these keys the unconditional !FindInMap below fails to resolve and
+    # the whole stack errors out in GovCloud.
+    us-gov-west-1:  { AccountId: '048591011584' }
+    us-gov-east-1:  { AccountId: '190560391635' }
 
 Parameters:
   IdentityPoolName:
@@ -280,7 +285,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
       Policies:
         - PolicyName: S3ReadAccess
           PolicyDocument:
@@ -893,7 +898,7 @@ Resources:
       FunctionName: !Ref LandingPageFunction
       Action: lambda:InvokeFunction
       Principal: elasticloadbalancing.amazonaws.com
-      SourceArn: !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
+      SourceArn: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
 
   # ACM Certificate (required for HTTPS/OIDC)
   Certificate:
@@ -1046,7 +1051,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: UpdateCognitoClient
           PolicyDocument:
@@ -1057,7 +1062,7 @@ Resources:
                   - cognito-idp:UpdateUserPoolClient
                   - cognito-idp:DescribeUserPoolClient
                 Resource:
-                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+                  - !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
 
   CognitoCallbackUpdaterFunction:
     Type: AWS::Lambda::Function

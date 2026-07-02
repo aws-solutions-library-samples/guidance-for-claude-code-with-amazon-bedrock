@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
+	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 
 	"ccwb-go/internal/config"
 	"ccwb-go/internal/portlock"
@@ -37,7 +39,9 @@ func TestRunDeviceAuthorizationFailsFastWhenHeadlessAndNoTTY(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := app.runDeviceAuthorization(ctx, nil, "https://d-1234567890.awsapps.com/start", filepath.Join(t.TempDir(), "tok.json"))
+	// loginMode=false: the silent credential-export path must always fail fast
+	// when stderr is captured, regardless of headless detection.
+	err := app.runDeviceAuthorization(ctx, nil, "https://d-1234567890.awsapps.com/start", filepath.Join(t.TempDir(), "tok.json"), false)
 	if err == nil {
 		t.Fatal("expected fail-fast error when headless without a TTY, got nil")
 	}
@@ -78,12 +82,125 @@ func TestRunDeviceAuthorizationFailsFastNoTTYWithoutSSH(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := app.runDeviceAuthorization(ctx, nil, "https://d-1234567890.awsapps.com/start", filepath.Join(t.TempDir(), "tok.json"))
+	err := app.runDeviceAuthorization(ctx, nil, "https://d-1234567890.awsapps.com/start", filepath.Join(t.TempDir(), "tok.json"), false)
 	if err == nil {
 		t.Fatal("expected fail-fast error when stderr is not a TTY (no SSH), got nil")
 	}
 	if !strings.Contains(err.Error(), "claude-bedrock") {
 		t.Errorf("expected launcher in fail-fast message; got: %s", err.Error())
+	}
+}
+
+// TestRunDeviceAuthorizationHeadlessLoginProceedsPastGate is the regression test
+// for the headless mid-session recovery path. In loginMode (--login /
+// awsAuthRefresh), Claude Code streams our stderr live, so a headless/SSH user
+// sees the verification URL + code and opens it on another device. The gate must
+// therefore NOT fail fast here — it must proceed into device authorization.
+//
+// We prove "got past the gate" without real network: a nil OIDC client makes the
+// first call after the gate (RegisterClient) panic with a nil dereference, which
+// we recover and treat as success. If the gate regressed to fail-fast, we'd get a
+// returned error (with the launcher message) and no panic instead.
+func TestRunDeviceAuthorizationHeadlessLoginProceedsPastGate(t *testing.T) {
+	for _, e := range []string{"BROWSER", "SSH_TTY", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"} {
+		t.Setenv(e, "")
+	}
+	t.Setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 51000") // headless
+
+	app := &credentialApp{profile: "idc-test"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected to proceed past the gate into device auth (nil-client panic); " +
+				"got no panic — gate likely failed fast on headless login")
+		}
+	}()
+
+	err := app.runDeviceAuthorization(ctx, nil, "https://d-1234567890.awsapps.com/start", filepath.Join(t.TempDir(), "tok.json"), true)
+	// Reaching here (no panic) means the gate returned an error instead of
+	// proceeding — that's the regression we're guarding against.
+	t.Fatalf("expected gate to proceed into device auth, but it returned: %v", err)
+}
+
+// TestCanSurfaceVerificationURL covers the gate that decides whether
+// runDeviceAuthorization may run the blocking poll or must fail fast. Under
+// `go test`, stderr is a pipe, so stderrIsTerminal() is false throughout —
+// which lets us isolate the loginMode + headless contribution. The only case
+// that may proceed is loginMode on a non-headless (browser-available) host.
+func TestCanSurfaceVerificationURL(t *testing.T) {
+	t.Run("silent_path_headless_cannot_surface", func(t *testing.T) {
+		for _, e := range []string{"BROWSER", "SSH_TTY", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"} {
+			t.Setenv(e, "")
+		}
+		t.Setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 51000")
+		if canSurfaceVerificationURL(false) {
+			t.Error("silent path on headless host must not be allowed to poll")
+		}
+	})
+
+	t.Run("login_headless_may_surface_via_streamed_stderr", func(t *testing.T) {
+		// Headless/SSH in the --login (awsAuthRefresh) slot: Claude Code streams
+		// our stderr live, so the URL + code reach the user on another device even
+		// with no local browser. The poll is allowed; the user opens the link.
+		for _, e := range []string{"BROWSER", "SSH_TTY", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"} {
+			t.Setenv(e, "")
+		}
+		t.Setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 51000")
+		if !canSurfaceVerificationURL(true) {
+			t.Error("login on headless host must be allowed to poll (stderr is streamed live)")
+		}
+	})
+
+	t.Run("login_with_browser_may_surface", func(t *testing.T) {
+		// $BROWSER forces isHeadless()=false on any OS, so loginMode qualifies even
+		// though stderr is a pipe under `go test`. This is the desktop mid-session
+		// recovery path: pop the browser, poll, exit 0.
+		for _, e := range []string{"SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"} {
+			t.Setenv(e, "")
+		}
+		t.Setenv("BROWSER", "/usr/bin/firefox")
+		if !canSurfaceVerificationURL(true) {
+			t.Error("login with an available browser must be allowed to poll")
+		}
+	})
+
+	t.Run("silent_with_browser_cannot_surface", func(t *testing.T) {
+		// Even with a browser, the SILENT path (awsCredentialExport) must never
+		// poll — its stderr is discarded and it must never hang.
+		for _, e := range []string{"SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"} {
+			t.Setenv(e, "")
+		}
+		t.Setenv("BROWSER", "/usr/bin/firefox")
+		if canSurfaceVerificationURL(false) {
+			t.Error("silent path must never poll, even with a browser available")
+		}
+	})
+}
+
+// TestPollForTokenTimeoutIsDeadlineExceeded pins the contract the timeout UX
+// depends on: when the context expires before approval, pollForToken must return
+// an error that errors.Is(context.DeadlineExceeded) matches. runIDCLogin keys the
+// friendly "Sign-in timed out — send another message to retry" message off that
+// check, so if the wrapping ever drops %w the user would fall back to the raw
+// jargon error. An already-cancelled context makes the poll's select hit
+// ctx.Done() before any CreateToken call, so the nil client is never touched.
+func TestPollForTokenTimeoutIsDeadlineExceeded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond) // ensure the deadline has passed
+
+	reg := &ssooidc.RegisterClientOutput{}
+	devAuth := &ssooidc.StartDeviceAuthorizationOutput{Interval: 5}
+
+	_, err := pollForToken(ctx, nil, reg, devAuth)
+	if err == nil {
+		t.Fatal("expected timeout error from expired context, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("timeout error must wrap context.DeadlineExceeded for the friendly "+
+			"retry message to trigger; got: %v", err)
 	}
 }
 

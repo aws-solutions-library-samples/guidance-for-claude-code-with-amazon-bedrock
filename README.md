@@ -86,6 +86,7 @@ The architecture is modular — start with authentication, then optionally add [
 | **Quota enforcement** (optional) | Quota check API + DynamoDB policies + per-user/team limits | `ccwb deploy --stack quota` |
 | **Analytics** (optional) | S3 data lake + Athena for historical SQL queries on usage data | `ccwb deploy --stack analytics` |
 | **Distribution** (optional) | S3 presigned URLs or self-service landing page with IdP auth | `ccwb deploy --stack distribution` |
+| **Diagnostics** | Installation health checks + resolved config dump | `ccwb doctor` |
 
 See [Monitoring Guide](assets/docs/MONITORING.md), [Quota Guide](assets/docs/QUOTA_MONITORING.md), [Analytics Guide](assets/docs/ANALYTICS.md), and [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup.
 ### Authentication Modes
@@ -140,7 +141,10 @@ flowchart LR
     IDC --> OUT
 ```
 
-The **otel-helper** attaches user identity to telemetry so CloudWatch dashboards can show per-user metrics:
+The **otel-helper** binary operates in two modes depending on the surface:
+
+- **Header mode** (Claude Code CLI): Called once per OTLP export as a header provider. Returns JSON headers containing user identity (email, team, department) extracted from the cached JWT. Claude Code's OTLP exporter attaches these headers to each request.
+- **Proxy mode** (Claude Desktop): Auto-spawned by `credential-process` after each successful auth. Runs as a local identity-injecting proxy that reads the user's decoded JWT from the local cache and injects `x-user-email`, `x-department`, `x-team-id` headers into every OTLP request. In central mode it listens on port 4318 (forwarding to the remote ALB); in sidecar mode it listens on port 4319 (forwarding to the local otelcol on 4318 to avoid port conflicts).
 
 ```mermaid
 flowchart LR
@@ -151,23 +155,27 @@ flowchart LR
 
 ### Usage Monitoring
 
-Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as a local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
+Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as an auto-spawned local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
 
 ```mermaid
 flowchart LR
     CC[Claude Code CLI] -->|OTLP| OH1[otel-helper<br/>header mode]
-    CW[Claude Desktop] -->|OTLP| OH2[otel-helper<br/>proxy mode]
+    CW[Claude Desktop] -->|OTLP to proxy| OH2[otel-helper<br/>proxy mode]
     OH1 -->|"user identity + Bearer JWT"| COLL[Collector]
-    OH2 -->|"user identity + X-Cowork-Token"| COLL
+    OH2 -->|"user identity from JWT cache"| COLL
     COLL --> DASH[CloudWatch Dashboards]
 ```
 
-| Surface | How otel-helper is used | Collector mode | Identity in telemetry |
-|---------|------------------------|----------------|----------------------|
-| **Claude Code (CLI)** | Header provider — called once per request, returns JSON headers | Central (ECS/ALB) or Sidecar (local) | User's JWT (email, team, department) |
-| **Claude Desktop (Cowork)** | Local proxy — runs on `localhost:4318`, injects user headers, forwards to collector | Central (ECS/ALB) | Email from IAM ARN (no team/department without OIDC) |
+| Surface | otel-helper mode | What it does | Collector mode | Identity in telemetry |
+|---------|-----------------|--------------|----------------|----------------------|
+| **Claude Code (CLI)** | Header mode | Called once per export, returns identity headers as JSON | Central (ECS/ALB) or Sidecar (local) | User's JWT claims (email, team, department) |
+| **Claude Desktop (Cowork)** | Proxy mode | Auto-spawned by credential-process; injects identity headers from JWT cache | Central or Sidecar | Full JWT claims (email, team, department) |
+| **Claude Desktop (bootstrap server)** | Not used | Bootstrap server delivers per-user `otlpHeaders` at sign-in | Central (ECS/ALB) | Per-user (from OIDC token) |
 
-**Local proxy explained:** Claude Desktop doesn't support custom OTLP headers natively. When using a central collector (ECS/ALB), otel-helper runs as a lightweight HTTP proxy on the user's machine. Cowork sends telemetry to `localhost:4318` (configured via MDM), and otel-helper adds user identity headers before forwarding to the remote central collector. This proxy is not needed in sidecar mode, where the local collector reads identity from a cache file directly.
+> **When is the proxy needed?** The proxy is **not needed** if you use the [Bootstrap Server](assets/docs/BOOTSTRAP_SERVER.md) (OIDC only) — it delivers per-user `otlpHeaders` at sign-in. Similarly, Claude Desktop natively supports [`otlpHeaders`](https://claude.com/docs/third-party/claude-desktop/configuration#otlp) for static values set via MDM. The proxy is only required when:
+> - **No bootstrap server** and you need per-user identity (the proxy reads JWT claims at runtime)
+> - **IDC deployments** (bootstrap server is OIDC-only)
+> - **SigV4 signing** for sidecar mode (forwarding to CloudWatch's OTLP endpoint directly)
 
 **Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
 
@@ -237,6 +245,7 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+- [Troubleshooting](assets/docs/TROUBLESHOOTING.md) - Common issues, `ccwb doctor`, and how to file bugs
 - [Workshop: Claude Code on Amazon Bedrock](https://catalog.workshops.aws/claude-code-on-amazon-bedrock/en-US) - Companion hands-on workshop
 - [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) - Blog post covering deployment patterns and best practices
 

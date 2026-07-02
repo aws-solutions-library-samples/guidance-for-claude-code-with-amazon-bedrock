@@ -16,6 +16,10 @@ def _profile(**overrides):
     p.stack_names = {}
     p.aws_region = "ap-southeast-1"
     p.codebuild_region = None
+    # Keep web search in the main region by default so these codebuild-focused
+    # tests don't build an extra (web search) cross-region manager. Tests that
+    # exercise web search set websearch_region explicitly.
+    p.websearch_region = "ap-southeast-1"
     for k, v in overrides.items():
         setattr(p, k, v)
     return p
@@ -64,3 +68,28 @@ def test_orphan_check_no_extra_manager_when_codebuild_same_region():
 
     # codebuild_region resolves to aws_region, so no separate manager is constructed.
     assert built == []
+
+
+def test_orphan_check_uses_websearch_region_for_websearch_stack():
+    """When web search is cross-region, the orphan status check must hit that region."""
+    profile = _profile(websearch_region="us-east-1")  # main region is ap-southeast-1
+    main_mgr = MagicMock()
+    main_mgr.get_stack_status.return_value = None  # nothing in main region
+
+    ws_mgr = MagicMock()
+    ws_mgr.get_stack_status.return_value = "CREATE_COMPLETE"
+
+    captured_regions = []
+
+    def _mgr_factory(region):
+        captured_regions.append(region)
+        return ws_mgr
+
+    cmd = DeployCommand()
+    with patch("claude_code_with_bedrock.cli.commands.deploy.CloudFormationManager", side_effect=_mgr_factory):
+        orphaned = cmd._check_orphaned_stacks([], profile, main_mgr, MagicMock())
+
+    # A region-specific manager was built for us-east-1 (the web search region).
+    assert "us-east-1" in captured_regions
+    # websearch is reported orphaned because it was found in us-east-1, not main.
+    assert any(stack_type == "websearch" for stack_type, _, _ in orphaned)

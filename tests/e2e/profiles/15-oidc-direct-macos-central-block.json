@@ -1,0 +1,10 @@
+{
+  "name": "15-oidc-direct-macos-central-block",
+  "description": "macOS ARM + Direct STS + Central + Block (tests macOS keychain integration)",
+  "auth": {"type": "oidc", "federation": "direct", "provider": "okta"},
+  "platform": "macos-arm64",
+  "monitoring": {"mode": "central"},
+  "config_delivery": "static",
+  "quota": {"enabled": true, "enforcement": "block", "fine_grained": false},
+  "tests": ["auth_flow", "credential_output", "monitoring_pipeline", "quota_enforcement", "binary_platform"]
+}

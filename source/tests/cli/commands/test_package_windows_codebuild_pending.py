@@ -69,6 +69,11 @@ def test_windows_only_async_build_is_not_a_failure(mock_config):
             "_build_executable",
             return_value=None,
         ),
+        patch.object(
+            PackageCommand,
+            "_resolve_federation",
+            return_value=("cognito", "us-east-1:fake-pool-id", None),
+        ),
         patch.object(PackageCommand, "_create_config"),
         patch.object(PackageCommand, "_create_installer"),
     ):
