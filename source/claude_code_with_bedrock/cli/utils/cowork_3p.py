@@ -119,8 +119,8 @@ def _credential_process_path(profile_name: str) -> dict[str, str]:
     resolves to the user's home directory on all platforms.
     """
     return {
-        "unix": f"~/claude-code-with-bedrock/credential-process --profile {profile_name}",
-        "windows": f"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile {profile_name}",
+        "unix": f"~/claude-code-with-bedrock/credential-process --desktop --profile {profile_name}",
+        "windows": f"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --desktop --profile {profile_name}",
     }
 
 
