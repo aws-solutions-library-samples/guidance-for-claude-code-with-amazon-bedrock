@@ -54,6 +54,7 @@ func main() {
 	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
 	setClientSecret := flag.Bool("set-client-secret", false, "Store Azure AD client secret in OS secure storage. Set CCWB_CLIENT_SECRET env var for non-interactive use, or enter it at the prompt.")
 	explain := flag.Bool("explain", false, "Print resolved configuration as JSON and exit (no auth, no network calls)")
+	desktop := flag.Bool("desktop", false, "Output a Bedrock bearer token for Claude Desktop inferenceCredentialHelper (respects CLAUDE_HELPER_CONTEXT)")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
@@ -114,6 +115,9 @@ func main() {
 	}
 	if *getMCPAuthHeader {
 		os.Exit(app.getMCPAuthHeader())
+	}
+	if *desktop {
+		os.Exit(app.runDesktopHelper())
 	}
 	if *checkExpiration {
 		os.Exit(app.checkExpiration())
