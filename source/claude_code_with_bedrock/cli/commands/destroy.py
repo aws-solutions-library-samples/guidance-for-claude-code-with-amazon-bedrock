@@ -15,11 +15,13 @@ from claude_code_with_bedrock.cli.utils.helpers import clear_cached_credentials,
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
 
 # All destroyable stacks in reverse dependency order (destroy-all uses this sequence).
-# Keep in sync with deploy.py's stack types when adding new stacks.
+# Leaf stacks (no dependents) go first; foundational stacks (auth) go last.
+# New stacks: add before 'codebuild' if they have no cross-stack dependencies.
+# Keep in sync with VALID_STACKS in deploy.py.
 DESTROYABLE_STACKS = [
-    "bootstrap",
-    "websearch",
-    "codebuild",
+    "bootstrap",  # Leaf: device-code/OIDC bootstrap server, no dependents
+    "websearch",  # Leaf: AgentCore gateway, no dependents, may be cross-region
+    "codebuild",  # Leaf: build pipeline, may be cross-region
     "analytics",
     "quota",
     "cowork-dashboard",
@@ -28,7 +30,7 @@ DESTROYABLE_STACKS = [
     "distribution",
     "networking",
     "s3bucket",
-    "auth",
+    "auth",  # Foundation: destroy last (other stacks reference its outputs)
 ]
 
 
