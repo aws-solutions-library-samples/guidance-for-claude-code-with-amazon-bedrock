@@ -1,6 +1,6 @@
 # AWS Resource Inventory Per Stack
 
-> **Last updated:** 2026-05-29
+> **Last updated:** 2026-07-03
 
 > **Purpose:** Pre-deployment reference for customers under restrictive SCPs.
 > Use this to plan IAM/SCP exemptions or decide which stacks to skip before running `ccwb deploy`.
@@ -9,7 +9,7 @@
 ## Stack Deployment Order
 
 ```
-auth → networking → s3bucket → monitoring → dashboard → analytics → quota → [codebuild] → [distribution]
+auth → networking → s3bucket → monitoring → dashboard → analytics → quota → [codebuild] → [distribution] → [bootstrap] → [websearch]
 ```
 
 Stacks in `[]` are optional. Only `auth` is strictly required for basic Claude Code access.
@@ -285,6 +285,115 @@ Stacks in `[]` are optional. Only `auth` is strictly required for basic Claude C
 
 ---
 
+## bootstrap (device-code)
+
+**Template:** `bootstrap-device-code.yaml`
+**Required:** No (optional, for Claude Desktop dynamic config delivery via RFC 8628 device-code flow)
+
+| Resource Type | Service Namespace | Count |
+|---|---|---|
+| `AWS::ApiGateway::RestApi` | `apigateway` | 1 |
+| `AWS::ApiGateway::Resource` | `apigateway` | 5 |
+| `AWS::ApiGateway::Method` | `apigateway` | 5 |
+| `AWS::ApiGateway::Deployment` | `apigateway` | 1 |
+| `AWS::ApiGateway::Stage` | `apigateway` | 1 |
+| `AWS::ApiGateway::Authorizer` | `apigateway` | 1 |
+| `AWS::DynamoDB::Table` | `dynamodb` | 1 |
+| `AWS::IAM::Role` | `iam` | 2 |
+| `AWS::Lambda::Function` | `lambda` | 2 |
+| `AWS::Lambda::Permission` | `lambda` | 2 |
+| `AWS::WAFv2::IPSet` | `wafv2` | 1 (conditional) |
+| `AWS::WAFv2::WebACL` | `wafv2` | 1 (conditional) |
+| `AWS::WAFv2::WebACLAssociation` | `wafv2` | 1 (conditional) |
+
+**IAM actions required for deployment:**
+- `apigateway:CreateRestApi`, `apigateway:CreateResource`, `apigateway:PutMethod`, `apigateway:CreateDeployment`, `apigateway:CreateStage`, `apigateway:CreateAuthorizer`
+- `dynamodb:CreateTable`, `dynamodb:DescribeTable`
+- `iam:CreateRole`, `iam:PutRolePolicy`, `iam:PassRole`
+- `lambda:CreateFunction`, `lambda:AddPermission`
+- `wafv2:CreateIPSet`, `wafv2:CreateWebACL`, `wafv2:AssociateWebACL` (if WAF enabled)
+
+---
+
+## bootstrap (oidc-bearer)
+
+**Template:** `bootstrap-oidc-bearer.yaml`
+**Required:** No (optional, lightweight config-only delivery without plugins)
+
+| Resource Type | Service Namespace | Count |
+|---|---|---|
+| `AWS::ApiGatewayV2::Api` | `apigateway` | 1 |
+| `AWS::ApiGatewayV2::Integration` | `apigateway` | 1 |
+| `AWS::ApiGatewayV2::Route` | `apigateway` | 1 |
+| `AWS::ApiGatewayV2::Stage` | `apigateway` | 1 |
+| `AWS::IAM::Role` | `iam` | 1 |
+| `AWS::Lambda::Function` | `lambda` | 1 |
+| `AWS::Lambda::Permission` | `lambda` | 1 |
+
+**IAM actions required for deployment:**
+- `apigateway:CreateApi`, `apigateway:CreateIntegration`, `apigateway:CreateRoute`, `apigateway:CreateStage`
+- `iam:CreateRole`, `iam:PutRolePolicy`, `iam:PassRole`
+- `lambda:CreateFunction`, `lambda:AddPermission`
+
+---
+
+## websearch
+
+**Template:** `bedrock-agentcore-gateway.yaml`
+**Required:** No (optional, for MCP web search tool via Bedrock AgentCore)
+**Region restriction:** us-east-1 only (managed connector availability)
+
+| Resource Type | Service Namespace | Count |
+|---|---|---|
+| `AWS::BedrockAgentCore::Gateway` | `bedrock-agentcore` | 1 |
+| `AWS::BedrockAgentCore::GatewayTarget` | `bedrock-agentcore` | 1 |
+| `AWS::IAM::Role` | `iam` | 1 |
+
+**IAM actions required for deployment:**
+- `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`
+- `iam:CreateRole`, `iam:PutRolePolicy`, `iam:PassRole`
+
+---
+
+## auth (idc)
+
+**Template:** `bedrock-auth-idc.yaml`
+**Required:** Alternative to OIDC auth (for IAM Identity Center users)
+
+| Resource Type | Service Namespace | Count |
+|---|---|---|
+| *(No AWS resources)* | — | 0 |
+
+IAM Identity Center handles authentication natively — no additional CloudFormation resources are provisioned.
+
+**IAM actions required for deployment:**
+- `cloudformation:CreateStack` (deploys empty stack as marker)
+
+---
+
+## cognito-user-pool
+
+**Template:** `cognito-user-pool-setup.yaml`
+**Required:** No (optional, built-in user directory)
+
+| Resource Type | Service Namespace | Count |
+|---|---|---|
+| `AWS::Cognito::UserPool` | `cognito-idp` | 1 |
+| `AWS::Cognito::UserPoolClient` | `cognito-idp` | 1 |
+| `AWS::Cognito::UserPoolDomain` | `cognito-idp` | 1 |
+| `AWS::Cognito::UserPoolIdentityProvider` | `cognito-idp` | 1 (conditional) |
+| `AWS::IAM::Role` | `iam` | 1 |
+| `AWS::Lambda::Function` | `lambda` | 1 |
+| `AWS::Lambda::Permission` | `lambda` | 1 |
+| `AWS::CloudFormation::CustomResource` | `cloudformation` | 1 |
+
+**IAM actions required for deployment:**
+- `cognito-idp:CreateUserPool`, `cognito-idp:CreateUserPoolClient`, `cognito-idp:CreateUserPoolDomain`
+- `iam:CreateRole`, `iam:PutRolePolicy`, `iam:PassRole`
+- `lambda:CreateFunction`, `lambda:AddPermission`
+
+---
+
 ## SCP Service Namespace Summary
 
 Minimum services required for **basic deployment** (auth only):
@@ -297,7 +406,7 @@ Full deployment adds:
 ec2, ecs, elasticloadbalancing, s3, ssm, acm, route53,
 application-autoscaling, cloudwatch, dynamodb, lambda,
 sns, events, apigateway, athena, glue, firehose, codebuild,
-secretsmanager
+secretsmanager, wafv2, bedrock-agentcore, cognito-idp
 ```
 
 **CloudFormation itself** always requires:
