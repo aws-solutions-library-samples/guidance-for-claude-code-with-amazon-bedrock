@@ -72,7 +72,11 @@
       "invocation_logging_s3_expiration_days": 90,
       "invocation_logging_log_text": true,
       "invocation_logging_log_image": true,
-      "invocation_logging_log_embedding": true
+      "invocation_logging_log_embedding": true,
+      "quota_api_endpoint": "https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota",
+      "quota_fail_mode": "open",
+      "quota_check_interval": 30,
+      "quota_check_timeout": 5
     }
   }
 }
