@@ -1,6 +1,6 @@
 # Guidance for Claude Code and Cowork on Amazon Bedrock
 
-[![Stable Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&label=stable)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases/latest)
+[![Stable Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&label=stable&filter=v*.*.*)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases/latest)
 [![Beta Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&include_prereleases&label=beta)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/beta)
 
 This guidance enables enterprise deployment of Claude Code and Claude Cowork on Amazon Bedrock across command-line (CLI) and desktop surfaces — with secure single sign-on (SSO), usage monitoring, and cost controls.
