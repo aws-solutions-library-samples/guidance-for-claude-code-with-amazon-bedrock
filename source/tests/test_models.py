@@ -101,6 +101,12 @@ class TestModelConfiguration:
         fable_5_profiles = get_available_profiles_for_model("fable-5")
         assert set(fable_5_profiles) == {"us", "eu", "global"}
 
+        opus_4_8_profiles = get_available_profiles_for_model("opus-4-8")
+        assert set(opus_4_8_profiles) == {"us", "eu", "global"}
+
+        opus_4_7_profiles = get_available_profiles_for_model("opus-4-7")
+        assert set(opus_4_7_profiles) == {"us", "eu", "global"}
+
         opus_4_6_profiles = get_available_profiles_for_model("opus-4-6")
         assert set(opus_4_6_profiles) == {"us", "eu", "au", "global"}  # Opus 4.6 has global and regional profiles
 
@@ -144,6 +150,8 @@ class TestModelConfiguration:
         assert get_model_id_for_profile("opus-4-6", "global") == "global.anthropic.claude-opus-4-6-v1"
 
         # Test Europe profiles
+        assert get_model_id_for_profile("opus-4-8", "eu") == "eu.anthropic.claude-opus-4-8"
+        assert get_model_id_for_profile("opus-4-7", "eu") == "eu.anthropic.claude-opus-4-7"
         assert get_model_id_for_profile("opus-4-6", "eu") == "eu.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("sonnet-4", "eu") == "eu.anthropic.claude-sonnet-4-20250514-v1:0"
         assert get_model_id_for_profile("sonnet-3-7", "eu") == "eu.anthropic.claude-3-7-sonnet-20250219-v1:0"
@@ -177,10 +185,10 @@ class TestModelConfiguration:
         # Test valid combinations - these should not raise errors
         # (Currently empty lists since regions are TODO, but structure should work)
         source_regions = get_source_regions_for_model_profile("sonnet-4", "us")
-        assert isinstance(source_regions, (list, tuple))
+        assert isinstance(source_regions, list | tuple)
 
         source_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
-        assert isinstance(source_regions, (list, tuple))
+        assert isinstance(source_regions, list | tuple)
 
         # Test invalid combinations
         with pytest.raises(ValueError, match="Unknown model"):
@@ -193,10 +201,10 @@ class TestModelConfiguration:
         """Test getting destination regions for model profiles."""
         # Test valid combinations - these should not raise errors
         dest_regions = get_destination_regions_for_model_profile("sonnet-4", "us")
-        assert isinstance(dest_regions, (list, tuple))
+        assert isinstance(dest_regions, list | tuple)
 
         dest_regions = get_destination_regions_for_model_profile("sonnet-4", "eu")
-        assert isinstance(dest_regions, (list, tuple))
+        assert isinstance(dest_regions, list | tuple)
 
         # Test invalid combinations
         with pytest.raises(ValueError, match="Unknown model"):
@@ -261,8 +269,8 @@ class TestModelConfiguration:
                 # Verify types
                 assert isinstance(model_id, str)
                 assert isinstance(description, str)
-                assert isinstance(source_regions, (list, tuple))
-                assert isinstance(dest_regions, (list, tuple))
+                assert isinstance(source_regions, list | tuple)
+                assert isinstance(dest_regions, list | tuple)
 
                 # Verify model_id appears in display names
                 display_names = get_all_model_display_names()
@@ -523,6 +531,6 @@ class TestResolveModelForTier:
             for tier in ["haiku", "sonnet", "opus", "fable"]:
                 result = resolve_model_for_tier(tier, prefix)
                 if result is not None:
-                    assert f"{prefix}." in result, (
-                        f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
-                    )
+                    assert (
+                        f"{prefix}." in result
+                    ), f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
