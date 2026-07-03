@@ -265,3 +265,78 @@ class TestPackageCommandOtelDefaults:
         attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
 
         assert attrs == "department=research,team.id=ml"
+class TestCopyExtraFiles:
+    """Tests for _copy_extra_files — the package-side extra-files copy step."""
+
+    def _profile(self, extra_files):
+        return Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client-id",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            monitoring_enabled=False,
+            extra_files=extra_files,
+        )
+
+    def test_empty_list_returns_empty(self, tmp_path):
+        command = PackageCommand()
+        profile = self._profile([])
+        result = command._copy_extra_files(profile, tmp_path, MagicMock())
+        assert result == []
+
+    def test_copies_file_and_folder(self, tmp_path):
+        # Source file
+        src_file = tmp_path / "src" / "preinstall.sh"
+        src_file.parent.mkdir(parents=True)
+        src_file.write_text("#!/bin/bash\necho hi")
+        # Source folder
+        src_dir = tmp_path / "src" / "certs"
+        src_dir.mkdir()
+        (src_dir / "ca.pem").write_text("CERT")
+
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [
+                {"name": "preinstall.sh", "targets": "macos", "from": str(src_file)},
+                {"name": "certs", "targets": "all", "from": str(src_dir)},
+            ]
+        )
+
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+
+        assert (out / "preinstall.sh").read_text() == "#!/bin/bash\necho hi"
+        assert (out / "certs" / "ca.pem").read_text() == "CERT"
+        names = {name for name, _ in result}
+        assert names == {"preinstall.sh", "certs"}
+
+    def test_missing_source_fails(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "missing.sh", "targets": "all", "from": str(tmp_path / "nope.sh")}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is None
+        assert not (out / "missing.sh").exists()
+
+    def test_validation_error_fails_and_copies_nothing(self, tmp_path):
+        src = tmp_path / "cfg"
+        src.write_text("x")
+        out = tmp_path / "out"
+        out.mkdir()
+        # 'config.json' collides with a generated artifact → validation error
+        profile = self._profile([{"name": "config.json", "targets": "all", "from": str(src)}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is None
+        assert not (out / "config.json").exists()
+
+    def test_nested_name_creates_parent_dirs(self, tmp_path):
+        src = tmp_path / "hook.sh"
+        src.write_text("hook")
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "hooks/pre.sh", "targets": "all", "from": str(src)}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is not None
+        assert (out / "hooks" / "pre.sh").read_text() == "hook"
