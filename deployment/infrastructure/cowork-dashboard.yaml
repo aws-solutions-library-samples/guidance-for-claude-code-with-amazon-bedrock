@@ -324,6 +324,16 @@ Resources:
               }
             },
             {
+              "type": "metric",
+              "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "Avg Cost Per Turn (USD)",
+                "view": "timeSeries",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"ClaudeCoWork\", MetricName=\"cost.usage\"}) / sum({\"ClaudeCoWork\", MetricName=\"session.turns\"})", "step": 60, "label": "$/turn" }] }
+              }
+            },
+            {
               "type": "text",
               "x": 0, "y": 18, "width": 24, "height": 1,
               "properties": { "markdown": "## Per-User Breakdown\n*Desktop mode only — LAM events do not emit user_email*" }
