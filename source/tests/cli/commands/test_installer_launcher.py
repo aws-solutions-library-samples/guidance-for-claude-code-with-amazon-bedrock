@@ -1,17 +1,19 @@
-# ABOUTME: Tests that installers generate a claude-bedrock launcher that signs in before running claude
-# ABOUTME: The launcher prevents the "run claude -> silent hang" trap for IDC interactive sign-in
+# ABOUTME: Tests that installers generate an optional claude-bedrock launcher that signs in before running claude
+# ABOUTME: In-session re-auth works via awsAuthRefresh; the launcher is a convenience for a smoother first sign-in
 
 """Tests for the generated `claude-bedrock` launcher wrapper.
 
-Claude Code's own credential refresh cannot surface an interactive IAM Identity
-Center sign-in (the verification URL is buffered until the blocking command
-exits — a deadlock). To make sign-in un-missable, the installer generates a
-`claude-bedrock` launcher that runs `credential-process --login` (URL shown live
-in the user's terminal; no-op if already signed in) and then execs `claude`.
+In-session IDC re-auth works: Claude Code runs `credential-process --login` via
+the `awsAuthRefresh` hook and surfaces the interactive IAM Identity Center
+sign-in prompt live, so plain `claude` handles first sign-in and re-auth. The
+installer still generates a `claude-bedrock` launcher as an OPTIONAL convenience
+— it runs `credential-process --login` (no-op if already signed in) and then
+execs `claude`, front-running the sign-in without the ~165s in-session hook cap.
 
 These tests generate the actual install.sh / install.bat and assert the launcher
-logic is present and, for bash, that both the installer and the launcher it
-writes are syntactically valid shell.
+logic is present, that the closing message presents `claude` as the usual path
+with the launcher as optional, and, for bash, that both the installer and the
+launcher it writes are syntactically valid shell.
 """
 
 import shutil
@@ -174,8 +176,12 @@ class TestWindowsInstallerLauncher:
         # No PowerShell invocation should be building the launcher lines.
         assert "$lines" not in launcher_section
 
-    def test_closing_message_points_at_launcher(self):
+    def test_closing_message_presents_claude_as_usual_path(self):
         content = self._generate()
+        # In-session re-auth now works, so `claude` is the normal way to start and
+        # the launcher is presented as an optional convenience (not required).
+        assert "Start Claude Code the usual way" in content
+        assert "Optional: a 'claude-bedrock' launcher" in content
         assert "claude-bedrock.cmd" in content
-        # Warn users not to run claude directly (the transient sign-in-error trap).
-        assert "NOT 'claude' directly" in content
+        # The old "run the launcher, NOT 'claude' directly" framing must be gone.
+        assert "NOT 'claude' directly" not in content

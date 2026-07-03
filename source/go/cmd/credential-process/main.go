@@ -53,10 +53,12 @@ func main() {
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
 	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
 	setClientSecret := flag.Bool("set-client-secret", false, "Store Azure AD client secret in OS secure storage. Set CCWB_CLIENT_SECRET env var for non-interactive use, or enter it at the prompt.")
+	explain := flag.Bool("explain", false, "Print resolved configuration as JSON and exit (no auth, no network calls)")
+	desktop := flag.Bool("desktop", false, "Output a Bedrock bearer token for Claude Desktop inferenceCredentialHelper (respects CLAUDE_HELPER_CONTEXT)")
 	flag.Parse()
 
 	if *versionFlag || *shortVersion {
-		fmt.Printf("credential-process %s\n", version.Version)
+		fmt.Printf("credential-process %s (%s)\n", version.Version, version.Commit)
 		os.Exit(0)
 	}
 
@@ -91,6 +93,11 @@ func main() {
 		cfg:     cfg,
 	}
 
+	// --explain: print resolved config as JSON and exit (no auth, no network).
+	if *explain {
+		runExplain(profile, cfg)
+	}
+
 	// Flag dispatch — must run before auth-type branching so IDC users
 	// can use --get-monitoring-token, --show-tags, etc.
 	if *clearCache {
@@ -108,6 +115,9 @@ func main() {
 	}
 	if *getMCPAuthHeader {
 		os.Exit(app.getMCPAuthHeader())
+	}
+	if *desktop {
+		os.Exit(app.runDesktopHelper())
 	}
 	if *checkExpiration {
 		os.Exit(app.checkExpiration())

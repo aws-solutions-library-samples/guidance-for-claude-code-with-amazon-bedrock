@@ -202,16 +202,28 @@ your browser; on a headless box or over SSH it detects the lack of a local
 browser (via `SSH_CONNECTION`/`SSH_TTY` or no `DISPLAY`) and instead shows a URL
 you open on any other device.
 
-**Use the `claude-bedrock` launcher instead of `claude` directly.** The installer
-generates a launcher next to the binaries
-(`~/claude-code-with-bedrock/claude-bedrock`, or `claude-bedrock.cmd` on Windows).
-It signs you in (showing the verification URL live in your terminal — a no-op if
-you already have a valid session), then runs Claude Code:
+**Just run `claude`.** When no valid session exists, Claude Code invokes the
+`awsAuthRefresh` hook, which signs you in — opening your browser on a desktop, or
+printing a verification URL + code on a headless/SSH host — then continues once
+you approve. It also refreshes your session automatically after that.
+
+```bash
+claude
+# First run (or after the SSO session expires): a sign-in prompt appears.
+# Desktop: your browser opens. Headless/SSH: a verification URL + code print;
+# open the URL on any device with a browser and approve. Claude Code continues.
+```
+
+**Optional: the `claude-bedrock` launcher.** The installer also generates a
+launcher next to the binaries (`~/claude-code-with-bedrock/claude-bedrock`, or
+`claude-bedrock.cmd` on Windows). It signs you in *first*, then starts Claude
+Code. The only functional difference is the sign-in step has no time limit —
+in-session sign-in via `claude` is capped at ~165s (see the callout below) — so
+the launcher can make a slow first sign-in (e.g. MFA on another device) smoother.
 
 ```bash
 ~/claude-code-with-bedrock/claude-bedrock
-# First run: a verification URL + code print to your terminal.
-# Open the URL on any device with a browser, approve — then Claude Code starts.
+# Signs you in (a no-op if a valid session is already cached), then runs claude.
 
 # Optional: add the folder to PATH so you can just type `claude-bedrock`:
 export PATH="$HOME/claude-code-with-bedrock:$PATH"
@@ -235,14 +247,15 @@ device-authorization login is built into the credential process binary, and the
 SSO token is cached in `~/.aws/sso/cache/` (refreshed automatically until the
 session fully expires).
 
-> **Why a launcher instead of plain `claude`?** The IDC sign-in is interactive
-> (browser approval), but Claude Code runs the credential helper
-> non-interactively and cannot display its prompt reliably — so it can't be
-> driven from inside a running session. If you start `claude` without an active
-> sign-in, the credential process fails fast and Claude Code flashes a brief
-> "Cloud authentication" error before retrying — easy to miss, leaving `claude`
-> apparently stuck. The `claude-bedrock` launcher avoids this by running the
-> sign-in first, in your terminal, where the URL is shown and persists.
+> **Do I still need the launcher?** No — plain `claude` handles first sign-in,
+> re-authentication, and refresh on its own, because Claude Code runs the
+> `awsAuthRefresh` (`--login`) hook and surfaces its sign-in prompt live in the
+> "Cloud authentication" panel. The launcher remains as an optional convenience
+> for one edge: Claude Code caps the `awsAuthRefresh` hook at 180 seconds (the
+> credential process stops at 165s to print a message first), so a sign-in that
+> takes longer than that — e.g. MFA on a separate device — will time out in-session
+> but has no time limit when run via the launcher. If the in-session prompt times
+> out, just send Claude Code another message to show a fresh sign-in link.
 >
 > If you need to see a credential error that already scrolled away, run Claude
 > Code with debug logging: `CLAUDE_CODE_DEBUG_LOGS_DIR=~/.claude/debug claude
@@ -263,9 +276,10 @@ which work together:
   the credential-process JSON schema is accepted in **v2.1.181+**.)
 - **`awsAuthRefresh`** (`--login`) — fires on the first credential failure and
   its output **is displayed to the user**. This is the only channel that can
-  surface the sign-in message, because `awsCredentialExport` discards stderr.
-  When there's no valid SSO session, this is what tells the user to relaunch
-  with `claude-bedrock` instead of leaving `claude` silently retrying.
+  surface the sign-in prompt, because `awsCredentialExport` discards stderr.
+  When there's no valid SSO session, this runs the interactive device-auth flow
+  in-session (browser on desktop, URL + code on headless), so `claude` recovers
+  without relaunching. It is capped at Claude Code's 180s hook timeout.
 
 Without `awsCredentialExport`, credentials are resolved only once at startup, so
 after the session duration elapses Claude Code retries expired credentials
@@ -275,5 +289,7 @@ role. To prevent that silent wrong-identity fallback, IDC settings also set
 credentials error instead.
 
 The separate ~8-hour SSO **session** expiry still requires an interactive
-re-login — relaunch with `claude-bedrock`, which runs `--login` (URL shown live)
-before starting Claude Code.
+re-login. This happens in-session: `claude` runs `awsAuthRefresh` (`--login`) and
+shows the sign-in prompt live (browser on desktop, URL + code on headless). The
+`claude-bedrock` launcher does the same sign-in up front, without the in-session
+180s hook cap — useful if the re-login step is slow.

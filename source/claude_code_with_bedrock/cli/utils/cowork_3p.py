@@ -12,6 +12,15 @@ from rich.console import Console
 
 from claude_code_with_bedrock.cli.utils.aws import get_stack_outputs
 
+# Placeholder for the user's home directory in macOS MDM path values. Claude
+# Desktop on macOS does NOT expand "~" (or env vars) in MDM string values, and
+# the .mobileconfig is generated centrally (the packaging host's home may not be
+# the user's). So macOS paths embed this token and `install.sh` substitutes it
+# with the real $HOME on each user's machine at install time — mirroring the
+# __CREDENTIAL_PROCESS_PATH__ pattern used for managed-settings.json. Windows
+# paths use the native %USERPROFILE% env var instead.
+CCWB_HOME_PLACEHOLDER = "__CCWB_HOME__"
+
 # CoWork 3P model aliases — defined by Anthropic's Claude Desktop client.
 # These may differ from the model IDs used by Claude Code (ANTHROPIC_MODEL env var).
 # The ccwb cowork generate --models flag allows admins to override if needed.
@@ -112,15 +121,18 @@ def _credential_process_path(profile_name: str) -> dict[str, str]:
     """Return platform-specific credential-process paths for inferenceCredentialHelper.
 
     The installer places the binary at a predictable location per-platform:
-    - macOS/Linux: ~/claude-code-with-bedrock/credential-process
-    - Windows: %USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe
+    - macOS/Linux: <home>/claude-code-with-bedrock/credential-process
+    - Windows: <home>\\claude-code-with-bedrock\\credential-process.exe
 
-    For MDM deployment we use the tilde (~) shorthand which Claude Desktop
-    resolves to the user's home directory on all platforms.
+    Claude Desktop does NOT expand "~"/env vars in MDM values on EITHER platform,
+    so both paths embed CCWB_HOME_PLACEHOLDER. `install.sh` (macOS/Linux) and
+    `install.bat` (Windows) substitute it with the real home at install time —
+    Windows escapes it for the .reg (see generate_reg_file). Using %USERPROFILE%
+    here would NOT work: Claude reads the literal string from the registry.
     """
     return {
-        "unix": f"~/claude-code-with-bedrock/credential-process --profile {profile_name}",
-        "windows": f"%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile {profile_name}",
+        "unix": f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/credential-process --desktop --profile {profile_name}",
+        "windows": f"{CCWB_HOME_PLACEHOLDER}\\claude-code-with-bedrock\\credential-process.exe --desktop --profile {profile_name}",
     }
 
 
@@ -252,9 +264,202 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
         )
 
 
+WEBSEARCH_MCP_SERVER_NAME = "agentcore-websearch"
+
+# Filename of the headersHelper the installer drops next to the credential-process
+# binary (in ~/claude-code-with-bedrock/). It prints
+# {"Authorization": "Bearer <id_token>"} on stdout for Claude Desktop to attach
+# to every MCP request to the gateway. On Windows it is a .cmd wrapper.
+WEBSEARCH_HEADERS_HELPER_NAME = "websearch-headers"
+
+# Per-OS default headersHelper paths. The MDM config is generated once but
+# rendered into per-OS formats (.mobileconfig vs .reg/.ps1), so the entry stores
+# a placeholder that each generator resolves to the right path. Admins can still
+# override with an explicit absolute path via ``websearch_headers_helper_path``.
+WEBSEARCH_HEADERS_HELPER_PLACEHOLDER = "__WEBSEARCH_HEADERS_HELPER__"
+WEBSEARCH_HEADERS_HELPER_POSIX = f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/{WEBSEARCH_HEADERS_HELPER_NAME}"
+# Windows path also embeds the home placeholder (NOT %USERPROFILE%): Claude
+# Desktop does NOT expand env vars in registry MDM string values (same class of
+# bug as "~" on macOS, confirmed by live Windows testing). install.bat
+# substitutes __CCWB_HOME__ with the absolute home (the .reg-escaped
+# %USERPROFILE%) before the .reg is imported; the Intune .ps1 resolves it via
+# $env:USERPROFILE at deploy time.
+WEBSEARCH_HEADERS_HELPER_WINDOWS = (
+    rf"{CCWB_HOME_PLACEHOLDER}\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
+)
+
+# Back-compat alias (POSIX default) for callers/tests that referenced the old name.
+WEBSEARCH_HEADERS_HELPER_DEFAULT = WEBSEARCH_HEADERS_HELPER_POSIX
+
+# How often (seconds) Claude Desktop re-invokes the headersHelper. Kept below the
+# Cognito id_token lifetime (~1h) so a fresh bearer is fetched before expiry.
+WEBSEARCH_HEADERS_TTL_SEC = 900
+
+
+def _resolve_websearch_gateway_url(profile) -> str | None:
+    """Resolve the gateway MCP endpoint, profile-first with a CloudFormation fallback.
+
+    Prefers ``websearch_gateway_url`` saved on the profile by ``ccwb deploy``
+    (mirrors the OTLP-endpoint discovery precedent), falling back to the
+    ``websearch`` stack's ``GatewayMcpEndpoint`` output (the gateway is pinned to
+    us-east-1). Ensures exactly one ``/mcp`` suffix. Returns None when unresolved.
+    """
+    url = (getattr(profile, "websearch_gateway_url", "") or "").strip()
+    if not url:
+        stack = (getattr(profile, "stack_names", None) or {}).get("websearch")
+        region = getattr(profile, "websearch_region", None) or "us-east-1"
+        if stack:
+            try:
+                url = (get_stack_outputs(stack, region).get("GatewayMcpEndpoint") or "").strip()
+            except Exception:
+                url = ""
+    if not url:
+        return None
+    return url if url.rstrip("/").endswith("/mcp") else url.rstrip("/") + "/mcp"
+
+
+def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> None:
+    """Inject the AgentCore web search gateway as a CoWork managed MCP server.
+
+    No-op unless ``web_search_enabled``. Resolves the gateway endpoint at
+    generation time (never a stale stored value beyond the profile cache) and
+    emits a **remote MCP** ``managedMcpServers`` entry authenticated with a
+    ``headersHelper`` script: ``{name, url, headersHelper, headersHelperTtlSec}``.
+
+    Claude Desktop treats this as a generic remote MCP server and speaks standard
+    MCP JSON-RPC that the AgentCore Gateway understands. The gateway's
+    ``CUSTOM_JWT`` authorizer validates the OIDC id_token the ``headersHelper``
+    emits (``Authorization: Bearer <id_token>``); the id_token's ``aud`` is the
+    app client ID, so the gateway must be deployed with ``AllowedAudience``
+    (the template default) — universal across Cognito/Entra/Okta.
+
+    The built-in ``server:"websearch"``/``provider:"custom"`` shape is NOT used:
+    that connector sends a request body the AgentCore Gateway cannot parse
+    ("Invalid JSON format"), even though auth succeeds.
+
+    The ``headersHelper`` path is OS-specific. Unless overridden, the entry
+    carries a placeholder that each generator resolves to the per-OS default
+    (``~/claude-code-with-bedrock/websearch-headers`` on macOS/Linux,
+    ``%USERPROFILE%\\claude-code-with-bedrock\\websearch-headers.cmd`` on
+    Windows) — the same path where ``ccwb package`` installs the wrapper. An
+    explicit ``websearch_headers_helper_path`` override is used verbatim across
+    all formats. Preserves any administrator-defined ``managedMcpServers`` and
+    de-dupes by name.
+    """
+    if not getattr(profile, "web_search_enabled", False):
+        return
+
+    # IDC deployments authorize the gateway with IAM (SigV4), which Claude
+    # Desktop does not yet support for managed MCP servers. Skip the CoWork
+    # injection for IDC (Claude Code CLI handles IDC web search separately).
+    auth_type = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+    if auth_type == "idc":
+        console.print(
+            "[dim]Web search: skipping CoWork config (IDC uses IAM/SigV4 auth, "
+            "not yet supported for Claude Desktop managed MCP servers)[/dim]"
+        )
+        return
+
+    url = _resolve_websearch_gateway_url(profile)
+    if not url:
+        console.print(
+            "[yellow]⚠ Web search is enabled but the gateway endpoint could not be resolved; "
+            "generating CoWork config without the web search MCP server.[/yellow]\n"
+            "[dim]  Run 'ccwb deploy websearch' first.[/dim]"
+        )
+        return
+
+    # Remote MCP entry authenticated via a headersHelper script. Claude Desktop
+    # invokes the helper, attaches the returned {"Authorization": "Bearer
+    # <id_token>"} header to each MCP request, and re-fetches every
+    # headersHelperTtlSec so an expiring token is refreshed.
+    #
+    # The path is OS-specific, but this one MDM dict is rendered into both macOS
+    # (.mobileconfig) and Windows (.reg/.ps1) formats. So unless the admin sets
+    # an explicit override, store a placeholder that each generator resolves to
+    # the right per-OS default. An override wins verbatim across all formats.
+    override = (getattr(profile, "websearch_headers_helper_path", "") or "").strip()
+    if override:
+        headers_helper = override
+        looks_absolute = (
+            override.startswith("/")
+            or override.startswith("~")
+            or override.startswith("%")
+            or (len(override) > 2 and override[1] == ":")  # Windows drive, e.g. C:\
+        )
+        if not looks_absolute:
+            console.print(
+                "[yellow]⚠ websearch_headers_helper_path is not an absolute path; "
+                "Claude Desktop may not resolve it.[/yellow]"
+            )
+        console.print(
+            "[dim]Web search: using a custom headersHelper path. The installer only creates the "
+            "default path \u2014 ensure an executable helper exists at this path on every user's "
+            "machine, and that it matches the target OS, especially with --target-platform all.[/dim]"
+        )
+    else:
+        headers_helper = WEBSEARCH_HEADERS_HELPER_PLACEHOLDER
+    entry = {
+        "name": WEBSEARCH_MCP_SERVER_NAME,
+        "url": url,
+        "headersHelper": headers_helper,
+        "headersHelperTtlSec": WEBSEARCH_HEADERS_TTL_SEC,
+    }
+
+    # managedMcpServers is a JSON-encoded string in the MDM config. Merge with any
+    # admin-defined entries (e.g. from cowork_3p_extra_keys), keeping all and
+    # de-duping by name so a re-run never creates a duplicate web search entry.
+    existing_raw = mdm_config.get("managedMcpServers")
+    servers: list = []
+    if isinstance(existing_raw, str) and existing_raw.strip():
+        try:
+            parsed = json.loads(existing_raw)
+            if isinstance(parsed, list):
+                servers = parsed
+        except (ValueError, TypeError):
+            servers = []
+    elif isinstance(existing_raw, list):
+        servers = list(existing_raw)
+
+    servers = [s for s in servers if not (isinstance(s, dict) and s.get("name") == WEBSEARCH_MCP_SERVER_NAME)]
+    servers.append(entry)
+    mdm_config["managedMcpServers"] = json.dumps(servers)
+    console.print(f"[dim]Added {WEBSEARCH_MCP_SERVER_NAME} MCP server to CoWork config ({url})[/dim]")
+
+    # Web Fetch egress: the Cowork sandbox blocks outbound egress by default, so
+    # opening the URLs that web search returns fails with "failed to fetch".
+    # Default to allowing all hosts so search results are usable out of the box.
+    # Only set it when the admin hasn't already provided a value (e.g. a narrower
+    # allowlist via cowork_3p_extra_keys), and warn loudly: "*" is broad.
+    if "coworkEgressAllowedHosts" not in mdm_config:
+        mdm_config["coworkEgressAllowedHosts"] = json.dumps(["*"])
+        console.print(
+            '[yellow]⚠ Web search: set coworkEgressAllowedHosts=["*"] so Web Fetch can open result '
+            "pages. This allows sandbox egress to ALL hosts \u2014 narrow it to a targeted domain list "
+            "for production (set coworkEgressAllowedHosts via cowork_3p_extra_keys).[/yellow]"
+        )
+
+
 def _mdm_keys(config: dict) -> dict:
     """Return config without internal underscore-prefixed keys."""
     return {k: v for k, v in config.items() if not k.startswith("_")}
+
+
+def _mdm_keys_resolved(config: dict, helper_path: str) -> dict:
+    """Like ``_mdm_keys`` but resolves the headersHelper placeholder for one OS.
+
+    ``add_websearch_mcp_config`` stores ``WEBSEARCH_HEADERS_HELPER_PLACEHOLDER``
+    in the ``managedMcpServers`` entry (unless the admin set an explicit path).
+    Each generator calls this with its platform default so the macOS plist and
+    the Windows .reg/.ps1 each get the correct path from the same MDM dict.
+    No-op when the placeholder is absent (e.g. an explicit override).
+    """
+    keys = _mdm_keys(config)
+    raw = keys.get("managedMcpServers")
+    if isinstance(raw, str) and WEBSEARCH_HEADERS_HELPER_PLACEHOLDER in raw:
+        keys = dict(keys)
+        keys["managedMcpServers"] = raw.replace(WEBSEARCH_HEADERS_HELPER_PLACEHOLDER, helper_path)
+    return keys
 
 
 def generate_json(output_dir: Path, mdm_config: dict) -> Path:
@@ -264,7 +469,7 @@ def generate_json(output_dir: Path, mdm_config: dict) -> Path:
     """
     json_path = output_dir / "cowork-3p-config.json"
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(_mdm_keys(mdm_config), f, indent=2)
+        json.dump(_mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_POSIX), f, indent=2)
     return json_path
 
 
@@ -279,11 +484,11 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
     # Per Claude CoWork docs: all values are stored as strings in the OS preference
     # store, even booleans, integers, and arrays. Arrays must be JSON-encoded strings.
     payload_items = []
-    for key, value in _mdm_keys(mdm_config).items():
+    for key, value in _mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_POSIX).items():
         payload_items.append(f"\t\t\t<key>{xml_escape(key)}</key>")
         if isinstance(value, bool):
             string_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             string_value = json.dumps(value)
         else:
             string_value = str(value)
@@ -331,38 +536,53 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
     return mobileconfig_path
 
 
+def _to_windows_credential_helper(value: str) -> str:
+    """Convert the unix inferenceCredentialHelper path to the Windows form.
+
+    ``__CCWB_HOME__/claude-code-with-bedrock/credential-process --profile X``
+    becomes ``__CCWB_HOME__\\claude-code-with-bedrock\\credential-process.exe --profile X``.
+    Keeps the ``__CCWB_HOME__`` placeholder (resolved at install/deploy time by
+    install.bat / the Intune .ps1); only rewrites slashes and adds the ``.exe``
+    suffix. No-op when the value is not a placeholder path.
+    """
+    if not (isinstance(value, str) and value.startswith(f"{CCWB_HOME_PLACEHOLDER}/")):
+        return value
+    parts = value.split(" ", 1)
+    binary_part = parts[0].replace("/", "\\")
+    if not binary_part.endswith(".exe"):
+        binary_part += ".exe"
+    return f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+
+
 def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     """Generate a Windows .reg file for Claude Cowork 3P.
 
     All values are stored as REG_SZ strings — booleans, integers, and arrays
     included — matching what Claude Desktop reads from the registry.
 
-    If inferenceCredentialHelper is present and uses a Unix-style path (~/ prefix),
-    it is rewritten to the Windows equivalent (%USERPROFILE%\\ + .exe suffix).
+    Paths embed the __CCWB_HOME__ home placeholder (NOT %USERPROFILE%): Claude
+    Desktop does not expand env vars in registry MDM values. inferenceCredentialHelper's
+    Unix path is converted to backslashes + .exe suffix (keeping the placeholder);
+    install.bat substitutes __CCWB_HOME__ with the .reg-escaped absolute home
+    before the file is imported.
 
     Returns the path to the generated file.
     """
     reg_key = r"HKEY_CURRENT_USER\SOFTWARE\Policies\Claude"
 
-    # Create a copy with Windows-specific credential helper path
+    # Create a copy with the Windows credential helper path (backslashes + .exe),
+    # keeping the __CCWB_HOME__ placeholder for install.bat to resolve.
     config = dict(mdm_config)
     helper_key = "inferenceCredentialHelper"
-    if helper_key in config and isinstance(config[helper_key], str) and config[helper_key].startswith("~/"):
-        # Convert ~/claude-code-with-bedrock/credential-process --profile X
-        # to %USERPROFILE%\claude-code-with-bedrock\credential-process.exe --profile X
-        unix_path = config[helper_key]
-        parts = unix_path.split(" ", 1)
-        binary_part = parts[0].replace("~/", "%USERPROFILE%\\").replace("/", "\\")
-        if not binary_part.endswith(".exe"):
-            binary_part += ".exe"
-        config[helper_key] = f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+    if helper_key in config:
+        config[helper_key] = _to_windows_credential_helper(config[helper_key])
 
     lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key}]"]
 
-    for key, value in _mdm_keys(config).items():
+    for key, value in _mdm_keys_resolved(config, WEBSEARCH_HEADERS_HELPER_WINDOWS).items():
         if isinstance(value, bool):
             string_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             string_value = json.dumps(value)
         else:
             string_value = str(value)
@@ -454,7 +674,12 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
 
     Returns the path to the generated .ps1 file.
     """
-    keys = _mdm_keys(mdm_config)
+    keys = _mdm_keys_resolved(mdm_config, WEBSEARCH_HEADERS_HELPER_WINDOWS)
+    # Convert the unix credential-helper path to the Windows form (keeps the
+    # __CCWB_HOME__ placeholder, resolved at deploy time below).
+    if "inferenceCredentialHelper" in keys:
+        keys = dict(keys)
+        keys["inferenceCredentialHelper"] = _to_windows_credential_helper(keys["inferenceCredentialHelper"])
 
     lines = [
         "<#",
@@ -477,6 +702,12 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
         "",
         '$regPath = "HKCU:\\SOFTWARE\\Policies\\Claude"',
         "",
+        "# Resolve the home-directory placeholder to this user's absolute home.",
+        "# Claude Desktop does NOT expand %USERPROFILE% (or other env vars) in",
+        "# registry MDM values, so headersHelper / inferenceCredentialHelper paths",
+        "# must be absolute. This script writes the literal (single-backslash) path.",
+        "$ccwbHome = $env:USERPROFILE",
+        "",
         "# Create registry key if it does not exist",
         "if (-not (Test-Path $regPath)) {",
         "    New-Item -Path $regPath -Force | Out-Null",
@@ -488,13 +719,20 @@ def generate_intune_script(output_dir: Path, mdm_config: dict) -> Path:
     for key, value in keys.items():
         if isinstance(value, bool):
             ps_value = "true" if value else "false"
-        elif isinstance(value, (list, dict)):
+        elif isinstance(value, list | dict):
             ps_value = json.dumps(value)
         else:
             ps_value = str(value)
         # Escape single quotes for PowerShell
         escaped = ps_value.replace("'", "''")
-        lines.append(f"Set-ItemProperty -Path $regPath -Name '{key}' -Value '{escaped}' -Type String")
+        # Values carrying the home placeholder are resolved at deploy time to the
+        # user's absolute home ($ccwbHome). %USERPROFILE% would NOT work — Claude
+        # reads the registry string literally.
+        if CCWB_HOME_PLACEHOLDER in ps_value:
+            value_expr = f"'{escaped}'.Replace('{CCWB_HOME_PLACEHOLDER}', $ccwbHome)"
+        else:
+            value_expr = f"'{escaped}'"
+        lines.append(f"Set-ItemProperty -Path $regPath -Name '{key}' -Value {value_expr} -Type String")
 
     lines.extend(
         [

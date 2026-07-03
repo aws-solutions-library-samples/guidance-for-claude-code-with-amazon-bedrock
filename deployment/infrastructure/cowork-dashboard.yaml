@@ -324,12 +324,81 @@ Resources:
               }
             },
             {
-              "type": "log",
+              "type": "metric",
               "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "Avg Cost Per Turn (USD)",
+                "view": "timeSeries",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"ClaudeCoWork\", MetricName=\"cost.usage\"}) / sum({\"ClaudeCoWork\", MetricName=\"session.turns\"})", "step": 60, "label": "$/turn" }] }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 18, "width": 24, "height": 1,
+              "properties": { "markdown": "## Per-User Breakdown\n*Desktop mode only — LAM events do not emit user_email*" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 19, "width": 12, "height": 6,
+              "properties": {
+                "title": "Top Users by Token Usage",
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"token.usage.input\"}))", "step": 60 }] }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 19, "width": 12, "height": 6,
+              "properties": {
+                "title": "Estimated Cost by User (USD)",
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 25, "width": 12, "height": 6,
+              "properties": {
+                "title": "Session Turns by User",
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60 }] }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 25, "width": 12, "height": 6,
+              "properties": {
+                "title": "Cost by Model",
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"model\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 31, "width": 6, "height": 4,
+              "properties": {
+                "title": "Active Users",
+                "view": "singleValue",
+                "region": "${MetricsRegion}",
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60, "label": "Active Users" }] }
+              }
+            },
+            {
+              "type": "log",
+              "x": 6, "y": 31, "width": 18, "height": 6,
               "properties": {
                 "title": "Recent CoWork Events (Raw)",
                 "region": "${MetricsRegion}",
-                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, coalesce(body.name, body) as event_name, coalesce(attributes.user_id, body.attributes.user_id) as device_id, coalesce(body.attributes.model, attributes.model) as model, coalesce(body.attributes.input_tokens, attributes.input_tokens) as input_tokens, coalesce(body.attributes.output_tokens, attributes.output_tokens) as output_tokens, coalesce(body.attributes.total_cost_usd, attributes.cost_usd) as cost_usd | sort @timestamp desc | limit 20",
+                "query": "SOURCE '/aws/claude-cowork/events' | fields @timestamp, coalesce(body.name, body) as event_name, coalesce(attributes.user_email, body.attributes.user_email) as user_email, coalesce(attributes.user_id, body.attributes.user_id) as device_id, coalesce(body.attributes.model, attributes.model) as model, coalesce(body.attributes.input_tokens, attributes.input_tokens) as input_tokens, coalesce(body.attributes.output_tokens, attributes.output_tokens) as output_tokens, coalesce(body.attributes.total_cost_usd, attributes.cost_usd) as cost_usd | sort @timestamp desc | limit 20",
                 "view": "table"
               }
             }

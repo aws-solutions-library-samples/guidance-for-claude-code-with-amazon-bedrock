@@ -29,7 +29,7 @@ from claude_code_with_bedrock.cli.utils.progress import WizardProgress
 from claude_code_with_bedrock.cli.utils.validators import (
     validate_oidc_provider_domain,
 )
-from claude_code_with_bedrock.config import Config, Profile
+from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
 
 
 def validate_identity_pool_name(value: str) -> bool | str:
@@ -1467,6 +1467,41 @@ class InitCommand(Command):
                     )
                 config["codebuild"]["region"] = None
 
+        # Web Search (AgentCore Gateway)
+        console.print("\n[bold]Web Search[/bold]")
+        ws_region = config.get("web_search", {}).get("region") or WEBSEARCH_SUPPORTED_REGIONS[0]
+        console.print(
+            "Give Claude a hosted web-search tool via Amazon Bedrock AgentCore Gateway.\n"
+            f"[dim]Currently available in {ws_region} only.[/dim]"
+        )
+
+        # Only show the prompt for OIDC-compatible providers
+        provider_type = config.get("provider_type")
+        auth_type = config.get("auth_type", "oidc")
+        if auth_type == "idc":
+            console.print(
+                "[dim]Web search is not available for IAM Identity Center (IDC) deployments "
+                "(Claude Desktop does not yet support SigV4 for MCP servers).[/dim]"
+            )
+            config.setdefault("web_search", {})["enabled"] = False
+        else:
+            enable_websearch = questionary.confirm(
+                "Enable web search?",
+                default=config.get("web_search", {}).get("enabled", False),
+            ).ask()
+
+            if "web_search" not in config:
+                config["web_search"] = {}
+            config["web_search"]["enabled"] = enable_websearch
+
+            if enable_websearch:
+                console.print(
+                    f"[green]\u2713[/green] Web search gateway will be deployed to {ws_region}\n"
+                    "[dim]  Run 'ccwb deploy websearch' after init to provision the gateway.[/dim]"
+                )
+            else:
+                console.print("[dim]Web search disabled — can be enabled later via 'ccwb init'.[/dim]")
+
         # Claude Desktop MDM configuration
         console.print("\n[bold]Claude Desktop Support[/bold]")
         console.print("Generate MDM configuration for Claude Desktop with Amazon Bedrock")
@@ -1510,6 +1545,45 @@ class InitCommand(Command):
                     )
                 else:
                     console.print("[dim]Claude Desktop service token already configured[/dim]")
+
+            # Claude Desktop configuration delivery mode (OIDC only)
+            if config.get("auth_type", "oidc") == "oidc":
+                console.print("\n[bold]Claude Desktop Configuration Delivery[/bold]")
+                console.print("How should Claude Desktop clients receive their configuration?")
+                console.print("  • Static: MDM profile with inline config (default)")
+                console.print("  • Dynamic: Bootstrap server delivers per-user config at sign-in")
+
+                config_delivery_choices = [
+                    questionary.Choice("Static (default \u2014 MDM profile with inline config)", value="static"),
+                    questionary.Choice(
+                        "Dynamic with plugins (device-code auth \u2014 config + org plugins)",
+                        value="bootstrap-device-code",
+                    ),
+                    questionary.Choice(
+                        "Dynamic config only (OIDC Bearer \u2014 config delivery, no plugins)",
+                        value="bootstrap-oidc-bearer",
+                    ),
+                ]
+                saved_config_delivery = config.get("cowork", {}).get("config_delivery", "static")
+                config_delivery = questionary.select(
+                    "Claude Desktop config delivery:",
+                    choices=config_delivery_choices,
+                    default=saved_config_delivery,
+                ).ask()
+
+                if "cowork" not in config:
+                    config["cowork"] = {}
+                config["cowork"]["config_delivery"] = config_delivery
+
+                if config_delivery in ("bootstrap-device-code", "bootstrap-oidc-bearer"):
+                    console.print(
+                        "[green]\u2713[/green] Bootstrap server will be deployed with [cyan]ccwb deploy bootstrap[/cyan]"
+                    )
+                    console.print(
+                        "[dim]  Clients receive per-user config dynamically at sign-in via OIDC token exchange[/dim]"
+                    )
+                else:
+                    console.print("[green]\u2713[/green] Static MDM configuration (default)")
 
         # Settings deployment target
         console.print("\n[bold]Settings Deployment Target[/bold]")
@@ -2601,6 +2675,8 @@ class InitCommand(Command):
             "cowork_3p_enabled": config_data.get("cowork_3p", {}).get("enabled", True),
             "cowork_3p_extra_keys": config_data.get("cowork_3p", {}).get("extra_keys", {}),
             "cowork_service_token": config_data.get("cowork_3p", {}).get("service_token", ""),
+            "cowork_config_delivery": config_data.get("cowork", {}).get("config_delivery", "static"),
+            "web_search_enabled": config_data.get("web_search", {}).get("enabled", False),
             "cowork_chat_tab_enabled": config_data.get("cowork_3p", {}).get("chat_tab_enabled", True),
             "cowork_chat_advanced_file_analysis": config_data.get("cowork_3p", {}).get(
                 "chat_advanced_file_analysis", True
@@ -2967,6 +3043,9 @@ class InitCommand(Command):
                 if getattr(profile, "codebuild_prior_regions", None):
                     existing_config["codebuild"]["prior_regions"] = profile.codebuild_prior_regions
 
+            # Add web search configuration
+            existing_config["web_search"] = {"enabled": getattr(profile, "web_search_enabled", False)}
+
             # Add Claude Desktop (cowork_3p) configuration
             cowork_3p_config = {"enabled": profile.cowork_3p_enabled}
             if profile.cowork_3p_extra_keys:
@@ -2978,6 +3057,12 @@ class InitCommand(Command):
             if profile.cowork_chat_advanced_file_analysis:
                 cowork_3p_config["chat_advanced_file_analysis"] = True
             existing_config["cowork_3p"] = cowork_3p_config
+
+            # Add CoWork dynamic config mode
+            if profile.cowork_config_delivery and profile.cowork_config_delivery != "static":
+                if "cowork" not in existing_config:
+                    existing_config["cowork"] = {}
+                existing_config["cowork"]["config_delivery"] = profile.cowork_config_delivery
 
             # Add distribution configuration if present
             if hasattr(profile, "enable_distribution"):

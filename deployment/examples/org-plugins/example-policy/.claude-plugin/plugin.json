@@ -1,0 +1,6 @@
+{
+  "name": "example-org-policy",
+  "version": "1.0.0",
+  "description": "Example organization plugin — demonstrates skills and hooks for org-wide enforcement",
+  "installationPreference": "required"
+}

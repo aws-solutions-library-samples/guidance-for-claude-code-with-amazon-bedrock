@@ -28,22 +28,22 @@ PACKAGE_PY = Path(__file__).resolve().parents[1] / "claude_code_with_bedrock" / 
 
 
 def _extract_install_bat() -> str:
-    """Extract the install.bat content from package.py source."""
+    """Extract the main install.bat content from package.py source."""
     content = PACKAGE_PY.read_text(encoding="utf-8")
 
-    # The batch script is a multi-line string starting with @echo off
-    # Find the section between the batch script markers
-    # It's written as a Python string that starts with @echo off
+    # The main installer starts with '@echo off' followed by 'SETLOCAL ENABLEDELAYEDEXPANSION'
+    # to distinguish it from other small @echo off snippets (websearch headers, launcher).
     lines = content.splitlines()
     bat_lines = []
     in_bat = False
-    for line in lines:
-        if "@echo off" in line and not in_bat:
-            in_bat = True
-            # Extract from the @echo off onwards
-            idx = line.find("@echo off")
-            bat_lines.append(line[idx:])
-            continue
+    for i, line in enumerate(lines):
+        if not in_bat and "@echo off" in line:
+            # Check if next line has SETLOCAL — that's the main installer
+            if i + 1 < len(lines) and "SETLOCAL" in lines[i + 1]:
+                in_bat = True
+                idx = line.find("@echo off")
+                bat_lines.append(line[idx:])
+                continue
         if in_bat:
             # The batch script ends when we hit a line that's clearly Python
             # (triple-quote end, or dedented Python code)

@@ -60,8 +60,35 @@ def _go_ldflags(goos: str) -> str:
     stripped Go binaries in subprocess/non-interactive contexts. Everywhere else we
     strip (-s -w) for size. This rule applies identically to credential-process,
     otel-helper, and the otelcol sidecar — hence one shared helper.
+
+    Always injects version and commit via -X flags so --version and --explain
+    report the build origin (critical for beta vs release troubleshooting).
     """
-    return "" if goos == "windows" else "-s -w"
+    import subprocess
+
+    # Resolve version from git tags
+    try:
+        ver = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        ver = "dev"
+
+    # Resolve commit SHA
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        commit = "unknown"
+
+    version_flags = f"-X ccwb-go/internal/version.Version={ver} -X ccwb-go/internal/version.Commit={commit}"
+    strip_flags = "" if goos == "windows" else "-s -w"
+    return f"{strip_flags} {version_flags}".strip()
 
 
 def _find_universal2_python() -> Path | None:
@@ -818,6 +845,7 @@ class PackageCommand(Command):
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
+        console.print("After installation, verify with: [cyan]poetry run ccwb doctor[/cyan]")
 
         # Only show distribute command if distribution is enabled
         if profile.enable_distribution:
@@ -2983,6 +3011,30 @@ if [ ! -f "$CREDENTIAL_BINARY" ]; then
 fi
 """
 
+        # Web search headersHelper: when web search is enabled (OIDC only), the
+        # installer drops a small wrapper next to credential-process that emits
+        # {"Authorization":"Bearer <id_token>"} for Claude Desktop's
+        # managedMcpServers headersHelper. Bound to this deployment profile.
+        websearch_helper_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            websearch_helper_block = f"""
+# Web search headersHelper (Cowork web search via AgentCore Gateway).
+# Emits {{"Authorization":"Bearer <id_token>"}} so Claude Desktop authenticates
+# managedMcpServers requests to the gateway. Bound to the '{profile.name}' profile.
+echo
+echo "Installing web search headersHelper..."
+WS_HELPER="$ACTUAL_HOME/claude-code-with-bedrock/websearch-headers"
+cat > "$WS_HELPER" <<WS_EOF
+#!/bin/sh
+exec "$ACTUAL_HOME/claude-code-with-bedrock/credential-process" --profile {profile.name} --get-mcp-auth-header
+WS_EOF
+chmod +x "$WS_HELPER"
+if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$WS_HELPER"; fi
+echo "OK Web search headersHelper installed: $WS_HELPER"
+"""
+
         installer_content += f"""
 # Create directory
 echo
@@ -3000,6 +3052,18 @@ chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 if [ -n "$SUDO_USER" ]; then
     chown -R "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock"
 fi
+{websearch_helper_block}
+# Resolve __CCWB_HOME__ to the real home in the CoWork MDM files. Claude Desktop
+# on macOS does NOT expand ~ or env vars in MDM string values, and the
+# .mobileconfig is generated centrally, so the absolute paths (headersHelper,
+# inferenceCredentialHelper) must be substituted here on the user's machine.
+for _ccwb_mdm in "cowork-3p.mobileconfig" "cowork-3p-config.json"; do
+    if [ -f "$_ccwb_mdm" ] && grep -q "__CCWB_HOME__" "$_ccwb_mdm" 2>/dev/null; then
+        sed -i.bak "s|__CCWB_HOME__|$ACTUAL_HOME|g" "$_ccwb_mdm" && rm -f "$_ccwb_mdm.bak"
+        if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$_ccwb_mdm"; fi
+        echo "OK Resolved home directory in $_ccwb_mdm"
+    fi
+done
 
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -3272,17 +3336,33 @@ else
 fi
 """
 
-        # IDC auth needs a launcher wrapper that signs in before launching Claude.
+        # IDC auth keeps a launcher wrapper that signs in before launching Claude.
         # OIDC auth handles sign-in transparently, so no launcher is needed.
+        #
+        # As of the awsAuthRefresh --login gate fix (credential-process now polls
+        # device-auth and surfaces the verification URL/code live when invoked via
+        # awsAuthRefresh), in-session recovery DOES work: an expired SSO session
+        # can be renewed from inside a running `claude` via the credential hook.
+        # The launcher is nonetheless kept for now because:
+        #   1. Claude Code does not auto-invoke awsAuthRefresh on a 401 yet
+        #      (anthropics/claude-code#67529, open) \u2014 recovery is manual via
+        #      /login -> "Claude Platform on AWS - refresh credentials" (v2.1.186+).
+        #      The launcher's pre-flight signs in BEFORE the first prompt, so the
+        #      user never hits the manual-recovery step.
+        #   2. Session-start behavior when the SSO session is fully dead (silent
+        #      awsCredentialExport fails, then whether Claude Code falls through to
+        #      awsAuthRefresh) is not yet verified across OSes.
+        # Revisit removing the launcher once #67529 lands and start-up fallback is
+        # confirmed; track via LOCAL_TESTING.md's "why a launcher" note.
         _is_idc = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", None)) == "idc"
         if _is_idc:
             installer_content += """
 # Generate a 'claude-bedrock' launcher wrapper.
 # It signs in (a no-op when the session is still valid) so the verification URL
-# is shown live in the user's terminal, THEN launches Claude Code. This avoids
-# the "run claude \u2192 silent hang" trap for IDC: the interactive sign-in can't be
-# surfaced through Claude Code's own credential refresh, so we front-run it here
-# where stdout/stderr go straight to the terminal.
+# is shown live in the user's terminal, THEN launches Claude Code. In-session
+# recovery via the awsAuthRefresh hook now works too, but Claude Code does not
+# auto-trigger it on a 401 yet (anthropics/claude-code#67529) \u2014 front-running the
+# sign-in here means the user is authenticated before the first prompt.
 CRED_PROC="$ACTUAL_HOME/claude-code-with-bedrock/credential-process"
 LAUNCHER="$ACTUAL_HOME/claude-code-with-bedrock/claude-bedrock"
 FIRST_PROFILE=$(echo $PROFILES | awk '{print $1}')
@@ -3309,13 +3389,17 @@ for PROFILE_NAME in $PROFILES; do
     echo "  - $PROFILE_NAME"
 done
 echo
-echo ">>> Start Claude Code with the launcher, NOT 'claude' directly:"
-echo "      $LAUNCHER"
+echo ">>> Start Claude Code the usual way:"
+echo "      claude"
 echo
-echo "    The launcher signs you in (shows the sign-in URL in your terminal when"
-echo "    needed) and then starts Claude Code. If you run 'claude' directly without"
-echo "    an active sign-in, it can briefly flash a sign-in error and then keep"
-echo "    retrying \u2014 easy to miss. The launcher avoids that."
+echo "    It signs you in automatically when needed \u2014 opening your browser, or"
+echo "    showing a sign-in link on headless/SSH hosts \u2014 and refreshes your session"
+echo "    on its own after that."
+echo
+echo "    Optional: a 'claude-bedrock' launcher is also installed. It signs you in"
+echo "    first, then starts Claude Code, which can make the very first sign-in"
+echo "    smoother (no time limit on the sign-in step). Use it if you prefer:"
+echo "      $LAUNCHER"
 echo
 echo "Tip: add it to your PATH so you can just run 'claude-bedrock':"
 echo "  export PATH=\\"$ACTUAL_HOME/claude-code-with-bedrock:\\$PATH\\""
@@ -3369,6 +3453,30 @@ echo
         # harmless and the copy stays best-effort.
         _otel_missing_is_fatal = bool(profile.monitoring_enabled)
 
+        # Web search headersHelper (Windows): when web search is enabled (OIDC),
+        # write %USERPROFILE%\claude-code-with-bedrock\websearch-headers.cmd, a
+        # wrapper that runs credential-process.exe --get-mcp-auth-header (the
+        # browserless MCP-header mode). The .cmd itself keeps %USERPROFILE%: that
+        # is fine because cmd.exe expands it at runtime when the wrapper EXECUTES.
+        # (The registry path that points AT this .cmd is the one that must be
+        # absolute — Claude reads it literally — handled via __CCWB_HOME__ in the
+        # .reg, resolved by the cowork-3p.reg substitution block below.)
+        windows_websearch_block = ""
+        _ws_enabled = getattr(profile, "web_search_enabled", False)
+        _ws_auth = getattr(profile, "effective_auth_type", getattr(profile, "auth_type", "oidc"))
+        if _ws_enabled and _ws_auth != "idc":
+            windows_websearch_block = f"""
+REM Web search headersHelper (Cowork web search via AgentCore Gateway).
+REM Emits {{"Authorization":"Bearer <id_token>"}} via the browserless
+REM --get-mcp-auth-header mode, bound to the '{profile.name}' profile.
+echo Installing web search headersHelper...
+(
+echo @echo off
+echo "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" --profile {profile.name} --get-mcp-auth-header
+) > "%USERPROFILE%\\claude-code-with-bedrock\\websearch-headers.cmd"
+echo OK Web search headersHelper installed
+"""
+
         installer_content = f"""@echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
 cd /d "%~dp0"
@@ -3410,7 +3518,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-
+{windows_websearch_block}
 REM Copy OTEL helper if it exists with renamed target
 if exist "otel-helper-windows.exe" (
     echo Copying OTEL helper...
@@ -3484,6 +3592,19 @@ if exist "collector-config.yaml" (
 REM Copy configuration
 echo Copying configuration...
 copy /Y "config.json" "%USERPROFILE%\\claude-code-with-bedrock\\" >nul
+
+REM Resolve __CCWB_HOME__ to the absolute home in the CoWork MDM .reg. Claude
+REM Desktop does NOT expand %USERPROFILE% (or other env vars) in registry MDM
+REM string values, and cowork-3p.reg is generated centrally, so the headersHelper
+REM / inferenceCredentialHelper absolute paths must be baked in here before the
+REM admin/user imports it. The .reg escapes backslashes, so the home is escaped
+REM (\\ -> \\\\) to match the .reg format; reg import un-escapes it back to a
+REM single backslash in the stored REG_SZ value.
+if exist "cowork-3p.reg" (
+    echo Resolving home directory in cowork-3p.reg...
+    powershell -NoProfile -Command "$h = $env:USERPROFILE.Replace('\\','\\\\'); (Get-Content 'cowork-3p.reg' -Raw).Replace('__CCWB_HOME__', $h) | Set-Content 'cowork-3p.reg'"
+    echo OK Resolved home directory in cowork-3p.reg ^(import it with: reg import cowork-3p.reg, then fully restart Claude^)
+)
 
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
@@ -3608,9 +3729,11 @@ for /f %%p in ('powershell -NoProfile -Command "$c=Get-Content config.json|Conve
             installer_content += """
 REM Generate a 'claude-bedrock.cmd' launcher.
 REM It signs in first (no-op if the session is still valid) so the verification
-REM URL is shown live in the user's console, THEN launches Claude Code. This
-REM avoids the "run claude -> silent hang" trap for IDC, whose interactive
-REM sign-in cannot be surfaced through Claude Code's own credential refresh.
+REM URL is shown live in the user's console, THEN launches Claude Code.
+REM In-session recovery via the awsAuthRefresh hook now works too, but Claude Code
+REM does not auto-trigger it on a 401 yet (anthropics/claude-code#67529) --
+REM front-running the sign-in here means the user is authenticated before the
+REM first prompt.
 REM
 REM Written with plain batch 'echo' redirection (NOT PowerShell) so the embedded
 REM quotes survive. In this script %%X%% becomes literal %X% in the .cmd, and
@@ -3638,13 +3761,17 @@ for /f %%p in ('powershell -NoProfile -Command "(Get-Content config.json | Conve
     echo   - %%p
 )
 echo.
-echo ^>^>^> Start Claude Code with the launcher, NOT 'claude' directly:
-echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
+echo ^>^>^> Start Claude Code the usual way:
+echo       claude
 echo.
-echo     The launcher signs you in (shows the sign-in URL in your terminal when
-echo     needed) and then starts Claude Code. If you run 'claude' directly without
-echo     an active sign-in, it can briefly flash a sign-in error and then keep
-echo     retrying - easy to miss. The launcher avoids that.
+echo     It signs you in automatically when needed - opening your browser, or
+echo     showing a sign-in link on headless/SSH hosts - and refreshes your session
+echo     on its own after that.
+echo.
+echo     Optional: a 'claude-bedrock' launcher is also installed. It signs you in
+echo     first, then starts Claude Code, which can make the very first sign-in
+echo     smoother ^(no time limit on the sign-in step^). Use it if you prefer:
+echo       %USERPROFILE%\\claude-code-with-bedrock\\claude-bedrock.cmd
 echo.
 echo Tip: add that folder to your PATH so you can just run 'claude-bedrock'.
 echo.
@@ -3922,12 +4049,16 @@ Available metrics include:
             # IDC needs BOTH:
             #   - awsCredentialExport for the silent ~hourly role-credential refresh
             #     (SSO session still valid -> re-mint via STS, no browser); and
-            #   - awsAuthRefresh so that when there is NO valid SSO session, the binary's
-            #     fail-fast message ("relaunch with claude-bedrock") is shown to the user
-            #     instead of a silent retry loop. The fail-fast guard makes the binary
-            #     exit immediately here, so awsAuthRefresh does NOT hang (the original
-            #     reason it was dropped for IDC). The ~8h SSO-session re-login itself
-            #     still happens out-of-band via the claude-bedrock launcher.
+            #   - awsAuthRefresh (--login) so that when there is NO valid SSO session,
+            #     the device-auth flow runs IN-SESSION: the credential-process --login
+            #     gate now polls device authorization and surfaces the verification
+            #     URL/code live (Claude Code streams the hook's stderr), so the ~8h
+            #     SSO re-login can complete from inside a running `claude`. On headless
+            #     hosts with discarded stderr (the silent awsCredentialExport path) the
+            #     binary still fails fast rather than hanging. NOTE: Claude Code does
+            #     not auto-invoke awsAuthRefresh on a 401 yet (anthropics/claude-code
+            #     #67529) — until it does, the claude-bedrock launcher front-runs the
+            #     sign-in so the user is authenticated before the first prompt.
             #
             # Non-IDC (OIDC) session profiles keep just awsAuthRefresh — their refresh
             # can be interactive (browser), which is exactly what that hook is for.
@@ -4171,6 +4302,7 @@ Available metrics include:
         """
         from claude_code_with_bedrock.cli.utils.cowork_3p import (
             add_monitoring_config,
+            add_websearch_mcp_config,
             build_mdm_config,
             derive_model_aliases,
             generate_all,
@@ -4200,6 +4332,7 @@ Available metrics include:
                 mdm_config["inferenceSessionLifetimeSec"] = profile.cowork_inference_session_lifetime_sec
 
             add_monitoring_config(mdm_config, profile, console)
+            add_websearch_mcp_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 
         except Exception as e:

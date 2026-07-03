@@ -37,6 +37,7 @@ class TestModelConfiguration:
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
             "fable-5",
+            "sonnet-5",
             "sonnet-4-6",
             "opus-4-8",
             "opus-4-7",
@@ -530,6 +531,6 @@ class TestResolveModelForTier:
             for tier in ["haiku", "sonnet", "opus", "fable"]:
                 result = resolve_model_for_tier(tier, prefix)
                 if result is not None:
-                    assert (
-                        f"{prefix}." in result
-                    ), f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    assert f"{prefix}." in result, (
+                        f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    )

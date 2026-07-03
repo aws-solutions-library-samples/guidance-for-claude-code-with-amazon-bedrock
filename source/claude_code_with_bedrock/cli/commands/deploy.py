@@ -29,7 +29,23 @@ from claude_code_with_bedrock.cli.utils.helpers import (
     find_nearest_codebuild_region,
     get_codebuild_region,
 )
-from claude_code_with_bedrock.config import Config
+from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config
+
+# All deployable stack types. Used for input validation and help text.
+# Keep in sync with DESTROYABLE_STACKS in destroy.py when adding new stacks.
+VALID_STACKS = [
+    "auth",
+    "networking",
+    "monitoring",
+    "dashboard",
+    "cowork-dashboard",
+    "analytics",
+    "quota",
+    "distribution",
+    "codebuild",
+    "websearch",
+    "bootstrap",
+]
 
 # Azure tenant ID GUID pattern — matches UUIDs in various URL formats:
 #   login.microsoftonline.com/{tenant-id}/v2.0
@@ -46,6 +62,284 @@ def _extract_azure_tenant_id(domain: str) -> str:
     """
     match = _AZURE_GUID_PATTERN.search(domain)
     return match.group(0) if match else domain
+
+
+def _discover_oidc_endpoints(profile) -> dict:
+    """Fetch OIDC discovery document and extract endpoints.
+
+    Builds the issuer URL from profile.provider_type / provider_domain,
+    then fetches /.well-known/openid-configuration. Falls back to manual
+    endpoint construction per provider type when discovery fails.
+    """
+    import json
+    import urllib.request
+
+    # Build issuer URL from provider type
+    provider_type = profile.provider_type or ""
+    provider_domain = profile.provider_domain or ""
+
+    tid = None  # needed for azure fallback
+    if provider_type == "okta":
+        issuer = f"https://{provider_domain}/oauth2/default"
+    elif provider_type == "azure":
+        tid = _extract_azure_tenant_id(provider_domain)
+        issuer = f"https://login.microsoftonline.com/{tid}/v2.0"
+    elif provider_type == "google":
+        issuer = "https://accounts.google.com"
+    elif provider_type == "auth0":
+        issuer = f"https://{provider_domain}/"
+    else:
+        issuer = f"https://{provider_domain}"
+
+    # Try fetching discovery document
+    discovery_url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        req = urllib.request.Request(discovery_url)
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            doc = json.loads(resp.read())
+        return {
+            "issuer": doc.get("issuer", issuer),
+            "authorization_endpoint": doc.get("authorization_endpoint", ""),
+            "token_endpoint": doc.get("token_endpoint", ""),
+            "jwks_uri": doc.get("jwks_uri", ""),
+        }
+    except Exception:
+        # Fallback: construct manually based on provider type
+        if provider_type == "okta":
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": f"{issuer}/v1/authorize",
+                "token_endpoint": f"{issuer}/v1/token",
+                "jwks_uri": f"{issuer}/v1/keys",
+            }
+        elif provider_type == "azure":
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/authorize",
+                "token_endpoint": f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token",
+                "jwks_uri": f"https://login.microsoftonline.com/{tid}/discovery/v2.0/keys",
+            }
+        else:
+            return {
+                "issuer": issuer,
+                "authorization_endpoint": "",
+                "token_endpoint": "",
+                "jwks_uri": "",
+            }
+
+
+# Provider types supported by the AgentCore Web Search gateway. The CUSTOM_JWT
+# authorizer is provider-agnostic (validates any OIDC id_token), so all OIDC
+# providers work. Non-OIDC (idc, none) have no id_token to validate.
+WEBSEARCH_SUPPORTED_PROVIDERS = ("cognito", "azure", "okta", "auth0", "google", "generic")
+
+
+def get_websearch_region(profile) -> str:
+    """Region the web search gateway stack deploys into (defaults to us-east-1)."""
+    return getattr(profile, "websearch_region", None) or WEBSEARCH_SUPPORTED_REGIONS[0]
+
+
+def websearch_preflight(profile) -> tuple[bool, str | None]:
+    """Validate that web search can be deployed for this profile.
+
+    Returns (ok, error_message). When ok is False, the caller must NOT deploy
+    the gateway stack and should surface error_message. Mirrors the per-provider
+    guards used elsewhere in deploy (e.g. quota requires OIDC/IDC).
+    """
+    provider = getattr(profile, "provider_type", None)
+    if provider not in WEBSEARCH_SUPPORTED_PROVIDERS:
+        return False, (
+            f"Web search requires an OIDC provider (one of: "
+            f"{', '.join(WEBSEARCH_SUPPORTED_PROVIDERS)}). "
+            f"Current provider_type: '{provider}'."
+        )
+
+    region = get_websearch_region(profile)
+    if region not in WEBSEARCH_SUPPORTED_REGIONS:
+        return False, (
+            f"Web search region '{region}' is not supported. "
+            f"Supported regions: {', '.join(WEBSEARCH_SUPPORTED_REGIONS)}."
+        )
+
+    if provider == "cognito" and not (
+        getattr(profile, "cognito_user_pool_id", None) and getattr(profile, "client_id", None)
+    ):
+        return False, "Cognito web search requires cognito_user_pool_id and client_id in the profile."
+
+    if provider == "azure":
+        has_issuer = getattr(profile, "oidc_issuer_url", None) or getattr(profile, "provider_domain", None)
+        if not (has_issuer and getattr(profile, "client_id", None)):
+            return False, (
+                "Azure (Entra ID) web search requires the Entra issuer and client_id in the profile. "
+                "Re-run 'ccwb init' to configure SSO."
+            )
+        # websearch_jwt_audience is optional: the gateway validates the id_token
+        # 'aud' claim, which defaults to client_id. Only set it when the Entra
+        # app is configured with a custom API audience (e.g. api://<app-id>).
+
+    if provider == "generic":
+        if not getattr(profile, "oidc_issuer_url", None):
+            return False, (
+                "Generic OIDC provider requires oidc_issuer_url to derive the "
+                "web-search gateway discovery URL. Re-run 'ccwb init'."
+            )
+
+    return True, None
+
+
+def validate_websearch_readiness(profile) -> list[dict]:
+    """Validate websearch configuration readiness for a profile.
+
+    Returns a list of diagnostic issues (each a dict with 'level' and 'message').
+    Empty list = healthy. Designed for `ccwb doctor` integration — call this
+    to surface websearch misconfigurations without reimplementing the logic.
+
+    Levels: 'error' (broken), 'warning' (degraded), 'info' (informational).
+    """
+    issues = []
+    enabled = getattr(profile, "web_search_enabled", False)
+
+    if not enabled:
+        return []  # Websearch not enabled — nothing to validate
+
+    # Check provider compatibility
+    ok, msg = websearch_preflight(profile)
+    if not ok:
+        issues.append({"level": "error", "message": msg})
+        return issues  # No point checking further if preflight fails
+
+    # Check gateway URL is populated (set after successful deploy)
+    gateway_url = getattr(profile, "websearch_gateway_url", None)
+    if not gateway_url:
+        issues.append(
+            {
+                "level": "warning",
+                "message": (
+                    "web_search_enabled=True but websearch_gateway_url is not set. "
+                    "Run 'ccwb deploy websearch' to deploy the gateway stack."
+                ),
+            }
+        )
+
+    # Check region is supported
+    region = get_websearch_region(profile)
+    if region not in WEBSEARCH_SUPPORTED_REGIONS:
+        issues.append(
+            {
+                "level": "error",
+                "message": f"websearch_region '{region}' is not in supported regions: {', '.join(WEBSEARCH_SUPPORTED_REGIONS)}",
+            }
+        )
+
+    return issues
+
+
+def _websearch_discovery_url(profile) -> str:
+    """Build the OIDC discovery URL for the gateway CUSTOM_JWT authorizer.
+
+    The gateway's expected issuer must match the id_token's actual `iss` claim,
+    so this derives the issuer per-provider and appends the well-known suffix.
+    """
+    provider = profile.provider_type
+    provider_domain = (getattr(profile, "provider_domain", "") or "").rstrip("/")
+
+    if provider == "cognito":
+        pool_id = profile.cognito_user_pool_id
+        pool_region = pool_id.split("_")[0] if pool_id and "_" in pool_id else profile.aws_region
+        return f"https://cognito-idp.{pool_region}.amazonaws.com/{pool_id}/.well-known/openid-configuration"
+    elif provider == "azure":
+        tenant_id = _extract_azure_tenant_id(getattr(profile, "oidc_issuer_url", None) or provider_domain or "")
+        return f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
+    elif provider == "okta":
+        return f"https://{provider_domain}/oauth2/default/.well-known/openid-configuration"
+    elif provider == "auth0":
+        return f"https://{provider_domain}/.well-known/openid-configuration"
+    elif provider == "google":
+        return "https://accounts.google.com/.well-known/openid-configuration"
+    elif provider == "generic":
+        issuer = (getattr(profile, "oidc_issuer_url", "") or "").rstrip("/")
+        if not issuer.startswith(("http://", "https://")):
+            issuer = f"https://{issuer}"
+        return f"{issuer}/.well-known/openid-configuration"
+    else:
+        raise ValueError(f"Unsupported provider_type '{provider}' for web search.")
+
+
+def build_websearch_params(profile) -> list[str]:
+    """Build CloudFormation parameter overrides for the web search gateway stack.
+
+    Matches the merged gateway template parameters (DiscoveryUrl, ClientId,
+    DomainExcludeList). The CUSTOM_JWT authorizer validates the inbound
+    id_token's 'aud' claim against ClientId; for an OIDC id_token aud == client_id.
+    The stack is deployed into a Web Search supported region via
+    ``get_websearch_region`` (region is no longer a template parameter).
+    """
+    discovery_url = _websearch_discovery_url(profile)
+    # The merged gateway template (PR #607) validates the inbound id_token's
+    # 'aud' claim against a single ClientId parameter (AllowedAudience: [ClientId]).
+    # For an OIDC id_token aud == client_id, so client_id works for every
+    # provider (Cognito, Okta, Auth0, Google, generic). Entra ID may override
+    # with a custom API audience (api://<app-id>) when the app is configured
+    # with one; otherwise the default aud (client_id) is used.
+    expected_audience = profile.client_id
+    if profile.provider_type == "azure" and getattr(profile, "websearch_jwt_audience", None):
+        expected_audience = profile.websearch_jwt_audience
+    params = [
+        f"DiscoveryUrl={discovery_url}",
+        f"ClientId={expected_audience}",
+    ]
+    denylist = getattr(profile, "websearch_domain_denylist", None) or []
+    if denylist:
+        params.append(f"DomainExcludeList={','.join(denylist)}")
+    return params
+
+
+def _poll_websearch_target_ready(
+    gateway_id: str, region: str, console, timeout: int = 600, interval: int = 15, session=None
+) -> bool:
+    """Poll the gateway's connector target until READY.
+
+    CFN CREATE_COMPLETE precedes the target reaching READY — the connector
+    provisions asynchronously. Returns True on READY, False on FAILED or timeout.
+    Uses the provided boto3 session to respect proxy/CA/endpoint config.
+    """
+    import time
+
+    try:
+        import boto3
+
+        if session is None:
+            session = boto3.Session(region_name=region)
+        client = session.client("bedrock-agentcore-control", region_name=region)
+    except Exception as e:
+        console.print(f"[yellow]\u26a0 Could not create AgentCore client to poll target: {e}[/yellow]")
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = client.list_gateway_targets(gatewayIdentifier=gateway_id, maxResults=1)
+            # ListGatewayTargets returns the targets under "items" (per the
+            # bedrock-agentcore-control API). Reading any other key yields an
+            # empty list, so the poll would never observe READY and would spin
+            # silently until the timeout.
+            targets = resp.get("items", [])
+            if targets:
+                status = targets[0].get("status", "")
+                if status == "READY":
+                    console.print("[green]\u2713 Web search connector target is READY[/green]")
+                    return True
+                elif status == "FAILED":
+                    reason = targets[0].get("statusReason", "unknown")
+                    console.print(f"[red]\u2717 Connector target FAILED: {reason}[/red]")
+                    return False
+                console.print(f"[dim]  Connector status: {status}, waiting...[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]  Poll error (retrying): {e}[/yellow]")
+        time.sleep(interval)
+
+    console.print(f"[yellow]\u26a0 Connector target did not reach READY within {timeout}s[/yellow]")
+    return False
 
 
 class DeployCommand(Command):
@@ -199,17 +493,53 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]CodeBuild is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "bootstrap":
+                if getattr(profile, "cowork_config_delivery", "static") not in (
+                    "bootstrap-device-code",
+                    "bootstrap-oidc-bearer",
+                ):
+                    console.print("[yellow]Bootstrap server requires dynamic configuration mode.[/yellow]")
+                    console.print(
+                        "[dim]Run 'ccwb init' and select 'Dynamic with plugins' or 'Dynamic config only'.[/dim]"
+                    )
+                    return 1
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (Device-Code Flow)"))
+            elif stack_arg == "websearch":
+                if not getattr(profile, "web_search_enabled", False):
+                    console.print("[yellow]Web search is not enabled in your configuration.[/yellow]")
+                    console.print("Run 'poetry run ccwb init' and enable web search.")
+                    return 1
+                ok, msg = websearch_preflight(profile)
+                if not ok:
+                    console.print(f"[yellow]{msg}[/yellow]")
+                    return 1
+                stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
-                console.print(
-                    "Valid stacks: auth, distribution, networking, monitoring, dashboard, cowork-dashboard, analytics, quota, codebuild\n"
-                )
+                console.print(f"Valid stacks: {', '.join(VALID_STACKS)}\n")
+
                 console.print("[dim]Tip: Use 'ccwb deploy' without arguments to deploy all enabled stacks.[/dim]")
                 console.print("[dim]Use 'ccwb deploy quota' for quota-specific updates or late enablement.[/dim]")
                 return 1
         else:
             # Deploy all configured stacks in dependency order.
             stacks_to_deploy = self._select_full_deploy_stacks(profile, console)
+
+            # Web search gateway — independent stack, only needs the IdP from auth.
+            # Deployed cross-region (us-east-1) where the connector is available.
+            if getattr(profile, "web_search_enabled", False):
+                ok, msg = websearch_preflight(profile)
+                if ok:
+                    stacks_to_deploy.append(("websearch", "AgentCore Gateway + Web Search connector"))
+                else:
+                    console.print(f"[yellow]⚠ Skipping web search gateway: {msg}[/yellow]")
+
+            # Check if bootstrap server is enabled (any dynamic mode)
+            cowork_mode = getattr(profile, "cowork_config_delivery", "static")
+            if cowork_mode == "bootstrap-device-code":
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (device-code — config + plugins)"))
+            elif cowork_mode == "bootstrap-oidc-bearer":
+                stacks_to_deploy.append(("bootstrap", "Bootstrap Server (OIDC Bearer — config only)"))
 
         # Initialize CloudFormation manager
         cf_manager = CloudFormationManager(region=profile.aws_region)
@@ -229,6 +559,10 @@ class DeployCommand(Command):
                 cb_region = get_codebuild_region(profile)
                 if cb_region != profile.aws_region:
                     status_manager = CloudFormationManager(region=cb_region)
+            elif stack_type == "websearch":
+                ws_region = get_websearch_region(profile)
+                if ws_region != profile.aws_region:
+                    status_manager = CloudFormationManager(region=ws_region)
             status = status_manager.get_stack_status(stack_name)
             if status and status in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
                 status_display = "[green]Update[/green]"
@@ -265,6 +599,10 @@ class DeployCommand(Command):
                             cb_region = get_codebuild_region(profile)
                             if cb_region != profile.aws_region:
                                 del_mgr = CloudFormationManager(region=cb_region)
+                        elif stack_type == "websearch":
+                            ws_region = get_websearch_region(profile)
+                            if ws_region != profile.aws_region:
+                                del_mgr = CloudFormationManager(region=ws_region)
                         del_mgr.delete_stack(stack_name)
                         console.print(f"[green]✓ {stack_type} stack deletion initiated[/green]")
                     except Exception as e:
@@ -289,6 +627,19 @@ class DeployCommand(Command):
 
             result = self._deploy_stack(stack_type, profile, console, cf_manager)
             if result != 0:
+                if stack_type == "websearch":
+                    # Web search is an optional add-on. A failure here must not mark
+                    # the whole platform deploy as failed or abort stacks that follow;
+                    # surface it clearly with remediation and continue. (Running
+                    # 'ccwb deploy websearch' explicitly still returns non-zero.)
+                    console.print(
+                        "[yellow]⚠ Web search gateway deploy failed — this is optional and does not "
+                        "block the rest of the deployment.[/yellow]\n"
+                        "[dim]  Re-run 'ccwb deploy websearch' to retry, or "
+                        "'ccwb destroy websearch' to clean up.[/dim]"
+                    )
+                    console.print("")
+                    continue
                 failed = True
                 console.print(f"[red]Failed to deploy {stack_type} stack[/red]")
                 break
@@ -434,6 +785,7 @@ class DeployCommand(Command):
                         template_path=template_path,
                         parameters=boto3_params,
                         capabilities=capabilities or ["CAPABILITY_NAMED_IAM"],
+                        tags=profile.tags if profile.tags else None,
                         on_event=lambda e: progress.update(
                             task,
                             description=f"{e.get('LogicalResourceId', 'Stack')} - {e.get('ResourceStatus', '')}"
@@ -1088,6 +1440,127 @@ class DeployCommand(Command):
                     cf=cf,
                 )
 
+            elif stack_type == "bootstrap":
+                cowork_mode = getattr(profile, "cowork_config_delivery", "static")
+                if cowork_mode == "bootstrap-oidc-bearer":
+                    template = project_root / "deployment" / "infrastructure" / "bootstrap-oidc-bearer.yaml"
+                else:
+                    template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
+                stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
+
+                # Auto-discover OIDC endpoints
+                oidc_endpoints = _discover_oidc_endpoints(profile)
+
+                # Validate required endpoints were resolved
+                missing = [
+                    k for k in ("token_endpoint", "authorization_endpoint", "jwks_uri") if not oidc_endpoints.get(k)
+                ]
+                if missing:
+                    console.print(f"[red]Error: Could not resolve OIDC endpoints: {', '.join(missing)}[/red]")
+                    console.print("[yellow]Ensure your IdP supports .well-known/openid-configuration,")
+                    console.print("or provide endpoints manually in your profile config.[/yellow]")
+                    return 1
+
+                # Validate client secret ARN is available
+                client_secret_arn = getattr(profile, "distribution_idp_client_secret_arn", "") or getattr(
+                    profile, "client_secret_arn", ""
+                )
+                if not client_secret_arn:
+                    console.print("[red]Error: No client secret ARN found.[/red]")
+                    console.print(
+                        "[yellow]Deploy the distribution/landing-page stack first (stores secret in SecretsManager),"
+                    )
+                    console.print("or set client_secret_arn in your profile config.[/yellow]")
+                    return 1
+
+                params = [
+                    f"OidcIssuerUrl={oidc_endpoints['issuer']}",
+                    f"OidcClientId={profile.client_id}",
+                    f"OidcClientSecretArn={client_secret_arn}",
+                    f"OidcTokenEndpoint={oidc_endpoints['token_endpoint']}",
+                    f"OidcAuthorizeEndpoint={oidc_endpoints['authorization_endpoint']}",
+                    f"OidcJwksEndpoint={oidc_endpoints['jwks_uri']}",
+                    f"InferenceRegion={profile.aws_region}",
+                    f"InferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+                ]
+
+                # Optional WAF CIDR restriction
+                allowed_cidr = getattr(profile, "bootstrap_allowed_cidr", "0.0.0.0/0")
+                if allowed_cidr != "0.0.0.0/0":
+                    params.append(f"AllowedCidr={allowed_cidr}")
+
+                # Use existing s3bucket stack for plugin registry storage
+                s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack, profile.aws_region)
+                if s3_outputs and s3_outputs.get("BucketName"):
+                    params.append(f"PluginsS3Bucket={s3_outputs['BucketName']}")
+
+                # Pass web search gateway URL if deployed
+                ws_url = getattr(profile, "websearch_gateway_url", "")
+                if ws_url:
+                    params.append(f"WebSearchGatewayUrl={ws_url}")
+
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    ["CAPABILITY_NAMED_IAM"],
+                    task_description="Deploying bootstrap server (device-code flow)...",
+                )
+
+                if result == 0:
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    callback_url = outputs.get("CallbackUrl", "")
+                    bootstrap_url = outputs.get("BootstrapUrl", "")
+                    console.print("\n[bold green]\u2713 Bootstrap server deployed![/bold green]")
+                    console.print(f"[bold]Bootstrap URL:[/bold] {bootstrap_url}")
+                    console.print(f"[bold]Callback URL:[/bold] {callback_url}")
+                    console.print(
+                        "\n[yellow]\u26a0\ufe0f  Add this redirect URI to your IdP app registration:[/yellow]"
+                    )
+                    console.print(f"  {callback_url}")
+                    console.print("\n[dim]Set bootstrapUrl in your MDM profile:[/dim]")
+                    console.print(f"  {bootstrap_url}")
+
+                return result
+
+            elif stack_type == "websearch":
+                ok, msg = websearch_preflight(profile)
+                if not ok:
+                    console.print(f"[red]{msg}[/red]")
+                    return 1
+                ws_region = get_websearch_region(profile)
+                cf = cf_manager if ws_region == profile.aws_region else CloudFormationManager(region=ws_region)
+                template = project_root / "deployment" / "infrastructure" / "bedrock-agentcore-gateway.yaml"
+                stack_name = profile.stack_names.get("websearch", f"{profile.identity_pool_name}-websearch")
+                params = build_websearch_params(profile)
+                result = deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    task_description=f"Deploying AgentCore web search gateway in {ws_region}...",
+                    cf=cf,
+                )
+                if result == 0:
+                    outputs = cf.get_stack_outputs(stack_name)
+                    gateway_url = outputs.get("GatewayMcpEndpoint")
+                    if gateway_url:
+                        profile.websearch_gateway_url = gateway_url
+                        config = Config.load()
+                        config.save_profile(profile)
+                        console.print(f"[green]✓ Gateway URL saved: {gateway_url}[/green]")
+                    outputs = cf.get_stack_outputs(stack_name)
+                    gateway_id = outputs.get("GatewayId")
+                    if gateway_id:
+                        ready = _poll_websearch_target_ready(gateway_id, ws_region, console, session=cf.session)
+                        if not ready:
+                            console.print(
+                                "[yellow]⚠ Connector target not yet READY. "
+                                "Re-run ccwb deploy websearch to re-check, or "
+                                "ccwb destroy websearch to tear down.[/yellow]"
+                            )
+                return result
+
             else:
                 console.print(f"[red]Unknown stack type: {stack_type}[/red]")
                 return 1
@@ -1302,6 +1775,25 @@ class DeployCommand(Command):
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
+        elif stack_type == "bootstrap":
+            template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
+            stack_name = profile.stack_names.get("bootstrap", f"{profile.identity_pool_name}-bootstrap")
+            oidc_endpoints = _discover_oidc_endpoints(profile)
+            params = [
+                f"OidcIssuerUrl={oidc_endpoints['issuer']}",
+                f"OidcClientId={profile.client_id}",
+                f"OidcClientSecretArn={getattr(profile, 'client_secret_arn', '')}",
+                f"OidcTokenEndpoint={oidc_endpoints['token_endpoint']}",
+                f"OidcAuthorizeEndpoint={oidc_endpoints['authorization_endpoint']}",
+                f"OidcJwksEndpoint={oidc_endpoints['jwks_uri']}",
+                f"InferenceRegion={profile.aws_region}",
+                f"InferenceModels={getattr(profile, 'selected_model', '') or 'us.anthropic.claude-sonnet-4-20250514-v1:0'}",
+            ]
+            allowed_cidr = getattr(profile, "bootstrap_allowed_cidr", "0.0.0.0/0")
+            if allowed_cidr != "0.0.0.0/0":
+                params.append(f"AllowedCidr={allowed_cidr}")
+            print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
+
         else:
             console.print(f"[yellow]  No command template available for stack type: {stack_type}[/yellow]")
 
@@ -1454,6 +1946,8 @@ class DeployCommand(Command):
             "analytics": "Analytics Pipeline",
             "quota": "Quota Monitoring",
             "codebuild": "CodeBuild",
+            "bootstrap": "Bootstrap Server",
+            "websearch": "AgentCore Gateway + Web Search connector",
         }
 
         # Stack types that are being deployed
@@ -1464,14 +1958,18 @@ class DeployCommand(Command):
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
                 # This stack type is not being deployed - check if it exists.
-                # CodeBuild may live in a different region (cross-region builds), so
-                # check it there or a cross-region orphan is never detected.
+                # CodeBuild and websearch may live in a different region, so
+                # check them there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
                 mgr = cf_manager
                 if stack_type == "codebuild":
                     cb_region = get_codebuild_region(profile)
                     if cb_region != profile.aws_region:
                         mgr = CloudFormationManager(region=cb_region)
+                elif stack_type == "websearch":
+                    ws_region = get_websearch_region(profile)
+                    if ws_region != profile.aws_region:
+                        mgr = CloudFormationManager(region=ws_region)
                 status = mgr.get_stack_status(stack_name)
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:

@@ -1187,3 +1187,51 @@ poetry run ccwb destroy [stack] [options]
 - Warns about manual cleanup requirements (e.g., CloudWatch LogGroups)
 
 **Note:** Some resources like CloudWatch LogGroups may require manual deletion.
+
+### `doctor` - Validate Installation Health
+
+Runs health checks on the local machine to catch misconfigurations and aid troubleshooting.
+
+```bash
+poetry run ccwb doctor [options]
+```
+
+**Options:**
+
+- `--verbose` / `-v` - Show raw JSON from `credential-process --explain` and `otel-helper --status`
+- `--live` / `-l` - Also attempt authentication and check proxy connectivity
+- `--json` - Machine-readable JSON output (for CI or support)
+- `--profile <name>` - Check a specific profile
+
+**Health Checks:**
+
+| Check | What it validates |
+|-------|-------------------|
+| `credential-process` | Binary exists in install dir (.exe/.cmd/.ps1 on Windows) |
+| `config.json` | Present, valid JSON, lists profiles |
+| `aws-profile` | `~/.aws/config` references credential-process |
+| `settings.json` | Claude Code settings file with env/hooks |
+| `explain` | Calls `credential-process --explain` — shows resolved auth mode, provider, quota |
+| `otel-helper` | Telemetry binary exists (only FAIL if monitoring configured) |
+| `otel-status` | Calls `otel-helper --status` — proxy running? headers cached? |
+| `auth-test` | (--live only) Attempts credential check |
+| `proxy-health` | (--live only) TCP connect to OTEL proxy port |
+
+**On failure:** Generates a pre-filled GitHub issue URL with diagnostics, environment, and auth mode.
+
+### Go Binary Diagnostic Flags
+
+These flags are available on the installed Go binaries (v2.5.0+):
+
+```bash
+# Print resolved configuration (no auth, no network)
+credential-process --explain
+
+# Print proxy and cache status
+otel-helper --status
+
+# Show version with commit SHA
+credential-process --version   # → credential-process v2.5.0-beta.91 (62a232f)
+```
+
+`--explain` output includes: auth mode (oidc/idc/passthrough), provider type, federation type, quota config, storage mode, and file paths. Useful for verifying the binary detected the correct configuration before debugging auth failures.

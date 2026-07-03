@@ -7,6 +7,7 @@ import json
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
     build_mdm_config,
+    generate_intune_script,
     generate_json,
     generate_reg_file,
 )
@@ -64,13 +65,13 @@ class TestBuildMdmConfigCredentialHelper:
         assert config["inferenceBedrockProfile"] == "ClaudeCode"
 
     def test_helper_mode_uses_unix_path_by_default(self):
-        """Default path should use ~/ prefix (Unix convention)."""
+        """Default macOS path uses the __CCWB_HOME__ placeholder (install.sh resolves it)."""
         config = build_mdm_config(
             bedrock_region="us-west-2",
             model_aliases=["sonnet"],
             profile_name="Test",
         )
-        assert config["inferenceCredentialHelper"].startswith("~/")
+        assert config["inferenceCredentialHelper"].startswith("__CCWB_HOME__/")
 
 
 class TestBuildMdmConfigProfileMode:
@@ -114,7 +115,12 @@ class TestGenerateRegFileCredentialHelper:
     """Test Windows .reg generation with credential helper path rewriting."""
 
     def test_reg_file_rewrites_unix_path_to_windows(self, tmp_path):
-        """Unix ~/... path should become %USERPROFILE%\\... with .exe suffix."""
+        """Unix path becomes __CCWB_HOME__\\...credential-process.exe (placeholder kept).
+
+        The placeholder is NOT %USERPROFILE%: Claude Desktop reads the registry
+        value literally and does not expand env vars. install.bat substitutes
+        __CCWB_HOME__ with the absolute home before importing the .reg.
+        """
         config = build_mdm_config(
             bedrock_region="us-west-2",
             model_aliases=["sonnet"],
@@ -122,8 +128,10 @@ class TestGenerateRegFileCredentialHelper:
         )
         reg_path = generate_reg_file(tmp_path, config)
         content = reg_path.read_text(encoding="utf-8")
-        # Should contain Windows-style path
-        assert "%USERPROFILE%" in content
+        # Placeholder kept, env var NOT used
+        assert "__CCWB_HOME__" in content
+        assert "%USERPROFILE%" not in content
+        # Windows binary form: backslashes + .exe suffix
         assert "credential-process.exe" in content
         assert "--profile Test" in content
 
@@ -139,6 +147,35 @@ class TestGenerateRegFileCredentialHelper:
         assert "inferenceCredentialHelper" not in content
 
 
+class TestGenerateIntuneScript:
+    """Test Intune .ps1 generation resolves the home placeholder at deploy time."""
+
+    def test_ps1_resolves_home_placeholder_at_runtime(self, tmp_path):
+        """The .ps1 resolves __CCWB_HOME__ to $env:USERPROFILE when it runs.
+
+        Claude Desktop does not expand env vars in registry MDM values, so the
+        script must write an absolute path. It resolves the placeholder at deploy
+        time rather than emitting a literal %USERPROFILE%.
+        """
+        config = build_mdm_config(
+            bedrock_region="us-west-2",
+            model_aliases=["sonnet"],
+            profile_name="Test",
+        )
+        ps1_path = generate_intune_script(tmp_path, config)
+        content = ps1_path.read_text(encoding="utf-8")
+        assert "$ccwbHome = $env:USERPROFILE" in content
+        assert ".Replace('__CCWB_HOME__', $ccwbHome)" in content
+        # credential helper converted to the Windows .exe form
+        assert "credential-process.exe" in content
+        assert "--profile Test" in content
+        # no emitted registry VALUE carries the unexpanded env var (comments may
+        # mention it, so check the Set-ItemProperty lines specifically)
+        value_lines = [ln for ln in content.splitlines() if ln.startswith("Set-ItemProperty")]
+        assert value_lines  # sanity: we did emit values
+        assert all("%USERPROFILE%" not in ln for ln in value_lines)
+
+
 class TestGenerateJsonCredentialHelper:
     """Test JSON output includes credential helper keys."""
 
@@ -151,6 +188,9 @@ class TestGenerateJsonCredentialHelper:
         )
         json_path = generate_json(tmp_path, config)
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        assert data["inferenceCredentialHelper"] == "~/claude-code-with-bedrock/credential-process --profile MyProfile"
+        assert (
+            data["inferenceCredentialHelper"]
+            == "__CCWB_HOME__/claude-code-with-bedrock/credential-process --desktop --profile MyProfile"
+        )
         assert data["inferenceCredentialHelperTtlSec"] == "3500"
         assert data["inferenceCredentialHelperSilentRefreshEnabled"] == "true"
