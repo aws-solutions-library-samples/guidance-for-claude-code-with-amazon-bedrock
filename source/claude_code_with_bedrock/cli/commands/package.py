@@ -4224,7 +4224,7 @@ Available metrics include:
                     # already resolved to http://localhost:4318 above; in central
                     # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
-                        "department=engineering,team.id=default,"
+                        "department=default,team.id=default,"
                         "cost_center=default,organization=default,"
                         "project=default"
                     )

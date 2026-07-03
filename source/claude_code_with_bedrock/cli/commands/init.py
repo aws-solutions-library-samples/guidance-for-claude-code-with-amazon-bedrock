@@ -873,7 +873,27 @@ class InitCommand(Command):
                 return None
 
             config["federation_type"] = federation_type
-            config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
+
+            # Session duration — how long issued AWS credentials remain valid before
+            # re-authentication. Retain any previously configured value across re-runs;
+            # otherwise fall back to the federation-type recommended default.
+            _recommended_duration = 43200 if federation_type == "direct" else 28800
+            _existing_duration = config.get("max_session_duration")
+            _default_duration = _existing_duration if _existing_duration else _recommended_duration
+
+            console.print("\n[cyan]Session Duration[/cyan]")
+            console.print(
+                "How long issued AWS credentials stay valid before re-authentication "
+                f"(3600–43200 seconds; recommended {_recommended_duration})."
+            )
+            duration_str = questionary.text(
+                "Max session duration (seconds):",
+                validate=lambda x: (
+                    (x.isdigit() and 3600 <= int(x) <= 43200) or "Must be a number between 3600 and 43200"
+                ),
+                default=str(_default_duration),
+            ).ask()
+            config["max_session_duration"] = int(duration_str) if duration_str else _default_duration
 
             # Save progress
             progress.save_step("oidc_complete", config)
