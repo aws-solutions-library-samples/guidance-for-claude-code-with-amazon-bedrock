@@ -726,6 +726,12 @@ class DistributeCommand(Command):
                                     f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(file)
                                 )
 
+                    # Add matching extras. "all-platforms" takes everything
+                    # (token=None); each family zip filters by its landing token
+                    # (mac/linux/windows).
+                    extra_token = None if platform == "all-platforms" else platform
+                    self._add_extra_files_to_zip(zipf, package_path, getattr(profile, "extra_files", None), extra_token)
+
                 # Upload to S3 at packages/{platform}/latest.zip
                 s3_key = f"packages/{platform}/latest.zip"
                 try:
@@ -996,7 +1002,7 @@ class DistributeCommand(Command):
         ) as progress:
             # Create archive
             task = progress.add_task("Creating distribution archive...", total=None)
-            archive_path = self._create_archive(package_path)
+            archive_path = self._create_archive(package_path, getattr(profile, "extra_files", None))
 
             # Calculate checksum
             progress.update(task, description="Calculating checksum...")
@@ -1241,7 +1247,7 @@ class DistributeCommand(Command):
         """Create and distribute separate packages per OS platform."""
         console.print("\n[cyan]Creating per-OS distribution packages...[/cyan]\n")
 
-        archives = self._create_per_os_archives(package_path)
+        archives = self._create_per_os_archives(package_path, getattr(profile, "extra_files", None))
         if not archives:
             console.print("[red]No platform binaries found to package.[/red]")
             return 1
@@ -1425,12 +1431,48 @@ class DistributeCommand(Command):
                         continue
                 raise
 
-    def _create_archive(self, package_path: Path) -> Path:
+    def _add_extra_files_to_zip(self, zf, package_path: Path, entries, platform_token) -> None:
+        """Add admin-defined extra files to an open zip, filtered by platform.
+
+        Extras were already copied into ``package_path`` by ``package`` (distribute
+        never re-reads the ``from`` source), so this reads plain files/dirs from the
+        build folder and writes them under the ``claude-code-package/`` prefix using
+        ``writestr()`` + ``_read_file_with_retry()`` (no temp files — SSL/AV invariant).
+
+        ``platform_token=None`` includes every extra (the all-OS archive). Otherwise
+        an entry is included only when its ``targets`` match ``platform_token`` via
+        ``extra_applies_to`` (per-OS zips and landing-family zips).
+        """
+        from claude_code_with_bedrock.extra_files import extra_applies_to, validate_extra_files
+
+        if not entries or validate_extra_files(entries):
+            # No extras, or an invalid config — package already fails fast on
+            # invalid entries, so skip silently rather than shipping garbage.
+            return
+
+        for entry in entries:
+            if platform_token is not None and not extra_applies_to(entry["targets"], platform_token):
+                continue
+            name = entry["name"]
+            src = package_path / name
+            if not src.exists():
+                continue
+            if src.is_dir():
+                for f in src.rglob("*"):
+                    if f.is_file():
+                        rel = f.relative_to(package_path)
+                        zf.writestr(f"claude-code-package/{rel.as_posix()}", self._read_file_with_retry(f))
+            else:
+                zf.writestr(f"claude-code-package/{name}", self._read_file_with_retry(src))
+
+    def _create_archive(self, package_path: Path, extra_files=None) -> Path:
         """Create a zip archive of the package directory.
 
         Builds the ZIP directly from source files using writestr() to avoid
         temp directory operations that fail on Windows with spaces in paths
         or when antivirus locks newly-written files.
+
+        ``extra_files`` (admin-defined) are added unconditionally (all-OS archive).
         """
         import zipfile
 
@@ -1489,6 +1531,9 @@ class DistributeCommand(Command):
                         rel_path = f.relative_to(package_path)
                         zf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(f))
 
+            # All-OS archive gets every extra file (platform_token=None).
+            self._add_extra_files_to_zip(zf, package_path, extra_files, None)
+
         return archive_path
 
     # Platform-to-files mapping for per-OS packages
@@ -1520,11 +1565,14 @@ class DistributeCommand(Command):
         },
     }
 
-    def _create_per_os_archives(self, package_path: Path) -> list[tuple[str, Path]]:
+    def _create_per_os_archives(self, package_path: Path, extra_files=None) -> list[tuple[str, Path]]:
         """Create separate zip archives per OS platform. Returns list of (platform_label, archive_path).
 
         Builds ZIPs directly from source files using writestr() to avoid
         temp directory operations that fail on Windows with spaces in paths.
+
+        ``extra_files`` are filtered per platform via the per-OS token (``macos-arm64``,
+        ``windows``, ``linux-x64``, …) so a ``macos`` extra never lands in the Windows zip.
         """
         import zipfile
 
@@ -1566,6 +1614,9 @@ class DistributeCommand(Command):
                         if f.is_file():
                             rel_path = f.relative_to(package_path)
                             zf.writestr(f"claude-code-package/{rel_path.as_posix()}", self._read_file_with_retry(f))
+
+                # Add matching extras for this per-OS token (e.g. macos-arm64).
+                self._add_extra_files_to_zip(zf, package_path, extra_files, platform)
 
             archives.append((platform, pconfig["label"], archive_path))
 
