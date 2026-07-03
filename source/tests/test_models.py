@@ -531,6 +531,6 @@ class TestResolveModelForTier:
             for tier in ["haiku", "sonnet", "opus", "fable"]:
                 result = resolve_model_for_tier(tier, prefix)
                 if result is not None:
-                    assert (
-                        f"{prefix}." in result
-                    ), f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    assert f"{prefix}." in result, (
+                        f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
+                    )

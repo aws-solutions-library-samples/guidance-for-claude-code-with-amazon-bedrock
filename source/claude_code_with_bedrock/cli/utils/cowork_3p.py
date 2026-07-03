@@ -284,7 +284,9 @@ WEBSEARCH_HEADERS_HELPER_POSIX = f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedr
 # substitutes __CCWB_HOME__ with the absolute home (the .reg-escaped
 # %USERPROFILE%) before the .reg is imported; the Intune .ps1 resolves it via
 # $env:USERPROFILE at deploy time.
-WEBSEARCH_HEADERS_HELPER_WINDOWS = rf"{CCWB_HOME_PLACEHOLDER}\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
+WEBSEARCH_HEADERS_HELPER_WINDOWS = (
+    rf"{CCWB_HOME_PLACEHOLDER}\claude-code-with-bedrock\{WEBSEARCH_HEADERS_HELPER_NAME}.cmd"
+)
 
 # Back-compat alias (POSIX default) for callers/tests that referenced the old name.
 WEBSEARCH_HEADERS_HELPER_DEFAULT = WEBSEARCH_HEADERS_HELPER_POSIX
@@ -432,7 +434,7 @@ def add_websearch_mcp_config(mdm_config: dict, profile, console: Console) -> Non
     if "coworkEgressAllowedHosts" not in mdm_config:
         mdm_config["coworkEgressAllowedHosts"] = json.dumps(["*"])
         console.print(
-            "[yellow]⚠ Web search: set coworkEgressAllowedHosts=[\"*\"] so Web Fetch can open result "
+            '[yellow]⚠ Web search: set coworkEgressAllowedHosts=["*"] so Web Fetch can open result '
             "pages. This allows sandbox egress to ALL hosts \u2014 narrow it to a targeted domain list "
             "for production (set coworkEgressAllowedHosts via cowork_3p_extra_keys).[/yellow]"
         )

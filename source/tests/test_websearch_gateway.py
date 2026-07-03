@@ -282,6 +282,8 @@ def test_poll_target_failed_returns_false():
         "gw-123", "us-east-1", Mock(), timeout=5, interval=0, session=_fake_session("FAILED")
     )
     assert ok is False
+
+
 # --- validate_websearch_readiness (doctor integration) ---
 
 
@@ -331,4 +333,3 @@ def test_valid_stacks_includes_all_known_stacks():
     """VALID_STACKS must include all the core stacks."""
     for stack in ["auth", "monitoring", "dashboard", "distribution", "codebuild", "websearch"]:
         assert stack in VALID_STACKS, f"Missing stack: {stack}"
-
