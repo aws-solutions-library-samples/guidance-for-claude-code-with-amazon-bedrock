@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -27,13 +29,24 @@ import (
 // is empty, attempt tryRefreshToken() to silently mint a fresh id_token
 // before giving up.
 //
-// This test proves the exchange is *attempted*: with a refresh_token stored
-// but an unreachable IdP, tryRefreshToken fails and clears the (presumed
-// revoked) refresh_token. Before the fix, performQuotaRecheck returned on the
-// empty-token check and NEVER touched the refresh_token, so it would remain
-// stored. The cleared-token assertion therefore fails without the fix and
-// passes with it.
+// This test proves the exchange is *attempted*: with a refresh_token stored and
+// an IdP that returns a definitive invalid_grant, tryRefreshToken fails and
+// clears the (revoked) refresh_token. Before the fix, performQuotaRecheck
+// returned on the empty-token check and NEVER touched the refresh_token, so it
+// would remain stored. The cleared-token assertion therefore fails without the
+// fix and passes with it.
+//
+// NOTE: the IdP must return invalid_grant (not merely be unreachable) — a
+// transient/unreachable failure now correctly RETAINS the token (that retention
+// is the OTEL-bearer undercount fix), so only a definitive rejection clears it.
 func TestPerformQuotaRecheck_AttemptsRefreshWhenTokenExpired(t *testing.T) {
+	// IdP that definitively rejects the refresh_token → tryRefreshToken clears it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"revoked"}`))
+	}))
+	defer srv.Close()
+
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir) // Windows
@@ -54,13 +67,13 @@ func TestPerformQuotaRecheck_AttemptsRefreshWhenTokenExpired(t *testing.T) {
 
 	cfg := &config.ProfileConfig{
 		ClientID:          "test-client",
-		ProviderDomain:    "test.invalid.example.com", // unreachable — exchange must fail
+		OIDCTokenEndpoint: srv.URL, // generic provider reads the endpoint directly
 		CredentialStorage: "session",
 		QuotaAPIEndpoint:  "https://quota.invalid.example.com",
 		QuotaFailMode:     "open",
 		QuotaCheckTimeout: 1,
 	}
-	app := &credentialApp{profile: profile, cfg: cfg, providerType: "okta"}
+	app := &credentialApp{profile: profile, cfg: cfg, providerType: "generic"}
 
 	// Exchange fails (unreachable IdP); with no usable token the recheck
 	// fails open and allows cached credentials through.
@@ -69,10 +82,10 @@ func TestPerformQuotaRecheck_AttemptsRefreshWhenTokenExpired(t *testing.T) {
 	}
 
 	// The core regression assertion: the refresh_token was consumed by a
-	// failed exchange. If it is still present, performQuotaRecheck never
-	// attempted the exchange — the fix is not wired in.
+	// definitive invalid_grant exchange. If it is still present, performQuotaRecheck
+	// never attempted the exchange — the fix is not wired in.
 	if got := storage.LoadRefreshToken(profile, "session"); got != "" {
-		t.Errorf("refresh_token not cleared after failed exchange (got %q); "+
+		t.Errorf("refresh_token not cleared after invalid_grant exchange (got %q); "+
 			"performQuotaRecheck did NOT attempt tryRefreshToken — quota recheck "+
 			"will silently fail open for over-quota users with expired id_tokens", got)
 	}

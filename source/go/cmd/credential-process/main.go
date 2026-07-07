@@ -98,6 +98,25 @@ func main() {
 		runExplain(profile, cfg)
 	}
 
+	// Resolve OIDC provider type + redirect port BEFORE the flag dispatch below.
+	// The --get-monitoring-token and --get-mcp-auth-header handlers perform a
+	// silent refresh_token exchange that depends on app.providerType (to build the
+	// token endpoint URL and pick the Azure confidential-auth path) and, on
+	// fall-through to browser auth, on app.redirectPort. Historically both fields
+	// were set only after the dispatch block (in the OIDC run() path), so those
+	// handlers ran with providerType=="" (empty token URL + no client assertion →
+	// failed exchange that wiped the refresh_token) and redirectPort==0 (browser
+	// fallback opened http://localhost:0 → ERR_UNSAFE_PORT).
+	//
+	// Gated to real OIDC profiles only: resolveProviderType calls provider.Detect,
+	// which returns "oidc" (→ os.Exit(1)) for the empty provider_domain typical of
+	// IDC/none profiles. IDC/none never use this OIDC refresh path, so skip them
+	// here and let their own dispatch branches (IsIDC / !IsSsoEnabled) handle them.
+	if cfg.IsSsoEnabled() && !cfg.IsIDC() {
+		app.providerType = resolveProviderType(cfg)
+		app.redirectPort = resolveRedirectPort(cfg)
+	}
+
 	// Flag dispatch — must run before auth-type branching so IDC users
 	// can use --get-monitoring-token, --show-tags, etc.
 	if *clearCache {
@@ -148,18 +167,15 @@ func main() {
 		exitAfterNotifications(app.runPassthrough())
 	}
 
-	// OIDC path — resolve provider type and redirect port
-	providerType := resolveProviderType(cfg)
-	redirectPort := 8400
-	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
-		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
-			redirectPort = p
-		}
-	} else if cfg.RedirectPort > 0 {
-		redirectPort = cfg.RedirectPort
+	// OIDC path — provider type + redirect port were already resolved above
+	// (before the flag dispatch) for this OIDC profile; resolve defensively if
+	// somehow unset.
+	if app.providerType == "" {
+		app.providerType = resolveProviderType(cfg)
 	}
-	app.providerType = providerType
-	app.redirectPort = redirectPort
+	if app.redirectPort == 0 {
+		app.redirectPort = resolveRedirectPort(cfg)
+	}
 
 	if *refreshIfNeeded {
 		if cfg.CredentialStorage != "session" {
@@ -196,6 +212,21 @@ type credentialApp struct {
 	cfg          *config.ProfileConfig
 	providerType string
 	redirectPort int
+}
+
+// resolveRedirectPort returns the OAuth callback port for the browser flow:
+// REDIRECT_PORT env override → profile RedirectPort → default 8400. Never returns
+// 0 (which would open http://localhost:0 → ERR_UNSAFE_PORT).
+func resolveRedirectPort(cfg *config.ProfileConfig) int {
+	if envPort := os.Getenv("REDIRECT_PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+			return p
+		}
+	}
+	if cfg.RedirectPort > 0 {
+		return cfg.RedirectPort
+	}
+	return 8400
 }
 
 func resolveProviderType(cfg *config.ProfileConfig) string {
@@ -752,8 +783,17 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 	tokenResp, err := oidc.RefreshTokenExchange(tokenURL, refreshToken, a.cfg.ClientID, confidential)
 	if err != nil {
 		debugPrint("Refresh token exchange failed: %v", err)
-		// Token may be revoked/expired — clear it so we don't retry next time
-		storage.ClearRefreshToken(a.profile)
+		// Only discard the refresh_token when the IdP definitively rejected it
+		// (invalid_grant / invalid_token). Transient failures — network/5xx/
+		// timeout, or a misconfiguration such as an unresolved provider type —
+		// must retain the token so a later cycle can retry; clearing on those was
+		// what permanently disabled silent renewal until the next browser login.
+		if oidc.IsDefinitiveRefreshFailure(err) {
+			debugPrint("Refresh_token rejected by IdP (invalid_grant); clearing stored token")
+			storage.ClearRefreshToken(a.profile)
+		} else {
+			debugPrint("Transient refresh failure; retaining refresh_token for next attempt")
+		}
 		return nil
 	}
 
@@ -835,8 +875,15 @@ func (a *credentialApp) refreshIDTokenOnly() string {
 	tokenResp, err := oidc.RefreshTokenExchange(tokenURL, refreshToken, a.cfg.ClientID, confidential)
 	if err != nil {
 		debugPrint("Refresh token exchange failed: %v", err)
-		// Token may be revoked/expired — clear it so we don't retry next time.
-		storage.ClearRefreshToken(a.profile)
+		// Clear only on a definitive rejection (invalid_grant / invalid_token);
+		// retain on transient failures so a later cycle can retry. See the twin
+		// guard in tryRefreshToken.
+		if oidc.IsDefinitiveRefreshFailure(err) {
+			debugPrint("Refresh_token rejected by IdP (invalid_grant); clearing stored token")
+			storage.ClearRefreshToken(a.profile)
+		} else {
+			debugPrint("Transient refresh failure; retaining refresh_token for next attempt")
+		}
 		return ""
 	}
 	if tokenResp.IDToken == "" {
