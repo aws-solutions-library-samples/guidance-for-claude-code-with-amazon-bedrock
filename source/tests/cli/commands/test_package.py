@@ -224,9 +224,7 @@ class TestPackageCommandOtelDefaults:
         command = PackageCommand()
         profile = self._make_monitoring_profile()
 
-        fake_outputs = json.dumps(
-            [{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}]
-        )
+        fake_outputs = json.dumps([{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}])
         completed = MagicMock(returncode=0, stdout=fake_outputs)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -265,6 +263,8 @@ class TestPackageCommandOtelDefaults:
         attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
 
         assert attrs == "department=research,team.id=ml"
+
+
 class TestCopyExtraFiles:
     """Tests for _copy_extra_files — the package-side extra-files copy step."""
 

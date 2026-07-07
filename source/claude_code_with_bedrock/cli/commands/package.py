@@ -250,6 +250,11 @@ class PackageCommand(Command):
             description="Skip configuration validation checks",
             flag=True,
         ),
+        option(
+            "prepare-offline",
+            description="Prepare an offline bundle (OCB binary + Go module cache) for air-gapped builds",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -268,6 +273,10 @@ class PackageCommand(Command):
             console.print("  • [cyan]poetry run ccwb builds --status latest[/cyan]    (check latest build)")
             console.print("\nRedirecting to builds command...\n")
             return self._check_build_status(self.option("status"), console)
+
+        # Prepare offline bundle for air-gapped environments
+        if self.option("prepare-offline"):
+            return self._prepare_offline_bundle(console)
 
         # Load configuration first (needed to check CodeBuild status)
         config = Config.load()
@@ -1161,7 +1170,15 @@ class PackageCommand(Command):
                 f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
             )
             console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
-            urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            try:
+                urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            except (urllib.error.URLError, OSError) as e:
+                console.print(f"[red]Failed to download OCB: {e}[/red]")
+                console.print(
+                    "[yellow]For air-gapped environments, run "
+                    "'ccwb package --prepare-offline' on a connected machine first.[/yellow]"
+                )
+                raise
             if ocb_os != "windows":
                 ocb_path.chmod(0o755)
 
@@ -2456,6 +2473,41 @@ RUN pyinstaller \
             raise RuntimeError(f"Nuitka build failed for OTEL helper: {result.stderr}")
 
         return output_dir / binary_name
+
+    def _prepare_offline_bundle(self, console: Console) -> int:
+        """Prepare an offline bundle for air-gapped Go and OTEL collector builds.
+
+        Downloads the OCB binary and pre-seeds the Go module cache so that
+        `ccwb package` can run without network access. The bundle is saved
+        to `ccwb-offline-go-bundle/` in the repo root.
+        """
+        import subprocess
+
+        script_path = Path(__file__).resolve().parents[4] / "scripts" / "prepare-offline-go-bundle.sh"
+        if not script_path.exists():
+            console.print(f"[red]Offline bundle script not found at {script_path}[/red]")
+            return 1
+
+        console.print("[bold]Preparing offline bundle...[/bold]")
+        console.print("[dim]This downloads OCB + Go modules and verifies the bundle with a test build.[/dim]\n")
+
+        try:
+            result = subprocess.run(
+                ["bash", str(script_path), "prepare"],
+                cwd=script_path.parent.parent,
+            )
+            if result.returncode == 0:
+                console.print("\n[green]✓ Offline bundle ready.[/green]")
+                console.print("\n[bold]Next steps:[/bold]")
+                console.print("  1. Transfer [cyan]ccwb-offline-go-bundle.tar.gz[/cyan] to the air-gapped machine")
+                console.print("  2. Extract: [cyan]tar xzf ccwb-offline-go-bundle.tar.gz[/cyan]")
+                console.print("  3. Install: [cyan]./scripts/prepare-offline-go-bundle.sh install[/cyan]")
+                console.print("  4. Source env: [cyan]source ccwb-offline-go-bundle/offline-env.sh[/cyan]")
+                console.print("  5. Build: [cyan]poetry run ccwb package[/cyan]")
+            return result.returncode
+        except FileNotFoundError:
+            console.print("[red]bash not found. This command requires a Unix-like environment.[/red]")
+            return 1
 
     def _regenerate_installers(self, profile, profile_name: str, console: Console) -> int:
         """Regenerate installer scripts using existing binaries from the latest dist folder."""
@@ -4281,9 +4333,7 @@ Available metrics include:
                     # already resolved to http://localhost:4318 above; in central
                     # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
-                        "department=default,team.id=default,"
-                        "cost_center=default,organization=default,"
-                        "project=default"
+                        "department=default,team.id=default,cost_center=default,organization=default,project=default"
                     )
 
                     settings["env"].update(
