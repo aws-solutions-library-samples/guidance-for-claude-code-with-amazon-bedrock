@@ -228,3 +228,67 @@ class TestCostEstimateTokenTypes:
         ]
         users = self._run_cost(mod, vector)
         assert users["a@b.com"]["cost_usd"] == pytest.approx(5.00 + 25.00 + 0.50 + 6.25)
+
+
+class TestPromQLAggregationFunction:
+    """Regression: token.usage is a Counter exported with DELTA temporality.
+
+    increase() assumes cumulative temporality and misreads the delta sawtooth's
+    down-steps as counter resets, returning empty/understated results. That froze
+    the DynamoDB row and surfaced as "Daily Tokens: 0" in `ccwb quota usage` while
+    Athena/CloudWatch (which sum the deltas) stayed correct. Aggregation MUST use
+    sum_over_time(). The existing tests mock fetch_usage_from_promql out entirely,
+    so the query construction — where the bug lived — was never exercised.
+    """
+
+    def _capture_queries(self, mod, primary_total="531643"):
+        """Monkeypatch _promql_query to record every query string it receives.
+
+        Returns the list that accumulates the queries. Only the primary
+        per-user total query gets a non-empty vector so the aggregation has
+        something to fold in; the rest return empty so cost/CoWork paths no-op.
+        """
+        captured = []
+
+        def fake_query(query, time_param=None):
+            captured.append(query)
+            is_primary = 'sum by ("user.email")' in query and ", type" not in query and ", model" not in query
+            if is_primary and "claude_code.token.usage" in query:
+                return [{"metric": {"user.email": "a@b.com"}, "value": [0, primary_total]}]
+            return []
+
+        mod._promql_query = fake_query
+        return captured
+
+    def test_claude_code_queries_use_sum_over_time_not_increase(self, base_env):
+        mod = _load_quota_monitor(base_env)
+        captured = self._capture_queries(mod)
+
+        mod.fetch_usage_from_promql()
+
+        cc_queries = [q for q in captured if "claude_code.token.usage" in q]
+        assert cc_queries, "expected at least one claude_code.token.usage query"
+        for q in cc_queries:
+            assert "sum_over_time(" in q, f"delta metric must use sum_over_time: {q}"
+            assert "increase(" not in q, f"increase() is wrong for a delta metric: {q}"
+
+    def test_cowork_queries_use_sum_over_time_not_increase(self, base_env):
+        mod = _load_quota_monitor(base_env)
+        captured = self._capture_queries(mod)
+
+        mod.fetch_usage_from_promql()
+
+        cowork_queries = [q for q in captured if "ClaudeCoWork" in q]
+        assert cowork_queries, "expected CoWork token.usage queries"
+        for q in cowork_queries:
+            assert "sum_over_time(" in q, f"CoWork delta metric must use sum_over_time: {q}"
+            assert "increase(" not in q, f"increase() is wrong for a delta metric: {q}"
+
+    def test_aggregated_total_flows_through(self, base_env):
+        """A non-empty primary vector must be recorded (not skipped as delta<=0)."""
+        mod = _load_quota_monitor(base_env)
+        self._capture_queries(mod, primary_total="531643")
+
+        users = mod.fetch_usage_from_promql()
+
+        assert users.get("a@b.com", {}).get("total_tokens") == 531643
