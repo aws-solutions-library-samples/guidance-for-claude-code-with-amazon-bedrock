@@ -1063,6 +1063,13 @@ class DeployCommand(Command):
                     if profile.distribution_hosted_zone_id:
                         params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
 
+                    # Add IDC/SAML auth parameters when auth_type is idc
+                    if profile.effective_auth_type == "idc":
+                        params.append("AuthType=idc")
+                        saml_url = getattr(profile, 'distribution_saml_metadata_url', None)
+                        if saml_url:
+                            params.append(f"SamlMetadataUrl={saml_url}")
+
                     # Add deployment timestamp to force custom resource re-execution
                     from datetime import datetime, timezone
 

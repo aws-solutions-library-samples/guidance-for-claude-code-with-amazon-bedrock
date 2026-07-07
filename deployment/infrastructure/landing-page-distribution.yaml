@@ -178,11 +178,28 @@ Parameters:
     Default: 'initial'
     Description: Timestamp to force custom resource re-execution on every deployment (auto-populated by deploy command)
 
+  AuthType:
+    Type: String
+    Default: 'oidc'
+    AllowedValues: ['oidc', 'idc']
+    Description: Authentication type. 'oidc' for direct OIDC IdPs, 'idc' for IAM Identity Center via SAML.
+
+  SamlMetadataUrl:
+    Type: String
+    Default: ''
+    Description: SAML metadata URL from IAM Identity Center (required when AuthType=idc)
+
 Conditions:
+  IsIdcAuth: !Equals [!Ref AuthType, 'idc']
+  IsOidcAuth: !Not [!Condition IsIdcAuth]
   IsOkta: !Equals [!Ref IdPProvider, 'okta']
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
   IsAuth0: !Equals [!Ref IdPProvider, 'auth0']
-  IsCognito: !Equals [!Ref IdPProvider, 'cognito']
+  IsCognitoProvider: !Equals [!Ref IdPProvider, 'cognito']
+  # IsCognito requires both Cognito provider AND OIDC auth type (not IDC)
+  IsCognito: !And
+    - !Condition IsCognitoProvider
+    - !Condition IsOidcAuth
   # Note: 'generic' is the terminal fallback in the AuthenticateOidcConfig !If chains
   # (the else branch after Okta/Azure/Auth0/Cognito), so no named condition is needed.
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
@@ -913,9 +930,10 @@ Resources:
         - Key: Application
           Value: ClaudeCodeWithBedrock
 
-  # HTTPS Listener with OIDC Authentication (REQUIRED - uses custom domain)
+  # HTTPS Listener with OIDC Authentication (only when AuthType=oidc)
   HTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: IsOidcAuth
     Properties:
       LoadBalancerArn: !Ref DistributionALB
       Port: 443
@@ -1007,6 +1025,83 @@ Resources:
                     - !Sub '{{resolve:secretsmanager:${CognitoClientSecretArn}:SecretString}}'
                     - !Sub '{{resolve:secretsmanager:${GenericClientSecretArn}:SecretString}}'
             SessionTimeout: 43200  # 12 hours
+            Scope: 'openid email profile'
+            OnUnauthenticatedRequest: authenticate
+        # Forward to Lambda
+        - Type: forward
+          Order: 2
+          TargetGroupArn: !Ref LambdaTargetGroup
+
+  # ============================================================
+  # IAM Identity Center (IDC) SAML Authentication Resources
+  # These resources are only created when AuthType=idc
+  # ============================================================
+
+  # Cognito User Pool for IDC SAML federation
+  IdcUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: IsIdcAuth
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-idc-pool'
+
+  # SAML Identity Provider (links to IAM Identity Center)
+  IdcSamlProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: IsIdcAuth
+    Properties:
+      UserPoolId: !Ref IdcUserPool
+      ProviderName: IAMIdentityCenter
+      ProviderType: SAML
+      ProviderDetails:
+        MetadataURL: !Ref SamlMetadataUrl
+      AttributeMapping:
+        email: http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress
+        given_name: http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname
+        family_name: http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname
+
+  # App client for the ALB to use with Cognito/IDC
+  IdcUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: IsIdcAuth
+    DependsOn: IdcSamlProvider
+    Properties:
+      UserPoolId: !Ref IdcUserPool
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [IAMIdentityCenter]
+      CallbackURLs:
+        - !Sub 'https://${CustomDomainName}/oauth2/idpresponse'
+
+  # Cognito domain for hosted UI (IDC)
+  IdcUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: IsIdcAuth
+    Properties:
+      UserPoolId: !Ref IdcUserPool
+      Domain: !Sub '${AWS::StackName}-idc'
+
+  # HTTPS Listener with Cognito/IDC Authentication (only when AuthType=idc)
+  IdcHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: IsIdcAuth
+    Properties:
+      LoadBalancerArn: !Ref DistributionALB
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref Certificate
+      DefaultActions:
+        # Cognito Authentication Action (SAML via IDC)
+        - Type: authenticate-cognito
+          Order: 1
+          AuthenticateCognitoConfig:
+            UserPoolArn: !GetAtt IdcUserPool.Arn
+            UserPoolClientId: !Ref IdcUserPoolClient
+            UserPoolDomain: !Sub '${AWS::StackName}-idc'
+            SessionTimeout: 43200
             Scope: 'openid email profile'
             OnUnauthenticatedRequest: authenticate
         # Forward to Lambda
@@ -1204,3 +1299,8 @@ Outputs:
     Value: !GetAtt DistributionBucket.Arn
     Export:
       Name: !Sub '${AWS::StackName}-DistributionBucketArn'
+
+  IdcLoginUrl:
+    Condition: IsIdcAuth
+    Description: IDC login URL (users visit this to sign in via IAM Identity Center)
+    Value: !Sub 'https://${CustomDomainName}'
