@@ -81,22 +81,38 @@ TOKEN_TYPE_TO_RATE_KEY = {
 
 
 def fetch_usage_from_promql():
-    """Query PromQL for per-user token usage in the last aggregation window only."""
+    """Query PromQL for per-user token usage in the last aggregation window only.
+
+    Aggregation MUST use sum_over_time(), NOT increase(). Claude Code exports
+    ``claude_code.token.usage`` as an OpenTelemetry Counter with DELTA temporality
+    by default (OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta): each
+    datapoint is the tokens emitted since the last export, so the series steps up
+    AND down (a sawtooth). increase() assumes CUMULATIVE temporality (a monotonic
+    running total) and reads every down-step as a counter reset — it returns empty
+    or wildly understated results, which froze DynamoDB and surfaced as
+    "Daily Tokens: 0" in `ccwb quota usage`. sum_over_time() sums the per-interval
+    deltas in the window = tokens used in the last 15 minutes, matching how the
+    Athena/CloudWatch consumers compute usage.
+
+    Coupling: this is correct only while the metric is exported with delta
+    temporality. If a deployment sets the temporality preference to `cumulative`,
+    increase() would become the correct function instead.
+    """
     window = AGGREGATION_WINDOW
 
     # Delta tokens per user in the last window
     results = _promql_query(
-        f'sum by ("user.email")(increase({{"claude_code.token.usage"}}[{window}s]))'
+        f'sum by ("user.email")(sum_over_time({{"claude_code.token.usage"}}[{window}s]))'
     )
 
     # Delta token type AND model breakdown per user (for cost calculation)
     type_model_results = _promql_query(
-        f'sum by ("user.email", type, model)(increase({{"claude_code.token.usage"}}[{window}s]))'
+        f'sum by ("user.email", type, model)(sum_over_time({{"claude_code.token.usage"}}[{window}s]))'
     )
 
     # Delta token type breakdown per user (without model, for backward compat)
     type_results = _promql_query(
-        f'sum by ("user.email", type)(increase({{"claude_code.token.usage"}}[{window}s]))'
+        f'sum by ("user.email", type)(sum_over_time({{"claude_code.token.usage"}}[{window}s]))'
     )
 
     users = {}
@@ -149,11 +165,13 @@ def fetch_usage_from_promql():
     # per-user metrics into the ClaudeCoWork namespace with user_email dimension.
     # This ensures CoWork token consumption counts toward the same quota as Claude Code.
     try:
+        # CoWork metrics are MetricFilter-derived per-event token counts (delta,
+        # not cumulative) — use sum_over_time() for the same reason as above.
         cowork_input = _promql_query(
-            f'sum by ("user_email", "model")(increase({{"ClaudeCoWork","token.usage.input"}}[{window}s]))'
+            f'sum by ("user_email", "model")(sum_over_time({{"ClaudeCoWork","token.usage.input"}}[{window}s]))'
         )
         cowork_output = _promql_query(
-            f'sum by ("user_email", "model")(increase({{"ClaudeCoWork","token.usage.output"}}[{window}s]))'
+            f'sum by ("user_email", "model")(sum_over_time({{"ClaudeCoWork","token.usage.output"}}[{window}s]))'
         )
         cowork_count = 0
         for r in cowork_input + cowork_output:
