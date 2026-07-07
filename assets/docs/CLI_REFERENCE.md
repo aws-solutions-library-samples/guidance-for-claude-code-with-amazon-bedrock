@@ -257,7 +257,34 @@ poetry run ccwb package [options]
 2. Creates `config.json` with federation config read from the admin profile
 3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint (or `managed-settings.json` if `--managed` was used during init)
 4. Creates installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
-5. Outputs to `dist/{profile}/{timestamp}/`
+5. Copies any admin-defined **extra files** into the build folder (see below)
+6. Outputs to `dist/{profile}/{timestamp}/`
+
+**Extra Files:**
+
+You can ship additional files or folders on top of the generated package —
+preinstall/postinstall scripts, an OIDC signing certificate, a CA bundle, and
+so on. Configure them during `ccwb init` (the "Extra files" step); they are
+stored in your admin deployment profile, never in the runtime `config.json` and
+never delivered to end users' Claude Code config.
+
+Each entry has three fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | path inside the package (relative — no `..` or absolute paths) |
+| `targets` | which machines receive it (see tokens below) |
+| `from` | source path on your machine (a file or a whole folder) |
+
+`targets` accepts `all`, a family (`macos`, `linux`, `windows`), an
+architecture (`macos-arm64`, `macos-intel`, `linux-x64`, `linux-arm64`), or a
+list such as `["macos", "linux"]`.
+
+`ccwb package` copies **all** extras into the build folder. `ccwb distribute`
+then filters them per platform — a `macos` extra lands in the macOS package but
+not the Windows one; an `all` extra lands in every package. `package` fails
+fast (non-zero exit) if a `from` source is missing or a `name` collides with a
+generated artifact, so a listed file is never silently dropped.
 
 **Build Modes:**
 

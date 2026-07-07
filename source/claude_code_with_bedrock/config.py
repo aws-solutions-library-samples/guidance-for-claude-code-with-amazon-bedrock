@@ -179,6 +179,12 @@ class Profile:
     websearch_domain_denylist: list[str] = field(default_factory=list)  # Optional domains to exclude from results
     websearch_headers_helper_path: str = ""  # Absolute path override for the Cowork headersHelper (default: ~/claude-code-with-bedrock/websearch-headers)
 
+    # Admin-only extra files copied into the package on top of generated artifacts.
+    # Consumed ONLY by `package`/`distribute` — deliberately NOT mirrored in the Go
+    # ProfileConfig (config-sync.md) and NOT written to the runtime config.json.
+    # Each entry: {"name": str, "targets": str | list[str], "from": str}
+    extra_files: list[dict[str, Any]] = field(default_factory=list)
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:

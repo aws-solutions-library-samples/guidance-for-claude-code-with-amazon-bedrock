@@ -802,6 +802,14 @@ class PackageCommand(Command):
             console.print("\n[cyan]Generating CoWork 3P MDM configuration...[/cyan]")
             self._generate_cowork_3p_mdm_config(output_dir, profile, profile_name)
 
+        # Copy admin-defined extra files into the build folder (superset; per-OS
+        # filtering happens in distribute at zip time). Fail fast on a missing
+        # source or a validation error — a listed cert the admin expects shipped
+        # must not be silently skipped.
+        copied_extra_files = self._copy_extra_files(profile, output_dir, console)
+        if copied_extra_files is None:
+            return 1
+
         # Summary
         console.print("\n[green]✓ Package created successfully![/green]")
         console.print(f"\nOutput directory: [cyan]{output_dir}[/cyan]")
@@ -832,6 +840,8 @@ class PackageCommand(Command):
                 console.print("  • cowork-3p.mobileconfig - CoWork 3P MDM profile (macOS)")
             if (output_dir / "cowork-3p.reg").exists():
                 console.print("  • cowork-3p.reg - CoWork 3P registry file (Windows)")
+        for name, targets in copied_extra_files:
+            console.print(f"  • {name} - Extra file (targets: {targets})")
 
         # Next steps
         console.print("\n[bold]Distribution steps:[/bold]")
@@ -858,6 +868,53 @@ class PackageCommand(Command):
             return 1
 
         return 0
+
+    def _copy_extra_files(self, profile, output_dir: Path, console: Console) -> list[tuple[str, str]] | None:
+        """Copy admin-defined extra files into the build folder.
+
+        Copies the full superset of entries (per-OS filtering happens later at
+        zip time in distribute). Returns a list of ``(name, targets)`` tuples for
+        the package summary, or ``None`` to signal a fatal error (missing source
+        or validation failure) — the caller must return a non-zero exit code.
+        """
+        import shutil
+
+        from claude_code_with_bedrock.extra_files import validate_extra_files
+
+        entries = getattr(profile, "extra_files", []) or []
+        if not entries:
+            return []
+
+        errors = validate_extra_files(entries)
+        if errors:
+            console.print("[red]Invalid extra_files configuration:[/red]")
+            for err in errors:
+                console.print(f"  [red]• {err}[/red]")
+            return None
+
+        console.print("\n[cyan]Copying extra files...[/cyan]")
+        copied: list[tuple[str, str]] = []
+        for entry in entries:
+            name = entry["name"]
+            src = Path(entry["from"]).expanduser()
+            if not src.exists():
+                console.print(f"[red]Extra file source not found for '{name}': {src}[/red]")
+                console.print("[red]Fix the 'from' path or remove the entry, then re-run.[/red]")
+                return None
+
+            dst = output_dir / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+
+            targets = entry["targets"]
+            targets_label = ", ".join(targets) if isinstance(targets, list) else str(targets)
+            copied.append((name, targets_label))
+            console.print(f"  [green]✓[/green] {name} ← {src} (targets: {targets_label})")
+
+        return copied
 
     def _check_build_status(self, build_id: str, console: Console) -> int:
         """Check the status of a CodeBuild build."""

@@ -224,6 +224,55 @@ class TestCodebuildRegionField:
         assert restored.codebuild_prior_regions == ["ap-southeast-2", "eu-west-1"]
 
 
+class TestExtraFilesField:
+    """Tests for the admin-only extra_files field."""
+
+    def test_defaults_to_empty_list(self):
+        """New field defaults to [] so old profiles load unchanged."""
+        profile = Profile(
+            name="t",
+            provider_domain="test.okta.com",
+            client_id="x",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="tp",
+        )
+        assert profile.extra_files == []
+        assert "extra_files" in profile.to_dict()
+
+    def test_legacy_config_without_extra_files_loads(self):
+        """A profile.json saved before this field existed loads with []."""
+        profile = Profile.from_dict(
+            {
+                "name": "t",
+                "provider_domain": "test.okta.com",
+                "client_id": "x",
+                "credential_storage": "session",
+                "aws_region": "us-east-1",
+                "identity_pool_name": "tp",
+            }
+        )
+        assert profile.extra_files == []
+
+    def test_round_trip_preserves_entries(self):
+        """extra_files survives a to_dict -> from_dict round-trip."""
+        entries = [
+            {"name": "certs", "targets": "all", "from": "~/secure/certs"},
+            {"name": "preinstall-mac.sh", "targets": ["macos"], "from": "~/x/pre.sh"},
+        ]
+        profile = Profile(
+            name="t",
+            provider_domain="test.okta.com",
+            client_id="x",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="tp",
+            extra_files=entries,
+        )
+        restored = Profile.from_dict(profile.to_dict())
+        assert restored.extra_files == entries
+
+
 class TestConfigManager:
     """Tests for the Config manager."""
 

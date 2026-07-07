@@ -2286,7 +2286,138 @@ class InitCommand(Command):
         else:
             config["tags"] = config.get("tags", {})
 
+        # Extra files (optional) — admin-defined files/folders shipped on top of
+        # the generated package. Preserves the existing list on cancel.
+        config["extra_files"] = self._configure_extra_files(config.get("extra_files", []))
+
         return config
+
+    def _configure_extra_files(self, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Interactively add/edit/remove admin-defined extra files.
+
+        Extra files are copied on top of the generated package by `package` and
+        filtered per-OS by `distribute`. Returns the (possibly unchanged) list.
+
+        Non-interactive / cancel safety: any prompt returning None (Ctrl+C or no
+        TTY) leaves the existing list untouched — the wizard never crashes and
+        never silently drops configured entries.
+        """
+        from claude_code_with_bedrock.extra_files import VALID_TARGET_TOKENS, validate_extra_files
+
+        console = Console()
+        # Work on a copy so a mid-loop cancel can fall back to the original.
+        entries: list[dict[str, Any]] = [dict(e) for e in (existing or [])]
+
+        console.print("\n[bold]Extra Files (Optional)[/bold]")
+        console.print("[dim]Ship extra files/folders on top of the package (preinstall scripts, certs, etc.).[/dim]")
+
+        want = questionary.confirm(
+            "Add or edit extra files to include in the package?",
+            default=bool(entries),
+        ).ask()
+        if want is None:
+            return existing or []
+        if not want:
+            return entries
+
+        # Sorted for a stable checkbox order in the Add prompt.
+        token_choices = sorted(VALID_TARGET_TOKENS)
+
+        while True:
+            if entries:
+                console.print("\n[dim]Current extra files:[/dim]")
+                for i, e in enumerate(entries, 1):
+                    targets = e.get("targets")
+                    targets_str = ", ".join(targets) if isinstance(targets, list) else str(targets)
+                    console.print(f"  {i}. {e.get('name')}  → {targets_str}  ← {e.get('from')}")
+            else:
+                console.print("\n[dim]No extra files configured yet.[/dim]")
+
+            action = questionary.select(
+                "Extra files:",
+                choices=["Add", "Edit", "Remove", "Done"] if entries else ["Add", "Done"],
+            ).ask()
+            if action is None or action == "Done":
+                break
+
+            if action == "Remove":
+                idx = self._pick_extra_file_index(entries, "Remove which entry?")
+                if idx is not None:
+                    removed = entries.pop(idx)
+                    console.print(f"[yellow]✗[/yellow] Removed: {removed.get('name')}")
+                continue
+
+            # Add or Edit both gather the same three fields.
+            current = None
+            if action == "Edit":
+                idx = self._pick_extra_file_index(entries, "Edit which entry?")
+                if idx is None:
+                    continue
+                current = entries[idx]
+
+            src = questionary.text(
+                "Source path (file or folder) on this machine:",
+                default=(current.get("from") if current else "") or "",
+            ).ask()
+            if src is None or not src.strip():
+                console.print("[dim]Cancelled.[/dim]")
+                continue
+            src = src.strip()
+
+            default_name = (current.get("name") if current else "") or Path(src).expanduser().name
+            name = questionary.text(
+                "Name inside the package:",
+                default=default_name,
+            ).ask()
+            if name is None or not name.strip():
+                console.print("[dim]Cancelled.[/dim]")
+                continue
+            name = name.strip()
+
+            # Pre-check the entry's current targets when editing; nothing on Add.
+            # Save exactly what the admin checks — "all" is just another token and
+            # can be combined with specific platforms (the matcher treats "all" as
+            # matching everything, so extra picks alongside it are harmless).
+            current_targets = current.get("targets", []) if current else []
+            if isinstance(current_targets, str):
+                current_targets = [current_targets]
+            targets = questionary.checkbox(
+                "Which machines get this? (space to select, enter to confirm)",
+                choices=[questionary.Choice(t, value=t, checked=(t in current_targets)) for t in token_choices],
+            ).ask()
+            if targets is None or not targets:
+                console.print("[yellow]![/yellow] No targets selected — entry not saved.")
+                continue
+
+            entry = {"name": name, "targets": targets, "from": src}
+            errors = validate_extra_files([entry])
+            if errors:
+                for err in errors:
+                    console.print(f"[red]✗ {err}[/red]")
+                console.print("[dim]Entry not saved — fix the issue and try again.[/dim]")
+                continue
+
+            # Warn (don't block) if the source doesn't exist yet — the admin may
+            # create it before running `package`. Build time enforces presence.
+            if not Path(src).expanduser().exists():
+                console.print(f"[yellow]![/yellow] Source not found yet: {src} (must exist at package time)")
+
+            if current is not None:
+                entries[idx] = entry
+                console.print(f"[green]✓[/green] Updated: {name}")
+            else:
+                entries.append(entry)
+                console.print(f"[green]✓[/green] Added: {name}")
+
+        return entries
+
+    @staticmethod
+    def _pick_extra_file_index(entries: list[dict[str, Any]], prompt: str) -> int | None:
+        """Prompt for an entry by name; return its index or None if cancelled."""
+        if not entries:
+            return None
+        choices = [questionary.Choice(f"{e.get('name')} ← {e.get('from')}", value=i) for i, e in enumerate(entries)]
+        return questionary.select(prompt, choices=choices).ask()
 
     @staticmethod
     def _store_idp_secret(secrets_client, secret_name: str, secret_value: str, description: str = "") -> str:
@@ -2432,6 +2563,11 @@ class InitCommand(Command):
         extra_keys = config.get("cowork_3p", {}).get("extra_keys", {})
         if extra_keys:
             table.add_row("Custom MDM Keys", ", ".join(f"{k}={v}" for k, v in extra_keys.items()))
+
+        # Show admin-defined extra files
+        extra_files = config.get("extra_files", [])
+        if extra_files:
+            table.add_row("Extra Files", ", ".join(str(e.get("name", "?")) for e in extra_files))
 
         console.print(table)
 
@@ -2707,6 +2843,7 @@ class InitCommand(Command):
             "lock_default_model": config_data.get("lock_default_model", False),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
+            "extra_files": config_data.get("extra_files", []),
         }
 
         if existing_profile:
@@ -3140,6 +3277,9 @@ class InitCommand(Command):
             # Add resource tags if present
             if hasattr(profile, "tags") and profile.tags:
                 existing_config["tags"] = profile.tags
+
+            # Restore admin-defined extra files so re-running init shows them.
+            existing_config["extra_files"] = getattr(profile, "extra_files", [])
 
             return existing_config
 
