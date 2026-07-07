@@ -67,13 +67,20 @@ class Profile:
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
-    distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
+    distribution_type: str | None = None  # "presigned-s3" | "landing-page" | "landing-page-idc" | None
     distribution_idp_provider: str | None = None  # okta|azure|auth0|cognito|generic (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+
+    # IAM Identity Center landing page configuration (distribution_type == "landing-page-idc")
+    distribution_idc_instance_arn: str | None = None  # IAM Identity Center instance ARN
+    distribution_idc_admin_group: str = "Claude-Code-Admins"  # Admin group name pattern
+    distribution_idc_bootstrap_client_id: str | None = None  # Cognito bootstrap OIDC client ID
+    distribution_idc_landing_page_url: str | None = None  # CloudFront URL (set after deploy)
+    distribution_idc_user_pool_id: str | None = None  # Cognito User Pool ID (set after deploy)
 
     # Generic OIDC distribution config (distribution_idp_provider == "generic").
     # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,

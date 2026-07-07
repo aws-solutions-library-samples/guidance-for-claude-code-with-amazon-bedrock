@@ -1091,6 +1091,10 @@ class DeployCommand(Command):
 
                     return result
 
+                elif profile.distribution_type == "landing-page-idc":
+                    # Deploy IAM Identity Center landing page using CDK
+                    return self._deploy_idc_landing_page(profile, console)
+
                 else:  # presigned-s3 or legacy
                     template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                     params = [f"IdentityPoolName={profile.identity_pool_name}"]
@@ -1976,6 +1980,315 @@ class DeployCommand(Command):
                     orphaned.append((stack_type, stack_name, status))
 
         return orphaned
+
+    def _deploy_idc_landing_page(self, profile, console: Console) -> int:
+        """Deploy the IAM Identity Center landing page using CDK.
+
+        This deploys a CloudFront + Cognito + Lambda solution with:
+        - Admin console for model/policy/MCP server management
+        - Automatic permission set creation per IDC group
+        - Dynamic config updates via OIDC bootstrap
+        """
+        import shutil
+
+        project_root = Path(__file__).parent.parent.parent.parent.parent
+        cdk_dir = project_root / "deployment" / "idc-landing-page"
+
+        if not cdk_dir.exists():
+            console.print(f"[red]Error: IDC landing page directory not found: {cdk_dir}[/red]")
+            return 1
+
+        # Check for Node.js and npm
+        if not shutil.which("node"):
+            console.print("[red]Error: Node.js is required for IDC landing page deployment[/red]")
+            console.print("[dim]Install Node.js from https://nodejs.org/[/dim]")
+            return 1
+
+        if not shutil.which("npm"):
+            console.print("[red]Error: npm is required for IDC landing page deployment[/red]")
+            return 1
+
+        # Get AWS account ID
+        try:
+            import boto3
+
+            sts = boto3.client("sts")
+            account_id = sts.get_caller_identity()["Account"]
+        except Exception as e:
+            console.print(f"[red]Error getting AWS account ID: {e}[/red]")
+            return 1
+
+        # Generate config.ts from profile
+        config_content = f"""export interface LandingPageConfig {{
+  profileName: string;
+  idcInstanceArn: string;
+  customDomain?: string;
+  hostedZoneId?: string;
+  vpcId?: string;
+  region?: string;
+  account?: string;
+  bootstrapOidcClientId?: string;
+}}
+
+export const config: LandingPageConfig = {{
+  profileName: '{profile.identity_pool_name}',
+  idcInstanceArn: '{profile.distribution_idc_instance_arn or ""}',
+  region: '{profile.aws_region}',
+  account: '{account_id}',
+  bootstrapOidcClientId: '{profile.distribution_idc_bootstrap_client_id or ""}',
+}};
+
+export function validateConfig(cfg: LandingPageConfig): void {{}}
+"""
+        config_file = cdk_dir / "lib" / "config.ts"
+        config_file.write_text(config_content)
+        console.print(f"[dim]Generated CDK config: {config_file}[/dim]")
+
+        # Install dependencies if node_modules doesn't exist
+        node_modules = cdk_dir / "node_modules"
+        if not node_modules.exists():
+            console.print("[yellow]Installing CDK dependencies...[/yellow]")
+            # Fixed argument list, no user input — same pattern as other npm/npx
+            # invocations throughout this file.
+            result = subprocess.run(  # nosec B603 B607
+                ["npm", "install"],
+                cwd=cdk_dir,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                console.print(f"[red]Error installing dependencies: {result.stderr}[/red]")
+                return 1
+            console.print("[green]✓ Dependencies installed[/green]")
+
+        # Build TypeScript
+        console.print("[yellow]Building TypeScript...[/yellow]")
+        result = subprocess.run(  # nosec B603 B607
+            ["npm", "run", "build"],
+            cwd=cdk_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Error building TypeScript: {result.stderr}[/red]")
+            return 1
+
+        # Deploy CDK stacks
+        console.print("[yellow]Deploying IAM Identity Center landing page...[/yellow]")
+        console.print("[dim]This may take a few minutes...[/dim]")
+
+        result = subprocess.run(  # nosec B603 B607
+            ["npx", "cdk", "deploy", "--all", "--require-approval", "never"],
+            cwd=cdk_dir,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            console.print("[red]CDK deployment failed:[/red]")
+            console.print(result.stderr)
+            return 1
+
+        console.print("[green]✓ CDK stacks deployed[/green]")
+
+        # Get stack outputs
+        import json
+
+        import boto3
+
+        cf_client = boto3.client("cloudformation", region_name=profile.aws_region)
+        cognito_stack = f"{profile.identity_pool_name}-cognito"
+        landing_stack = f"{profile.identity_pool_name}-landing-page"
+
+        console.print("[yellow]Gathering deployment outputs...[/yellow]")
+
+        # Get Cognito outputs
+        try:
+            cognito_outputs = cf_client.describe_stacks(StackName=cognito_stack)["Stacks"][0]["Outputs"]
+            user_pool_id = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolId"), "")
+            user_pool_domain = next(
+                (o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolDomain"), ""
+            )
+            client_id = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolClientId"), "")
+            saml_acs_url = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "SamlAcsUrl"), "")
+            saml_audience = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "SamlAudienceUri"), "")
+        except Exception as e:
+            console.print(f"[red]Error getting Cognito outputs: {e}[/red]")
+            return 1
+
+        # Get Landing Page outputs
+        try:
+            landing_outputs = cf_client.describe_stacks(StackName=landing_stack)["Stacks"][0]["Outputs"]
+            landing_page_url = next(
+                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "LandingPageUrl"), ""
+            )
+            bucket_name = next(
+                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "DistributionBucketName"), ""
+            )
+            distribution_id = next(
+                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "CloudFrontDistributionId"), ""
+            )
+            session_signing_secret_arn = next(
+                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "SessionSigningSecretArn"), ""
+            )
+        except Exception as e:
+            console.print(f"[red]Error getting Landing Page outputs: {e}[/red]")
+            return 1
+
+        # Update Cognito callback URLs
+        console.print("[yellow]Updating Cognito callback URLs...[/yellow]")
+        try:
+            cognito_client = boto3.client("cognito-idp", region_name=profile.aws_region)
+
+            # Check if IAMIdentityCenter provider exists
+            providers = ["COGNITO"]
+            try:
+                idp_list = cognito_client.list_identity_providers(UserPoolId=user_pool_id)
+                if any(p["ProviderName"] == "IAMIdentityCenter" for p in idp_list.get("Providers", [])):
+                    providers.append("IAMIdentityCenter")
+            except Exception:
+                pass
+
+            cognito_client.update_user_pool_client(
+                UserPoolId=user_pool_id,
+                ClientId=client_id,
+                CallbackURLs=[f"{landing_page_url}/callback"],
+                LogoutURLs=[f"{landing_page_url}/logout", landing_page_url],
+                AllowedOAuthFlows=["code"],
+                AllowedOAuthScopes=["openid", "email", "profile"],
+                AllowedOAuthFlowsUserPoolClient=True,
+                SupportedIdentityProviders=providers,
+            )
+            console.print(f"[green]✓ Cognito callbacks updated (providers: {', '.join(providers)})[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not update Cognito callbacks: {e}[/yellow]")
+
+        # Create bootstrap OIDC client for Claude Desktop dynamic config
+        console.print("[yellow]Creating bootstrap OIDC client...[/yellow]")
+        bootstrap_client_id = ""
+        try:
+            # Check if bootstrap client already exists
+            existing_clients = cognito_client.list_user_pool_clients(
+                UserPoolId=user_pool_id,
+                MaxResults=60,
+            )
+            bootstrap_client = next(
+                (
+                    c
+                    for c in existing_clients.get("UserPoolClients", [])
+                    if c["ClientName"] == f"{profile.identity_pool_name}-bootstrap"
+                ),
+                None,
+            )
+
+            if bootstrap_client:
+                bootstrap_client_id = bootstrap_client["ClientId"]
+                console.print(f"[green]✓ Bootstrap client exists: {bootstrap_client_id}[/green]")
+            else:
+                # Create new bootstrap client (no secret, for public OIDC flow)
+                response = cognito_client.create_user_pool_client(
+                    UserPoolId=user_pool_id,
+                    ClientName=f"{profile.identity_pool_name}-bootstrap",
+                    GenerateSecret=False,
+                    SupportedIdentityProviders=["COGNITO"],  # Will add IAMIdentityCenter after SAML setup
+                    CallbackURLs=["http://127.0.0.1:8080/callback"],
+                    AllowedOAuthFlows=["code"],
+                    AllowedOAuthScopes=["openid", "email", "profile"],
+                    AllowedOAuthFlowsUserPoolClient=True,
+                )
+                bootstrap_client_id = response["UserPoolClient"]["ClientId"]
+                console.print(f"[green]✓ Bootstrap client created: {bootstrap_client_id}[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create bootstrap client: {e}[/yellow]")
+
+        # Update Lambda environment
+        console.print("[yellow]Updating Lambda environment...[/yellow]")
+        try:
+            lambda_client = boto3.client("lambda", region_name=profile.aws_region)
+            lambda_name = f"{profile.identity_pool_name}-landing-page"
+            cloudfront_domain = landing_page_url.replace("https://", "")
+            admin_group = profile.distribution_idc_admin_group or "Claude-Code-Admins"
+
+            env_vars = {
+                "COGNITO_DOMAIN": f"{user_pool_domain}.auth.{profile.aws_region}.amazoncognito.com",
+                "IDC_INSTANCE_ARN": profile.distribution_idc_instance_arn or "",
+                "S3_BUCKET_NAME": bucket_name,
+                "COGNITO_CLIENT_ID": client_id,
+                "COGNITO_USER_POOL_ID": user_pool_id,
+                "ADMIN_GROUP": admin_group,
+                "REGION": profile.aws_region,
+                "CLOUDFRONT_DOMAIN": cloudfront_domain,
+                "SESSION_SIGNING_SECRET_ARN": session_signing_secret_arn,
+            }
+
+            # Add bootstrap client ID if available
+            if bootstrap_client_id:
+                env_vars["COGNITO_BOOTSTRAP_CLIENT_ID"] = bootstrap_client_id
+
+            lambda_client.update_function_configuration(
+                FunctionName=lambda_name,
+                Environment={"Variables": env_vars},
+            )
+            console.print("[green]✓ Lambda environment updated[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not update Lambda environment: {e}[/yellow]")
+
+        # Save deployment info
+        deployment_info = {
+            "profileName": profile.identity_pool_name,
+            "landingPageUrl": landing_page_url,
+            "bucketName": bucket_name,
+            "distributionId": distribution_id,
+            "userPoolId": user_pool_id,
+            "userPoolDomain": user_pool_domain,
+            "clientId": client_id,
+            "region": profile.aws_region,
+            "accountId": account_id,
+        }
+        deployment_info_file = cdk_dir / "deployment-info.json"
+        deployment_info_file.write_text(json.dumps(deployment_info, indent=2))
+
+        # Save IDC info
+        idc_info = {
+            "instanceArn": profile.distribution_idc_instance_arn,
+            "accountId": account_id,
+            "region": profile.aws_region,
+        }
+        idc_info_file = cdk_dir / "idc-info.json"
+        idc_info_file.write_text(json.dumps(idc_info, indent=2))
+
+        console.print("\n[bold green]✓ IAM Identity Center landing page deployed![/bold green]")
+        console.print(f"\n[bold]Landing Page URL:[/bold] {landing_page_url}")
+        console.print(f"[bold]Admin Console:[/bold] {landing_page_url}/admin")
+
+        # Show SAML setup instructions
+        console.print("\n[bold yellow]⚠️  SAML Configuration Required:[/bold yellow]")
+        console.print("\n[cyan]1. Create a SAML Application in IAM Identity Center (manual — AWS console):[/cyan]")
+        console.print(
+            "   • Go to: IAM Identity Center → Applications → Add application → Add custom SAML 2.0 application"
+        )
+        console.print(f"   • Application ACS URL: [green]{saml_acs_url}[/green]")
+        console.print(f"   • Application SAML Audience: [green]{saml_audience}[/green]")
+        console.print("   • Attribute mappings:")
+        console.print("       Subject → ${user:email} (emailAddress format)")
+        console.print("       email   → ${user:email}")
+        console.print("   • Assign your Claude groups to this application")
+        console.print("   • Copy the SAML metadata URL")
+
+        console.print("\n[cyan]2. Wire the SAML provider into Cognito (automated — run this command):[/cyan]")
+        console.print("   [green]poetry run ccwb configure-saml <metadata-url>[/green]")
+        console.print(
+            "   This creates/updates the Cognito SAML identity provider and enables it on both\n"
+            "   the web app client and the bootstrap client (used for Claude Desktop dynamic config)."
+        )
+        console.print(
+            "   [dim]To do this manually instead: Cognito → "
+            f"{user_pool_id} → Sign-in experience → Add identity provider → SAML\n"
+            "   (Provider name: IAMIdentityCenter, Metadata URL: paste from IAM Identity Center),\n"
+            "   then enable 'IAMIdentityCenter' on both app clients under App integration.[/dim]"
+        )
+
+        return 0
 
     def _ensure_ecs_service_linked_role(self, console: Console) -> None:
         """Ensure ECS service linked role exists, create if needed."""

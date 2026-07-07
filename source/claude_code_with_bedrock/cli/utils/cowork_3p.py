@@ -140,14 +140,24 @@ def build_mdm_config(
     bedrock_region: str,
     model_aliases: list[str],
     profile_name: str = "ClaudeCode",
+    auth_type: str = "profile",
+    idc_start_url: str | None = None,
+    idc_region: str | None = None,
+    idc_account_id: str | None = None,
+    idc_role_name: str | None = None,
+    models_with_labels: list[dict] | None = None,
+    deployment_org_uuid: str | None = None,
     extra_keys: dict[str, str] | None = None,
     credential_mode: str = "helper",
     credential_helper_ttl_sec: int = 3500,
 ) -> dict:
     """Build the base CoWork 3P MDM configuration dictionary.
 
-    Supports two credential modes:
+    Supports two authentication modes:
+    - "profile": Uses inferenceBedrockProfile pointing to ~/.aws/config with credential_process
+    - "idc": Uses native IAM Identity Center SSO (no credential-process binary needed)
 
+    For profile mode, supports two credential modes:
     - "helper" (default, recommended): Uses inferenceCredentialHelper, which gives
       Claude Desktop direct control over the credential lifecycle. The app caches
       the helper's output for `credential_helper_ttl_sec` seconds and automatically
@@ -164,10 +174,17 @@ def build_mdm_config(
     Args:
         bedrock_region: AWS region for Bedrock API calls.
         model_aliases: List of model aliases (e.g., ["opus", "sonnet", "haiku"]).
-        profile_name: AWS named profile (matches ~/.aws/config stanza).
+        profile_name: AWS named profile (for auth_type="profile").
+        auth_type: Authentication type - "profile" or "idc".
+        idc_start_url: IAM Identity Center start URL (for auth_type="idc").
+        idc_region: IAM Identity Center region (for auth_type="idc").
+        idc_account_id: AWS account ID (for auth_type="idc").
+        idc_role_name: IAM Identity Center permission set/role name (for auth_type="idc").
+        models_with_labels: Optional list of model dicts with name and labelOverride.
+        deployment_org_uuid: Optional deployment organization UUID.
         extra_keys: Optional dictionary of additional MDM keys to merge into the
             configuration. Values should be strings (JSON-encoded for complex types).
-        credential_mode: "helper" or "profile" (default: "helper").
+        credential_mode: "helper" or "profile" (default: "helper"). Only used when auth_type="profile".
         credential_helper_ttl_sec: Cache TTL for the credential helper output in
             seconds (default: 3500, slightly under the 1h STS token lifetime to
             ensure refresh happens before expiry).
@@ -178,7 +195,6 @@ def build_mdm_config(
     config = {
         "inferenceProvider": "bedrock",
         "inferenceBedrockRegion": bedrock_region,
-        "inferenceModels": build_inference_models(model_aliases),
         "isClaudeCodeForDesktopEnabled": True,
         "isDesktopExtensionEnabled": True,
         "isDesktopExtensionDirectoryEnabled": True,
@@ -186,7 +202,18 @@ def build_mdm_config(
         "isLocalDevMcpEnabled": True,
     }
 
-    if credential_mode == "helper":
+    if auth_type == "idc":
+        # Native IAM Identity Center SSO - Claude Desktop handles auth directly
+        config["inferenceCredentialKind"] = "interactive"
+        if idc_start_url:
+            config["inferenceBedrockSsoStartUrl"] = idc_start_url
+        if idc_region:
+            config["inferenceBedrockSsoRegion"] = idc_region
+        if idc_account_id:
+            config["inferenceBedrockSsoAccountId"] = idc_account_id
+        if idc_role_name:
+            config["inferenceBedrockSsoRoleName"] = idc_role_name
+    elif credential_mode == "helper":
         # Direct credential helper — Claude Desktop manages the credential lifecycle.
         # Uses the same credential-process binary but invoked directly by the app
         # instead of indirectly via the AWS SDK's credential_process chain.
@@ -201,6 +228,16 @@ def build_mdm_config(
     else:
         # Legacy profile mode — rely on AWS SDK credential_process chain.
         config["inferenceBedrockProfile"] = profile_name
+
+    # Models - use models_with_labels if provided, otherwise build from aliases
+    if models_with_labels:
+        config["inferenceModels"] = models_with_labels
+    else:
+        config["inferenceModels"] = build_inference_models(model_aliases)
+
+    # Optional deployment org UUID
+    if deployment_org_uuid:
+        config["deploymentOrganizationUuid"] = deployment_org_uuid
 
     if extra_keys:
         config.update(extra_keys)

@@ -161,13 +161,22 @@ class ProfileValidator:
         # Validate distribution configuration
         distribution_type = profile_data.get("distribution_type")
         if distribution_type:
-            if distribution_type not in ["presigned-s3", "landing-page"]:
+            if distribution_type not in ["presigned-s3", "landing-page", "landing-page-idc"]:
                 errors.append(
-                    f"Invalid distribution_type: {distribution_type}. Must be 'presigned-s3' or 'landing-page'"
+                    f"Invalid distribution_type: {distribution_type}. "
+                    "Must be 'presigned-s3', 'landing-page', or 'landing-page-idc'"
                 )
 
-            # Landing page requires additional fields
-            if distribution_type == "landing-page":
+            # IAM Identity Center landing page validation
+            if distribution_type == "landing-page-idc":
+                idc_instance_arn = profile_data.get("distribution_idc_instance_arn")
+                if not idc_instance_arn:
+                    errors.append("distribution_idc_instance_arn is required for landing-page-idc distribution")
+                elif not ProfileValidator._is_valid_arn(idc_instance_arn):
+                    errors.append(f"Invalid distribution_idc_instance_arn format: {idc_instance_arn}")
+
+            # External OIDC landing page requires additional fields
+            elif distribution_type == "landing-page":
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
@@ -327,7 +336,9 @@ class ProfileValidator:
             return False
 
         # Basic ARN format: arn:partition:service:region:account-id:resource
-        arn_pattern = r"^arn:[a-z\-]+:[a-z0-9\-]+:[a-z0-9\-]*:\d{12}:.+$"
+        # Note: Some services like SSO have special ARN formats with empty region/account
+        # e.g., arn:aws:sso:::instance/ssoins-xxx
+        arn_pattern = r"^arn:[a-z\-]+:[a-z0-9\-]+:[a-z0-9\-]*:(\d{12})?:.+$"
         return bool(re.match(arn_pattern, arn))
 
     @staticmethod

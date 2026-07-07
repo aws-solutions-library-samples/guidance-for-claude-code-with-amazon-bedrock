@@ -521,13 +521,20 @@ How to deliver the installer package to end users:
 | Option | How it works | Best for |
 |---|---|---|
 | **Presigned S3 URLs** | `ccwb distribute` uploads to S3 and generates a time-limited link (48h default) you share via Slack/email | Any team size, no extra infrastructure |
-| **Authenticated Landing Page** | Self-service web portal — users log in with SSO and download the right binary for their OS | Large orgs needing compliance, audit trail, self-service |
+| **Authenticated Landing Page** | Self-service web portal — users log in with an external IdP (Okta/Azure/Auth0/Cognito) and download the right binary for their OS | Large orgs needing compliance, audit trail, self-service |
+| **Self-Service Portal (IAM Identity Center)** | CDK-deployed CloudFront + Cognito + Lambda portal with an admin console (model/policy/MCP server management) and native IAM Identity Center SSO. Also delivers dynamic Claude Desktop config updates via bootstrap. | Orgs already using IAM Identity Center for workforce SSO |
 | **Disabled** | You distribute the `dist/` folder manually (zip + email, shared drive, artifact repo) | Simple pilots, internal testing |
 
 If you choose **Landing Page**, the wizard asks for:
 - IdP provider for the web portal (can be different from your developer IdP)
 - Custom domain for the download portal (e.g. `downloads.company.com`)
 - Route53 hosted zone
+
+If you choose **Self-Service Portal (IAM Identity Center)**, the wizard asks for:
+- Your IAM Identity Center instance ARN (auto-detected when possible)
+- Your admin group name (default: `Claude-Code-Admins`) — members of this group get access to the portal's `/admin` console
+
+This option deploys via AWS CDK (not CloudFormation) when you run `ccwb deploy distribution`. After the CDK deploy, you'll manually create a Custom SAML 2.0 application in IAM Identity Center, then run `poetry run ccwb configure-saml <metadata-url>` to wire it into Cognito. See [deployment/idc-landing-page/README.md](deployment/idc-landing-page/README.md) for the full walkthrough.
 
 ---
 
@@ -731,7 +738,7 @@ This will:
 
 ### Step 6: Distribute Packages to Users
 
-You have three options for sharing packages with users. The distribution method is configured during `ccwb init` (Step 2).
+You have four options for sharing packages with users. The distribution method is configured during `ccwb init` (Step 2).
 
 #### Option 1: Manual Sharing
 
@@ -766,7 +773,7 @@ Generates presigned URLs (default 48-hour expiry) that you share with users via 
 
 #### Option 3: Authenticated Landing Page
 
-Self-service portal with IdP authentication:
+Self-service portal with external IdP authentication:
 
 ```bash
 # Deploy landing page infrastructure (if not done during Step 3)
@@ -781,6 +788,21 @@ Users visit your landing page URL, authenticate with SSO, and download packages 
 **Best for:** Self-service portal with compliance and audit requirements
 
 **Setup:** Select "landing-page" distribution type during `ccwb init` (Step 2), then deploy distribution infrastructure
+
+#### Option 4: Self-Service Portal (IAM Identity Center)
+
+CDK-deployed self-service portal with native IAM Identity Center SSO and an admin console for managing models, policies, and MCP servers:
+
+```bash
+# Deploy the CDK stack (if not done during Step 3)
+poetry run ccwb deploy distribution
+```
+
+Users visit the portal's CloudFront URL, sign in with IAM Identity Center, and download configs for their platform. Configs also self-update automatically via the bootstrap API — no re-distribution needed for policy or model changes.
+
+**Best for:** Organizations already using IAM Identity Center for workforce SSO who want a persistent admin console instead of redeploying for every config change
+
+**Setup:** Select "Self-Service Portal (IAM Identity Center)" distribution type during `ccwb init` (Step 2), then deploy distribution infrastructure. After deploying, create a Custom SAML 2.0 application in IAM Identity Center and run `poetry run ccwb configure-saml <metadata-url>` to complete the Cognito federation. See [deployment/idc-landing-page/README.md](deployment/idc-landing-page/README.md) for the full walkthrough.
 
 See [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed feature comparison and setup guides.
 

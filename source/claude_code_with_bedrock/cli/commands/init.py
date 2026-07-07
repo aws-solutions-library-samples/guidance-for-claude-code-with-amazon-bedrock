@@ -1630,11 +1630,13 @@ class InitCommand(Command):
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
         console.print("  • Presigned S3 URLs: Simple, no authentication (good for < 20 users)")
-        console.print("  • Landing Page: IdP authentication with web UI (good for 20-100 users)")
+        console.print("  • Landing Page (OIDC): External IdP authentication (Okta/Azure/Auth0)")
+        console.print("  • Landing Page (IDC): AWS IAM Identity Center with admin console")
 
         distribution_choices = [
             questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
-            questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
+            questionary.Choice("Authenticated Landing Page (external OIDC)", value="landing-page"),
+            questionary.Choice("Self-Service Portal (IAM Identity Center)", value="landing-page-idc"),
             questionary.Choice("Disabled", value=None),
         ]
 
@@ -1982,6 +1984,73 @@ class InitCommand(Command):
                 )
 
             console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
+
+        elif distribution_type == "landing-page-idc":
+            console.print("\n[bold]IAM Identity Center Landing Page Configuration[/bold]")
+            console.print("Configure the self-service portal with IAM Identity Center authentication")
+            console.print("\nThis deploys a CloudFront + Cognito + Lambda solution with:")
+            console.print("  • Admin console for model/policy/MCP server management")
+            console.print("  • Automatic permission set creation per IDC group")
+            console.print("  • Dynamic config updates via OIDC bootstrap")
+
+            # Try to auto-detect IDC instance
+            try:
+                import boto3
+
+                sso_admin = boto3.client("sso-admin")
+                instances = sso_admin.list_instances()
+                if instances.get("Instances"):
+                    detected_arn = instances["Instances"][0].get("InstanceArn", "")
+                    identity_store_id = instances["Instances"][0].get("IdentityStoreId", "")
+                    console.print("\n[green]✓[/green] Detected IAM Identity Center instance")
+                    console.print(f"  Instance ARN: {detected_arn}")
+                    console.print(f"  Identity Store ID: {identity_store_id}")
+
+                    use_detected = questionary.confirm(
+                        "Use this IAM Identity Center instance?",
+                        default=True,
+                    ).ask()
+
+                    if use_detected:
+                        idc_instance_arn = detected_arn
+                    else:
+                        idc_instance_arn = questionary.text(
+                            "IAM Identity Center instance ARN:",
+                            default=config.get("distribution", {}).get("idc_instance_arn", ""),
+                        ).ask()
+                else:
+                    console.print("[yellow]⚠[/yellow] No IAM Identity Center instance found")
+                    idc_instance_arn = questionary.text(
+                        "IAM Identity Center instance ARN:",
+                        default=config.get("distribution", {}).get("idc_instance_arn", ""),
+                    ).ask()
+            except Exception as e:
+                console.print(f"[yellow]⚠[/yellow] Could not detect IAM Identity Center: {e}")
+                idc_instance_arn = questionary.text(
+                    "IAM Identity Center instance ARN:",
+                    default=config.get("distribution", {}).get("idc_instance_arn", ""),
+                ).ask()
+
+            # Admin group name
+            console.print("\n[dim]Admin group: Users in this group can access the admin console.[/dim]")
+            console.print("[dim]The group name must contain both 'Claude' and 'Admin' (e.g., Claude-Code-Admins)[/dim]")
+            idc_admin_group = questionary.text(
+                "Admin group name:",
+                default=config.get("distribution", {}).get("idc_admin_group", "Claude-Code-Admins"),
+            ).ask()
+
+            # Store IDC configuration
+            config.setdefault("distribution", {}).update(
+                {
+                    "enabled": True,
+                    "type": "landing-page-idc",
+                    "idc_instance_arn": idc_instance_arn,
+                    "idc_admin_group": idc_admin_group,
+                }
+            )
+
+            console.print("\n[green]✓[/green] IAM Identity Center landing page will be deployed")
+            console.print("[dim]Note: After deployment, you'll need to configure SAML in IAM Identity Center[/dim]")
 
         elif distribution_type == "presigned-s3":
             console.print("[green]✓[/green] Presigned S3 distribution will be deployed")

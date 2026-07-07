@@ -1,0 +1,22 @@
+{
+  "name": "claude-code-landing-page",
+  "version": "1.0.0",
+  "description": "CDK deployment for Claude Code landing page with IAM Identity Center authentication",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "deploy": "cdk deploy --all --require-approval never",
+    "destroy": "cdk destroy --all --force",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.150.0",
+    "constructs": "^10.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5",
+    "aws-cdk": "^2.150.0"
+  }
+}

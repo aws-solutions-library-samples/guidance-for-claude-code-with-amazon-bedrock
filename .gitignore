@@ -67,7 +67,10 @@ tests/
 !tests/e2e/**
 !source/tests/
 !source/tests/**
+!deployment/idc-landing-page/lambda/tests/
+!deployment/idc-landing-page/lambda/tests/**
 source/tests/**/__pycache__/
+deployment/idc-landing-page/lambda/tests/**/__pycache__/
 tests/e2e/artifacts/
 assets/docs/planning
 

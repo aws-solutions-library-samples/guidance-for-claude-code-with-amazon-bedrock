@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.js
+*.d.ts
+!jest.config.js
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment artifacts (contains account-specific info)
+deployment-info.json
+
+# Don't commit configured config (template is fine)
+# lib/config.ts is tracked but will be overwritten by deploy.sh

@@ -143,8 +143,15 @@ class DestroyCommand(Command):
                 continue
             if stack == "quota" and not getattr(profile, "quota_monitoring_enabled", False):
                 continue
-            if stack == "distribution" and not getattr(profile, "enable_distribution", False):
-                continue
+            if stack == "distribution":
+                if not getattr(profile, "enable_distribution", False):
+                    continue
+                # Handle IDC landing page (CDK) separately
+                if getattr(profile, "distribution_type", None) == "landing-page-idc":
+                    result = self._destroy_idc_landing_page(profile, console)
+                    if result != 0:
+                        stacks_with_failures.append("idc-landing-page (CDK)")
+                    continue
             if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
                 continue
             if stack == "websearch" and not getattr(profile, "web_search_enabled", False):
@@ -227,6 +234,41 @@ class DestroyCommand(Command):
         # fail fast on a broken teardown. Matches deploy/package, which already
         # return 1 on failure. The summary above still surfaces what to clean up.
         return 1 if stacks_with_failures else 0
+
+    def _destroy_idc_landing_page(self, profile, console: Console) -> int:
+        """Destroy the IAM Identity Center landing page CDK stacks."""
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        project_root = Path(__file__).parent.parent.parent.parent.parent
+        cdk_dir = project_root / "deployment" / "idc-landing-page"
+
+        if not cdk_dir.exists():
+            console.print("[yellow]IDC landing page directory not found - skipping[/yellow]")
+            return 0
+
+        if not shutil.which("npx"):
+            console.print("[red]Error: npx is required to destroy IDC landing page[/red]")
+            return 1
+
+        console.print("[yellow]Destroying IAM Identity Center landing page...[/yellow]")
+
+        # Fixed argument list, no user input — same pattern as the CDK deploy path.
+        result = subprocess.run(  # nosec B603 B607
+            ["npx", "cdk", "destroy", "--all", "--force"],
+            cwd=cdk_dir,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            console.print("[red]CDK destroy failed:[/red]")
+            console.print(result.stderr)
+            return 1
+
+        console.print("[green]✓ IAM Identity Center landing page destroyed[/green]\n")
+        return 0
 
     def _delete_stack(self, stack_name: str, region: str, console: Console) -> int:
         """Delete a CloudFormation stack using boto3.
