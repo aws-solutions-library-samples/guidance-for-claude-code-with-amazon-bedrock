@@ -166,3 +166,65 @@ class TestStaleDailyReset:
         }
         entry = mod._build_usage_entry(item, _today())
         assert entry["daily_tokens"] == 3_355_533
+
+
+class TestCostEstimateTokenTypes:
+    """Regression: cost must price all four token types, including cacheCreation.
+
+    The metric's `type` dimension is camelCase (input/output/cacheRead/
+    cacheCreation) but the rate tables use snake_case keys (input/output/
+    cache_read/cache_write). The old code only rewrote cacheRead->cache_read, so
+    cacheCreation looked up a non-existent key and priced at $0 — dropping the
+    cache-write share of the cost, which is usually the majority of tokens.
+    """
+
+    def _run_cost(self, mod, type_model_vector):
+        """Drive fetch_usage_from_promql with a canned type+model breakdown.
+
+        Only the (user.email, type, model) query returns data; the primary
+        total, type-only, and CoWork queries return empty so we isolate the
+        cost calculation. Returns the users dict.
+        """
+
+        def fake_query(query, time_param=None):
+            if ", type, model)" in query and "claude_code.token.usage" in query:
+                return type_model_vector
+            return []
+
+        mod._promql_query = fake_query
+        return mod.fetch_usage_from_promql()
+
+    def test_cache_creation_is_priced(self, base_env):
+        """A cacheCreation-only breakdown must produce a non-zero cost."""
+        mod = _load_quota_monitor(base_env)
+        # opus cache_write rate = 6.25 / 1M tokens; 1,000,000 tokens -> $6.25
+        vector = [
+            {
+                "metric": {"user.email": "a@b.com", "type": "cacheCreation", "model": "claude-opus-4-8"},
+                "value": [0, "1000000"],
+            }
+        ]
+        users = self._run_cost(mod, vector)
+        assert users["a@b.com"]["cost_usd"] == pytest.approx(6.25)
+
+    def test_all_four_types_priced(self, base_env):
+        """input/output/cacheRead/cacheCreation each contribute to the cost."""
+        mod = _load_quota_monitor(base_env)
+        # opus rates per 1M: input 5.00, output 25.00, cache_read 0.50, cache_write 6.25
+        vector = [
+            {"metric": {"user.email": "a@b.com", "type": "input", "model": "claude-opus-4-8"}, "value": [0, "1000000"]},
+            {
+                "metric": {"user.email": "a@b.com", "type": "output", "model": "claude-opus-4-8"},
+                "value": [0, "1000000"],
+            },
+            {
+                "metric": {"user.email": "a@b.com", "type": "cacheRead", "model": "claude-opus-4-8"},
+                "value": [0, "1000000"],
+            },
+            {
+                "metric": {"user.email": "a@b.com", "type": "cacheCreation", "model": "claude-opus-4-8"},
+                "value": [0, "1000000"],
+            },
+        ]
+        users = self._run_cost(mod, vector)
+        assert users["a@b.com"]["cost_usd"] == pytest.approx(5.00 + 25.00 + 0.50 + 6.25)

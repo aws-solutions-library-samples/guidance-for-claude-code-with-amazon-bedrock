@@ -67,6 +67,18 @@ def _promql_query(query, time_param=None):
 
 AGGREGATION_WINDOW = 900  # 15 minutes in seconds (matches EventBridge schedule)
 
+# Map the metric's `type` dimension values to pricing.py rate keys.
+# The CloudWatch `type` dimension is camelCase (input/output/cacheRead/
+# cacheCreation); the rate tables in shared/pricing.py are snake_case
+# (input/output/cache_read/cache_write). cacheCreation (cache-write) is usually
+# the majority of tokens, so a missing mapping silently drops most of the cost.
+TOKEN_TYPE_TO_RATE_KEY = {
+    "input": "input",
+    "output": "output",
+    "cacheRead": "cache_read",
+    "cacheCreation": "cache_write",
+}
+
 
 def fetch_usage_from_promql():
     """Query PromQL for per-user token usage in the last aggregation window only."""
@@ -123,7 +135,7 @@ def fetch_usage_from_promql():
                 u = users.setdefault(email, {})
                 family = resolve_model_family(model)
                 family_rates = rates.get(family, rates.get("sonnet", {}))
-                rate = family_rates.get(token_type.replace("cacheRead", "cache_read"), 0)
+                rate = family_rates.get(TOKEN_TYPE_TO_RATE_KEY.get(token_type, token_type), 0)
                 cost_delta = (val / 1_000_000) * rate
                 u["cost_usd"] = u.get("cost_usd", 0) + cost_delta
     except Exception as e:
