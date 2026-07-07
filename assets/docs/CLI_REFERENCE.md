@@ -257,34 +257,7 @@ poetry run ccwb package [options]
 2. Creates `config.json` with federation config read from the admin profile
 3. Creates `claude-settings/settings.json` with Bedrock model and OTel endpoint (or `managed-settings.json` if `--managed` was used during init)
 4. Creates installer scripts (`install.sh`, `install.bat`, `ccwb-install.ps1`)
-5. Copies any admin-defined **extra files** into the build folder (see below)
-6. Outputs to `dist/{profile}/{timestamp}/`
-
-**Extra Files:**
-
-You can ship additional files or folders on top of the generated package —
-preinstall/postinstall scripts, an OIDC signing certificate, a CA bundle, and
-so on. Configure them during `ccwb init` (the "Extra files" step); they are
-stored in your admin deployment profile, never in the runtime `config.json` and
-never delivered to end users' Claude Code config.
-
-Each entry has three fields:
-
-| Field | Meaning |
-|---|---|
-| `name` | path inside the package (relative — no `..` or absolute paths) |
-| `targets` | which machines receive it (see tokens below) |
-| `from` | source path on your machine (a file or a whole folder) |
-
-`targets` accepts `all`, a family (`macos`, `linux`, `windows`), an
-architecture (`macos-arm64`, `macos-intel`, `linux-x64`, `linux-arm64`), or a
-list such as `["macos", "linux"]`.
-
-`ccwb package` copies **all** extras into the build folder. `ccwb distribute`
-then filters them per platform — a `macos` extra lands in the macOS package but
-not the Windows one; an `all` extra lands in every package. `package` fails
-fast (non-zero exit) if a `from` source is missing or a `name` collides with a
-generated artifact, so a listed file is never silently dropped.
+5. Outputs to `dist/{profile}/{timestamp}/`
 
 **Build Modes:**
 
@@ -304,6 +277,22 @@ With `--go`, all 5 platforms are always available regardless of the admin's OS. 
 - **Windows x64**: Native PE with embedded version info (~14 MB, unstripped for Defender compatibility)
 
 **Offline Packaging:**
+
+`ccwb package` normally needs internet on the admin machine for three things: Go module downloads for `source/go`, the OCB (OpenTelemetry Collector Builder) binary from GitHub, and Go module downloads for the OCB-generated collector module (sidecar mode only). A `vendor/` directory cannot cover the collector build — OCB generates a fresh Go module in a temp directory on every run.
+
+For air-gapped environments, use `--prepare-offline` to pre-seed everything:
+
+```bash
+# On an internet-connected machine (same OS/arch and Go version as the offline box):
+poetry run ccwb package --prepare-offline
+# Transfer ccwb-offline-go-bundle.tar.gz to the offline machine, extract, then:
+tar xzf ccwb-offline-go-bundle.tar.gz
+./scripts/prepare-offline-go-bundle.sh install
+source ccwb-offline-go-bundle/offline-env.sh
+poetry run ccwb package
+```
+
+The bundle contains the pinned OCB binary (installed to `~/.cache/ocb/`, where `package.py` looks before downloading) and a pre-populated Go module cache covering both `source/go` and the collector. Because every `go`/`ocb` subprocess inherits the environment, `GOPROXY=off` plus the seeded `GOMODCACHE` satisfies all module resolution — including the `go mod tidy` OCB runs internally. The `prepare` step rehearses a fully offline collector build before archiving, so a bundle that ships is a bundle that works.
 
 **Legacy mode platform details (PyInstaller / Nuitka / Docker):**
 
