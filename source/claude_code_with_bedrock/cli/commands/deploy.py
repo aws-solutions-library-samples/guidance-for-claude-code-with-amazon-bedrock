@@ -846,6 +846,9 @@ class DeployCommand(Command):
                         f"AllowedBedrockRegions={','.join(bedrock_regions)}",
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
                     ]
+                    extra_policies = getattr(profile, "additional_managed_policy_arns", None) or []
+                    if extra_policies:
+                        params.append(f"AdditionalManagedPolicyArns={','.join(extra_policies)}")
                     return deploy_with_cf(
                         template,
                         stack_name,
@@ -955,6 +958,9 @@ class DeployCommand(Command):
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
                     ]
                 )
+                extra_policies = getattr(profile, "additional_managed_policy_arns", None) or []
+                if extra_policies:
+                    params.append(f"AdditionalManagedPolicyArns={','.join(extra_policies)}")
 
                 return deploy_with_cf(
                     template,
@@ -1602,6 +1608,7 @@ class DeployCommand(Command):
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
             auth_type = profile.effective_auth_type
+            extra_policies = getattr(profile, "additional_managed_policy_arns", None) or []
 
             if auth_type == "idc":
                 template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
@@ -1612,6 +1619,8 @@ class DeployCommand(Command):
                     f"AllowedBedrockRegions={','.join(bedrock_regions)}",
                     f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
                 ]
+                if extra_policies:
+                    params.append(f"AdditionalManagedPolicyArns={','.join(extra_policies)}")
                 print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
             else:
                 provider_type = profile.provider_type or "okta"
@@ -1653,6 +1662,8 @@ class DeployCommand(Command):
                         f"EnableMonitoring={str(profile.monitoring_enabled).lower()}",
                     ]
                 )
+                if extra_policies:
+                    params.append(f"AdditionalManagedPolicyArns={','.join(extra_policies)}")
                 print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         elif stack_type == "networking":

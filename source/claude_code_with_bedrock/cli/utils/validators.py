@@ -90,3 +90,23 @@ def validate_client_id(client_id: str) -> bool:
     # - Google: 123456789012-abcdefghijklmnopqrstuvwxyz1234.apps.googleusercontent.com
     pattern = r"^[a-zA-Z0-9][a-zA-Z0-9.\-_]+$"
     return bool(re.match(pattern, client_id))
+
+
+# Partition-agnostic (aws, aws-us-gov, aws-cn); "aws" account segment allows
+# AWS-managed policies. Must stay in sync with the AdditionalManagedPolicyArns
+# AllowedPattern in deployment/infrastructure/bedrock-auth-*.yaml.
+_MANAGED_POLICY_ARN_PATTERN = r"^arn:[a-z-]+:iam::(\d{12}|aws):policy/\S+$"
+
+
+def validate_managed_policy_arns(value: str) -> bool | str:
+    """Validate a comma-separated list of IAM managed policy ARNs.
+
+    Empty input is valid (feature is optional). Returns True or an error
+    message naming the first invalid entry (questionary validator contract).
+    """
+    if not value.strip():
+        return True
+    for arn in (a.strip() for a in value.split(",") if a.strip()):
+        if not re.match(_MANAGED_POLICY_ARN_PATTERN, arn):
+            return f"Invalid IAM managed policy ARN: {arn}"
+    return True

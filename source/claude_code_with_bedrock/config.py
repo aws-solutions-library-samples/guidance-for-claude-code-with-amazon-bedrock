@@ -109,6 +109,9 @@ class Profile:
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
+    # Existing customer-managed policy ARNs attached to the federated role at deploy
+    # time (e.g. an IP-restriction policy). Empty = only the stack-created policy.
+    additional_managed_policy_arns: list[str] = field(default_factory=list)
     sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
     # Authentication type — explicit three-way classification

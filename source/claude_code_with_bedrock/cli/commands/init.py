@@ -27,6 +27,7 @@ from claude_code_with_bedrock.cli.utils.aws import (
 )
 from claude_code_with_bedrock.cli.utils.progress import WizardProgress
 from claude_code_with_bedrock.cli.utils.validators import (
+    validate_managed_policy_arns,
     validate_oidc_provider_domain,
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
@@ -436,6 +437,9 @@ class InitCommand(Command):
             if permission_set is None:
                 return None
             config["idc_permission_set_name"] = permission_set.strip()
+
+            # Optional guardrail policies on the federated role
+            self._prompt_additional_policy_arns(config)
 
             console.print("\n[green]✓[/green] IAM Identity Center configured")
             console.print(f"  Start URL: {config['idc_start_url']}")
@@ -894,6 +898,9 @@ class InitCommand(Command):
                 default=str(_default_duration),
             ).ask()
             config["max_session_duration"] = int(duration_str) if duration_str else _default_duration
+
+            # Optional guardrail policies on the federated role
+            self._prompt_additional_policy_arns(config)
 
             # Save progress
             progress.save_step("oidc_complete", config)
@@ -2292,6 +2299,31 @@ class InitCommand(Command):
 
         return config
 
+    def _prompt_additional_policy_arns(self, config: dict) -> None:
+        """Prompt for existing IAM managed policy ARNs to attach to the federated role.
+
+        Optional guardrail hook (e.g. an IP-restriction policy). The policies
+        must already exist in the deployment account; deploy passes them to the
+        auth stack, which attaches them alongside the stack-created Bedrock
+        access policy. Cancel / non-interactive keeps the existing list.
+        """
+        console = Console()
+        existing = config.get("additional_managed_policy_arns", []) or []
+
+        console.print("\n[cyan]Additional IAM Policies[/cyan]")
+        console.print(
+            "Attach existing customer-managed policies to the federated role "
+            "(e.g. an IP-restriction policy). Leave empty to attach none."
+        )
+        answer = questionary.text(
+            "Additional managed policy ARNs (comma-separated, optional):",
+            default=",".join(existing),
+            validate=validate_managed_policy_arns,
+        ).ask()
+        if answer is None:
+            return  # cancelled — keep the existing list untouched
+        config["additional_managed_policy_arns"] = [a.strip() for a in answer.split(",") if a.strip()]
+
     def _configure_extra_files(self, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Interactively add/edit/remove admin-defined extra files.
 
@@ -2788,6 +2820,7 @@ class InitCommand(Command):
             "oidc_thumbprint": config_data.get("oidc_thumbprint"),
             "federation_type": config_data.get("federation_type", "cognito"),
             "max_session_duration": config_data.get("max_session_duration", 28800),
+            "additional_managed_policy_arns": config_data.get("additional_managed_policy_arns", []),
             "sso_enabled": config_data.get("sso_enabled", True),
             "auth_type": config_data.get("auth_type", "oidc"),
             "idc_start_url": config_data.get("idc_start_url"),
@@ -3155,6 +3188,9 @@ class InitCommand(Command):
             # Add max session duration if present
             if hasattr(profile, "max_session_duration") and profile.max_session_duration:
                 existing_config["max_session_duration"] = profile.max_session_duration
+
+            # Restore additional managed policy ARNs (unconditional — empty list is valid)
+            existing_config["additional_managed_policy_arns"] = getattr(profile, "additional_managed_policy_arns", [])
 
             # Add Cognito User Pool ID if present
             if hasattr(profile, "cognito_user_pool_id") and profile.cognito_user_pool_id:

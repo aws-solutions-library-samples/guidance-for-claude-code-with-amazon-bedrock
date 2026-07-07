@@ -85,6 +85,10 @@ poetry run ccwb init [options]
 - Prompts for authentication method selection:
   - Direct IAM: Uses IAM OIDC Provider for federation
   - Cognito: Uses Cognito Identity Pool for federation
+- Prompts for additional IAM managed policy ARNs to attach to the federated role (optional):
+  - Attach existing customer-managed guardrail policies (for example, an IP-restriction policy that denies requests unless `aws:SourceIp` matches your corporate CIDR ranges)
+  - Policies must already exist in the deployment account; they are attached alongside the stack-created Bedrock access policy
+  - IAM allows at most 10 managed policies per role by default (quota increase possible up to 20)
 - Configures AWS settings (region, stack names)
 - Prompts for Claude model selection (Opus, Sonnet, Haiku)
 - Configures cross-region inference profiles (US, Europe, APAC)

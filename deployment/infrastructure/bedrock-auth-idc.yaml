@@ -22,7 +22,15 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable monitoring and logging capabilities
 
+  AdditionalManagedPolicyArns:
+    Type: String
+    Default: ''
+    Description: Comma-separated ARNs of existing IAM managed policies to attach to the federated role (e.g. an IP-restriction policy). Leave empty to skip.
+    AllowedPattern: '^$|^arn:[a-z-]+:iam::(\d{12}|aws):policy/\S+(,arn:[a-z-]+:iam::(\d{12}|aws):policy/\S+)*$'
+    ConstraintDescription: Must be empty or a comma-separated list of IAM managed policy ARNs
+
 Conditions:
+  HasAdditionalManagedPolicies: !Not [!Equals [!Ref AdditionalManagedPolicyArns, '']]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
 
 Resources:
@@ -92,8 +100,10 @@ Resources:
             Condition:
               ArnLike:
                 'aws:PrincipalArn': !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-reserved/sso.amazonaws.com/*'
-      ManagedPolicyArns:
-        - !Ref BedrockAccessPolicy
+      ManagedPolicyArns: !If
+        - HasAdditionalManagedPolicies
+        - !Split [',', !Join [',', [!Ref BedrockAccessPolicy, !Ref AdditionalManagedPolicyArns]]]
+        - - !Ref BedrockAccessPolicy
       # Optional CloudWatch access for monitoring
       Policies: !If
         - MonitoringEnabled

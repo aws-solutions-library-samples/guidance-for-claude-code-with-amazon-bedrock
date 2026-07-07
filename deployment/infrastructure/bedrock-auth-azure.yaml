@@ -49,7 +49,15 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
+  AdditionalManagedPolicyArns:
+    Type: String
+    Default: ''
+    Description: Comma-separated ARNs of existing IAM managed policies to attach to the federated role (e.g. an IP-restriction policy). Leave empty to skip.
+    AllowedPattern: '^$|^arn:[a-z-]+:iam::(\d{12}|aws):policy/\S+(,arn:[a-z-]+:iam::(\d{12}|aws):policy/\S+)*$'
+    ConstraintDescription: Must be empty or a comma-separated list of IAM managed policy ARNs
+
 Conditions:
+  HasAdditionalManagedPolicies: !Not [!Equals [!Ref AdditionalManagedPolicyArns, '']]
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
@@ -163,8 +171,10 @@ Resources:
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
               - 'sts:TagSession'
-      ManagedPolicyArns:
-        - !Ref BedrockAccessPolicy
+      ManagedPolicyArns: !If
+        - HasAdditionalManagedPolicies
+        - !Split [',', !Join [',', [!Ref BedrockAccessPolicy, !Ref AdditionalManagedPolicyArns]]]
+        - - !Ref BedrockAccessPolicy
       Tags:
         - Key: Purpose
           Value: Claude Code Direct IAM Authentication
@@ -223,8 +233,10 @@ Resources:
                     - IsGovCloudEast
                     - 'cognito-identity.us-gov-east-1.amazonaws.com:amr': authenticated
                     - 'cognito-identity.amazonaws.com:amr': authenticated
-      ManagedPolicyArns:
-        - !Ref BedrockAccessPolicy
+      ManagedPolicyArns: !If
+        - HasAdditionalManagedPolicies
+        - !Split [',', !Join [',', [!Ref BedrockAccessPolicy, !Ref AdditionalManagedPolicyArns]]]
+        - - !Ref BedrockAccessPolicy
       Tags:
         - Key: Purpose
           Value: Claude Code Cognito Authentication

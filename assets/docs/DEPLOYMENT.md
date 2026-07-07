@@ -36,6 +36,8 @@ The `ccwb` (Claude Code with Bedrock) CLI tool guides you through deployment wit
 
 The wizard asks you to choose an authentication method. You can select either Direct IAM federation or Cognito Identity Pool based on your organization's requirements. Both methods provide secure OIDC federation to AWS credentials.
 
+The wizard also lets you attach additional IAM managed policies to the federated role. If your organization requires extra guardrails — for example, an IP-restriction policy that denies access unless `aws:SourceIp` matches your corporate network ranges — create that policy in the deployment account first, then supply its ARN (comma-separate multiple ARNs) when prompted. The deploy step attaches the policies alongside the generated Bedrock access policy, so they stay managed by CloudFormation instead of manual console edits.
+
 Next, you'll select your Claude model and configure regional access. Choose from available Claude models (Opus, Sonnet, Haiku) and select a cross-region inference profile (US, Europe, or APAC) for optimal performance. The wizard will then prompt you to select a source region within your chosen profile for model inference. Finally, choose where to deploy the authentication infrastructure (typically your primary AWS region) and configure optional monitoring setup, which provides usage analytics and cost tracking through OpenTelemetry.
 
 Once configuration is complete, deploy the infrastructure with:

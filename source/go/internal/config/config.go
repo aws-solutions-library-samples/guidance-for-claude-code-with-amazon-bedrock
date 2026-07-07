@@ -19,6 +19,9 @@ type ProfileConfig struct {
 	// Federation - Direct STS
 	FederatedRoleARN string `json:"federated_role_arn"`
 	FederationType   string `json:"federation_type"`
+	// Deploy-time only (mirrors Python Profile): extra managed policies attached
+	// to the federated role by CloudFormation. Unused by credential-process.
+	AdditionalManagedPolicyARNs []string `json:"additional_managed_policy_arns,omitempty"`
 
 	// Federation - Cognito
 	IdentityPoolID    string `json:"identity_pool_id"`
