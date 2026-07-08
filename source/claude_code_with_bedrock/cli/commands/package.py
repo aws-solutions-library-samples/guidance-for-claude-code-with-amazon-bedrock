@@ -811,11 +811,11 @@ class PackageCommand(Command):
             console.print("\n[cyan]Generating CoWork 3P MDM configuration...[/cyan]")
             self._generate_cowork_3p_mdm_config(output_dir, profile, profile_name)
 
-        # Copy admin-defined extra files into the build folder (superset; per-OS
-        # filtering happens in distribute at zip time). Fail fast on a missing
-        # source or a validation error — a listed cert the admin expects shipped
-        # must not be silently skipped.
-        copied_extra_files = self._copy_extra_files(profile, output_dir, console)
+        # Copy admin-defined extra files into the build folder, filtered to the
+        # platforms actually being built (distribute filters again per-OS at zip
+        # time). Fail fast on a missing source or a validation error — a listed
+        # cert the admin expects shipped must not be silently skipped.
+        copied_extra_files = self._copy_extra_files(profile, output_dir, console, platforms_to_build)
         if copied_extra_files is None:
             return 1
 
@@ -878,17 +878,21 @@ class PackageCommand(Command):
 
         return 0
 
-    def _copy_extra_files(self, profile, output_dir: Path, console: Console) -> list[tuple[str, str]] | None:
+    def _copy_extra_files(
+        self, profile, output_dir: Path, console: Console, platforms_to_build: list[str] | None = None
+    ) -> list[tuple[str, str]] | None:
         """Copy admin-defined extra files into the build folder.
 
-        Copies the full superset of entries (per-OS filtering happens later at
-        zip time in distribute). Returns a list of ``(name, targets)`` tuples for
-        the package summary, or ``None`` to signal a fatal error (missing source
-        or validation failure) — the caller must return a non-zero exit code.
+        Copies only the entries whose ``targets`` apply to at least one platform
+        in ``platforms_to_build`` (``None`` disables filtering and copies every
+        entry). Distribute filters again per-OS at zip time. Returns a list of
+        ``(name, targets)`` tuples for the package summary, or ``None`` to signal
+        a fatal error (missing source or validation failure) — the caller must
+        return a non-zero exit code.
         """
         import shutil
 
-        from claude_code_with_bedrock.extra_files import validate_extra_files
+        from claude_code_with_bedrock.extra_files import extra_applies_to_any, validate_extra_files
 
         entries = getattr(profile, "extra_files", []) or []
         if not entries:
@@ -905,6 +909,9 @@ class PackageCommand(Command):
         copied: list[tuple[str, str]] = []
         for entry in entries:
             name = entry["name"]
+            if platforms_to_build is not None and not extra_applies_to_any(entry["targets"], platforms_to_build):
+                console.print(f"  [dim]– {name} skipped (not targeted for this build)[/dim]")
+                continue
             src = Path(entry["from"]).expanduser()
             if not src.exists():
                 console.print(f"[red]Extra file source not found for '{name}': {src}[/red]")

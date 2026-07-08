@@ -340,3 +340,63 @@ class TestCopyExtraFiles:
         result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
         assert result is not None
         assert (out / "hooks" / "pre.sh").read_text() == "hook"
+
+    def test_target_platform_filters_non_matching_extras(self, tmp_path):
+        """Regression: --target-platform macos must not copy windows-only extras."""
+        for fname in ("hook-win.bat", "hook-mac.sh", "ca.pem"):
+            (tmp_path / fname).write_text(fname)
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [
+                {"name": "ca.pem", "targets": "all", "from": str(tmp_path / "ca.pem")},
+                {
+                    "name": "hook-mac.sh",
+                    "targets": ["macos", "macos-arm64", "macos-intel"],
+                    "from": str(tmp_path / "hook-mac.sh"),
+                },
+                {
+                    "name": "hook-win.bat",
+                    "targets": ["windows"],
+                    "from": str(tmp_path / "hook-win.bat"),
+                },
+            ]
+        )
+
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+
+        assert result is not None
+        assert (out / "ca.pem").exists()
+        assert (out / "hook-mac.sh").exists()
+        assert not (out / "hook-win.bat").exists()
+        names = {name for name, _ in result}
+        assert names == {"ca.pem", "hook-mac.sh"}
+
+    def test_skipped_extra_does_not_require_source(self, tmp_path):
+        """A filtered-out entry's missing 'from' source must not fail the build."""
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [{"name": "win-only.bat", "targets": "windows", "from": str(tmp_path / "does-not-exist.bat")}]
+        )
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+        assert result == []
+
+    def test_applicable_extra_missing_source_still_fails(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [{"name": "mac-only.sh", "targets": "macos", "from": str(tmp_path / "does-not-exist.sh")}]
+        )
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+        assert result is None
+
+    def test_no_platform_filter_copies_everything(self, tmp_path):
+        """platforms_to_build=None keeps the pre-filter superset behavior."""
+        (tmp_path / "w.bat").write_text("w")
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "w.bat", "targets": "windows", "from": str(tmp_path / "w.bat")}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is not None
+        assert (out / "w.bat").exists()
