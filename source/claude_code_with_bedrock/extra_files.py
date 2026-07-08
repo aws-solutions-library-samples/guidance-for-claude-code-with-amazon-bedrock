@@ -8,7 +8,8 @@ bundles, etc.) to ship *on top of* the generated package. The list lives in the
 admin-side deployment profile (never in the runtime ``config.json`` and never
 synced to the Go credential-process) and is consumed by two commands:
 
-- ``package`` copies the full superset of extras into the build folder.
+- ``package`` copies the extras that apply to at least one platform being
+  built (``--target-platform``) into the build folder.
 - ``distribute`` filters extras per-OS across its three archive builders.
 
 Each entry is a plain dict with three keys::
@@ -134,6 +135,25 @@ def extra_applies_to(targets: Any, platform_token: str) -> bool:
         if token_family and plat in _LANDING_FAMILY and _LANDING_FAMILY[plat] == token_family:
             return True
     return False
+
+
+def extra_applies_to_any(targets: Any, platform_tokens: Any) -> bool:
+    """True if an entry with ``targets`` applies to at least one platform in
+    ``platform_tokens``.
+
+    ``platform_tokens`` uses the ``platforms_to_build`` vocabulary from the
+    ``package`` command: per-OS arch tokens (``macos-arm64``, ``windows``, …)
+    plus the generic family tokens ``macos`` / ``linux`` that the non-Go build
+    path can produce. A family token is expanded to its arches so an
+    arch-targeted extra (e.g. ``macos-arm64``) still ships in a generic
+    ``macos`` build.
+    """
+    expanded: set[str] = set()
+    for p in platform_tokens or []:
+        tok = str(p).strip().lower()
+        expanded.add(tok)
+        expanded.update(arch for arch, family in _FAMILY_OF.items() if family == tok)
+    return any(extra_applies_to(targets, tok) for tok in expanded)
 
 
 def _name_errors(name: Any) -> list[str]:
