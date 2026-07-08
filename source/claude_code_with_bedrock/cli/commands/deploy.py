@@ -1324,7 +1324,9 @@ class DeployCommand(Command):
                     params.append(
                         f"IdcBootstrapUserPoolClientId={distribution_outputs['IdcBootstrapUserPoolClientId']}"
                     )
-                    params.append(f"IdcBootstrapRedirectPort={distribution_outputs.get('IdcBootstrapRedirectPort', '')}")
+                    params.append(
+                        f"IdcBootstrapRedirectPort={distribution_outputs.get('IdcBootstrapRedirectPort', '')}"
+                    )
 
                 # IAM Identity Center data (permission sets, groups, users) only
                 # ever lives in the region IDC was enabled in, which may differ
