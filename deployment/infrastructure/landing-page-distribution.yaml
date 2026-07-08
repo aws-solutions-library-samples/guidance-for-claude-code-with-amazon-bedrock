@@ -1975,6 +1975,8 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W58
+            reason: "AWSLambdaBasicExecutionRole (attached via ManagedPolicyArns above) already grants logs:CreateLogGroup/CreateLogStream/PutLogEvents — cfn_nag's static analysis doesn't resolve managed policies referenced through Fn::Sub"
           - id: W89
             reason: "Custom resource Lambda for a one-time Cognito API call — VPC not needed"
           - id: W92
@@ -2072,6 +2074,8 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W58
+            reason: "AWSLambdaBasicExecutionRole (attached via ManagedPolicyArns above) already grants logs:CreateLogGroup/CreateLogStream/PutLogEvents — cfn_nag's static analysis doesn't resolve managed policies referenced through Fn::Sub"
           - id: W89
             reason: "Custom resource Lambda for a one-time Secrets Manager write — VPC not needed"
           - id: W92
@@ -2154,6 +2158,18 @@ Resources:
             - IsInternalALB
             - 'HTTPS from private networks (10.x.x.x) - access via SSM port forwarding or VPN'
             - 'Allow HTTPS from internet (authenticated access)'
+      # Explicit egress (rather than relying on the implicit allow-all
+      # default) restricted to HTTPS: the ALB's authenticate-oidc action
+      # needs outbound 443 to reach the IdP's public token/userInfo
+      # endpoints (Cognito, Okta, Azure, Auth0, or IDC's SAML bridge);
+      # Lambda target group invocations go through the AWS Lambda service
+      # API, not through this security group's egress.
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTPS outbound to IdP token/userInfo endpoints'
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock

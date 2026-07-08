@@ -163,6 +163,11 @@ Resources:
   # ============================================================
   AdminConsoleFunctionRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "sso:ListInstances, identitystore:List*/Describe*/ListGroupMembershipsForMember (Identity Store ID unknown at template-author time), and Bedrock model-discovery/sts:GetCallerIdentity actions require Resource: * by API design — see inline comments on each statement"
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -274,6 +279,11 @@ Resources:
 
   AdminConsoleLogGroup:
     Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Log group contains admin-console request/audit logs, not user secrets; KMS encryption adds cost without security benefit here (matches bedrock-auth-google.yaml's BedrockAccessLogGroup precedent)"
     Properties:
       LogGroupName: !Sub '/aws/lambda/${IdentityPoolName}-admin-console'
       RetentionInDays: 30
@@ -288,6 +298,15 @@ Resources:
   AdminConsoleFunction:
     Type: AWS::Lambda::Function
     DependsOn: AdminConsoleLogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "AWSLambdaBasicExecutionRole (attached via ManagedPolicyArns above) already grants logs:CreateLogGroup/CreateLogStream/PutLogEvents — cfn_nag's static analysis doesn't resolve managed policies referenced through Fn::Sub"
+          - id: W89
+            reason: "ALB-invoked admin console Lambda requires internet access to reach IDC SSO Admin/Identity Store and Bedrock APIs — VPC not needed"
+          - id: W92
+            reason: "Invocation rate bounded by admin-user traffic to /admin* — reserved concurrency unnecessary"
     Properties:
       FunctionName: !Sub '${IdentityPoolName}-admin-console'
       Runtime: python3.12
