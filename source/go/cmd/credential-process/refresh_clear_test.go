@@ -80,43 +80,7 @@ func TestTryRefreshToken_ServerErrorRetainsToken(t *testing.T) {
 	}
 }
 
-// TestRefreshIDTokenOnly_ServerErrorRetainsToken guards the twin clear site on
-// the MCP-auth-header path (refreshIDTokenOnly), which had the identical
-// clear-on-any-failure bug.
-func TestRefreshIDTokenOnly_ServerErrorRetainsToken(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(`bad gateway`))
-	}))
-	defer srv.Close()
-
-	profile := "test-idtoken-only-server-error"
-	app := newRefreshApp(t, profile, srv.URL)
-
-	if tok := app.refreshIDTokenOnly(); tok != "" {
-		t.Fatalf("refreshIDTokenOnly returned non-empty on 502: %q", tok)
-	}
-	if got := storage.LoadRefreshToken(profile, "session"); got != "rt_original" {
-		t.Errorf("refresh_token = %q after transient 502, want retained (%q)", got, "rt_original")
-	}
-}
-
-// TestRefreshIDTokenOnly_InvalidGrantClearsToken confirms the MCP path still
-// clears on a definitive rejection.
-func TestRefreshIDTokenOnly_InvalidGrantClearsToken(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
-	}))
-	defer srv.Close()
-
-	profile := "test-idtoken-only-invalid-grant"
-	app := newRefreshApp(t, profile, srv.URL)
-
-	if tok := app.refreshIDTokenOnly(); tok != "" {
-		t.Fatalf("refreshIDTokenOnly returned non-empty on invalid_grant: %q", tok)
-	}
-	if got := storage.LoadRefreshToken(profile, "session"); got != "" {
-		t.Errorf("refresh_token = %q after invalid_grant, want cleared", got)
-	}
-}
+// NOTE: the former refreshIDTokenOnly twin tests were removed when that
+// function was consolidated into tryRefreshToken (which no longer performs an
+// AWS credential exchange). The two tests above now cover the single
+// clear-vs-retain site for every caller, including the MCP-auth-header path.

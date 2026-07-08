@@ -37,8 +37,15 @@ func (a *credentialApp) runDesktopHelper() int {
 	if creds == nil {
 		// No cached creds — try silent refresh
 		if a.cfg.IsSsoEnabled() && !a.cfg.IsIDC() {
-			// OIDC: try refresh token
-			creds = a.tryRefreshToken()
+			// OIDC: try refresh token. Quota is enforced on the fresh id_token
+			// BEFORE the STS exchange (#761) — previously this path minted
+			// credentials with no quota check at all.
+			if auth := a.tryRefreshToken(); auth != nil {
+				if !a.enforceQuota(auth.IDToken) {
+					return 1
+				}
+				creds = a.exchangeAndSaveCredentials(auth)
+			}
 		}
 
 		if creds == nil && allowInteractive {
@@ -69,9 +76,15 @@ func (a *credentialApp) runDesktopHelper() int {
 	// Check if credentials are expired
 	remaining := storage.ParseExpirationSeconds(creds.Expiration)
 	if remaining <= 30 {
-		// Expired — try refresh
+		// Expired — try refresh (same quota-before-STS ordering as above)
 		if a.cfg.IsSsoEnabled() && !a.cfg.IsIDC() {
-			creds = a.tryRefreshToken()
+			creds = nil
+			if auth := a.tryRefreshToken(); auth != nil {
+				if !a.enforceQuota(auth.IDToken) {
+					return 1
+				}
+				creds = a.exchangeAndSaveCredentials(auth)
+			}
 		}
 		if creds == nil || storage.ParseExpirationSeconds(creds.Expiration) <= 30 {
 			if allowInteractive {

@@ -299,16 +299,13 @@ func (a *credentialApp) getMonitoringToken() int {
 	// token has aged past the 10-min buffer in storage.GetMonitoringToken
 	// while their refresh_token is still valid (typically 7-30 days).
 	//
-	// Note: trySilentRefresh() is intentionally not attempted here — its
-	// first step is storage.GetMonitoringToken(), which we just observed
-	// returns empty. Only refresh_token (separately stored) is meaningful.
-	if creds := a.tryRefreshToken(); creds != nil {
-		_ = creds // tryRefreshToken already saved AWS creds and the fresh monitoring token
-		if t, terr := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage); terr == nil && t != "" {
-			fmt.Println(t)
-			return 0
-		}
-		debugPrint("refresh_token exchange succeeded but monitoring token unreadable; falling through to browser auth")
+	// Note: the cached-token path is intentionally not attempted here — we
+	// just observed storage.GetMonitoringToken() returns empty. Only
+	// refresh_token (separately stored) is meaningful. tryRefreshToken mints
+	// no AWS credentials, so this path cannot bypass quota enforcement.
+	if auth := a.tryRefreshToken(); auth != nil {
+		fmt.Println(auth.IDToken)
+		return 0
 	}
 
 	// No refresh_token available, refresh failed, or refresh produced no
@@ -330,15 +327,11 @@ func (a *credentialApp) getMonitoringToken() int {
 		return 1
 	}
 
-	// Get AWS creds (needed to complete the flow)
-	awsCreds, err := a.getAWSCredentials(authResult)
-	if err != nil {
-		debugPrint("Failed to get AWS credentials: %v", err)
-		return 1
-	}
-	_ = a.saveCredentials(awsCreds)
-
-	// Save monitoring token
+	// Persist the monitoring token only. Deliberately NO AWS credential
+	// exchange here: this entrypoint serves OTEL attribution, and minting
+	// credentials on it would bypass quota enforcement (#761) — every
+	// credential-minting path must enforce quota first. A blocked user
+	// still gets a monitoring token so their telemetry stays attributed.
 	a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(authResult.TokenClaims))
 
 	fmt.Println(authResult.IDToken)
@@ -361,13 +354,12 @@ func (a *credentialApp) getMCPAuthHeader() int {
 		// headersHelper can never drive an interactive login. Only attempt for
 		// OIDC; idc/none have no id_token.
 		//
-		// Use refreshIDTokenOnly (NOT tryRefreshToken): the gateway's CUSTOM_JWT
-		// authorizer only needs the id_token, so a successful refresh must NOT be
-		// thrown away just because the unrelated AWS STS/IAM credential exchange
-		// fails or times out. tryRefreshToken couples the two and would discard a
-		// perfectly valid refreshed id_token on a Cognito/STS hiccup.
-		if fresh := a.refreshIDTokenOnly(); fresh != "" {
-			token, err = fresh, nil
+		// tryRefreshToken performs only the token exchange (no AWS credential
+		// exchange), so a successful refresh is never thrown away because the
+		// unrelated AWS STS/IAM credential exchange fails or times out — the
+		// gateway's CUSTOM_JWT authorizer only needs the id_token.
+		if auth := a.tryRefreshToken(); auth != nil {
+			token, err = auth.IDToken, nil
 		}
 	}
 	if err != nil || token == "" {
@@ -540,42 +532,37 @@ func (a *credentialApp) run() int {
 		return 0
 	}
 
-	// Try silent refresh using cached id_token before opening browser
-	if creds := a.trySilentRefresh(); creds != nil {
-		if a.cfg.QuotaAPIEndpoint != "" {
-			token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
-			if token != "" {
-				qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-				if !qr.Allowed {
-					printQuotaBlocked(qr)
-					return 1
-				}
-				printQuotaWarning(qr)
-				_ = storage.SaveQuotaState(a.profile)
-			}
+	// Try silent refresh using cached id_token before opening browser.
+	// Quota is enforced BEFORE the STS exchange, using the id_token already in
+	// hand, so an over-quota user never mints or caches fresh credentials and
+	// the check can never be skipped because a separate storage read came back
+	// empty (#761).
+	if auth := a.cachedTokenAuthResult(); auth != nil {
+		if !a.enforceQuota(auth.IDToken) {
+			return 1
 		}
-		outputJSON(creds)
-		return 0
+		if creds := a.exchangeAndSaveCredentials(auth); creds != nil {
+			debugPrint("Silent credential refresh succeeded")
+			outputJSON(creds)
+			return 0
+		}
+		debugPrint("Silent refresh failed, trying refresh_token exchange...")
 	}
 
 	// Try refresh_token exchange before falling back to browser auth.
 	// This enables Cowork 3P (Claude Desktop) to refresh silently even after
 	// the id_token expires, since Claude Desktop cannot open a browser popup.
-	if creds := a.tryRefreshToken(); creds != nil {
-		if a.cfg.QuotaAPIEndpoint != "" {
-			token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
-			if token != "" {
-				qr := quota.Check(a.cfg.QuotaAPIEndpoint, token, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-				if !qr.Allowed {
-					printQuotaBlocked(qr)
-					return 1
-				}
-				printQuotaWarning(qr)
-				_ = storage.SaveQuotaState(a.profile)
-			}
+	// Same ordering contract as above: quota first, credentials second.
+	if auth := a.tryRefreshToken(); auth != nil {
+		if !a.enforceQuota(auth.IDToken) {
+			return 1
 		}
-		outputJSON(creds)
-		return 0
+		if creds := a.exchangeAndSaveCredentials(auth); creds != nil {
+			debugPrint("Refresh token exchange succeeded — credentials renewed without browser")
+			outputJSON(creds)
+			return 0
+		}
+		debugPrint("AWS credential exchange after refresh failed, falling back to browser auth")
 	}
 
 	// Authenticate with OIDC provider (browser popup)
@@ -587,14 +574,8 @@ func (a *credentialApp) run() int {
 	}
 
 	// Quota check before issuing credentials
-	if a.cfg.QuotaAPIEndpoint != "" {
-		qr := quota.Check(a.cfg.QuotaAPIEndpoint, authResult.IDToken, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
-		if !qr.Allowed {
-			printQuotaBlocked(qr)
-			return 1
-		}
-		printQuotaWarning(qr)
-		_ = storage.SaveQuotaState(a.profile)
+	if !a.enforceQuota(authResult.IDToken) {
+		return 1
 	}
 
 	// Get AWS credentials
@@ -715,13 +696,45 @@ func (a *credentialApp) getAWSCredentials(auth *oidc.AuthResult) (*federation.AW
 	)
 }
 
-func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
+// enforceQuota performs the pre-issuance quota check with the given id_token.
+// Returns false when credentials must NOT be issued. When a quota endpoint is
+// configured but no usable token is available, the outcome is decided by
+// quota_fail_mode — never silently skipped (#761).
+func (a *credentialApp) enforceQuota(idToken string) bool {
+	if a.cfg.QuotaAPIEndpoint == "" {
+		return true
+	}
+	if idToken == "" {
+		// The OIDC quota API expects a JWT. Never fall through to the SigV4
+		// path here — inside credential-process the default credential chain
+		// would recurse into ourselves.
+		if a.cfg.QuotaFailMode == "closed" {
+			fmt.Fprintln(os.Stderr, "Error: quota enforcement is configured but no identity token is available for the check (quota fail mode: closed).")
+			return false
+		}
+		debugPrint("Quota check has no identity token; allowing per fail mode 'open'")
+		return true
+	}
+	qr := quota.Check(a.cfg.QuotaAPIEndpoint, idToken, a.cfg.QuotaCheckTimeout, a.cfg.QuotaFailMode)
+	if !qr.Allowed {
+		printQuotaBlocked(qr)
+		return false
+	}
+	printQuotaWarning(qr)
+	_ = storage.SaveQuotaState(a.profile)
+	return true
+}
+
+// cachedTokenAuthResult builds an AuthResult from the cached monitoring
+// id_token, or returns nil when no valid unexpired token is cached. It makes
+// no network calls — the caller decides what to do with the token (quota
+// check first, then STS exchange).
+func (a *credentialApp) cachedTokenAuthResult() *oidc.AuthResult {
 	token, err := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
 	if err != nil || token == "" {
 		debugPrint("No valid cached id_token for silent refresh")
 		return nil
 	}
-	debugPrint("Found valid cached id_token, attempting silent credential refresh...")
 	claims, err := jwt.DecodePayload(token)
 	if err != nil {
 		debugPrint("Failed to decode cached id_token: %v", err)
@@ -732,18 +745,26 @@ func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
 		debugPrint("Cached id_token is expired, silent refresh not possible")
 		return nil
 	}
-	authResult := &oidc.AuthResult{IDToken: token, TokenClaims: claims}
-	creds, err := a.getAWSCredentials(authResult)
+	debugPrint("Found valid cached id_token, attempting silent credential refresh...")
+	return &oidc.AuthResult{IDToken: token, TokenClaims: claims}
+}
+
+// exchangeAndSaveCredentials exchanges a quota-cleared id_token for AWS
+// credentials and persists them plus the monitoring token. Callers MUST run
+// enforceQuota first — this is the only place the silent-refresh paths mint
+// credentials, which keeps the "quota before STS" ordering in one spot.
+// Returns nil on failure so callers can fall through to the next auth path.
+func (a *credentialApp) exchangeAndSaveCredentials(auth *oidc.AuthResult) *federation.AWSCredentials {
+	creds, err := a.getAWSCredentials(auth)
 	if err != nil {
-		debugPrint("Silent refresh failed, will require browser auth: %v", err)
+		debugPrint("AWS credential exchange failed: %v", err)
 		return nil
 	}
 	if saveErr := a.saveCredentials(creds); saveErr != nil {
-		debugPrint("Failed to save silently-refreshed credentials: %v", saveErr)
+		debugPrint("Failed to save credentials: %v", saveErr)
 	}
 	// Re-save monitoring token to refresh its expiry tracking
-	a.saveMonitoringTokenAndHeaders(token, map[string]interface{}(claims))
-	debugPrint("Silent credential refresh succeeded")
+	a.saveMonitoringTokenAndHeaders(auth.IDToken, map[string]interface{}(auth.TokenClaims))
 	return creds
 }
 
@@ -752,7 +773,12 @@ func (a *credentialApp) trySilentRefresh() *federation.AWSCredentials {
 // Cowork 3P (Claude Desktop): after the id_token expires, credential-process
 // can still silently refresh credentials as long as the refresh_token is valid
 // (typically 7-30 days depending on IdP configuration).
-func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
+//
+// It persists the refreshed monitoring token and rotated refresh_token, but
+// deliberately does NOT exchange for AWS credentials: quota must be enforced
+// on the fresh id_token before any STS call (#761), and callers like
+// --get-mcp-auth-header and --get-monitoring-token only need the id_token.
+func (a *credentialApp) tryRefreshToken() *oidc.AuthResult {
 	refreshToken := storage.LoadRefreshToken(a.profile, a.cfg.CredentialStorage)
 	if refreshToken == "" {
 		debugPrint("No cached refresh_token, cannot refresh silently")
@@ -809,23 +835,6 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 		return nil
 	}
 
-	// Exchange for AWS credentials
-	authResult := &oidc.AuthResult{
-		IDToken:      tokenResp.IDToken,
-		RefreshToken: tokenResp.RefreshToken,
-		TokenClaims:  claims,
-	}
-	creds, err := a.getAWSCredentials(authResult)
-	if err != nil {
-		debugPrint("AWS credential exchange after refresh failed: %v", err)
-		return nil
-	}
-
-	// Save refreshed credentials
-	if saveErr := a.saveCredentials(creds); saveErr != nil {
-		debugPrint("Failed to save refresh-derived credentials: %v", saveErr)
-	}
-
 	// Update monitoring token with fresh id_token
 	a.saveMonitoringTokenAndHeaders(tokenResp.IDToken, map[string]interface{}(claims))
 
@@ -834,79 +843,12 @@ func (a *credentialApp) tryRefreshToken() *federation.AWSCredentials {
 		_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, tokenResp.RefreshToken)
 	}
 
-	debugPrint("Refresh token exchange succeeded — credentials renewed without browser")
-	return creds
-}
-
-// refreshIDTokenOnly performs the browserless refresh_token exchange and returns
-// a fresh id_token WITHOUT exchanging it for AWS credentials. It exists for the
-// MCP headersHelper path (--get-mcp-auth-header): the AgentCore CUSTOM_JWT gateway
-// authorizer validates only the id_token, so the header must still be emitted even
-// when the AWS STS/IAM credential exchange would fail or time out — a failure mode
-// unrelated to gateway auth. (tryRefreshToken couples the two and returns nil if
-// cred exchange fails, which would discard a valid refreshed id_token.)
-//
-// It mirrors tryRefreshToken's endpoint/confidential-auth resolution and persists
-// the refreshed monitoring token + rotated refresh_token so the next cache read
-// hits, but never opens a browser. Returns "" on any failure so the caller fails
-// cleanly. Only meaningful for OIDC (idc/none have no id_token).
-func (a *credentialApp) refreshIDTokenOnly() string {
-	refreshToken := storage.LoadRefreshToken(a.profile, a.cfg.CredentialStorage)
-	if refreshToken == "" {
-		debugPrint("No cached refresh_token, cannot refresh id_token silently")
-		return ""
+	debugPrint("id_token refreshed without browser")
+	return &oidc.AuthResult{
+		IDToken:      tokenResp.IDToken,
+		RefreshToken: tokenResp.RefreshToken,
+		TokenClaims:  claims,
 	}
-
-	// Resolve token endpoint URL — use shared builder from #666 to avoid
-	// Azure /v2.0 doubling and keep parity with tryRefreshToken.
-	var tokenURL string
-	if a.providerType == "generic" {
-		tokenURL = a.cfg.OIDCTokenEndpoint
-	} else {
-		tokenURL = provider.TokenEndpointURL(a.providerType, a.cfg.OktaAuthServerID, a.cfg.ProviderDomain)
-	}
-
-	confidential, err := a.resolveConfidentialAuth()
-	if err != nil {
-		debugPrint("Failed to resolve confidential auth for id_token refresh: %v", err)
-		return ""
-	}
-
-	tokenResp, err := oidc.RefreshTokenExchange(tokenURL, refreshToken, a.cfg.ClientID, confidential)
-	if err != nil {
-		debugPrint("Refresh token exchange failed: %v", err)
-		// Clear only on a definitive rejection (invalid_grant / invalid_token);
-		// retain on transient failures so a later cycle can retry. See the twin
-		// guard in tryRefreshToken.
-		if oidc.IsDefinitiveRefreshFailure(err) {
-			debugPrint("Refresh_token rejected by IdP (invalid_grant); clearing stored token")
-			storage.ClearRefreshToken(a.profile)
-		} else {
-			debugPrint("Transient refresh failure; retaining refresh_token for next attempt")
-		}
-		return ""
-	}
-	if tokenResp.IDToken == "" {
-		debugPrint("Refresh response did not contain an id_token")
-		return ""
-	}
-
-	claims, err := jwt.DecodePayload(tokenResp.IDToken)
-	if err != nil {
-		debugPrint("Failed to decode refreshed id_token: %v", err)
-		return ""
-	}
-
-	// Persist the refreshed monitoring token so the next cache read hits, and
-	// rotate the refresh_token (some IdPs rotate on every use). Deliberately no
-	// AWS credential exchange here — see the doc comment above.
-	a.saveMonitoringTokenAndHeaders(tokenResp.IDToken, map[string]interface{}(claims))
-	if tokenResp.RefreshToken != "" {
-		_ = storage.SaveRefreshToken(a.profile, a.cfg.CredentialStorage, tokenResp.RefreshToken)
-	}
-
-	debugPrint("id_token refreshed without browser (no AWS credential exchange)")
-	return tokenResp.IDToken
 }
 
 // saveMonitoringTokenAndHeaders persists the monitoring token and also writes
@@ -959,8 +901,8 @@ func (a *credentialApp) performQuotaRecheck() bool {
 		// getMonitoringToken() handler: try a silent refresh_token exchange to
 		// mint a fresh id_token before giving up, so an over-quota user is still
 		// warned/blocked on the cache-hit fast path instead of silently passing.
-		if creds := a.tryRefreshToken(); creds != nil {
-			token, _ = storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+		if auth := a.tryRefreshToken(); auth != nil {
+			token = auth.IDToken
 		}
 	}
 	if token == "" {
