@@ -804,6 +804,7 @@ class PackageCommand(Command):
             profile_name,
             otel_resource_attributes,
             is_idc_zero_binary=is_idc_zero_binary,
+            settings_version=timestamp,
         )
 
         # Generate CoWork 3P MDM configuration if enabled
@@ -2642,7 +2643,14 @@ RUN pyinstaller \
 
         # Regenerate Claude Code settings
         console.print("[cyan]Generating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            settings_version=timestamp,
+        )
 
         # Summary
         console.print("\n[green]✓ Installers regenerated successfully![/green]")
@@ -4104,6 +4112,7 @@ Available metrics include:
         profile_name: str = "ClaudeCode",
         otel_resource_attributes: str | None = None,
         is_idc_zero_binary: bool = False,
+        settings_version: str | None = None,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -4342,6 +4351,13 @@ Available metrics include:
                     resource_attrs = otel_resource_attributes or (
                         "department=default,team.id=default,cost_center=default,organization=default,project=default"
                     )
+                    # Stamp the dist-folder timestamp so telemetry records which
+                    # packaged distribution each user runs. The collector's
+                    # resource_to_telemetry_conversion surfaces it as a field on
+                    # every EMF event in /aws/claude-code/metrics, so adoption is
+                    # queryable without any collector change.
+                    if settings_version:
+                        resource_attrs += f",settings_version={settings_version}"
 
                     settings["env"].update(
                         {
