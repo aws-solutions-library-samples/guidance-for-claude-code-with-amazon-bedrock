@@ -31,8 +31,9 @@ tokenURL = provider.TokenEndpointURL(providerType, oktaAuthServerID, providerDom
 
 ## Callers (must all use the shared builder)
 - `oidc/flow.go` — browser authorization-code exchange
-- `tryRefreshToken()` in main.go — silent refresh
-- `refreshIDTokenOnly()` — monitoring token refresh (when added)
+- `tryRefreshToken()` in main.go — the single silent refresh_token exchange
+  (serves credential refresh, monitoring token refresh, and the MCP auth
+  header path; the former `refreshIDTokenOnly()` twin was merged into it)
 - Any future token endpoint caller
 
 ## Related

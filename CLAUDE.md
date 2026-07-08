@@ -46,8 +46,8 @@ AWS SDK calls credential-process
   → read cache → [valid?] → return cached credentials
   → [expired?] → try silent refresh (refresh_token)
   → [no token?] → OIDC browser flow or IDC passthrough
+  → check quota with id_token → [blocked?] → exit non-zero
   → STS AssumeRoleWithWebIdentity → credentials
-  → check quota → [blocked?] → exit non-zero
   → emit OTEL attribution headers → cache → stdout JSON
 ```
 
