@@ -843,7 +843,17 @@ Resources:
                   if ENABLE_CLOUDFRONT:
                       base_url = f"https://{CLOUDFRONT_DOMAIN}"
                       if path == '/callback':
-                          code = (event.get('queryStringParameters') or {}).get('code')
+                          # With lambda.multi_value_headers.enabled=true the ALB
+                          # delivers the ?code=... query string in
+                          # multiValueQueryStringParameters (arrays), NOT
+                          # queryStringParameters — reading the latter alone
+                          # returns None and bounces straight back to login
+                          # (infinite Cognito loop).
+                          mv_qs = event.get('multiValueQueryStringParameters') or {}
+                          if mv_qs.get('code'):
+                              code = mv_qs['code'][0]
+                          else:
+                              code = (event.get('queryStringParameters') or {}).get('code')
                           if code:
                               return handle_self_callback(code, base_url)
                           return redirect_to_self_login(base_url)
