@@ -219,7 +219,7 @@ class TestPackageCommandOtelDefaults:
             stack_names={"monitoring": "test-otel-collector"},
         )
 
-    def _render_settings(self, otel_resource_attributes=None):
+    def _render_settings(self, otel_resource_attributes=None, settings_version=None):
         """Drive _create_claude_settings with a mocked monitoring stack endpoint."""
         command = PackageCommand()
         profile = self._make_monitoring_profile()
@@ -239,6 +239,7 @@ class TestPackageCommandOtelDefaults:
                     include_coauthored_by=True,
                     profile_name="test",
                     otel_resource_attributes=otel_resource_attributes,
+                    settings_version=settings_version,
                 )
 
             settings_path = output_dir / "claude-settings" / "settings.json"
@@ -263,6 +264,62 @@ class TestPackageCommandOtelDefaults:
         attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
 
         assert attrs == "department=research,team.id=ml"
+
+    def test_settings_version_appended_to_default_attributes(self):
+        """The dist-folder timestamp is stamped as settings_version for telemetry."""
+        settings = self._render_settings(settings_version="2026-07-08-120000")
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs.endswith(",settings_version=2026-07-08-120000")
+        assert "department=default" in attrs
+
+    def test_settings_version_appended_to_custom_attributes(self):
+        """settings_version is stamped even when the admin customizes attributes."""
+        settings = self._render_settings(
+            otel_resource_attributes="department=research,team.id=ml",
+            settings_version="2026-07-08-120000",
+        )
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs == "department=research,team.id=ml,settings_version=2026-07-08-120000"
+
+    def test_no_settings_version_omits_attribute(self):
+        """Without a version (backward compat), the attribute is absent entirely."""
+        settings = self._render_settings()
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert "settings_version" not in attrs
+
+    def test_cowork_package_stamps_settings_version(self):
+        """Parity: the CodeBuild package variant stamps settings_version too."""
+        from claude_code_with_bedrock.cli.commands.package_cb import PackageCbCommand
+
+        command = PackageCbCommand()
+        profile = self._make_monitoring_profile()
+
+        fake_outputs = json.dumps([{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}])
+        completed = MagicMock(returncode=0, stdout=fake_outputs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch(
+                "claude_code_with_bedrock.cli.commands.package_cb.subprocess.run",
+                return_value=completed,
+            ):
+                command._create_claude_settings(
+                    output_dir,
+                    profile,
+                    include_coauthored_by=True,
+                    profile_name="test",
+                    settings_version="2026-07-08-120000",
+                )
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            with open(settings_path, encoding="utf-8") as f:
+                settings = json.load(f)
+
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+        assert attrs.endswith(",settings_version=2026-07-08-120000")
 
 
 class TestCopyExtraFiles:
