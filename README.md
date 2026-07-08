@@ -215,7 +215,7 @@ The authentication tools support all major platforms:
 
 | Platform | Architecture          | Build Method                | Installation |
 | -------- | --------------------- | --------------------------- | ------------ |
-| Windows  | x64                   | Local Nuitka (`scripts/build-windows-local.ps1`) | install.bat  |
+| Windows  | x64                   | AWS CodeBuild (Nuitka)      | install.bat  |
 | macOS    | ARM64 (Apple Silicon) | Native (PyInstaller)        | install.sh   |
 | macOS    | Intel (x86_64)        | Cross-compile (PyInstaller) | install.sh   |
 | macOS    | Universal (both)      | Universal2 (PyInstaller)    | install.sh   |
@@ -224,7 +224,7 @@ The authentication tools support all major platforms:
 
 **Build Requirements:**
 
-- **Windows**: Built locally on a real Windows machine with Nuitka via `scripts/build-windows-local.ps1`. See [Windows Builds](#windows-builds) below.
+- **Windows**: AWS CodeBuild with Nuitka (automated)
 - **macOS**: PyInstaller with architecture-specific builds
   - ARM64: Native build on Apple Silicon Macs
   - Intel: Optional - requires x86_64 Python environment on ARM Macs
@@ -237,44 +237,6 @@ Intel Mac builds require an x86_64 Python environment on Apple Silicon Macs.
 See [CLI Reference](assets/docs/CLI_REFERENCE.md#intel-mac-build-setup-optional) for setup instructions.
 
 If not configured, the package command will skip Intel builds and continue with other platforms.
-
-### Windows Builds
-
-> **Note:** The AWS CodeBuild Windows pipeline is broken in our account — its container
-> image's Python has a broken TLS cert store, so Nuitka can't download the MinGW toolchain
-> from GitHub and every build fails with `CERTIFICATE_VERIFY_FAILED`. We build the Windows
-> binaries locally on a real Windows machine instead, where a working cert store lets the
-> *same* Nuitka build succeed.
-
-Windows binaries are produced by [`scripts/build-windows-local.ps1`](scripts/build-windows-local.ps1),
-which mirrors `deployment/infrastructure/codebuild-windows.yaml` exactly (same Nuitka flags,
-same dependencies) and builds from the current source tree — so the output includes all
-SmartNews customizations (Honeycomb telemetry, Codex-on-Bedrock, `awsAuthRefresh`, JWT group
-parsing, and all the Windows runtime fixes in PR #12).
-
-**Prerequisites (on the Windows box):**
-
-- Windows 10/11 (x64)
-- Python 3.12 on `PATH` (`python --version` → `3.12.x`) — from [python.org](https://www.python.org/downloads/) or `choco install python312`
-- Internet access to `github.com` (for Nuitka's one-time MinGW download)
-
-**Build:** from the repo root (the folder containing `source/`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows-local.ps1
-```
-
-This writes `credential-process-windows.exe` and `otel-helper-windows.exe` to `.\dist-windows\`.
-The script fails loudly if either binary is missing.
-
-**Fold the Windows binaries into a distribution package** (on macOS/Linux, where the rest of
-the package is assembled):
-
-1. On Windows: run the script above, then hand back the two `.exe` files from `dist-windows\`.
-2. On macOS: run `poetry run ccwb package` for the Mac/Linux binaries, drop the two Windows
-   `.exe` files into `dist/`, then `poetry run ccwb distribute` to assemble and upload the full
-   multi-platform zip.
-3. Hand the zip to Alex Shen for the Workspace ONE (Windows MDM) push.
 
 ## Implementation
 
@@ -330,8 +292,11 @@ This creates the following AWS resources:
 Build the package for end users:
 
 ```bash
-# Build macOS/Linux executables locally
+# Build all platforms (starts Windows build in background)
 poetry run ccwb package --target-platform all
+
+# Check Windows build status (optional)
+poetry run ccwb builds
 
 # When ready, create distribution URL (optional)
 poetry run ccwb distribute
@@ -340,10 +305,11 @@ poetry run ccwb distribute
 **Package Workflow:**
 
 1. **Local builds**: macOS/Linux executables are built locally using PyInstaller
-2. **Windows builds**: Built separately on a real Windows machine via `scripts/build-windows-local.ps1` (see [Windows Builds](#windows-builds)). Drop the resulting `.exe` files into `dist/` before distributing.
-3. **Create distribution**: Use `distribute` to upload and generate presigned URLs
+2. **Windows builds**: Trigger AWS CodeBuild for Windows executables (20+ minutes) - requires enabling CodeBuild during `init`
+3. **Check status**: Monitor build progress with `poetry run ccwb builds`
+4. **Create distribution**: Use `distribute` to upload and generate presigned URLs
 
-> **Note**: `ccwb package` builds macOS/Linux only. Windows binaries must be produced by `scripts/build-windows-local.ps1` on a Windows host and folded into `dist/` — see [Windows Builds](#windows-builds).
+> **Note**: Windows builds are optional and require CodeBuild to be enabled during the `init` process. If not enabled, the package command will skip Windows builds and continue with other platforms.
 
 The `dist/` folder will contain:
 
