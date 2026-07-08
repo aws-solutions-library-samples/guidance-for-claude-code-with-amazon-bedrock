@@ -108,18 +108,19 @@ class CloudFormationManager:
             # Read template
             template_body = self._read_template(template_path)
 
-            # CloudFormation's CreateStack/UpdateStack APIs cap TemplateBody at
-            # 51,200 bytes. Templates larger than that must be uploaded to S3
-            # and referenced via TemplateURL (1 MB cap). Fail fast here with a
-            # clear message so the user can trim the template rather than
-            # sitting through a partial deploy that rolls back.
+            # CloudFormation's CreateStack/UpdateStack APIs cap inline TemplateBody
+            # at 51,200 bytes (TemplateURL supports up to 1 MB). Templates that
+            # exceed the inline limit are uploaded to a per-account/region
+            # artifacts bucket (created on demand) and referenced via TemplateURL
+            # instead, so large templates (e.g. landing-page-distribution.yaml
+            # with its several inline custom-resource Lambda functions) deploy
+            # transparently rather than failing.
             template_bytes = len(template_body.encode("utf-8"))
             if template_bytes > 51200:
-                raise CloudFormationError(
-                    f"Template {template_path} is {template_bytes} bytes, which exceeds the "
-                    f"CloudFormation inline TemplateBody limit of 51,200 bytes. "
-                    f"Trim the template (or open a PR to add TemplateURL/S3 upload support)."
-                )
+                template_url = self._upload_template_for_deploy(stack_name, template_path, template_body, on_event)
+                template_arg = {"TemplateURL": template_url}
+            else:
+                template_arg = {"TemplateBody": template_body}
 
             # Check if stack exists
             exists, current_status = self._check_stack_exists(stack_name)
@@ -134,8 +135,8 @@ class CloudFormationManager:
             # Prepare parameters
             params = {
                 "StackName": stack_name,
-                "TemplateBody": template_body,
                 "Capabilities": capabilities or [],
+                **template_arg,
             }
 
             if parameters:
@@ -203,6 +204,71 @@ class CloudFormationManager:
 
         except Exception as e:
             return StackDeploymentResult(success=False, error=str(e))
+
+    def _get_or_create_artifacts_bucket(self) -> str:
+        """Get (or create) a per-account/region S3 bucket for CloudFormation
+        template artifacts that exceed the inline TemplateBody size limit.
+
+        Named deterministically (account ID + region) so repeated deploys
+        reuse the same bucket rather than creating a new one each time.
+        """
+        account_id = self.session.client("sts").get_caller_identity()["Account"]
+        bucket_name = f"ccwb-cfn-artifacts-{account_id}-{self.region}"
+
+        try:
+            self.s3_client.head_bucket(Bucket=bucket_name)
+            return bucket_name
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code not in ("404", "NoSuchBucket"):
+                raise
+
+        # Bucket doesn't exist yet — create it. us-east-1 must omit
+        # CreateBucketConfiguration entirely (passing LocationConstraint=
+        # us-east-1 there is rejected by S3).
+        create_kwargs = {"Bucket": bucket_name}
+        if self.region != "us-east-1":
+            create_kwargs["CreateBucketConfiguration"] = {"LocationConstraint": self.region}
+        self.s3_client.create_bucket(**create_kwargs)
+        self.s3_client.put_public_access_block(
+            Bucket=bucket_name,
+            PublicAccessBlockConfiguration={
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
+            },
+        )
+        self.s3_client.put_bucket_encryption(
+            Bucket=bucket_name,
+            ServerSideEncryptionConfiguration={
+                "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+            },
+        )
+        return bucket_name
+
+    def _upload_template_for_deploy(
+        self, stack_name: str, template_path: str | Path, template_body: str, on_event: Callable = None
+    ) -> str:
+        """Upload an oversized template to the artifacts bucket and return its
+        TemplateURL, for use in place of TemplateBody in create/update_stack."""
+        bucket_name = self._get_or_create_artifacts_bucket()
+        template_path = Path(template_path)
+        s3_key = f"{stack_name}/{template_path.name}"
+
+        if on_event:
+            on_event({"message": f"Template exceeds inline size limit — uploading to s3://{bucket_name}/{s3_key}"})
+        self.s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=template_body.encode("utf-8"))
+
+        # Partition-aware S3 URL, matching the logic already used for nested
+        # stacks in package_template().
+        if self.region.startswith("us-gov-"):
+            s3_domain = f"s3.{self.region}.amazonaws.com"
+        elif self.region.startswith("cn-"):
+            s3_domain = f"s3.{self.region}.amazonaws.com.cn"
+        else:
+            s3_domain = f"s3.{self.region}.amazonaws.com" if self.region != "us-east-1" else "s3.amazonaws.com"
+        return f"https://{bucket_name}.{s3_domain}/{s3_key}"
 
     def delete_stack(
         self,

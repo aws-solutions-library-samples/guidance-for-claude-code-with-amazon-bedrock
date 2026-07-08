@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Optional admin console for the IAM Identity Center landing page. Adds a
+  /admin* listener rule + Lambda target group to the ALB provisioned by
+  landing-page-distribution.yaml (IdPProvider=idc). Deployed as a separate
+  stack (`ccwb deploy admin-console`) so the landing page itself has no
+  dependency on IDC group/permission-set management — only sites that need
+  the admin UI deploy this stack.
+#
+# Why a separate stack instead of bundling into landing-page-distribution.yaml:
+#   - The landing page (self-service downloads + auth) is useful on its own;
+#     the admin console (group->model->permission-set provisioning) is a much
+#     more powerful, more privileged capability that not every deployment
+#     wants or needs.
+#   - Reuses the SAME ALB/listener/Cognito-IDC-bridge the distribution stack
+#     already created — no new ALB, no new Cognito app client, no new
+#     Secrets Manager secret. This stack only adds a listener rule + target
+#     group + Lambda.
+#   - Auth is 100% ALB-native `authenticate-oidc` (the same mechanism the
+#     landing page's default listener action uses), not a custom Lambda
+#     session-cookie scheme. ALB validates the JWT and passes the decoded
+#     claims via the x-amzn-oidc-data header; this Lambda only adds a second,
+#     independent authorization check (live IAM Identity Center group lookup)
+#     on top of that authentication, gating everything under /admin.
+
+Parameters:
+  IdentityPoolName:
+    Type: String
+    Description: Name prefix for resources (should match the distribution stack's IdentityPoolName)
+
+  CustomDomainName:
+    Type: String
+    Description: >-
+      Custom domain of the distribution stack's ALB (same value passed to
+      landing-page-distribution.yaml's CustomDomainName). Used to build the
+      admin console URL and to validate the Origin header on admin POST
+      requests (CSRF defense-in-depth).
+    AllowedPattern: '.+'
+
+  HTTPSListenerArn:
+    Type: String
+    Description: >-
+      ARN of the distribution stack's ALB HTTPS listener (from that stack's
+      HTTPSListenerArn output). This stack attaches a new listener rule here
+      rather than creating its own ALB.
+    AllowedPattern: '.+'
+    ConstraintDescription: 'HTTPSListenerArn is required — deploy the distribution stack first.'
+
+  ListenerRulePriority:
+    Type: Number
+    Default: 10
+    Description: >-
+      Priority for the /admin* listener rule. Must be unique among all rules
+      on the shared listener. The distribution stack's own numbered rule
+      (BootstrapApiListenerRule, for /api/bootstrap) is fixed at priority 1 —
+      avoid setting this parameter to 1.
+    MinValue: 2
+    MaxValue: 50000
+
+  IdcUserPoolClientId:
+    Type: String
+    Description: >-
+      Cognito User Pool Client ID from the distribution stack's
+      IdcUserPoolClientId output (the same OIDC app client the landing page
+      uses — the admin console reuses it rather than minting a new one).
+    AllowedPattern: '.+'
+
+  IdcUserPoolClientSecretArn:
+    Type: String
+    Description: Secrets Manager ARN from the distribution stack's IdcUserPoolClientSecretArn output.
+    AllowedPattern: '.+'
+
+  IdcUserPoolId:
+    Type: String
+    Description: Cognito User Pool ID from the distribution stack's IdcUserPoolId output.
+    AllowedPattern: '.+'
+
+  IdcUserPoolDomain:
+    Type: String
+    Description: Cognito User Pool domain prefix from the distribution stack's IdcUserPoolDomain output.
+    AllowedPattern: '.+'
+
+  IdcBootstrapUserPoolClientId:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Cognito app client ID from the distribution stack's
+      IdcBootstrapUserPoolClientId output. When set, generated
+      mobileconfig/.reg MDM files include a bootstrapOidc block so Claude
+      Desktop can authenticate directly against /api/bootstrap for dynamic
+      per-user config. Leave empty to generate MDM files without bootstrap
+      OIDC (bootstrapUrl-only, e.g. for distribution stacks deployed before
+      this feature existed).
+
+  IdcBootstrapRedirectPort:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Loopback port from the distribution stack's
+      IdcBootstrapRedirectPort output — must match IdcBootstrapUserPoolClientId's
+      registered callback URLs. Required if IdcBootstrapUserPoolClientId is set.
+
+  DistributionBucketName:
+    Type: String
+    Description: S3 bucket name from the distribution stack's DistributionBucket output (admin config is stored under admin/ and config/ prefixes in this bucket).
+    AllowedPattern: '.+'
+
+  DistributionBucketArn:
+    Type: String
+    Description: S3 bucket ARN from the distribution stack's DistributionBucketArn output.
+    AllowedPattern: '.+'
+
+  IdcInstanceArn:
+    Type: String
+    Description: >-
+      IAM Identity Center instance ARN. Required — the admin console reads
+      groups/permission sets from this instance and provisions Bedrock model
+      access via SSO Admin API permission sets.
+    AllowedPattern: '.+'
+    ConstraintDescription: 'IdcInstanceArn is required for the admin console (group/permission-set management).'
+
+  IdcRegion:
+    Type: String
+    Default: ''
+    Description: >-
+      AWS region where the IAM Identity Center instance lives (its "home"
+      region — IDC data such as permission sets, groups, and users is only
+      ever stored in that one region, regardless of where this stack itself
+      is deployed). Leave empty to default to this stack's own region (the
+      common case where the admin console is deployed in the same region as
+      IDC). Set explicitly when deploying the admin console in a different
+      region than IDC's home region — e.g. distribution/admin-console
+      infrastructure in us-west-2 while IDC is enabled in us-east-1.
+
+  AdminGroupName:
+    Type: String
+    Default: 'Claude-Code-Admins'
+    Description: >-
+      IAM Identity Center group whose members may access /admin. Checked via
+      a live IDC lookup on every request (never trusted from a token claim),
+      matching the landing page's existing group-membership pattern.
+
+  AdditionalTrustedOrigins:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      (Optional) Extra Origin/Referer values to accept on admin POST
+      requests, in addition to https://CustomDomainName. Needed when
+      ALBScheme=internal and you access the admin console through an
+      SSM port-forwarding tunnel or VPN endpoint whose hostname differs
+      from CustomDomainName (e.g. https://localhost, https://127.0.0.1) —
+      without this, the CSRF Origin check fails closed for those requests.
+      Leave empty for production internet-facing deployments where the
+      custom domain is the only way users reach the admin console.
+
+Conditions:
+  HasExplicitIdcRegion: !Not [!Equals [!Ref IdcRegion, '']]
+  HasIdcBootstrapClient: !Not [!Equals [!Ref IdcBootstrapUserPoolClientId, '']]
+
+Resources:
+  # ============================================================
+  # Lambda execution role
+  # ============================================================
+  AdminConsoleFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        # Admin config is stored as JSON under admin/ and generated MDM/bootstrap
+        # files under config/ in the same bucket the landing page uses for
+        # package downloads — scoped to those two prefixes only, no access to
+        # packages/ or docs/.
+        - PolicyName: AdminConfigS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${DistributionBucketArn}/admin/*'
+                  - !Sub '${DistributionBucketArn}/config/*'
+        # IAM Identity Center group/permission-set management. Note: the IAM
+        # action prefix for the SSO Admin API is "sso:" (not "sso-admin:" —
+        # that's only the boto3 client name); using "sso-admin:" here would
+        # silently grant nothing since it isn't a real IAM action namespace.
+        #
+        # Scoped per the "Actions, resources, and condition keys for AWS IAM
+        # Identity Center" service-authorization reference
+        # (https://docs.aws.amazon.com/service-authorization/latest/reference/list_awsiamidentitycenter.html).
+        # Several actions require MULTIPLE resource types simultaneously
+        # (e.g. CreateAccountAssignment needs Account* + Instance* +
+        # PermissionSet* all at once) — all required ARNs must be listed in
+        # Resource for IAM to grant the action at all, not just one of them.
+        # PermissionSetId isn't known ahead of creation, so PermissionSet*
+        # resources use "permissionSet/${InstanceId}/*" (any permission set
+        # under THIS instance, not any permission set in any instance).
+        - PolicyName: IdcGroupAndPermissionSetManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sso:ListInstances
+                Resource: '*' # ListInstances has no resource type to scope to
+              - Effect: Allow
+                Action:
+                  - sso:ListPermissionSets
+                  - sso:ListPermissionSetProvisioningStatus
+                  - sso:DescribePermissionSetProvisioningStatus
+                Resource: !Ref IdcInstanceArn # Instance* only
+              - Effect: Allow
+                Action:
+                  - sso:DescribePermissionSet
+                  - sso:CreatePermissionSet
+                  - sso:PutInlinePolicyToPermissionSet
+                  - sso:GetInlinePolicyForPermissionSet
+                Resource:
+                  # Instance* + PermissionSet*, both required simultaneously.
+                  - !Ref IdcInstanceArn
+                  - !Sub
+                    - 'arn:${AWS::Partition}:sso:::permissionSet/${InstanceId}/*'
+                    - InstanceId: !Select [1, !Split ['/', !Ref IdcInstanceArn]]
+              - Effect: Allow
+                Action:
+                  - sso:CreateAccountAssignment
+                  - sso:ListAccountAssignments
+                  - sso:ProvisionPermissionSet
+                Resource:
+                  # Account* + Instance* + PermissionSet*, all required simultaneously.
+                  - !Sub 'arn:${AWS::Partition}:sso:::account/${AWS::AccountId}'
+                  - !Ref IdcInstanceArn
+                  - !Sub
+                    - 'arn:${AWS::Partition}:sso:::permissionSet/${InstanceId}/*'
+                    - InstanceId: !Select [1, !Split ['/', !Ref IdcInstanceArn]]
+              # identitystore:ListGroups/DescribeGroup/ListUsers/
+              # ListGroupMembershipsForMember each require BOTH a Group/User/
+              # AllGroupMemberships-family resource type AND an Identitystore
+              # resource (arn:...:identitystore::${Account}:identitystore/${Id})
+              # simultaneously. The Identity Store ID is only discovered at
+              # runtime via sso:ListInstances (it isn't derivable from
+              # IdcInstanceArn and isn't available as a template parameter),
+              # so the Identitystore resource can't be scoped in this static
+              # policy. Left as '*' — every one of these actions is read-only
+              # (List/Read access level, no Write) rather than a mutation.
+              - Effect: Allow
+                Action:
+                  - identitystore:ListGroups
+                  - identitystore:DescribeGroup
+                  - identitystore:ListUsers
+                  - identitystore:ListGroupMembershipsForMember
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:GetInferenceProfile
+                Resource: '*' # Bedrock read-only model discovery actions don't support resource-level scoping
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*' # sts:GetCallerIdentity does not support resource-level permissions
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  AdminConsoleLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IdentityPoolName}-admin-console'
+      RetentionInDays: 30
+
+  # ============================================================
+  # Lambda function
+  # ============================================================
+  # Code is packaged from deployment/infrastructure/lambda-functions/admin_console/
+  # via `aws cloudformation package` (same pattern as bootstrap-device-code.yaml
+  # and quota-monitoring.yaml) since the admin HTML/JS + route handlers exceed
+  # the 4096-byte inline ZipFile limit.
+  AdminConsoleFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AdminConsoleLogGroup
+    Properties:
+      FunctionName: !Sub '${IdentityPoolName}-admin-console'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt AdminConsoleFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref DistributionBucketName
+          IDC_INSTANCE_ARN: !Ref IdcInstanceArn
+          ADMIN_GROUP: !Ref AdminGroupName
+          BASE_URL: !Sub 'https://${CustomDomainName}'
+          ADDITIONAL_TRUSTED_ORIGINS: !Join [',', !Ref AdditionalTrustedOrigins]
+          IDC_BOOTSTRAP_CLIENT_ID: !Ref IdcBootstrapUserPoolClientId
+          IDC_BOOTSTRAP_ISSUER: !If
+            - HasIdcBootstrapClient
+            - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${IdcUserPoolId}'
+            - ''
+          IDC_BOOTSTRAP_REDIRECT_PORT: !Ref IdcBootstrapRedirectPort
+          # IDC data (permission sets, groups, users) only ever lives in the
+          # region IDC was enabled in — not necessarily this stack's own
+          # region. Defaults to AWS::Region (the common case: admin console
+          # deployed alongside IDC) when IdcRegion isn't set.
+          IDC_REGION: !If [HasExplicitIdcRegion, !Ref IdcRegion, !Ref 'AWS::Region']
+      Code: ./lambda-functions/admin_console/
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  # ALB target groups for Lambda targets don't support HealthCheckEnabled=true
+  # against a Lambda target (ALB invokes the function directly to health
+  # check), but we disable it anyway to match the landing page's
+  # LambdaTargetGroup and avoid unnecessary invocations.
+  AdminTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: AdminLambdaInvokePermission
+    Properties:
+      TargetType: lambda
+      Targets:
+        - Id: !GetAtt AdminConsoleFunction.Arn
+      HealthCheckEnabled: false
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  AdminLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AdminConsoleFunction
+      Action: lambda:InvokeFunction
+      Principal: elasticloadbalancing.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*'
+
+  # ============================================================
+  # Listener rule: /admin* on the distribution stack's shared ALB listener
+  # ============================================================
+  # authenticate-oidc is configured per-rule here (independently of the
+  # listener's own DefaultActions in landing-page-distribution.yaml), reusing
+  # the same Cognito-IDC-bridge app client/secret so admins get the same
+  # sign-in experience as the landing page, on the same domain.
+  AdminListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HTTPSListenerArn
+      Priority: !Ref ListenerRulePriority
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/admin'
+            - '/admin/*'
+      Actions:
+        - Type: authenticate-oidc
+          Order: 1
+          AuthenticateOidcConfig:
+            Issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${IdcUserPoolId}'
+            AuthorizationEndpoint: !Sub 'https://${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize'
+            TokenEndpoint: !Sub 'https://${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+            UserInfoEndpoint: !Sub 'https://${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/userInfo'
+            ClientId: !Ref IdcUserPoolClientId
+            ClientSecret: !Sub '{{resolve:secretsmanager:${IdcUserPoolClientSecretArn}:SecretString}}'
+            SessionTimeout: 43200 # 12 hours, matches the landing page listener
+            Scope: 'openid email profile'
+            OnUnauthenticatedRequest: authenticate
+        - Type: forward
+          Order: 2
+          TargetGroupArn: !Ref AdminTargetGroup
+
+Outputs:
+  AdminConsoleUrl:
+    Description: Admin console URL (requires membership in AdminGroupName within IAM Identity Center)
+    Value: !Sub 'https://${CustomDomainName}/admin'
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminConsoleUrl'
+
+  AdminConsoleFunctionArn:
+    Description: Admin console Lambda function ARN
+    Value: !GetAtt AdminConsoleFunction.Arn

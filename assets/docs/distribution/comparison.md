@@ -6,9 +6,9 @@ Claude Code with Bedrock supports three distribution methods for sharing package
 
 1. **Presigned S3 URLs** - Simple, no authentication required
 2. **Authenticated Landing Page** - Enterprise-grade with external IdP integration (Okta/Azure/Auth0/Cognito)
-3. **Self-Service Portal (IAM Identity Center)** - CDK-deployed CloudFront + Cognito + Lambda portal with an admin console, native IAM Identity Center SSO, and dynamic Claude Desktop config delivery via bootstrap
+3. **Self-Service Portal (IAM Identity Center)** - the same ALB + Lambda + S3 CloudFormation stack as the Landing Page, with `IdPProvider=idc` (Cognito bridges SAML/IDC to OIDC), plus an optional separate admin console stack for managing models/policies/MCP servers
 
-This guide helps you choose the right option for your organization. For the IAM Identity Center portal specifically, see [deployment/idc-landing-page/README.md](../../../deployment/idc-landing-page/README.md).
+This guide helps you choose the right option for your organization. For the IAM Identity Center portal specifically, see [idc-self-service-portal.md](idc-self-service-portal.md).
 
 ---
 
@@ -24,7 +24,7 @@ This guide helps you choose the right option for your organization. For the IAM 
 | **User Experience** | Copy/paste URL                     | Navigate to URL, authenticate, download | Navigate to URL, SSO login, download; configs auto-update via bootstrap |
 | **Admin Overhead**  | Generate new URLs when needed      | Set up once, no maintenance             | Admin console for models/policies/MCP servers, group-based access |
 | **Access Control**  | Anyone with URL                    | IdP groups/users                        | IAM Identity Center groups → per-group permission sets |
-| **Deployment tool** | CloudFormation (`ccwb deploy`)     | CloudFormation (`ccwb deploy`)          | AWS CDK (via `ccwb deploy distribution`)   |
+| **Deployment tool** | CloudFormation (`ccwb deploy`)     | CloudFormation (`ccwb deploy`)          | CloudFormation (`ccwb deploy distribution` + optional `ccwb deploy admin-console`) |
 
 ---
 
@@ -121,7 +121,7 @@ Admin Machine → S3 → Lambda (generates presigned URLs) → User authenticate
 - ✅ Your org already uses AWS IAM Identity Center for workforce SSO
 - ✅ You want an admin console to manage models, policies, and MCP servers per group without redeploying
 - ✅ You want Claude Desktop configs to update automatically (via bootstrap) without re-issuing installers
-- ✅ You're comfortable running an AWS CDK deployment alongside the CloudFormation-based `ccwb deploy`
+- ✅ You want everything deployed via CloudFormation, consistent with every other `ccwb deploy` stack (no CDK toolchain required)
 
 ---
 
@@ -155,14 +155,14 @@ Admin Machine → S3 → Lambda (generates presigned URLs) → User authenticate
 1. Run `poetry run ccwb init`
 2. Select "Self-Service Portal (IAM Identity Center)"
 3. Provide (or let the wizard auto-detect) your IAM Identity Center instance ARN and admin group name
-4. Run `poetry run ccwb deploy distribution` — this invokes AWS CDK to deploy CloudFront, Cognito, Lambda, and S3 (prints SAML ACS URL/Audience and next steps on completion)
+4. Run `poetry run ccwb deploy distribution` — deploys `landing-page-distribution.yaml` (`IdPProvider=idc`), the same CloudFormation template used by the other landing-page types (prints SAML ACS URL/Audience and next steps on completion)
 5. Create a **Custom SAML 2.0 application** in IAM Identity Center (manual, AWS console — using the ACS URL/Audience from Step 4's output)
-6. Run `poetry run ccwb configure-saml <metadata-url>` — wires the SAML identity provider into Cognito automatically, enabling it on both the web app client and the bootstrap client
+6. Run `poetry run ccwb configure-saml <metadata-url>` — saves the metadata URL to your profile and re-deploys the distribution stack, letting CloudFormation's conditional SAML identity-provider resource wire itself into Cognito automatically
 7. Assign IAM Identity Center groups to the application
-8. Sign in to the portal's `/admin` console to configure models, policies, and MCP servers per group
+8. (Optional) Run `poetry run ccwb deploy admin-console` to deploy a separate stack that adds a `/admin` console (attached to the same ALB) for configuring models, policies, and MCP servers per group
 9. **Ready to use!** Users authenticate with IAM Identity Center and download configs that self-update via bootstrap
 
-See [deployment/idc-landing-page/README.md](../../../deployment/idc-landing-page/README.md) for full step-by-step deployment instructions.
+See [idc-self-service-portal.md](idc-self-service-portal.md) for the full step-by-step deployment instructions.
 
 ---
 
@@ -208,13 +208,12 @@ See [deployment/idc-landing-page/README.md](../../../deployment/idc-landing-page
 
 **Security Features:**
 
-- Native IAM Identity Center SSO (no separate IdP credential set)
-- HMAC-signed session cookies (Secrets Manager-backed key) — not forgeable
+- Native IAM Identity Center SSO (no separate IdP credential set) via the ALB's native `authenticate-oidc` listener action (same mechanism as the other landing-page types) — no custom session-cookie logic
 - Bootstrap API validates the caller's Cognito access token via `/oauth2/userInfo` before returning config
-- CSRF protection via Origin-header verification
+- CSRF protection via Origin-header verification on admin POST requests
 - Per-group authorization on config downloads (fail-closed group filtering)
-- Admin console access requires exact match against an admin group name
-- S3 bucket not publicly accessible (CloudFront + Origin Access Control)
+- Admin console access requires a live IAM Identity Center group lookup on every request (never trusted from a token claim) against an admin group name
+- S3 bucket not publicly accessible
 - HTML output escaped to prevent XSS; error responses do not leak internal exception detail
 
 **Security Limitations:**
@@ -233,9 +232,9 @@ You can switch between distribution types by:
 1. Run `poetry run ccwb init` (reconfigure)
 2. Select different distribution type
 3. Run `poetry run ccwb deploy distribution`
-4. CloudFormation (or CDK, for the IAM Identity Center portal) will replace the stack with the new type
+4. CloudFormation will replace the stack with the new type
 
-**Note:** Presigned S3 and Landing Page share the same CloudFormation stack name, so you can't have both deployed simultaneously. The Self-Service Portal (IAM Identity Center) is a separate AWS CDK app under `deployment/idc-landing-page/` and can coexist with either CloudFormation-based option, but `ccwb init` only tracks one active `distribution_type` per profile at a time.
+**Note:** All three distribution types (Presigned S3, Landing Page, and the IAM Identity Center portal) share the same `landing-page-distribution.yaml`/`presigned-s3-distribution.yaml` CloudFormation stack name, so you can't have more than one deployed simultaneously — `ccwb init` only tracks one active `distribution_type` per profile at a time. The admin console (`ccwb deploy admin-console`) is a separate stack and must be destroyed/redeployed independently if you switch away from `landing-page-idc`.
 
 ---
 
@@ -267,7 +266,7 @@ You can switch between distribution types by:
 ## FAQ
 
 **Q: Can I have both types deployed at once?**
-A: Presigned S3 and Landing Page use the same CloudFormation stack name, so choose one per deployment. The Self-Service Portal (IAM Identity Center) is a separate CDK deployment and can run alongside either.
+A: No — all three distribution types share the same CloudFormation stack name, so choose one per deployment. The admin console is a separate stack, but only makes sense alongside the IAM Identity Center portal.
 
 **Q: How do I switch from Presigned S3 to Landing Page?**
 A: Run `ccwb init` to reconfigure, then `ccwb deploy distribution` to update the stack.
@@ -282,10 +281,10 @@ A: No, ALB requires IdP authentication before users can access the landing page.
 A: For presigned-s3: Generate new URLs with `ccwb distribute`. For landing-page: URLs regenerate automatically when users visit.
 
 **Q: Can I use a custom domain?**
-A: Landing page supports custom domains via Route53. Presigned-s3 uses S3 URLs directly. The Self-Service Portal (IAM Identity Center) uses CloudFront's default `*.cloudfront.net` domain and does not currently support a custom domain.
+A: Yes for all three types — Landing Page, Presigned S3 (S3 URLs directly), and the Self-Service Portal (IAM Identity Center), which uses the same `CustomDomainName`/Route53 parameters as the external-IdP Landing Page.
 
 **Q: Does the Self-Service Portal (IAM Identity Center) require a VPC?**
-A: No. It's serverless (CloudFront + API Gateway + Lambda + S3), unlike the external-IdP Landing Page which requires a networking stack.
+A: Yes — it uses the same ALB + Lambda architecture as the external-IdP Landing Page, so it requires the networking stack (`ccwb deploy networking`) just like that option does.
 
 ---
 

@@ -1987,11 +1987,10 @@ class InitCommand(Command):
 
         elif distribution_type == "landing-page-idc":
             console.print("\n[bold]IAM Identity Center Landing Page Configuration[/bold]")
-            console.print("Configure the self-service portal with IAM Identity Center authentication")
-            console.print("\nThis deploys a CloudFront + Cognito + Lambda solution with:")
-            console.print("  • Admin console for model/policy/MCP server management")
-            console.print("  • Automatic permission set creation per IDC group")
-            console.print("  • Dynamic config updates via OIDC bootstrap")
+            console.print("Configure the self-service download portal with IAM Identity Center authentication")
+            console.print("\nThis deploys the same ALB + Lambda + S3 CloudFormation stack used by the other")
+            console.print("landing page types (`ccwb deploy distribution`), with Cognito bridging SAML (IDC)")
+            console.print("to OIDC for the ALB.")
 
             # Try to auto-detect IDC instance
             try:
@@ -2031,12 +2030,26 @@ class InitCommand(Command):
                     default=config.get("distribution", {}).get("idc_instance_arn", ""),
                 ).ask()
 
-            # Admin group name
-            console.print("\n[dim]Admin group: Users in this group can access the admin console.[/dim]")
-            console.print("[dim]The group name must contain both 'Claude' and 'Admin' (e.g., Claude-Code-Admins)[/dim]")
+            # Admin group name (used if an admin console is deployed later)
+            console.print(
+                "\n[dim]Admin group: reserved for a future admin console stack, not required for the "
+                "landing page itself.[/dim]"
+            )
             idc_admin_group = questionary.text(
                 "Admin group name:",
                 default=config.get("distribution", {}).get("idc_admin_group", "Claude-Code-Admins"),
+            ).ask()
+
+            # ALB scheme: internal (default — test via SSM port forwarding, or VPN/private
+            # network access) vs internet-facing (production, publicly reachable).
+            console.print(
+                "\n[dim]Load balancer scheme: 'internal' restricts access to your VPC/private network "
+                "(test via SSM port forwarding or VPN). Use 'internet-facing' for public access.[/dim]"
+            )
+            alb_scheme = questionary.select(
+                "ALB scheme:",
+                choices=["internal", "internet-facing"],
+                default=config.get("distribution", {}).get("alb_scheme", "internal"),
             ).ask()
 
             # Store IDC configuration
@@ -2046,11 +2059,20 @@ class InitCommand(Command):
                     "type": "landing-page-idc",
                     "idc_instance_arn": idc_instance_arn,
                     "idc_admin_group": idc_admin_group,
+                    "alb_scheme": alb_scheme,
                 }
             )
 
             console.print("\n[green]✓[/green] IAM Identity Center landing page will be deployed")
-            console.print("[dim]Note: After deployment, you'll need to configure SAML in IAM Identity Center[/dim]")
+            console.print(
+                "[dim]Note: after deployment, create a Custom SAML 2.0 application in IAM Identity Center "
+                "using the printed ACS URL/Audience, then run 'ccwb configure-saml <metadata-url>'.[/dim]"
+            )
+            console.print(
+                "[dim]Optional: once the landing page is deployed, run 'ccwb deploy admin-console' to add "
+                f"a /admin UI (restricted to the '{idc_admin_group}' group) for managing group->model "
+                "mappings, permission sets, and MCP server policies.[/dim]"
+            )
 
         elif distribution_type == "presigned-s3":
             console.print("[green]✓[/green] Presigned S3 distribution will be deployed")
@@ -2727,6 +2749,11 @@ class InitCommand(Command):
             ),
             "distribution_idp_token_endpoint": config_data.get("distribution", {}).get("idp_token_endpoint"),
             "distribution_idp_userinfo_endpoint": config_data.get("distribution", {}).get("idp_userinfo_endpoint"),
+            "distribution_idc_instance_arn": config_data.get("distribution", {}).get("idc_instance_arn"),
+            "distribution_idc_admin_group": config_data.get("distribution", {}).get(
+                "idc_admin_group", "Claude-Code-Admins"
+            ),
+            "distribution_alb_scheme": config_data.get("distribution", {}).get("alb_scheme"),
             "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -3148,6 +3175,9 @@ class InitCommand(Command):
                     "idp_authorization_endpoint": getattr(profile, "distribution_idp_authorization_endpoint", None),
                     "idp_token_endpoint": getattr(profile, "distribution_idp_token_endpoint", None),
                     "idp_userinfo_endpoint": getattr(profile, "distribution_idp_userinfo_endpoint", None),
+                    "idc_instance_arn": getattr(profile, "distribution_idc_instance_arn", None),
+                    "idc_admin_group": getattr(profile, "distribution_idc_admin_group", "Claude-Code-Admins"),
+                    "alb_scheme": getattr(profile, "distribution_alb_scheme", None),
                 }
 
             # Add quota monitoring configuration if present.

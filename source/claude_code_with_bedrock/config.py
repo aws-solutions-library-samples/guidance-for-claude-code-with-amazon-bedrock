@@ -74,13 +74,25 @@ class Profile:
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+    distribution_existing_certificate_arn: str | None = (
+        None  # Optional ACM cert ARN to use instead of requesting a new DNS-validated one
+    )
 
-    # IAM Identity Center landing page configuration (distribution_type == "landing-page-idc")
-    distribution_idc_instance_arn: str | None = None  # IAM Identity Center instance ARN
-    distribution_idc_admin_group: str = "Claude-Code-Admins"  # Admin group name pattern
-    distribution_idc_bootstrap_client_id: str | None = None  # Cognito bootstrap OIDC client ID
-    distribution_idc_landing_page_url: str | None = None  # CloudFront URL (set after deploy)
-    distribution_idc_user_pool_id: str | None = None  # Cognito User Pool ID (set after deploy)
+    # IAM Identity Center landing page configuration (distribution_type == "landing-page-idc").
+    # Deployed via landing-page-distribution.yaml (IdPProvider=idc) — the same
+    # CloudFormation template used for the other landing-page IdP types, not a
+    # separate stack. User Pool ID / client ID / landing page URL are read
+    # directly from that stack's outputs (get_stack_outputs), not stored here.
+    distribution_idc_instance_arn: str | None = (
+        None  # IAM Identity Center instance ARN (used by the separate admin-console stack)
+    )
+    distribution_idc_admin_group: str = (
+        "Claude-Code-Admins"  # Admin group name pattern (used by the separate admin-console stack)
+    )
+    distribution_idc_saml_metadata_url: str | None = None  # SAML metadata URL, set by `ccwb configure-saml`
+    distribution_alb_scheme: str | None = (
+        None  # "internal" | "internet-facing" (defaults to "internal" for landing-page-idc)
+    )
 
     # Generic OIDC distribution config (distribution_idp_provider == "generic").
     # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,

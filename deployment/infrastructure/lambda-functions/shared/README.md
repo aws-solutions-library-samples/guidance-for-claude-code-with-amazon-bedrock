@@ -63,13 +63,13 @@ The `ccwb cowork generate` command uses `source/claude_code_with_bedrock/cli/uti
 |-----------|---------------------|-------|
 | `bootstrap_server/index.py` | Partial | Uses own config builder |
 | `bootstrap_device_code/index.py` | No | Needs migration |
-| `idc-landing-page/lambda/index.py` | No | Needs migration (shared module copied) |
+| `admin_console/index.py` | Yes | Uses `shared.mdm_config`/`shared.mdm_generators` directly (retired the old CDK app's duplicated inline generators) |
 | `ccwb cowork generate` | No | Uses `cowork_3p.py` |
 
 ## Migration Plan
 
 1. **Phase 1 (Complete)**: Create shared library with canonical MDM schema
 2. **Phase 2**: Update `bootstrap_server/index.py` to use shared builders
-3. **Phase 3**: Update `idc-landing-page/lambda/index.py` to use shared generators
+3. **Phase 3 (Complete)**: `admin_console/index.py` (successor to the retired CDK-based `idc-landing-page/lambda/index.py`) uses shared generators
 4. **Phase 4**: Align `cowork_3p.py` with shared library (may need to import or mirror)
 5. **Phase 5**: Add validation tests to ensure all generators produce compatible output

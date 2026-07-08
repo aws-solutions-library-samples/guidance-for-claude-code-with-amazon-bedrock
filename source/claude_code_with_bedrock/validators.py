@@ -167,13 +167,24 @@ class ProfileValidator:
                     "Must be 'presigned-s3', 'landing-page', or 'landing-page-idc'"
                 )
 
-            # IAM Identity Center landing page validation
+            # IAM Identity Center landing page validation. Deployed via
+            # landing-page-distribution.yaml (IdPProvider=idc) — no required
+            # fields at distribution-setup time: distribution_idc_instance_arn
+            # is only needed by the separate admin-console stack (deployed
+            # independently, not as part of `ccwb deploy distribution`), and
+            # distribution_idc_saml_metadata_url is set later by `ccwb
+            # configure-saml` once the manual IDC SAML app exists. Validate
+            # format only when either happens to be present.
             if distribution_type == "landing-page-idc":
                 idc_instance_arn = profile_data.get("distribution_idc_instance_arn")
-                if not idc_instance_arn:
-                    errors.append("distribution_idc_instance_arn is required for landing-page-idc distribution")
-                elif not ProfileValidator._is_valid_arn(idc_instance_arn):
+                if idc_instance_arn and not ProfileValidator._is_valid_arn(idc_instance_arn):
                     errors.append(f"Invalid distribution_idc_instance_arn format: {idc_instance_arn}")
+
+                alb_scheme = profile_data.get("distribution_alb_scheme")
+                if alb_scheme and alb_scheme not in ("internal", "internet-facing"):
+                    errors.append(
+                        f"Invalid distribution_alb_scheme: {alb_scheme}. Must be 'internal' or 'internet-facing'"
+                    )
 
             # External OIDC landing page requires additional fields
             elif distribution_type == "landing-page":

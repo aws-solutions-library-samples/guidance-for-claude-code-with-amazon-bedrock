@@ -42,6 +42,8 @@ VALID_STACKS = [
     "analytics",
     "quota",
     "distribution",
+    "admin-console",
+    "s3bucket",
     "codebuild",
     "websearch",
     "bootstrap",
@@ -62,6 +64,21 @@ def _extract_azure_tenant_id(domain: str) -> str:
     """
     match = _AZURE_GUID_PATTERN.search(domain)
     return match.group(0) if match else domain
+
+
+def _resolve_alb_scheme(profile) -> str:
+    """Resolve the distribution ALB's scheme the same way the distribution
+    deploy branch does, so the networking stack can decide whether a NAT
+    Gateway is needed before the distribution stack itself is deployed.
+
+    Mirrors the landing-page-idc default (internal, since it's typically
+    tested via SSM port forwarding rather than exposed to the internet) while
+    leaving every other distribution type at the template's own default
+    (internet-facing) unless explicitly overridden on the profile.
+    """
+    if profile.distribution_type == "landing-page-idc":
+        return getattr(profile, "distribution_alb_scheme", None) or "internal"
+    return getattr(profile, "distribution_alb_scheme", None) or "internet-facing"
 
 
 def _discover_oidc_endpoints(profile) -> dict:
@@ -487,6 +504,25 @@ class DeployCommand(Command):
                     console.print("[yellow]Distribution features not enabled in profile.[/yellow]")
                     console.print("Run 'poetry run ccwb init' and enable distribution features.")
                     return 1
+            elif stack_arg == "admin-console":
+                if profile.distribution_type != "landing-page-idc":
+                    console.print(
+                        "[yellow]The admin console is only available for the 'landing-page-idc' "
+                        "distribution type.[/yellow]"
+                    )
+                    return 1
+                if not getattr(profile, "distribution_idc_instance_arn", None):
+                    console.print("[yellow]Admin console requires distribution_idc_instance_arn to be set.[/yellow]")
+                    console.print("[dim]Run 'ccwb init' and provide your IAM Identity Center instance ARN.[/dim]")
+                    return 1
+                stacks_to_deploy.append(("admin-console", "Admin Console (IDC group/model/permission-set management)"))
+            elif stack_arg == "s3bucket":
+                # Otherwise auto-deployed as part of monitoring/quota, but exposed
+                # directly too since admin-console/dashboard/quota's Lambda
+                # packaging step needs its CfnArtifactsBucket output and may be
+                # deployed standalone (e.g. distribution_type=landing-page-idc
+                # without monitoring enabled).
+                stacks_to_deploy.append(("s3bucket", "S3 Bucket (CloudFormation artifacts + packages)"))
             elif stack_arg == "codebuild":
                 if profile.enable_codebuild:
                     stacks_to_deploy.append(("codebuild", "CodeBuild for Windows binary builds"))
@@ -968,7 +1004,7 @@ class DeployCommand(Command):
                 stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
 
                 # Select template based on distribution type
-                if profile.distribution_type == "landing-page":
+                if profile.distribution_type in ("landing-page", "landing-page-idc"):
                     template = project_root / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
 
                     # Get VPC outputs from networking stack
@@ -984,7 +1020,6 @@ class DeployCommand(Command):
                         return 1
 
                     vpc_id = networking_outputs.get("VpcId", "")
-                    # Networking stack only has public subnets (SubnetIds), use for both ALB and Lambda
                     subnet_ids = networking_outputs.get("SubnetIds", "")
 
                     if not vpc_id or not subnet_ids:
@@ -993,9 +1028,32 @@ class DeployCommand(Command):
                         console.print(f"[yellow]Got: {list(networking_outputs.keys())}[/yellow]")
                         return 1
 
-                    # Use same subnets for both public (ALB) and private (Lambda)
+                    # landing-page-idc always uses IdPProvider=idc; landing-page uses
+                    # whichever external IdP was configured during init.
+                    idp_provider = (
+                        "idc" if profile.distribution_type == "landing-page-idc" else profile.distribution_idp_provider
+                    )
+
+                    # An internal-scheme ALB needs NAT-routed private subnets (its
+                    # nodes never get a public IP, so a direct IGW route can't NAT
+                    # their outbound calls to a public OIDC token endpoint). The
+                    # networking stack only creates those when CreateNatGateway=true
+                    # (see _resolve_alb_scheme / the networking deploy branch above).
                     public_subnets = subnet_ids
-                    private_subnets = subnet_ids
+                    if _resolve_alb_scheme(profile) == "internal":
+                        private_subnets = networking_outputs.get("PrivateSubnetIds", "")
+                        if not private_subnets:
+                            console.print(
+                                "[red]Error: ALBScheme=internal requires NAT-routed private subnets, but the "
+                                "networking stack has no PrivateSubnetIds output.[/red]"
+                            )
+                            console.print(
+                                "[yellow]Redeploy the networking stack (it will add a NAT Gateway "
+                                "automatically now that distribution is configured for an internal ALB).[/yellow]"
+                            )
+                            return 1
+                    else:
+                        private_subnets = subnet_ids
 
                     # Build parameters for landing page
                     params = [
@@ -1003,11 +1061,31 @@ class DeployCommand(Command):
                         f"VpcId={vpc_id}",
                         f"PublicSubnetIds={public_subnets}",
                         f"PrivateSubnetIds={private_subnets}",
-                        f"IdPProvider={profile.distribution_idp_provider}",
+                        f"IdPProvider={idp_provider}",
                     ]
 
                     # Add IdP-specific parameters
-                    if profile.distribution_idp_provider == "okta":
+                    if idp_provider == "idc":
+                        # ALBScheme defaults to internal for IDC deployments (tested via SSM
+                        # port forwarding); set distribution_alb_scheme="internet-facing" on
+                        # the profile to override for production internet-facing use.
+                        alb_scheme = _resolve_alb_scheme(profile)
+                        params.append(f"ALBScheme={alb_scheme}")
+                        if getattr(profile, "distribution_idc_saml_metadata_url", None):
+                            params.append(f"IdcSamlMetadataUrl={profile.distribution_idc_saml_metadata_url}")
+                        # The landing page's own admin-nav visibility and
+                        # per-group model-authorization checks call sso-admin/
+                        # identitystore directly (see get_user_idc_groups_landing),
+                        # which only ever return data in IDC's home region. Without
+                        # this, IdcGroupLookupRegion defaults to the template's own
+                        # !Ref AWS::Region, which is wrong whenever the distribution
+                        # stack is deployed in a different region than IDC (e.g.
+                        # infra in us-west-2, IDC enabled in us-east-1) — group
+                        # lookups silently return nothing, hiding the admin nav
+                        # and failing every group-based authorization check.
+                        if getattr(profile, "sso_region", None):
+                            params.append(f"IdcGroupLookupRegion={profile.sso_region}")
+                    elif idp_provider == "okta":
                         params.extend(
                             [
                                 f"OktaDomain={profile.distribution_idp_domain}",
@@ -1062,6 +1140,8 @@ class DeployCommand(Command):
                         params.append(f"CustomDomainName={profile.distribution_custom_domain}")
                     if profile.distribution_hosted_zone_id:
                         params.append(f"HostedZoneId={profile.distribution_hosted_zone_id}")
+                    if getattr(profile, "distribution_existing_certificate_arn", None):
+                        params.append(f"ExistingCertificateArn={profile.distribution_existing_certificate_arn}")
 
                     # Add deployment timestamp to force custom resource re-execution
                     from datetime import datetime, timezone
@@ -1082,18 +1162,74 @@ class DeployCommand(Command):
                         outputs = get_stack_outputs(stack_name, profile.aws_region)
                         console.print("\n[bold green]✓ Landing page deployed successfully![/bold green]")
                         console.print(f"\n[bold]Distribution URL:[/bold] {outputs.get('DistributionURL', 'N/A')}")
-                        console.print("\n[bold yellow]⚠️  Configure your IdP web application:[/bold yellow]")
-                        console.print(f"   [cyan]Redirect URI:[/cyan] {outputs.get('IdPRedirectURI', 'N/A')}")
-                        console.print(
-                            "\n   Add this redirect URI to your IdP web application settings "
-                            "before users can authenticate."
-                        )
+
+                        if idp_provider == "idc":
+                            saml_status = outputs.get("IdcSamlConfigurationStatus", "")
+                            if "not yet configured" in saml_status.lower() or not saml_status:
+                                console.print("\n[bold yellow]⚠️  SAML Configuration Required:[/bold yellow]")
+                                console.print(
+                                    "\n[cyan]1. Create a SAML Application in IAM Identity Center "
+                                    "(manual — AWS console):[/cyan]"
+                                )
+                                console.print(
+                                    "   • Go to: IAM Identity Center → Applications → Add application "
+                                    "→ Add custom SAML 2.0 application"
+                                )
+                                console.print(
+                                    f"   • Application ACS URL: [green]{outputs.get('IdcSamlAcsUrl', 'N/A')}[/green]"
+                                )
+                                console.print(
+                                    f"   • Application SAML Audience: [green]{outputs.get('IdcSamlAudienceUri', 'N/A')}[/green]"
+                                )
+                                console.print("   • Attribute mappings:")
+                                console.print("       Subject → ${user:email} (emailAddress format)")
+                                console.print("       email   → ${user:email}")
+                                console.print("   • Assign your Claude groups to this application")
+                                console.print("   • Copy the SAML metadata URL")
+                                console.print(
+                                    "\n[cyan]2. Wire the SAML provider into Cognito "
+                                    "(automated — run this command):[/cyan]"
+                                )
+                                console.print("   [green]poetry run ccwb configure-saml <metadata-url>[/green]")
+                            else:
+                                console.print(f"\n[green]✓ {saml_status}[/green]")
+                        else:
+                            console.print("\n[bold yellow]⚠️  Configure your IdP web application:[/bold yellow]")
+                            console.print(f"   [cyan]Redirect URI:[/cyan] {outputs.get('IdPRedirectURI', 'N/A')}")
+                            console.print(
+                                "\n   Add this redirect URI to your IdP web application settings "
+                                "before users can authenticate."
+                            )
+
+                        # An internal-scheme ALB has no public IP. The networking
+                        # stack auto-provisions an SSM-only bastion in this case
+                        # (see CreateSsmBastion above) — surface the ready-to-run
+                        # tunnel command using its real instance ID and this
+                        # stack's actual ALB DNS/custom domain.
+                        if _resolve_alb_scheme(profile) == "internal":
+                            networking_stack_name = profile.stack_names.get(
+                                "networking", f"{profile.identity_pool_name}-networking"
+                            )
+                            networking_outputs = get_stack_outputs(networking_stack_name, profile.aws_region)
+                            bastion_id = (networking_outputs or {}).get("SsmBastionInstanceId")
+                            tunnel_host = getattr(profile, "distribution_custom_domain", None) or outputs.get(
+                                "DistributionURL", ""
+                            ).replace("https://", "")
+                            if bastion_id and tunnel_host:
+                                console.print(
+                                    "\n[bold]Testing via SSM port forwarding[/bold] "
+                                    "(ALB is internal-only, no public IP):"
+                                )
+                                console.print(
+                                    f"   [green]aws ssm start-session --target {bastion_id} "
+                                    "--document-name AWS-StartPortForwardingSessionToRemoteHost "
+                                    f'--parameters \'{{"host":["{tunnel_host}"],"portNumber":["443"],'
+                                    '"localPortNumber":["8443"]}}\''
+                                    f" --region {profile.aws_region}[/green]"
+                                )
+                                console.print("   Then browse to [cyan]https://localhost:8443[/cyan]")
 
                     return result
-
-                elif profile.distribution_type == "landing-page-idc":
-                    # Deploy IAM Identity Center landing page using CDK
-                    return self._deploy_idc_landing_page(profile, console)
 
                 else:  # presigned-s3 or legacy
                     template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
@@ -1106,6 +1242,162 @@ class DeployCommand(Command):
                         task_description="Deploying presigned S3 distribution stack...",
                     )
 
+            elif stack_type == "admin-console":
+                template = project_root / "deployment" / "infrastructure" / "admin-console.yaml"
+                stack_name = profile.stack_names.get("admin-console", f"{profile.identity_pool_name}-admin-console")
+
+                # The admin console attaches a listener rule to the distribution
+                # stack's ALB and reuses its Cognito-IDC-bridge app client — it
+                # cannot be deployed before that stack exists.
+                distribution_stack_name = profile.stack_names.get(
+                    "distribution", f"{profile.identity_pool_name}-distribution"
+                )
+                distribution_outputs = get_stack_outputs(distribution_stack_name, profile.aws_region)
+                if not distribution_outputs:
+                    console.print(
+                        f"[red]Error: Distribution stack '{distribution_stack_name}' not found. "
+                        "Deploy it first with 'ccwb deploy distribution'.[/red]"
+                    )
+                    return 1
+
+                required_outputs = [
+                    "HTTPSListenerArn",
+                    "IdcUserPoolClientId",
+                    "IdcUserPoolClientSecretArn",
+                    "IdcUserPoolId",
+                    "IdcUserPoolDomain",
+                    "DistributionBucket",
+                    "DistributionBucketArn",
+                ]
+                missing = [k for k in required_outputs if not distribution_outputs.get(k)]
+                if missing:
+                    console.print(
+                        f"[red]Error: Distribution stack is missing required outputs: {', '.join(missing)}.[/red]"
+                    )
+                    console.print(
+                        "[yellow]The admin console requires distribution_type=landing-page-idc "
+                        "(IdPProvider=idc). Re-deploy the distribution stack with that configuration.[/yellow]"
+                    )
+                    return 1
+
+                idc_instance_arn = getattr(profile, "distribution_idc_instance_arn", None)
+                if not idc_instance_arn:
+                    console.print("[red]Error: distribution_idc_instance_arn is not set on this profile.[/red]")
+                    return 1
+
+                params = [
+                    f"IdentityPoolName={profile.identity_pool_name}",
+                    f"CustomDomainName={profile.distribution_custom_domain or ''}",
+                    f"HTTPSListenerArn={distribution_outputs['HTTPSListenerArn']}",
+                    f"IdcUserPoolClientId={distribution_outputs['IdcUserPoolClientId']}",
+                    f"IdcUserPoolClientSecretArn={distribution_outputs['IdcUserPoolClientSecretArn']}",
+                    f"IdcUserPoolId={distribution_outputs['IdcUserPoolId']}",
+                    f"IdcUserPoolDomain={distribution_outputs['IdcUserPoolDomain']}",
+                    f"DistributionBucketName={distribution_outputs['DistributionBucket']}",
+                    f"DistributionBucketArn={distribution_outputs['DistributionBucketArn']}",
+                    f"IdcInstanceArn={idc_instance_arn}",
+                    f"AdminGroupName={getattr(profile, 'distribution_idc_admin_group', None) or 'Claude-Code-Admins'}",
+                ]
+
+                # ALBScheme=internal admin consoles are typically reached via
+                # an SSM port-forwarding tunnel or VPN (see
+                # AdditionalTrustedOrigins param description), whose hostname
+                # (localhost/127.0.0.1, with or without :8443) differs from
+                # CustomDomainName — without this, every state-changing admin
+                # POST (Save Draft, Save Configuration, Deploy) fails the
+                # verify_request_origin CSRF check with "Invalid request
+                # origin", since the browser's Origin header never matches
+                # BASE_URL. Reuses the same trusted hosts as the Cognito
+                # callback URLs the distribution stack registers for tunnel
+                # testing (see CognitoCallbackUpdaterFunction).
+                if _resolve_alb_scheme(profile) == "internal":
+                    params.append(
+                        "AdditionalTrustedOrigins=https://localhost,https://127.0.0.1,"
+                        "https://localhost:8443,https://127.0.0.1:8443"
+                    )
+
+                # Bootstrap OIDC (Claude Desktop's /api/bootstrap flow) — both
+                # outputs only exist on distribution stacks deployed after
+                # this feature was added; older stacks simply won't have
+                # them, and generated MDM files fall back to bootstrapUrl-only.
+                if distribution_outputs.get("IdcBootstrapUserPoolClientId"):
+                    params.append(
+                        f"IdcBootstrapUserPoolClientId={distribution_outputs['IdcBootstrapUserPoolClientId']}"
+                    )
+                    params.append(f"IdcBootstrapRedirectPort={distribution_outputs.get('IdcBootstrapRedirectPort', '')}")
+
+                # IAM Identity Center data (permission sets, groups, users) only
+                # ever lives in the region IDC was enabled in, which may differ
+                # from where this stack (and profile.aws_region) is deployed —
+                # e.g. distribution/admin-console infra in us-west-2 while IDC
+                # itself is enabled in us-east-1. Reuses the same sso_region
+                # field the "idc" auth type already relies on for this reason.
+                idc_region = getattr(profile, "sso_region", None)
+                if idc_region:
+                    params.append(f"IdcRegion={idc_region}")
+
+                # Package the admin_console Lambda directory (index.py + shared/)
+                # to S3 first — same pattern as quota-monitoring.yaml/bootstrap-
+                # device-code.yaml, since the admin HTML/JS + route handlers
+                # exceed CloudFormation's 4096-byte inline ZipFile limit.
+                s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+                s3_outputs = get_stack_outputs(s3_stack, profile.aws_region)
+                if not s3_outputs or not s3_outputs.get("CfnArtifactsBucket"):
+                    console.print(f"[red]Could not get S3 bucket from s3bucket stack {s3_stack}[/red]")
+                    console.print("[yellow]The s3bucket stack must be deployed first.[/yellow]")
+                    console.print("Run: [cyan]ccwb deploy s3bucket[/cyan]")
+                    return 1
+                artifacts_bucket = s3_outputs["CfnArtifactsBucket"]
+
+                task = progress.add_task("Packaging admin console Lambda...", total=None)
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                        packaged_template_path = f.name
+
+                    cmd = [
+                        "aws",
+                        "cloudformation",
+                        "package",
+                        "--template-file",
+                        str(template),
+                        "--s3-bucket",
+                        artifacts_bucket,
+                        "--s3-prefix",
+                        "claude-code/admin-console",
+                        "--output-template-file",
+                        packaged_template_path,
+                        "--region",
+                        profile.aws_region,
+                    ]
+                    result_pkg = subprocess.run(cmd, capture_output=True, text=True)
+                    if result_pkg.returncode != 0:
+                        console.print(f"[red]Failed to package template: {result_pkg.stderr}[/red]")
+                        return 1
+                    progress.update(task, description="Admin console Lambda packaged successfully", completed=True)
+                except Exception as e:
+                    console.print(f"[red]Failed to package admin console template: {e}[/red]")
+                    return 1
+
+                result = deploy_with_cf(
+                    packaged_template_path,
+                    stack_name,
+                    params,
+                    ["CAPABILITY_NAMED_IAM"],
+                    task_description="Deploying admin console stack...",
+                )
+
+                if result == 0:
+                    outputs = get_stack_outputs(stack_name, profile.aws_region)
+                    console.print("\n[bold green]✓ Admin console deployed successfully![/bold green]")
+                    console.print(f"\n[bold]Admin Console URL:[/bold] {outputs.get('AdminConsoleUrl', 'N/A')}")
+                    console.print(
+                        f"\n[dim]Access requires membership in the "
+                        f"'{getattr(profile, 'distribution_idc_admin_group', None) or 'Claude-Code-Admins'}' "
+                        "IAM Identity Center group.[/dim]"
+                    )
+
+                return result
+
             elif stack_type == "networking":
                 template = project_root / "deployment" / "infrastructure" / "networking.yaml"
                 stack_name = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
@@ -1116,6 +1408,21 @@ class DeployCommand(Command):
                     f"PublicSubnet1Cidr={vpc_config.get('subnet1_cidr', '10.0.1.0/24')}",
                     f"PublicSubnet2Cidr={vpc_config.get('subnet2_cidr', '10.0.2.0/24')}",
                 ]
+                # An internal-scheme ALB (landing-page distribution's most common
+                # IDC configuration) has nodes with no public IP — an internet
+                # gateway alone can't NAT their outbound traffic, so the ALB
+                # can never reach Cognito's public token endpoint to complete
+                # the OIDC/authenticate-oidc code exchange. A NAT Gateway (which
+                # needs its own pair of private subnets to route through it) is
+                # required whenever distribution is enabled with an internal ALB.
+                if profile.enable_distribution and _resolve_alb_scheme(profile) == "internal":
+                    params.append("CreateNatGateway=true")
+                    # An internal-scheme ALB has no public IP, so it can only
+                    # be reached from within the VPC. Auto-provision a small
+                    # SSM-only bastion (no SSH, no open inbound ports) as a
+                    # port-forwarding tunnel target so `ccwb deploy distribution`
+                    # is testable end-to-end without a pre-existing VPN/bastion.
+                    params.append("CreateSsmBastion=true")
                 return deploy_with_cf(
                     template, stack_name, params, task_description="Deploying networking infrastructure..."
                 )
@@ -1668,6 +1975,8 @@ class DeployCommand(Command):
                 f"PublicSubnet1Cidr={vpc_config.get('subnet1_cidr', '10.0.1.0/24')}",
                 f"PublicSubnet2Cidr={vpc_config.get('subnet2_cidr', '10.0.2.0/24')}",
             ]
+            if profile.enable_distribution and _resolve_alb_scheme(profile) == "internal":
+                params.append("CreateNatGateway=true")
             print_deploy_cmd(template, stack_name, params)
 
         elif stack_type == "s3bucket":
@@ -1767,17 +2076,56 @@ class DeployCommand(Command):
             if profile.distribution_type == "landing-page":
                 template = project_root / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
                 networking_stack = profile.stack_names.get("networking", f"{profile.identity_pool_name}-networking")
+                private_subnets_hint = (
+                    f"<PrivateSubnetIds from {networking_stack}, requires CreateNatGateway=true>"
+                    if _resolve_alb_scheme(profile) == "internal"
+                    else f"<SubnetIds from {networking_stack}>"
+                )
                 params = [
                     f"IdentityPoolName={profile.identity_pool_name}",
                     f"VpcId=<VpcId from {networking_stack}>",
                     f"PublicSubnetIds=<SubnetIds from {networking_stack}>",
-                    f"PrivateSubnetIds=<SubnetIds from {networking_stack}>",
+                    f"PrivateSubnetIds={private_subnets_hint}",
                     f"IdPProvider={profile.distribution_idp_provider}",
                 ]
+                if profile.distribution_idp_provider == "idc" and getattr(profile, "sso_region", None):
+                    params.append(f"IdcGroupLookupRegion={profile.sso_region}")
             else:
                 template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
             print_deploy_cmd(template, stack_name, params, ["CAPABILITY_NAMED_IAM"])
+
+        elif stack_type == "admin-console":
+            template = project_root / "deployment" / "infrastructure" / "admin-console.yaml"
+            stack_name = profile.stack_names.get("admin-console", f"{profile.identity_pool_name}-admin-console")
+            distribution_stack = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
+            s3_stack = profile.stack_names.get("s3", f"{profile.identity_pool_name}-s3bucket")
+            params = [
+                f"IdentityPoolName={profile.identity_pool_name}",
+                f"CustomDomainName={profile.distribution_custom_domain or ''}",
+                f"HTTPSListenerArn=<HTTPSListenerArn from {distribution_stack}>",
+                f"IdcUserPoolClientId=<IdcUserPoolClientId from {distribution_stack}>",
+                f"IdcUserPoolClientSecretArn=<IdcUserPoolClientSecretArn from {distribution_stack}>",
+                f"IdcUserPoolId=<IdcUserPoolId from {distribution_stack}>",
+                f"IdcUserPoolDomain=<IdcUserPoolDomain from {distribution_stack}>",
+                f"DistributionBucketName=<DistributionBucket from {distribution_stack}>",
+                f"DistributionBucketArn=<DistributionBucketArn from {distribution_stack}>",
+                f"IdcInstanceArn={getattr(profile, 'distribution_idc_instance_arn', '') or ''}",
+                f"AdminGroupName={getattr(profile, 'distribution_idc_admin_group', None) or 'Claude-Code-Admins'}",
+            ]
+            if getattr(profile, "sso_region", None):
+                params.append(f"IdcRegion={profile.sso_region}")
+            console.print(
+                f"\n[cyan]# Step 1: Package Lambda function\n"
+                f"aws cloudformation package \\\n"
+                f"    --template-file {template} \\\n"
+                f"    --s3-bucket <CfnArtifactsBucket from {s3_stack}> \\\n"
+                f"    --s3-prefix claude-code/admin-console \\\n"
+                f"    --output-template-file /tmp/admin-console-packaged.yaml \\\n"
+                f"    --region {region}[/cyan]"
+            )
+            console.print("\n[dim]# Step 2: Deploy packaged template[/dim]")
+            print_deploy_cmd("/tmp/admin-console-packaged.yaml", stack_name, params, ["CAPABILITY_NAMED_IAM"])
 
         elif stack_type == "bootstrap":
             template = project_root / "deployment" / "infrastructure" / "bootstrap-device-code.yaml"
@@ -1980,315 +2328,6 @@ class DeployCommand(Command):
                     orphaned.append((stack_type, stack_name, status))
 
         return orphaned
-
-    def _deploy_idc_landing_page(self, profile, console: Console) -> int:
-        """Deploy the IAM Identity Center landing page using CDK.
-
-        This deploys a CloudFront + Cognito + Lambda solution with:
-        - Admin console for model/policy/MCP server management
-        - Automatic permission set creation per IDC group
-        - Dynamic config updates via OIDC bootstrap
-        """
-        import shutil
-
-        project_root = Path(__file__).parent.parent.parent.parent.parent
-        cdk_dir = project_root / "deployment" / "idc-landing-page"
-
-        if not cdk_dir.exists():
-            console.print(f"[red]Error: IDC landing page directory not found: {cdk_dir}[/red]")
-            return 1
-
-        # Check for Node.js and npm
-        if not shutil.which("node"):
-            console.print("[red]Error: Node.js is required for IDC landing page deployment[/red]")
-            console.print("[dim]Install Node.js from https://nodejs.org/[/dim]")
-            return 1
-
-        if not shutil.which("npm"):
-            console.print("[red]Error: npm is required for IDC landing page deployment[/red]")
-            return 1
-
-        # Get AWS account ID
-        try:
-            import boto3
-
-            sts = boto3.client("sts")
-            account_id = sts.get_caller_identity()["Account"]
-        except Exception as e:
-            console.print(f"[red]Error getting AWS account ID: {e}[/red]")
-            return 1
-
-        # Generate config.ts from profile
-        config_content = f"""export interface LandingPageConfig {{
-  profileName: string;
-  idcInstanceArn: string;
-  customDomain?: string;
-  hostedZoneId?: string;
-  vpcId?: string;
-  region?: string;
-  account?: string;
-  bootstrapOidcClientId?: string;
-}}
-
-export const config: LandingPageConfig = {{
-  profileName: '{profile.identity_pool_name}',
-  idcInstanceArn: '{profile.distribution_idc_instance_arn or ""}',
-  region: '{profile.aws_region}',
-  account: '{account_id}',
-  bootstrapOidcClientId: '{profile.distribution_idc_bootstrap_client_id or ""}',
-}};
-
-export function validateConfig(cfg: LandingPageConfig): void {{}}
-"""
-        config_file = cdk_dir / "lib" / "config.ts"
-        config_file.write_text(config_content)
-        console.print(f"[dim]Generated CDK config: {config_file}[/dim]")
-
-        # Install dependencies if node_modules doesn't exist
-        node_modules = cdk_dir / "node_modules"
-        if not node_modules.exists():
-            console.print("[yellow]Installing CDK dependencies...[/yellow]")
-            # Fixed argument list, no user input — same pattern as other npm/npx
-            # invocations throughout this file.
-            result = subprocess.run(  # nosec B603 B607
-                ["npm", "install"],
-                cwd=cdk_dir,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                console.print(f"[red]Error installing dependencies: {result.stderr}[/red]")
-                return 1
-            console.print("[green]✓ Dependencies installed[/green]")
-
-        # Build TypeScript
-        console.print("[yellow]Building TypeScript...[/yellow]")
-        result = subprocess.run(  # nosec B603 B607
-            ["npm", "run", "build"],
-            cwd=cdk_dir,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            console.print(f"[red]Error building TypeScript: {result.stderr}[/red]")
-            return 1
-
-        # Deploy CDK stacks
-        console.print("[yellow]Deploying IAM Identity Center landing page...[/yellow]")
-        console.print("[dim]This may take a few minutes...[/dim]")
-
-        result = subprocess.run(  # nosec B603 B607
-            ["npx", "cdk", "deploy", "--all", "--require-approval", "never"],
-            cwd=cdk_dir,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            console.print("[red]CDK deployment failed:[/red]")
-            console.print(result.stderr)
-            return 1
-
-        console.print("[green]✓ CDK stacks deployed[/green]")
-
-        # Get stack outputs
-        import json
-
-        import boto3
-
-        cf_client = boto3.client("cloudformation", region_name=profile.aws_region)
-        cognito_stack = f"{profile.identity_pool_name}-cognito"
-        landing_stack = f"{profile.identity_pool_name}-landing-page"
-
-        console.print("[yellow]Gathering deployment outputs...[/yellow]")
-
-        # Get Cognito outputs
-        try:
-            cognito_outputs = cf_client.describe_stacks(StackName=cognito_stack)["Stacks"][0]["Outputs"]
-            user_pool_id = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolId"), "")
-            user_pool_domain = next(
-                (o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolDomain"), ""
-            )
-            client_id = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "UserPoolClientId"), "")
-            saml_acs_url = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "SamlAcsUrl"), "")
-            saml_audience = next((o["OutputValue"] for o in cognito_outputs if o["OutputKey"] == "SamlAudienceUri"), "")
-        except Exception as e:
-            console.print(f"[red]Error getting Cognito outputs: {e}[/red]")
-            return 1
-
-        # Get Landing Page outputs
-        try:
-            landing_outputs = cf_client.describe_stacks(StackName=landing_stack)["Stacks"][0]["Outputs"]
-            landing_page_url = next(
-                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "LandingPageUrl"), ""
-            )
-            bucket_name = next(
-                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "DistributionBucketName"), ""
-            )
-            distribution_id = next(
-                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "CloudFrontDistributionId"), ""
-            )
-            session_signing_secret_arn = next(
-                (o["OutputValue"] for o in landing_outputs if o["OutputKey"] == "SessionSigningSecretArn"), ""
-            )
-        except Exception as e:
-            console.print(f"[red]Error getting Landing Page outputs: {e}[/red]")
-            return 1
-
-        # Update Cognito callback URLs
-        console.print("[yellow]Updating Cognito callback URLs...[/yellow]")
-        try:
-            cognito_client = boto3.client("cognito-idp", region_name=profile.aws_region)
-
-            # Check if IAMIdentityCenter provider exists
-            providers = ["COGNITO"]
-            try:
-                idp_list = cognito_client.list_identity_providers(UserPoolId=user_pool_id)
-                if any(p["ProviderName"] == "IAMIdentityCenter" for p in idp_list.get("Providers", [])):
-                    providers.append("IAMIdentityCenter")
-            except Exception:
-                pass
-
-            cognito_client.update_user_pool_client(
-                UserPoolId=user_pool_id,
-                ClientId=client_id,
-                CallbackURLs=[f"{landing_page_url}/callback"],
-                LogoutURLs=[f"{landing_page_url}/logout", landing_page_url],
-                AllowedOAuthFlows=["code"],
-                AllowedOAuthScopes=["openid", "email", "profile"],
-                AllowedOAuthFlowsUserPoolClient=True,
-                SupportedIdentityProviders=providers,
-            )
-            console.print(f"[green]✓ Cognito callbacks updated (providers: {', '.join(providers)})[/green]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not update Cognito callbacks: {e}[/yellow]")
-
-        # Create bootstrap OIDC client for Claude Desktop dynamic config
-        console.print("[yellow]Creating bootstrap OIDC client...[/yellow]")
-        bootstrap_client_id = ""
-        try:
-            # Check if bootstrap client already exists
-            existing_clients = cognito_client.list_user_pool_clients(
-                UserPoolId=user_pool_id,
-                MaxResults=60,
-            )
-            bootstrap_client = next(
-                (
-                    c
-                    for c in existing_clients.get("UserPoolClients", [])
-                    if c["ClientName"] == f"{profile.identity_pool_name}-bootstrap"
-                ),
-                None,
-            )
-
-            if bootstrap_client:
-                bootstrap_client_id = bootstrap_client["ClientId"]
-                console.print(f"[green]✓ Bootstrap client exists: {bootstrap_client_id}[/green]")
-            else:
-                # Create new bootstrap client (no secret, for public OIDC flow)
-                response = cognito_client.create_user_pool_client(
-                    UserPoolId=user_pool_id,
-                    ClientName=f"{profile.identity_pool_name}-bootstrap",
-                    GenerateSecret=False,
-                    SupportedIdentityProviders=["COGNITO"],  # Will add IAMIdentityCenter after SAML setup
-                    CallbackURLs=["http://127.0.0.1:8080/callback"],
-                    AllowedOAuthFlows=["code"],
-                    AllowedOAuthScopes=["openid", "email", "profile"],
-                    AllowedOAuthFlowsUserPoolClient=True,
-                )
-                bootstrap_client_id = response["UserPoolClient"]["ClientId"]
-                console.print(f"[green]✓ Bootstrap client created: {bootstrap_client_id}[/green]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not create bootstrap client: {e}[/yellow]")
-
-        # Update Lambda environment
-        console.print("[yellow]Updating Lambda environment...[/yellow]")
-        try:
-            lambda_client = boto3.client("lambda", region_name=profile.aws_region)
-            lambda_name = f"{profile.identity_pool_name}-landing-page"
-            cloudfront_domain = landing_page_url.replace("https://", "")
-            admin_group = profile.distribution_idc_admin_group or "Claude-Code-Admins"
-
-            env_vars = {
-                "COGNITO_DOMAIN": f"{user_pool_domain}.auth.{profile.aws_region}.amazoncognito.com",
-                "IDC_INSTANCE_ARN": profile.distribution_idc_instance_arn or "",
-                "S3_BUCKET_NAME": bucket_name,
-                "COGNITO_CLIENT_ID": client_id,
-                "COGNITO_USER_POOL_ID": user_pool_id,
-                "ADMIN_GROUP": admin_group,
-                "REGION": profile.aws_region,
-                "CLOUDFRONT_DOMAIN": cloudfront_domain,
-                "SESSION_SIGNING_SECRET_ARN": session_signing_secret_arn,
-            }
-
-            # Add bootstrap client ID if available
-            if bootstrap_client_id:
-                env_vars["COGNITO_BOOTSTRAP_CLIENT_ID"] = bootstrap_client_id
-
-            lambda_client.update_function_configuration(
-                FunctionName=lambda_name,
-                Environment={"Variables": env_vars},
-            )
-            console.print("[green]✓ Lambda environment updated[/green]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not update Lambda environment: {e}[/yellow]")
-
-        # Save deployment info
-        deployment_info = {
-            "profileName": profile.identity_pool_name,
-            "landingPageUrl": landing_page_url,
-            "bucketName": bucket_name,
-            "distributionId": distribution_id,
-            "userPoolId": user_pool_id,
-            "userPoolDomain": user_pool_domain,
-            "clientId": client_id,
-            "region": profile.aws_region,
-            "accountId": account_id,
-        }
-        deployment_info_file = cdk_dir / "deployment-info.json"
-        deployment_info_file.write_text(json.dumps(deployment_info, indent=2))
-
-        # Save IDC info
-        idc_info = {
-            "instanceArn": profile.distribution_idc_instance_arn,
-            "accountId": account_id,
-            "region": profile.aws_region,
-        }
-        idc_info_file = cdk_dir / "idc-info.json"
-        idc_info_file.write_text(json.dumps(idc_info, indent=2))
-
-        console.print("\n[bold green]✓ IAM Identity Center landing page deployed![/bold green]")
-        console.print(f"\n[bold]Landing Page URL:[/bold] {landing_page_url}")
-        console.print(f"[bold]Admin Console:[/bold] {landing_page_url}/admin")
-
-        # Show SAML setup instructions
-        console.print("\n[bold yellow]⚠️  SAML Configuration Required:[/bold yellow]")
-        console.print("\n[cyan]1. Create a SAML Application in IAM Identity Center (manual — AWS console):[/cyan]")
-        console.print(
-            "   • Go to: IAM Identity Center → Applications → Add application → Add custom SAML 2.0 application"
-        )
-        console.print(f"   • Application ACS URL: [green]{saml_acs_url}[/green]")
-        console.print(f"   • Application SAML Audience: [green]{saml_audience}[/green]")
-        console.print("   • Attribute mappings:")
-        console.print("       Subject → ${user:email} (emailAddress format)")
-        console.print("       email   → ${user:email}")
-        console.print("   • Assign your Claude groups to this application")
-        console.print("   • Copy the SAML metadata URL")
-
-        console.print("\n[cyan]2. Wire the SAML provider into Cognito (automated — run this command):[/cyan]")
-        console.print("   [green]poetry run ccwb configure-saml <metadata-url>[/green]")
-        console.print(
-            "   This creates/updates the Cognito SAML identity provider and enables it on both\n"
-            "   the web app client and the bootstrap client (used for Claude Desktop dynamic config)."
-        )
-        console.print(
-            "   [dim]To do this manually instead: Cognito → "
-            f"{user_pool_id} → Sign-in experience → Add identity provider → SAML\n"
-            "   (Provider name: IAMIdentityCenter, Metadata URL: paste from IAM Identity Center),\n"
-            "   then enable 'IAMIdentityCenter' on both app clients under App integration.[/dim]"
-        )
-
-        return 0
 
     def _ensure_ecs_service_linked_role(self, console: Console) -> None:
         """Ensure ECS service linked role exists, create if needed."""

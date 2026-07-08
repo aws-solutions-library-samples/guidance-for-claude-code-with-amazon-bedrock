@@ -1,24 +1,24 @@
-# ABOUTME: Tests for `ccwb configure-saml` — automates Cognito SAML provider setup for
-# ABOUTME: the IAM Identity Center landing page after the manual IDC-side SAML app is created
+# ABOUTME: Tests for `ccwb configure-saml` — saves the SAML metadata URL to the profile
+# ABOUTME: and re-deploys the CFN distribution stack so IdcSamlIdentityProvider gets created
 
-"""Tests for ConfigureSamlCommand.
+"""Tests for ConfigureSamlCommand (CloudFormation-based implementation).
+
+The landing-page-idc distribution type deploys via landing-page-distribution.yaml
+(IdPProvider=idc), the same template used by the other landing-page IdP types.
+`ccwb configure-saml` doesn't call the Cognito API directly — it saves
+distribution_idc_saml_metadata_url to the profile and triggers a stack update via
+DeployCommand._deploy_stack("distribution", ...), letting CloudFormation's
+conditional IdcSamlIdentityProvider resource (and the callback-updater custom
+resource) do the actual Cognito wiring.
 
 Covers:
 - Guard: command refuses to run for non-`landing-page-idc` profiles
-- Guard: command fails cleanly when deployment info can't be found (no deployment-info.json
-  and no CloudFormation stacks)
-- Happy path via deployment-info.json: creates the SAML identity provider and enables it on
-  both the web app client and the bootstrap client
-- Update path: an existing SAML identity provider is updated, not recreated
-- Fallback path via CloudFormation stack outputs when deployment-info.json is absent
-- Non-fatal handling when no bootstrap client exists (dynamic config simply disabled)
-
-Note: ConfigureSamlCommand builds its own `rich.console.Console()` rather than writing through
-cleo's IO, so output assertions use pytest's `capsys` fixture (which captures real stdout)
-instead of `tester.io.fetch_output()`.
+- Guard: command fails cleanly when the distribution stack hasn't been deployed yet
+- Happy path: saves metadata URL to profile, re-deploys, reports SAML status
+- Stack update failure is surfaced, not swallowed
+- --profile option forwarding
 """
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,6 +40,7 @@ def _profile(**overrides) -> Profile:
         "aws_region": "us-east-1",
         "identity_pool_name": "claude-code-test",
         "distribution_type": "landing-page-idc",
+        "enable_distribution": True,
     }
     defaults.update(overrides)
     return Profile(**{k: v for k, v in defaults.items() if k in field_names})
@@ -79,242 +80,134 @@ class TestDistributionTypeGuard:
         assert "No profile found" in capsys.readouterr().out
 
 
-class TestDeploymentInfoResolution:
-    """The command locates User Pool / client IDs via deployment-info.json first,
-    falling back to CloudFormation stack outputs."""
+class TestStackExistenceGuard:
+    """The distribution stack must already exist (for its ACS URL/Audience outputs)."""
 
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=False)
+    @patch("claude_code_with_bedrock.cli.commands.configure_saml.get_stack_outputs")
     @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_missing_deployment_info_and_cfn_failure_is_non_fatal(
-        self, mock_get_profile, mock_exists, mock_boto_client, capsys
+    def test_missing_stack_fails_cleanly(self, mock_get_profile, mock_get_outputs, capsys):
+        mock_get_profile.return_value = _profile()
+        mock_get_outputs.return_value = None
+
+        tester = _run()
+
+        assert tester.status_code == 1
+        output = capsys.readouterr().out
+        assert "not found" in output
+        assert "deploy distribution" in output
+
+
+class TestSamlConfigurationFlow:
+    """Happy-path: save metadata URL to profile, re-deploy, report SAML status."""
+
+    @patch("claude_code_with_bedrock.cli.commands.deploy.CloudFormationManager")
+    @patch("claude_code_with_bedrock.cli.commands.configure_saml.CloudFormationManager")
+    @patch("claude_code_with_bedrock.cli.commands.deploy.get_stack_outputs")
+    @patch("claude_code_with_bedrock.cli.commands.configure_saml.get_stack_outputs")
+    @patch("claude_code_with_bedrock.config.Config.save_profile")
+    @patch("claude_code_with_bedrock.config.Config.get_profile")
+    def test_saves_metadata_url_and_redeploys(
+        self,
+        mock_get_profile,
+        mock_save_profile,
+        mock_get_outputs_configure_saml,
+        mock_get_outputs_deploy,
+        MockConfigureSamlCFManager,
+        MockDeployCFManager,
+        capsys,
     ):
-        """No deployment-info.json and a CloudFormation lookup error must fail cleanly, not crash."""
-        mock_get_profile.return_value = _profile()
-        mock_cfn = MagicMock()
-        mock_cfn.describe_stacks.side_effect = Exception("Stack does not exist")
-        mock_boto_client.return_value = mock_cfn
+        profile = _profile()
+        mock_get_profile.return_value = profile
 
-        tester = _run()
-        assert tester.status_code == 1
-        assert "deployed the distribution stack first" in capsys.readouterr().out
-
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=False)
-    @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_incomplete_cfn_outputs_reports_missing_info(self, mock_get_profile, mock_exists, mock_boto_client, capsys):
-        """If CFN outputs are missing required keys (e.g. no landing page URL), fail with a clear message."""
-        mock_get_profile.return_value = _profile()
-        mock_cfn = MagicMock()
-        mock_cfn.describe_stacks.side_effect = [
+        # configure_saml.py calls get_stack_outputs twice: once to verify the
+        # stack exists (pre-SAML), once after redeploying (post-SAML status).
+        mock_get_outputs_configure_saml.side_effect = [
+            {"DistributionURL": "https://downloads.example.com", "IdcSamlAcsUrl": "https://x/saml2/idpresponse"},
             {
-                "Stacks": [
-                    {
-                        "Outputs": [
-                            {"OutputKey": "UserPoolId", "OutputValue": "us-east-1_abc123"},
-                            {"OutputKey": "UserPoolClientId", "OutputValue": "clientid123"},
-                        ]
-                    }
-                ]
+                "DistributionURL": "https://downloads.example.com",
+                "IdcSamlConfigurationStatus": "✓ SAML identity provider configured",
             },
-            {"Stacks": [{"Outputs": []}]},  # landing page stack missing LandingPageUrl
         ]
-        mock_boto_client.return_value = mock_cfn
-
-        tester = _run()
-        assert tester.status_code == 1
-        assert "Missing required deployment information" in capsys.readouterr().out
-
-
-class TestSamlProviderSetup:
-    """Happy-path and update-path coverage for the Cognito SAML identity provider wiring."""
-
-    def _mock_cognito_client(self, *, provider_exists: bool, bootstrap_client=None):
-        client = MagicMock()
-
-        class _ResourceNotFound(Exception):
-            pass
-
-        client.exceptions.ResourceNotFoundException = _ResourceNotFound
-
-        if provider_exists:
-            client.describe_identity_provider.return_value = {"IdentityProvider": {}}
-        else:
-            client.describe_identity_provider.side_effect = _ResourceNotFound()
-
-        clients = []
-        if bootstrap_client is not None:
-            clients.append(bootstrap_client)
-        client.list_user_pool_clients.return_value = {"UserPoolClients": clients}
-
-        return client
-
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_creates_saml_provider_when_absent(self, mock_get_profile, mock_exists, mock_boto_client, capsys):
-        mock_get_profile.return_value = _profile()
-
-        deployment_info = {
-            "userPoolId": "us-east-1_abc123",
-            "clientId": "web-client-id",
-            "landingPageUrl": "https://d123.cloudfront.net",
-            "region": "us-east-1",
+        # deploy.py's _deploy_stack("distribution", ...) separately looks up the
+        # networking stack's VpcId/SubnetIds outputs before building CFN params.
+        # landing-page-idc defaults ALBScheme to internal, which requires the
+        # networking stack's NAT-routed PrivateSubnetIds output.
+        mock_get_outputs_deploy.return_value = {
+            "VpcId": "vpc-123",
+            "SubnetIds": "subnet-1,subnet-2",
+            "PrivateSubnetIds": "subnet-priv-1,subnet-priv-2",
         }
-        cognito_client = self._mock_cognito_client(
-            provider_exists=False,
-            bootstrap_client={"ClientId": "bootstrap-client-id", "ClientName": "claude-code-test-bootstrap"},
-        )
-        mock_boto_client.return_value = cognito_client
 
-        with patch("pathlib.Path.read_text", return_value=json.dumps(deployment_info)):
-            tester = _run(metadata_url="https://example.com/saml/metadata")
+        mock_manager = MagicMock()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.outputs = {}
+        mock_manager.deploy_stack.return_value = mock_result
+        MockDeployCFManager.return_value = mock_manager
+        MockConfigureSamlCFManager.return_value = mock_manager
+
+        tester = _run(metadata_url="https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc")
 
         assert tester.status_code == 0
-        cognito_client.create_identity_provider.assert_called_once()
-        create_kwargs = cognito_client.create_identity_provider.call_args.kwargs
-        assert create_kwargs["UserPoolId"] == "us-east-1_abc123"
-        assert create_kwargs["ProviderName"] == "IAMIdentityCenter"
-        assert create_kwargs["ProviderType"] == "SAML"
-        assert create_kwargs["ProviderDetails"]["MetadataURL"] == "https://example.com/saml/metadata"
-        cognito_client.update_identity_provider.assert_not_called()
 
-        # Web app client updated with both providers enabled
-        web_update = cognito_client.update_user_pool_client.call_args_list[0].kwargs
-        assert web_update["ClientId"] == "web-client-id"
-        assert "IAMIdentityCenter" in web_update["SupportedIdentityProviders"]
-        assert "COGNITO" in web_update["SupportedIdentityProviders"]
+        # Metadata URL was saved to the profile before redeploying.
+        assert (
+            profile.distribution_idc_saml_metadata_url == "https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc"
+        )
+        mock_save_profile.assert_called_once()
 
-        # Bootstrap client also updated
-        bootstrap_update = cognito_client.update_user_pool_client.call_args_list[1].kwargs
-        assert bootstrap_update["ClientId"] == "bootstrap-client-id"
-        assert "IAMIdentityCenter" in bootstrap_update["SupportedIdentityProviders"]
+        # The stack update actually happened (deploy_stack invoked with the
+        # distribution template and IdcSamlMetadataUrl param). Parameters are
+        # in boto3 ParameterKey/ParameterValue dict format at this point
+        # (deploy.py's _convert_params_to_boto3 already ran).
+        mock_manager.deploy_stack.assert_called_once()
+        call_kwargs = mock_manager.deploy_stack.call_args.kwargs
+        params = call_kwargs.get("parameters") or []
+        assert {
+            "ParameterKey": "IdcSamlMetadataUrl",
+            "ParameterValue": "https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc",
+        } in params
 
         output = capsys.readouterr().out
-        assert "SAML provider created" in output
-        assert "Bootstrap client updated" in output
+        assert "SAML Configuration Complete" in output
+        assert "SAML identity provider configured" in output
 
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=True)
+    @patch("claude_code_with_bedrock.cli.commands.deploy.CloudFormationManager")
+    @patch("claude_code_with_bedrock.cli.commands.configure_saml.CloudFormationManager")
+    @patch("claude_code_with_bedrock.cli.commands.deploy.get_stack_outputs")
+    @patch("claude_code_with_bedrock.cli.commands.configure_saml.get_stack_outputs")
+    @patch("claude_code_with_bedrock.config.Config.save_profile")
     @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_updates_existing_saml_provider(self, mock_get_profile, mock_exists, mock_boto_client):
-        """An existing IAMIdentityCenter provider must be updated, not recreated."""
-        mock_get_profile.return_value = _profile()
-
-        deployment_info = {
-            "userPoolId": "us-east-1_abc123",
-            "clientId": "web-client-id",
-            "landingPageUrl": "https://d123.cloudfront.net",
-            "region": "us-east-1",
-        }
-        cognito_client = self._mock_cognito_client(provider_exists=True, bootstrap_client=None)
-        mock_boto_client.return_value = cognito_client
-
-        with patch("pathlib.Path.read_text", return_value=json.dumps(deployment_info)):
-            tester = _run(metadata_url="https://example.com/saml/metadata")
-
-        assert tester.status_code == 0
-        cognito_client.create_identity_provider.assert_not_called()
-        cognito_client.update_identity_provider.assert_called_once()
-        update_kwargs = cognito_client.update_identity_provider.call_args.kwargs
-        assert update_kwargs["ProviderName"] == "IAMIdentityCenter"
-        assert update_kwargs["ProviderDetails"]["MetadataURL"] == "https://example.com/saml/metadata"
-
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_no_bootstrap_client_is_non_fatal(self, mock_get_profile, mock_exists, mock_boto_client, capsys):
-        """When no bootstrap client exists, the command must succeed (dynamic config just isn't enabled)."""
-        mock_get_profile.return_value = _profile()
-
-        deployment_info = {
-            "userPoolId": "us-east-1_abc123",
-            "clientId": "web-client-id",
-            "landingPageUrl": "https://d123.cloudfront.net",
-            "region": "us-east-1",
-        }
-        cognito_client = self._mock_cognito_client(provider_exists=False, bootstrap_client=None)
-        mock_boto_client.return_value = cognito_client
-
-        with patch("pathlib.Path.read_text", return_value=json.dumps(deployment_info)):
-            tester = _run(metadata_url="https://example.com/saml/metadata")
-
-        assert tester.status_code == 0
-        assert "No bootstrap client found" in capsys.readouterr().out
-        # Only the web app client should have been updated (one call, not two)
-        assert cognito_client.update_user_pool_client.call_count == 1
-
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_bootstrap_client_update_failure_is_non_fatal(
-        self, mock_get_profile, mock_exists, mock_boto_client, capsys
+    def test_stack_update_failure_is_surfaced(
+        self,
+        mock_get_profile,
+        mock_save_profile,
+        mock_get_outputs_configure_saml,
+        mock_get_outputs_deploy,
+        MockConfigureSamlCFManager,
+        MockDeployCFManager,
+        capsys,
     ):
-        """A failure updating the bootstrap client must warn, not abort the whole command."""
-        mock_get_profile.return_value = _profile()
+        """A failed stack update must not be reported as success."""
+        profile = _profile()
+        mock_get_profile.return_value = profile
+        mock_get_outputs_configure_saml.return_value = {"DistributionURL": "https://downloads.example.com"}
+        mock_get_outputs_deploy.return_value = {"VpcId": "vpc-123", "SubnetIds": "subnet-1,subnet-2"}
 
-        deployment_info = {
-            "userPoolId": "us-east-1_abc123",
-            "clientId": "web-client-id",
-            "landingPageUrl": "https://d123.cloudfront.net",
-            "region": "us-east-1",
-        }
-        cognito_client = self._mock_cognito_client(
-            provider_exists=False,
-            bootstrap_client={"ClientId": "bootstrap-client-id", "ClientName": "claude-code-test-bootstrap"},
-        )
+        mock_manager = MagicMock()
+        mock_result = MagicMock()
+        mock_result.success = False
+        mock_result.error = "Stack update failed: some resource error"
+        mock_result.outputs = {}
+        mock_manager.deploy_stack.return_value = mock_result
+        MockDeployCFManager.return_value = mock_manager
+        MockConfigureSamlCFManager.return_value = mock_manager
 
-        def _update_side_effect(**kwargs):
-            if kwargs.get("ClientId") == "bootstrap-client-id":
-                raise Exception("boom")
-            return {}
+        tester = _run()
 
-        cognito_client.update_user_pool_client.side_effect = _update_side_effect
-        mock_boto_client.return_value = cognito_client
-
-        with patch("pathlib.Path.read_text", return_value=json.dumps(deployment_info)):
-            tester = _run(metadata_url="https://example.com/saml/metadata")
-
-        # Command still reports overall success — web client succeeded, bootstrap failure is a warning.
-        assert tester.status_code == 0
-        assert "Could not update bootstrap client" in capsys.readouterr().out
-
-    @patch("boto3.client")
-    @patch("pathlib.Path.exists", return_value=False)
-    @patch("claude_code_with_bedrock.config.Config.get_profile")
-    def test_falls_back_to_cloudformation_outputs(self, mock_get_profile, mock_exists, mock_boto_client):
-        """Without deployment-info.json, resolve User Pool/client IDs from CloudFormation stack outputs."""
-        mock_get_profile.return_value = _profile()
-
-        cfn_client = MagicMock()
-        cfn_client.describe_stacks.side_effect = [
-            {
-                "Stacks": [
-                    {
-                        "Outputs": [
-                            {"OutputKey": "UserPoolId", "OutputValue": "us-east-1_fromCfn"},
-                            {"OutputKey": "UserPoolClientId", "OutputValue": "web-client-from-cfn"},
-                        ]
-                    }
-                ]
-            },
-            {"Stacks": [{"Outputs": [{"OutputKey": "LandingPageUrl", "OutputValue": "https://cfn.cloudfront.net"}]}]},
-        ]
-
-        cognito_client = self._mock_cognito_client(provider_exists=False, bootstrap_client=None)
-
-        def _client_factory(service_name, region_name=None):
-            return cfn_client if service_name == "cloudformation" else cognito_client
-
-        mock_boto_client.side_effect = _client_factory
-
-        tester = _run(metadata_url="https://example.com/saml/metadata")
-
-        assert tester.status_code == 0
-        create_kwargs = cognito_client.create_identity_provider.call_args.kwargs
-        assert create_kwargs["UserPoolId"] == "us-east-1_fromCfn"
-        web_update = cognito_client.update_user_pool_client.call_args_list[0].kwargs
-        assert web_update["ClientId"] == "web-client-from-cfn"
+        assert tester.status_code != 0
+        output = capsys.readouterr().out
+        assert "SAML Configuration Complete" not in output
 
 
 class TestProfileOptionOverride:

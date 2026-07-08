@@ -143,20 +143,47 @@ class TestDeployStack:
         result = cfn_manager.deploy_stack(stack_name="test-stack", template_path=small_template)
         assert result.success is True
 
-    def test_template_too_large_fails(self, cfn_manager, tmp_path):
-        """Template >51200 bytes should raise CloudFormationError."""
+    def test_template_too_large_uploads_to_s3_and_uses_template_url(self, cfn_manager, tmp_path):
+        """Templates >51200 bytes are uploaded to an artifacts bucket and
+        deployed via TemplateURL instead of failing outright — several real
+        templates (e.g. the IDC landing-page distribution stack, with its
+        several inline custom-resource Lambda functions) legitimately exceed
+        the inline TemplateBody limit."""
         big_template = tmp_path / "big.yaml"
         big_template.write_text("A" * 52000)
 
-        # Stack doesn't exist — need to mock _check_stack_exists properly
-        cfn_manager._cf_client.describe_stacks.side_effect = ClientError(
-            {"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"
+        # Artifacts bucket already exists (head_bucket succeeds).
+        cfn_manager._s3_client.head_bucket.return_value = {}
+        cfn_manager._s3_client.get_paginator = MagicMock()
+
+        # sts client for account ID lookup inside _get_or_create_artifacts_bucket.
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        cfn_manager.session.client = MagicMock(
+            side_effect=lambda svc, **kw: mock_sts if svc == "sts" else cfn_manager._cf_client
         )
 
+        # Stack doesn't exist yet, then create succeeds.
+        cfn_manager._cf_client.describe_stacks.side_effect = [
+            ClientError({"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"),
+            {"Stacks": [{"StackStatus": "CREATE_COMPLETE", "Outputs": []}]},
+        ]
+        cfn_manager._cf_client.create_stack.return_value = {"StackId": "arn:aws:cfn:us-east-1:123:stack/big/abc"}
+        cfn_manager._cf_client.get_waiter.return_value = MagicMock()
+
         result = cfn_manager.deploy_stack(stack_name="big-stack", template_path=str(big_template))
-        # deploy_stack catches the exception internally and returns failure
-        assert result.success is False
-        assert "exceeds" in result.error or "51,200" in result.error
+
+        assert result.success is True
+        # Template body was uploaded to S3, not passed inline.
+        cfn_manager._s3_client.put_object.assert_called_once()
+        put_kwargs = cfn_manager._s3_client.put_object.call_args.kwargs
+        assert put_kwargs["Bucket"] == "ccwb-cfn-artifacts-123456789012-us-east-1"
+        assert put_kwargs["Key"] == "big-stack/big.yaml"
+        # create_stack was called with TemplateURL, not TemplateBody.
+        create_kwargs = cfn_manager._cf_client.create_stack.call_args.kwargs
+        assert "TemplateURL" in create_kwargs
+        assert "TemplateBody" not in create_kwargs
+        assert create_kwargs["TemplateURL"].endswith("big-stack/big.yaml")
 
     def test_no_updates_needed(self, cfn_manager, small_template):
         """Update with no changes returns success."""
