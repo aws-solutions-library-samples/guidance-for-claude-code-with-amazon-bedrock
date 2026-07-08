@@ -93,6 +93,9 @@ class Profile:
     distribution_alb_scheme: str | None = (
         None  # "internal" | "internet-facing" (defaults to "internal" for landing-page-idc)
     )
+    distribution_enable_cloudfront: bool = False  # Put a CloudFront distribution (VPC origin) in front of an
+    # internal ALB so an internet-facing HTTPS URL is available without a public cert on the origin. Only
+    # meaningful for IdPProvider=idc/cognito; moves OIDC auth into the Lambda (self-contained session cookies).
 
     # Generic OIDC distribution config (distribution_idp_provider == "generic").
     # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,

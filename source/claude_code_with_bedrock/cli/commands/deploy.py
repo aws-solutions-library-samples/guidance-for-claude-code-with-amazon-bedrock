@@ -81,6 +81,45 @@ def _resolve_alb_scheme(profile) -> str:
     return getattr(profile, "distribution_alb_scheme", None) or "internet-facing"
 
 
+def _resolve_cloudfront_prefix_list_id(region: str) -> str | None:
+    """Resolve the region-specific ID of the AWS-managed
+    com.amazonaws.global.cloudfront.origin-facing prefix list.
+
+    A CloudFront VPC origin reaches the ALB from CloudFront's origin-facing
+    server fleet (not an in-VPC source IP), so the ALB security group must
+    allow this managed prefix list on the plain-HTTP origin port. The prefix
+    list ID differs per region, so it's looked up at deploy time rather than
+    hardcoded in the template.
+    """
+    import json
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "aws",
+                "ec2",
+                "describe-managed-prefix-lists",
+                "--region",
+                region,
+                "--filters",
+                "Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing",
+                "--query",
+                "PrefixLists[0].PrefixListId",
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        value = json.loads(result.stdout or "null")
+        return value or None
+    except Exception:
+        return None
+
+
 def _discover_oidc_endpoints(profile) -> dict:
     """Fetch OIDC discovery document and extract endpoints.
 
@@ -1143,6 +1182,31 @@ class DeployCommand(Command):
                     if getattr(profile, "distribution_existing_certificate_arn", None):
                         params.append(f"ExistingCertificateArn={profile.distribution_existing_certificate_arn}")
 
+                    # CloudFront-in-front-of-internal-ALB. When enabled, the
+                    # template stands up a CloudFront distribution whose VPC
+                    # origin reaches the internal ALB over the AWS private
+                    # backbone on a plain-HTTP (port 80) listener, terminating
+                    # public HTTPS with its own *.cloudfront.net cert. OIDC auth
+                    # moves out of the ALB authenticate-oidc action and into the
+                    # Lambda itself (self-contained signed session cookies), so
+                    # no public certificate is ever needed on the origin. The
+                    # template condition (ShouldEnableCloudFront) additionally
+                    # gates this on IdPProvider being idc/cognito.
+                    if getattr(profile, "distribution_enable_cloudfront", False):
+                        params.append("EnableCloudFront=true")
+                        # CloudFront VPC origins reach the ALB from CloudFront's
+                        # origin-facing server fleet, so the ALB security group must
+                        # allow the region-specific com.amazonaws.global.cloudfront.
+                        # origin-facing managed prefix list (not the VPC CIDR).
+                        cf_prefix_list_id = _resolve_cloudfront_prefix_list_id(profile.aws_region)
+                        if not cf_prefix_list_id:
+                            console.print(
+                                "[red]Error: Could not resolve the CloudFront origin-facing managed "
+                                f"prefix list in {profile.aws_region}. Cannot enable CloudFront.[/red]"
+                            )
+                            return 1
+                        params.append(f"CloudFrontPrefixListId={cf_prefix_list_id}")
+
                     # Add deployment timestamp to force custom resource re-execution
                     from datetime import datetime, timezone
 
@@ -1162,6 +1226,11 @@ class DeployCommand(Command):
                         outputs = get_stack_outputs(stack_name, profile.aws_region)
                         console.print("\n[bold green]✓ Landing page deployed successfully![/bold green]")
                         console.print(f"\n[bold]Distribution URL:[/bold] {outputs.get('DistributionURL', 'N/A')}")
+                        if outputs.get("CloudFrontURL"):
+                            console.print(
+                                f"[bold]CloudFront URL:[/bold] {outputs['CloudFrontURL']} "
+                                "[dim](internet-facing, HTTPS via *.cloudfront.net)[/dim]"
+                            )
 
                         if idp_provider == "idc":
                             saml_status = outputs.get("IdcSamlConfigurationStatus", "")
@@ -1337,6 +1406,22 @@ class DeployCommand(Command):
                 idc_region = getattr(profile, "sso_region", None)
                 if idc_region:
                     params.append(f"IdcRegion={idc_region}")
+
+                # CloudFront-in-front-of-internal-ALB. When the distribution
+                # stack was deployed with EnableCloudFront=true it exposes a
+                # plain-HTTP (port 80) listener, its public CloudFront domain,
+                # and a shared session-signing secret. The admin console hangs
+                # its own forward-only /admin* rule off that HTTP listener and
+                # validates the SAME signed session cookie the landing page
+                # issues (shared secret, shared Cognito client, shared
+                # /callback), redirecting unauthenticated users to Cognito
+                # login. Presence of CloudFrontHTTPListenerArn on the
+                # distribution outputs is the signal the feature is on.
+                if distribution_outputs.get("CloudFrontHTTPListenerArn"):
+                    params.append("EnableCloudFront=true")
+                    params.append(f"CloudFrontHTTPListenerArn={distribution_outputs['CloudFrontHTTPListenerArn']}")
+                    params.append(f"CloudFrontDomain={distribution_outputs.get('CloudFrontDomainName', '')}")
+                    params.append(f"SessionSigningSecretArn={distribution_outputs.get('SessionSigningSecretArn', '')}")
 
                 # Package the admin_console Lambda directory (index.py + shared/)
                 # to S3 first — same pattern as quota-monitoring.yaml/bootstrap-
@@ -2092,6 +2177,10 @@ class DeployCommand(Command):
                 ]
                 if profile.distribution_idp_provider == "idc" and getattr(profile, "sso_region", None):
                     params.append(f"IdcGroupLookupRegion={profile.sso_region}")
+                if getattr(profile, "distribution_enable_cloudfront", False):
+                    params.append("EnableCloudFront=true")
+                    cf_prefix_list_id = _resolve_cloudfront_prefix_list_id(region) or "<cloudfront-prefix-list-id>"
+                    params.append(f"CloudFrontPrefixListId={cf_prefix_list_id}")
             else:
                 template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
@@ -2117,6 +2206,11 @@ class DeployCommand(Command):
             ]
             if getattr(profile, "sso_region", None):
                 params.append(f"IdcRegion={profile.sso_region}")
+            if getattr(profile, "distribution_enable_cloudfront", False):
+                params.append("EnableCloudFront=true")
+                params.append(f"CloudFrontHTTPListenerArn=<CloudFrontHTTPListenerArn from {distribution_stack}>")
+                params.append(f"CloudFrontDomain=<CloudFrontDomainName from {distribution_stack}>")
+                params.append(f"SessionSigningSecretArn=<SessionSigningSecretArn from {distribution_stack}>")
             console.print(
                 f"\n[cyan]# Step 1: Package Lambda function\n"
                 f"aws cloudformation package \\\n"

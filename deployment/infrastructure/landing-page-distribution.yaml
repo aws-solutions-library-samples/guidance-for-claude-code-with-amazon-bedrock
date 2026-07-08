@@ -290,6 +290,54 @@ Parameters:
     Default: 'initial'
     Description: Timestamp to force custom resource re-execution on every deployment (auto-populated by deploy command)
 
+  # CloudFront + VPC origin (optional). Solves the "internal ALB has no
+  # real, publicly-trusted TLS certificate" problem: CloudFront refuses to
+  # connect to any origin over HTTPS unless it presents a certificate from a
+  # public CA, which an internal ALB serving a non-resolvable test domain
+  # (e.g. *.internal) can never have. Instead of exposing the ALB to the
+  # internet to get a real cert, this adds a CloudFront distribution with a
+  # VPC origin that connects to the ALB over a NEW plain-HTTP listener
+  # (CloudFrontHTTPListener, port 80) — that connection runs entirely over
+  # CloudFront's private VPC-origin ENI, never the public internet, so there
+  # is no certificate to validate. CloudFront terminates HTTPS towards users
+  # with its own always-trusted *.cloudfront.net certificate.
+  #
+  # ALB-native authenticate-oidc only works on HTTPS listeners, so the new
+  # HTTP listener is forward-only — the Lambda instead runs a self-contained
+  # Cognito login flow (signed session cookie, /callback code exchange; same
+  # pattern as the original CDK prototype) for requests that arrive without
+  # an ALB-set x-amzn-oidc-data header. The existing HTTPS listener +
+  # authenticate-oidc is untouched and still serves direct/SSM-tunnel/VPN
+  # access exactly as before.
+  #
+  # Only meaningful for IdPProvider=cognito or idc (the only two types that
+  # already provision a Cognito app client this stack can drive itself).
+  EnableCloudFront:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Add a CloudFront distribution with a VPC origin in front of this
+      stack's ALB, so users can reach an ALBScheme=internal deployment over
+      a real, publicly-trusted HTTPS certificate without exposing the ALB to
+      the internet or needing a custom domain of your own. Only supported
+      with IdPProvider=cognito or idc.
+
+  # CloudFront VPC origins reach the ALB from CloudFront's origin-facing
+  # servers, NOT from an in-VPC private IP — so the ALB security group must
+  # allow the CloudFront managed prefix list
+  # (com.amazonaws.global.cloudfront.origin-facing) on the plain-HTTP port,
+  # not the VPC CIDR. The prefix list ID is region-specific, so deploy.py
+  # resolves it via ec2:DescribeManagedPrefixLists and passes it here.
+  CloudFrontPrefixListId:
+    Type: String
+    Default: ''
+    Description: >-
+      ID of the com.amazonaws.global.cloudfront.origin-facing AWS-managed
+      prefix list for this region (e.g. pl-82a045eb in us-west-2). Only used
+      when EnableCloudFront=true — grants the ALB's plain-HTTP listener
+      inbound access from CloudFront's origin-facing servers.
+
 Conditions:
   IsOkta: !Equals [!Ref IdPProvider, 'okta']
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
@@ -308,6 +356,7 @@ Conditions:
   # which only exist when IsIdc is true.
   HasIdcSamlMetadata: !And [!Condition IsIdc, !Not [!Equals [!Ref IdcSamlMetadataUrl, '']]]
   HasIdcGroupLookupRegion: !Not [!Equals [!Ref IdcGroupLookupRegion, '']]
+  ShouldEnableCloudFront: !And [!Equals [!Ref EnableCloudFront, 'true'], !Condition IsCognitoOrIdc]
 
 Resources:
   # S3 Bucket for package distribution
@@ -395,6 +444,24 @@ Resources:
             Action: s3:GetBucketAcl
             Resource: !GetAtt ALBLogsBucket.Arn
 
+  # HMAC key used to sign/verify the landing page's own session cookie for
+  # requests that arrive without an ALB-set x-amzn-oidc-data header (i.e.
+  # via the CloudFront + plain-HTTP-listener path — see EnableCloudFront).
+  # Always created (cheap, no ongoing cost) but only read when
+  # ShouldEnableCloudFront is true.
+  SessionSigningSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub 'HMAC key for signing the ${IdentityPoolName} landing page session cookie (CloudFront path only)'
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: 'key'
+        PasswordLength: 64
+        ExcludePunctuation: true
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
   # Lambda Execution Role
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -422,6 +489,25 @@ Resources:
                 Resource:
                   - !GetAtt DistributionBucket.Arn
                   - !Sub '${DistributionBucket.Arn}/*'
+        # CloudFront-in-front-of-ALB only (ShouldEnableCloudFront): the
+        # Lambda runs its own Cognito OIDC login flow for requests that
+        # arrive via the plain-HTTP CloudFront listener (no ALB-set
+        # x-amzn-oidc-data header) instead of relying on authenticate-oidc.
+        # Needs the Cognito app client secret (to do the /oauth2/token code
+        # exchange itself) and the HMAC key used to sign/verify the
+        # session cookie it sets.
+        - !If
+          - ShouldEnableCloudFront
+          - PolicyName: CloudFrontOidcSecrets
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource:
+                    - !If [IsIdc, !GetAtt IdcUserPoolClientSecret.SecretArn, !Ref CognitoClientSecretArn]
+                    - !Ref SessionSigningSecret
+          - !Ref 'AWS::NoValue'
         # IdPProvider=idc only: read-only group-membership lookups so the
         # landing page can resolve which per-group MDM configs (under
         # config/) the signed-in user is authorized to see/download. Same
@@ -506,6 +592,30 @@ Resources:
             - !Sub '${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
             - ''
           IDC_BOOTSTRAP_CLIENT_ID: !If [IsIdc, !Ref IdcBootstrapUserPoolClient, '']
+          # CloudFront-in-front-of-ALB only: requests arriving via
+          # CloudFront's plain-HTTP listener have no ALB-set
+          # x-amzn-oidc-data header, so the Lambda runs its own Cognito
+          # login (signed session cookie + /callback code exchange) for
+          # those. Empty when EnableCloudFront=false — the existing
+          # ALB-native authenticate-oidc path is unaffected either way.
+          ENABLE_CLOUDFRONT: !If [ShouldEnableCloudFront, 'true', 'false']
+          CLOUDFRONT_DOMAIN: !If [ShouldEnableCloudFront, !GetAtt CloudFrontDistribution.DomainName, '']
+          SELF_COGNITO_DOMAIN: !If
+            - ShouldEnableCloudFront
+            - !If
+              - IsIdc
+              - !Sub '${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+              - !Sub '${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+            - ''
+          SELF_COGNITO_CLIENT_ID: !If
+            - ShouldEnableCloudFront
+            - !If [IsIdc, !Ref IdcUserPoolClient, !Ref CognitoClientId]
+            - ''
+          SELF_COGNITO_CLIENT_SECRET_ARN: !If
+            - ShouldEnableCloudFront
+            - !If [IsIdc, !GetAtt IdcUserPoolClientSecret.SecretArn, !Ref CognitoClientSecretArn]
+            - ''
+          SESSION_SIGNING_SECRET_ARN: !If [ShouldEnableCloudFront, !Ref SessionSigningSecret, '']
       Code:
         ZipFile: |
           # ABOUTME: Lambda function for authenticated distribution landing page
@@ -514,6 +624,9 @@ Resources:
           import os
           import json
           import base64
+          import hashlib
+          import hmac
+          import time
           import urllib.parse
           import urllib.request
           import boto3
@@ -530,8 +643,169 @@ Resources:
           IDC_BOOTSTRAP_CLIENT_ID = os.environ.get('IDC_BOOTSTRAP_CLIENT_ID', '')
           PRESIGNED_URL_EXPIRY = 3600  # 1 hour
 
+          # CloudFront-in-front-of-ALB self-contained Cognito login (see
+          # EnableCloudFront parameter comment). All empty/false when this
+          # feature isn't enabled — extract_user_email falls back to the
+          # existing ALB-header path unchanged in that case.
+          ENABLE_CLOUDFRONT = os.environ.get('ENABLE_CLOUDFRONT', 'false') == 'true'
+          CLOUDFRONT_DOMAIN = os.environ.get('CLOUDFRONT_DOMAIN', '')
+          SELF_COGNITO_DOMAIN = os.environ.get('SELF_COGNITO_DOMAIN', '')
+          SELF_COGNITO_CLIENT_ID = os.environ.get('SELF_COGNITO_CLIENT_ID', '')
+          SELF_COGNITO_CLIENT_SECRET_ARN = os.environ.get('SELF_COGNITO_CLIENT_SECRET_ARN', '')
+          SESSION_SIGNING_SECRET_ARN = os.environ.get('SESSION_SIGNING_SECRET_ARN', '')
+
           sso_admin_client = boto3.client('sso-admin', region_name=IDC_GROUP_LOOKUP_REGION) if IS_IDC else None
           identity_store_client = boto3.client('identitystore', region_name=IDC_GROUP_LOOKUP_REGION) if IS_IDC else None
+          secretsmanager_client = boto3.client('secretsmanager') if ENABLE_CLOUDFRONT else None
+
+          _session_signing_secret_cache = None
+          _self_cognito_client_secret_cache = None
+
+
+          def _get_session_signing_secret():
+              """Fetch (and cache for the life of the execution environment) the
+              HMAC key used to sign/verify this Lambda's own session cookie."""
+              global _session_signing_secret_cache
+              if _session_signing_secret_cache is None:
+                  if not SESSION_SIGNING_SECRET_ARN:
+                      raise RuntimeError('SESSION_SIGNING_SECRET_ARN is not configured')
+                  response = secretsmanager_client.get_secret_value(SecretId=SESSION_SIGNING_SECRET_ARN)
+                  secret_dict = json.loads(response['SecretString'])
+                  _session_signing_secret_cache = secret_dict['key'].encode('utf-8')
+              return _session_signing_secret_cache
+
+
+          def _get_self_cognito_client_secret():
+              global _self_cognito_client_secret_cache
+              if _self_cognito_client_secret_cache is None:
+                  if not SELF_COGNITO_CLIENT_SECRET_ARN:
+                      raise RuntimeError('SELF_COGNITO_CLIENT_SECRET_ARN is not configured')
+                  response = secretsmanager_client.get_secret_value(SecretId=SELF_COGNITO_CLIENT_SECRET_ARN)
+                  _self_cognito_client_secret_cache = response['SecretString']
+              return _self_cognito_client_secret_cache
+
+
+          def _sign(payload_b64):
+              """HMAC-SHA256 sign a base64url payload, return a base64url signature."""
+              key = _get_session_signing_secret()
+              digest = hmac.new(key, payload_b64.encode('utf-8'), hashlib.sha256).digest()
+              return base64.urlsafe_b64encode(digest).decode().rstrip('=')
+
+
+          def create_session_token(email, name='', ttl_seconds=3600):
+              """Build an HMAC-signed session token: base64url(payload).base64url(signature).
+              Not forgeable without the signing secret — see validate_session."""
+              payload = json.dumps({'email': email, 'name': name, 'exp': int(time.time()) + ttl_seconds})
+              payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=')
+              signature_b64 = _sign(payload_b64)
+              return f"{payload_b64}.{signature_b64}"
+
+
+          def validate_session(session_token):
+              """Verify an HMAC-signed session token created by create_session_token().
+              Returns the decoded payload dict if valid and not expired, else None."""
+              try:
+                  payload_b64, signature_b64 = session_token.split('.', 1)
+              except ValueError:
+                  return None
+              expected_signature = _sign(payload_b64)
+              if not hmac.compare_digest(signature_b64, expected_signature):
+                  return None
+              try:
+                  padded = payload_b64 + '=' * (-len(payload_b64) % 4)
+                  session_data = json.loads(base64.urlsafe_b64decode(padded))
+              except Exception:
+                  return None
+              if session_data.get('exp', 0) < time.time():
+                  return None
+              return session_data
+
+
+          def parse_cookies(cookie_header):
+              cookies = {}
+              if cookie_header:
+                  for item in cookie_header.split(';'):
+                      if '=' in item:
+                          k, v = item.strip().split('=', 1)
+                          cookies[k] = v
+              return cookies
+
+
+          def redirect_to_self_login(base_url):
+              login_url = (
+                  f"https://{SELF_COGNITO_DOMAIN}/login?"
+                  f"client_id={SELF_COGNITO_CLIENT_ID}&"
+                  f"response_type=code&"
+                  f"scope=openid+email+profile&"
+                  f"redirect_uri={urllib.parse.quote(base_url + '/callback')}"
+              )
+              # multiValueHeaders (not headers): the Lambda target group has
+              # lambda.multi_value_headers.enabled=true, so plain 'headers'
+              # are silently dropped by the ALB (302 with no Location).
+              return {'statusCode': 302, 'multiValueHeaders': {'Location': [login_url]}, 'body': ''}
+
+
+          def verify_self_cognito_access_token(access_token):
+              """Verify an access token by calling this Cognito user pool's own
+              /oauth2/userInfo endpoint (validates signature/expiry/revocation
+              server-side, rather than trusting a locally-decoded JWT)."""
+              if not access_token:
+                  return None
+              req = urllib.request.Request(f"https://{SELF_COGNITO_DOMAIN}/oauth2/userInfo", method='GET')
+              req.add_header('Authorization', f'Bearer {access_token}')
+              try:
+                  # URL built from SELF_COGNITO_DOMAIN (a deploy-time env var set
+                  # by our own CFN stack), not from request input.
+                  with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
+                      user_attrs = json.loads(response.read().decode('utf-8'))
+              except Exception as e:
+                  print(f"Access token verification failed: {e}")
+                  return None
+              return {'email': user_attrs.get('email', '')}
+
+
+          def handle_self_callback(code, base_url):
+              """Cognito /callback: exchange the authorization code for tokens,
+              verify the access token, and set our own signed session cookie.
+              Only used for CloudFront-arriving requests (see ENABLE_CLOUDFRONT)."""
+              token_url = f"https://{SELF_COGNITO_DOMAIN}/oauth2/token"
+              client_secret = _get_self_cognito_client_secret()
+              credentials = base64.b64encode(f"{SELF_COGNITO_CLIENT_ID}:{client_secret}".encode()).decode()
+              data = urllib.parse.urlencode({
+                  'grant_type': 'authorization_code',
+                  'client_id': SELF_COGNITO_CLIENT_ID,
+                  'code': code,
+                  'redirect_uri': base_url + '/callback',
+              }).encode('utf-8')
+              req = urllib.request.Request(token_url, data=data, method='POST')
+              req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+              req.add_header('Authorization', f'Basic {credentials}')
+              try:
+                  # URL built from SELF_COGNITO_DOMAIN (deploy-time env var), not
+                  # from request input.
+                  with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
+                      tokens = json.loads(response.read().decode('utf-8'))
+              except Exception as e:
+                  print(f"Token exchange failed: {e}")
+                  return redirect_to_self_login(base_url)
+
+              access_token = tokens.get('access_token', '')
+              user_info = verify_self_cognito_access_token(access_token)
+              if not user_info or not user_info.get('email'):
+                  return redirect_to_self_login(base_url)
+
+              session_token = create_session_token(email=user_info['email'], ttl_seconds=3600)
+              # multiValueHeaders (not headers): the Lambda target group has
+              # lambda.multi_value_headers.enabled=true, so plain 'headers'
+              # are silently dropped — the session cookie would never be set.
+              return {
+                  'statusCode': 302,
+                  'multiValueHeaders': {
+                      'Location': [base_url],
+                      'Set-Cookie': [f'session={session_token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600'],
+                  },
+                  'body': '',
+              }
 
           def get_header(event, name, default=''):
               """Read a request header from an ALB Lambda-target event,
@@ -557,6 +831,23 @@ Resources:
               try:
                   # Check if this is a documentation request
                   path = event.get('path', '/')
+
+                  # CloudFront-in-front-of-ALB mode (see ENABLE_CLOUDFRONT):
+                  # requests arrive via CloudFront's plain-HTTP listener with
+                  # NO ALB-set x-amzn-oidc-data header, so this Lambda runs
+                  # its own Cognito login. base_url is CloudFront's own HTTPS
+                  # domain (CLOUDFRONT_DOMAIN) so redirect_uri/cookies match
+                  # the address the user's browser actually used. When
+                  # EnableCloudFront=false none of this runs and the existing
+                  # ALB authenticate-oidc path is used unchanged.
+                  if ENABLE_CLOUDFRONT:
+                      base_url = f"https://{CLOUDFRONT_DOMAIN}"
+                      if path == '/callback':
+                          code = (event.get('queryStringParameters') or {}).get('code')
+                          if code:
+                              return handle_self_callback(code, base_url)
+                          return redirect_to_self_login(base_url)
+
                   if path.startswith('/docs'):
                       return serve_documentation(path)
 
@@ -571,7 +862,14 @@ Resources:
                   # live IDC group membership (see handle_config_download).
                   if IS_IDC and path.startswith('/download-config/'):
                       config_download_id = path.split('/download-config/', 1)[-1].strip('/')
-                      user_email = extract_user_email(event)
+                      if ENABLE_CLOUDFRONT:
+                          cookies = parse_cookies(get_header(event, 'cookie'))
+                          session_info = validate_session(cookies.get('session', ''))
+                          if not session_info:
+                              return redirect_to_self_login(f"https://{CLOUDFRONT_DOMAIN}")
+                          user_email = session_info.get('email', '')
+                      else:
+                          user_email = extract_user_email(event)
                       return handle_config_download(config_download_id, user_email)
 
                   # IdPProvider=idc only: Claude Desktop's dynamic per-user
@@ -585,9 +883,21 @@ Resources:
                   if path == '/logout':
                       return handle_logout(event)
 
-                  # Extract user email from ALB authentication headers
-                  # ALB has already validated authentication - trust the header
-                  user_email = extract_user_email(event)
+                  # In CloudFront mode there's no ALB-verified header, so
+                  # resolve identity from our own signed session cookie and
+                  # redirect unauthenticated callers into the Cognito login
+                  # flow. In ALB mode this is skipped and the header is
+                  # trusted exactly as before.
+                  if ENABLE_CLOUDFRONT:
+                      cookies = parse_cookies(get_header(event, 'cookie'))
+                      session_info = validate_session(cookies.get('session', ''))
+                      if not session_info:
+                          return redirect_to_self_login(f"https://{CLOUDFRONT_DOMAIN}")
+                      user_email = session_info.get('email', '')
+                  else:
+                      # Extract user email from ALB authentication headers
+                      # ALB has already validated authentication - trust the header
+                      user_email = extract_user_email(event)
 
                   # IdPProvider=idc renders per-group MDM configs instead of
                   # the flat installer-zip cards every other IdP type shows.
@@ -693,6 +1003,13 @@ Resources:
                   f'AWSELBAuthSessionCookie-{i}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'
                   for i in range(4)
               ]
+              # CloudFront path (see ENABLE_CLOUDFRONT): auth lives in this
+              # Lambda's own signed 'session' cookie, not the ALB's
+              # AWSELBAuthSessionCookie-N shards, so clear that too — otherwise
+              # the user stays logged in after hitting /logout.
+              if ENABLE_CLOUDFRONT:
+                  base_url = f"https://{CLOUDFRONT_DOMAIN}"
+                  expired_cookies.append('session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0')
 
               sign_in_again_url = base_url
               if LOGOUT_URL:
@@ -2158,6 +2475,21 @@ Resources:
             - IsInternalALB
             - 'HTTPS from private networks (10.x.x.x) - access via SSM port forwarding or VPN'
             - 'Allow HTTPS from internet (authenticated access)'
+        # Port 80 ingress for the CloudFront VPC origin only (see
+        # EnableCloudFront). CloudFront reaches the ALB from its
+        # origin-facing server fleet, so this is scoped to the AWS-managed
+        # CloudFront prefix list (not the VPC CIDR — VPC-origin traffic does
+        # NOT arrive from an in-VPC source IP). The CloudFrontHTTPListener it
+        # targets is forward-only (no auth data in the clear). Omitted
+        # entirely when CloudFront isn't enabled.
+        - !If
+          - ShouldEnableCloudFront
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            SourcePrefixListId: !Ref CloudFrontPrefixListId
+            Description: 'HTTP from CloudFront origin-facing servers (managed prefix list)'
+          - !Ref 'AWS::NoValue'
       # Explicit egress (rather than relying on the implicit allow-all
       # default) restricted to HTTPS: the ALB's authenticate-oidc action
       # needs outbound 443 to reach the IdP's public token/userInfo
@@ -2390,6 +2722,96 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref LambdaTargetGroup
 
+  # =====================================================================
+  # CloudFront-in-front-of-internal-ALB (EnableCloudFront=true, Cognito/IDC)
+  # =====================================================================
+  # Forward-only HTTP listener that the CloudFront VPC origin connects to.
+  # No authenticate-oidc here (that only works on HTTPS listeners) — the
+  # Lambda runs its own Cognito login for CloudFront-arriving requests.
+  CloudFrontHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: ShouldEnableCloudFront
+    Properties:
+      LoadBalancerArn: !Ref DistributionALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LambdaTargetGroup
+
+  # /api/bootstrap on the HTTP listener too (IDC + CloudFront): Claude
+  # Desktop reaches the bootstrap endpoint through CloudFront over HTTP; the
+  # Lambda still validates the caller's own Bearer token itself.
+  CloudFrontBootstrapApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: ShouldEnableCloudFront
+    Properties:
+      ListenerArn: !Ref CloudFrontHTTPListener
+      Priority: 1
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/api/bootstrap'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref LambdaTargetGroup
+
+  # CloudFront VPC origin — the private ENI CloudFront uses to reach the
+  # internal ALB over the AWS backbone (no public internet, no cert to
+  # validate since the connection is plain HTTP on port 80).
+  DistributionVpcOrigin:
+    Type: AWS::CloudFront::VpcOrigin
+    Condition: ShouldEnableCloudFront
+    Properties:
+      VpcOriginEndpointConfig:
+        Name: !Sub '${IdentityPoolName}-alb-vpc-origin'
+        Arn: !Ref DistributionALB
+        HTTPPort: 80
+        # http-only: the CloudFront->ALB leg is plain HTTP over the private
+        # VPC-origin ENI. CloudFront still terminates HTTPS toward users
+        # with its own *.cloudfront.net certificate (ViewerCertificate
+        # below), so end-user traffic is always encrypted.
+        OriginProtocolPolicy: http-only
+      Tags:
+        - Key: Application
+          Value: ClaudeCodeWithBedrock
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: ShouldEnableCloudFront
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'Claude Code distribution portal (${IdentityPoolName}) - VPC origin to internal ALB'
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: alb-vpc-origin
+            # DomainName must be the ALB's real DNS name (CloudFront uses it
+            # as the Host/SNI and to resolve the origin), even though the
+            # actual connection is routed through the VPC origin below.
+            DomainName: !GetAtt DistributionALB.DNSName
+            VpcOriginConfig:
+              VpcOriginId: !GetAtt DistributionVpcOrigin.Id
+        DefaultCacheBehavior:
+          TargetOriginId: alb-vpc-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          Compress: true
+          # AllViewer origin request policy — forwards ALL headers, cookies,
+          # and query strings to the ALB. Required for the Cognito OIDC
+          # login/callback + session-cookie flow to work through CloudFront
+          # (host, cookies, and the ?code= query string must all reach the
+          # Lambda). CachingDisabled — every response here is per-user/
+          # dynamic and must never be cached at the edge.
+          CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+          OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+        # CloudFront's default *.cloudfront.net certificate (always publicly
+        # trusted) — no custom domain / ACM certificate needed.
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
   # Route53 record for the custom domain (if custom domain with Route53).
   # Use a CNAME (not an A alias) so the host resolves through the custom
   # domain name rather than the ALB's IP addresses. With an A alias, OIDC
@@ -2481,14 +2903,23 @@ Resources:
                   user_pool_id = event['ResourceProperties']['UserPoolId']
                   client_id = event['ResourceProperties']['ClientId']
                   custom_domain = event['ResourceProperties']['CustomDomain']
+                  # Optional CloudFront domain (EnableCloudFront=true) — its
+                  # login flow is Lambda-driven and lands on /callback (not
+                  # the ALB's /oauth2/idpresponse), and its logout returns to
+                  # the CloudFront root. Registered alongside the ALB custom
+                  # domain so both access paths work off the same client.
+                  cloudfront_domain = event['ResourceProperties'].get('CloudFrontDomain', '')
 
                   # Build callback URLs
-                  callback_url = f"https://{custom_domain}/oauth2/idpresponse"
-                  logout_url = f"https://{custom_domain}"
+                  callback_urls = [f"https://{custom_domain}/oauth2/idpresponse"]
+                  logout_urls = [f"https://{custom_domain}"]
+                  if cloudfront_domain:
+                      callback_urls.append(f"https://{cloudfront_domain}/callback")
+                      logout_urls.append(f"https://{cloudfront_domain}")
 
                   logger.info(f"Updating Cognito client {client_id} in pool {user_pool_id}")
-                  logger.info(f"Callback URL: {callback_url}")
-                  logger.info(f"Logout URL: {logout_url}")
+                  logger.info(f"Callback URLs: {callback_urls}")
+                  logger.info(f"Logout URLs: {logout_urls}")
 
                   # Get current client configuration
                   response = cognito.describe_user_pool_client(
@@ -2502,8 +2933,8 @@ Resources:
                   update_params = {
                       'UserPoolId': user_pool_id,
                       'ClientId': client_id,
-                      'CallbackURLs': [callback_url],
-                      'LogoutURLs': [logout_url]
+                      'CallbackURLs': callback_urls,
+                      'LogoutURLs': logout_urls
                   }
 
                   # Preserve required OAuth settings
@@ -2526,8 +2957,8 @@ Resources:
 
                   logger.info("Successfully updated Cognito client callback URLs")
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {
-                      'CallbackURL': callback_url,
-                      'LogoutURL': logout_url
+                      'CallbackURLs': ','.join(callback_urls),
+                      'LogoutURLs': ','.join(logout_urls)
                   })
 
               except Exception as e:
@@ -2547,6 +2978,7 @@ Resources:
       UserPoolId: !If [IsIdc, !Ref IdcUserPool, !Ref CognitoUserPoolId]
       ClientId: !If [IsIdc, !Ref IdcUserPoolClient, !Ref CognitoClientId]
       CustomDomain: !Ref CustomDomainName
+      CloudFrontDomain: !If [ShouldEnableCloudFront, !GetAtt CloudFrontDistribution.DomainName, '']
       Version: !Ref DeploymentTimestamp  # Changes on every deployment to force Lambda re-execution
 
 Outputs:
@@ -2555,6 +2987,24 @@ Outputs:
     Value: !Sub 'https://${CustomDomainName}'
     Export:
       Name: !Sub '${AWS::StackName}-DistributionURL'
+
+  CloudFrontURL:
+    Condition: ShouldEnableCloudFront
+    Description: >-
+      Publicly reachable CloudFront URL in front of the internal ALB (VPC
+      origin). Use this to reach the landing page/admin console over a real,
+      publicly-trusted HTTPS certificate without exposing the ALB or needing
+      your own custom domain.
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontURL'
+
+  CloudFrontDomainName:
+    Condition: ShouldEnableCloudFront
+    Description: CloudFront distribution domain name (e.g. dxxxx.cloudfront.net).
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontDomainName'
 
   IdPRedirectURI:
     Description: Configure this redirect URI in your IdP web application
@@ -2646,6 +3096,28 @@ Outputs:
     Value: !Ref HTTPSListener
     Export:
       Name: !Sub '${AWS::StackName}-HTTPSListenerArn'
+
+  CloudFrontHTTPListenerArn:
+    Condition: ShouldEnableCloudFront
+    Description: >-
+      ARN of the ALB's forward-only HTTP listener (port 80) that the
+      CloudFront VPC origin connects to. Exported so the admin-console stack
+      can attach its own /admin* rule here as well when CloudFront is
+      enabled (the /admin path must be reachable through CloudFront, not just
+      the HTTPS listener).
+    Value: !Ref CloudFrontHTTPListener
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontHTTPListenerArn'
+
+  SessionSigningSecretArn:
+    Description: >-
+      Secrets Manager ARN of the HMAC key used to sign the landing page's
+      session cookie in CloudFront mode. Exported so the admin-console stack
+      (same CloudFront domain, same Cognito client) can validate the same
+      session cookie a user obtained on the landing page.
+    Value: !Ref SessionSigningSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-SessionSigningSecretArn'
 
   ALBSecurityGroupId:
     Description: Security group ID attached to the ALB (informational; the admin console reuses the same ALB, no additional security group needed).

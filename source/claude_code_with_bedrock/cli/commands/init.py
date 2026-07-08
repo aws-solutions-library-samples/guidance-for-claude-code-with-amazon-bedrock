@@ -2052,6 +2052,27 @@ class InitCommand(Command):
                 default=config.get("distribution", {}).get("alb_scheme", "internal"),
             ).ask()
 
+            # CloudFront-in-front-of-internal-ALB. An internal ALB has no public
+            # IP and can't get a real public certificate, so it can normally
+            # only be reached via SSM port forwarding or a VPN. Enabling
+            # CloudFront puts a public HTTPS URL (*.cloudfront.net) in front of
+            # it via a VPC origin over the AWS private backbone, so users can
+            # reach the landing page directly without a domain/cert. OIDC auth
+            # moves into the Lambda (self-contained signed session cookies)
+            # since CloudFront can't validate a self-signed origin cert.
+            enable_cloudfront = False
+            if alb_scheme == "internal":
+                console.print(
+                    "\n[dim]CloudFront: expose the internal ALB through a public HTTPS URL "
+                    "(*.cloudfront.net) via a VPC origin, so users can reach the landing page "
+                    "without SSM tunneling, a VPN, or buying a domain. Authentication moves into "
+                    "the Lambda (signed session cookies).[/dim]"
+                )
+                enable_cloudfront = questionary.confirm(
+                    "Put a CloudFront distribution in front of the internal ALB?",
+                    default=config.get("distribution", {}).get("enable_cloudfront", False),
+                ).ask()
+
             # Store IDC configuration
             config.setdefault("distribution", {}).update(
                 {
@@ -2060,6 +2081,7 @@ class InitCommand(Command):
                     "idc_instance_arn": idc_instance_arn,
                     "idc_admin_group": idc_admin_group,
                     "alb_scheme": alb_scheme,
+                    "enable_cloudfront": enable_cloudfront,
                 }
             )
 
@@ -2754,6 +2776,7 @@ class InitCommand(Command):
                 "idc_admin_group", "Claude-Code-Admins"
             ),
             "distribution_alb_scheme": config_data.get("distribution", {}).get("alb_scheme"),
+            "distribution_enable_cloudfront": config_data.get("distribution", {}).get("enable_cloudfront", False),
             "quota_monitoring_enabled": (
                 config_data.get("quota", {}).get("enabled", False)
                 if config_data.get("monitoring", {}).get("enabled")
@@ -3178,6 +3201,7 @@ class InitCommand(Command):
                     "idc_instance_arn": getattr(profile, "distribution_idc_instance_arn", None),
                     "idc_admin_group": getattr(profile, "distribution_idc_admin_group", "Claude-Code-Admins"),
                     "alb_scheme": getattr(profile, "distribution_alb_scheme", None),
+                    "enable_cloudfront": getattr(profile, "distribution_enable_cloudfront", False),
                 }
 
             # Add quota monitoring configuration if present.

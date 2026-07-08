@@ -153,9 +153,52 @@ Parameters:
       Leave empty for production internet-facing deployments where the
       custom domain is the only way users reach the admin console.
 
+  # CloudFront-in-front-of-internal-ALB support (see the distribution stack's
+  # EnableCloudFront parameter). When the distribution stack is deployed with
+  # CloudFront, the admin console must (a) attach its /admin* rule to the
+  # forward-only HTTP listener CloudFront connects to, and (b) run its own
+  # Cognito login (session cookie) for CloudFront-arriving requests, since
+  # ALB-native authenticate-oidc only works on the HTTPS listener.
+  EnableCloudFront:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Set to 'true' when the distribution stack was deployed with
+      EnableCloudFront=true, so the admin console is reachable through the
+      CloudFront distribution (VPC origin) as well.
+
+  CloudFrontHTTPListenerArn:
+    Type: String
+    Default: ''
+    Description: >-
+      (EnableCloudFront=true) ARN of the distribution stack's forward-only
+      HTTP listener (from its CloudFrontHTTPListenerArn output). The admin
+      console attaches a second /admin* rule here so /admin is reachable
+      through CloudFront.
+
+  CloudFrontDomain:
+    Type: String
+    Default: ''
+    Description: >-
+      (EnableCloudFront=true) CloudFront distribution domain name (from the
+      distribution stack's CloudFrontDomainName output). Used as the base URL
+      for the admin console's own Cognito login redirect/callback and CSRF
+      origin check when reached through CloudFront.
+
+  SessionSigningSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      (EnableCloudFront=true) Secrets Manager ARN of the shared session-cookie
+      HMAC key (from the distribution stack's SessionSigningSecretArn output).
+      Must match the landing page's so a session obtained there is valid on
+      /admin (same CloudFront domain, same Cognito client).
+
 Conditions:
   HasExplicitIdcRegion: !Not [!Equals [!Ref IdcRegion, '']]
   HasIdcBootstrapClient: !Not [!Equals [!Ref IdcBootstrapUserPoolClientId, '']]
+  ShouldEnableCloudFront: !Equals [!Ref EnableCloudFront, 'true']
 
 Resources:
   # ============================================================
@@ -273,6 +316,22 @@ Resources:
               - Effect: Allow
                 Action: sts:GetCallerIdentity
                 Resource: '*' # sts:GetCallerIdentity does not support resource-level permissions
+        # CloudFront mode only: the admin Lambda validates the shared
+        # session cookie the landing page's /callback set (same CloudFront
+        # domain, same Cognito client), so it only needs the session-signing
+        # HMAC key — the code exchange itself happens in the landing page
+        # Lambda, so no Cognito client secret is needed here.
+        - !If
+          - ShouldEnableCloudFront
+          - PolicyName: CloudFrontSessionSecret
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource:
+                    - !Ref SessionSigningSecretArn
+          - !Ref 'AWS::NoValue'
       Tags:
         - Key: Application
           Value: ClaudeCodeWithBedrock
@@ -332,6 +391,16 @@ Resources:
           # region. Defaults to AWS::Region (the common case: admin console
           # deployed alongside IDC) when IdcRegion isn't set.
           IDC_REGION: !If [HasExplicitIdcRegion, !Ref IdcRegion, !Ref 'AWS::Region']
+          # CloudFront mode: self-contained Cognito login for requests
+          # arriving via CloudFront's HTTP listener (no ALB auth header).
+          ENABLE_CLOUDFRONT: !If [ShouldEnableCloudFront, 'true', 'false']
+          CLOUDFRONT_DOMAIN: !Ref CloudFrontDomain
+          SELF_COGNITO_DOMAIN: !If
+            - ShouldEnableCloudFront
+            - !Sub '${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+            - ''
+          SELF_COGNITO_CLIENT_ID: !If [ShouldEnableCloudFront, !Ref IdcUserPoolClientId, '']
+          SESSION_SIGNING_SECRET_ARN: !Ref SessionSigningSecretArn
       Code: ./lambda-functions/admin_console/
       Tags:
         - Key: Application
@@ -395,10 +464,32 @@ Resources:
           Order: 2
           TargetGroupArn: !Ref AdminTargetGroup
 
+  # CloudFront mode: /admin* also needs a rule on the forward-only HTTP
+  # listener CloudFront connects to. No authenticate-oidc (that only works on
+  # HTTPS listeners) — the admin Lambda runs its own Cognito login for these
+  # requests, exactly like the landing page does.
+  AdminCloudFrontListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: ShouldEnableCloudFront
+    Properties:
+      ListenerArn: !Ref CloudFrontHTTPListenerArn
+      Priority: !Ref ListenerRulePriority
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/admin'
+            - '/admin/*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref AdminTargetGroup
+
 Outputs:
   AdminConsoleUrl:
     Description: Admin console URL (requires membership in AdminGroupName within IAM Identity Center)
-    Value: !Sub 'https://${CustomDomainName}/admin'
+    Value: !If
+      - ShouldEnableCloudFront
+      - !Sub 'https://${CloudFrontDomain}/admin'
+      - !Sub 'https://${CustomDomainName}/admin'
     Export:
       Name: !Sub '${AWS::StackName}-AdminConsoleUrl'
 

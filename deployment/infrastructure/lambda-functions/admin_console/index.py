@@ -19,10 +19,13 @@ implementation (deployment/idc-landing-page/lambda/index.py).
 """
 
 import base64
+import hashlib
+import hmac
 import html
 import json
 import os
 import time
+import urllib.parse
 import uuid
 from urllib.parse import unquote
 
@@ -55,7 +58,89 @@ IDC_BOOTSTRAP_REDIRECT_PORT = os.environ.get("IDC_BOOTSTRAP_REDIRECT_PORT", "")
 # different region than IDC's home region.
 IDC_REGION = os.environ.get("IDC_REGION", REGION)
 
+# CloudFront-in-front-of-internal-ALB mode (see admin-console.yaml's
+# EnableCloudFront). Requests arrive via CloudFront's forward-only HTTP
+# listener with NO ALB-set x-amzn-oidc-data header, so identity comes from
+# the shared session cookie the landing page's /callback set (same CloudFront
+# domain, same Cognito client, same signing secret). Unauthenticated callers
+# are redirected to Cognito login with redirect_uri pointing back at the
+# landing page's /callback (already a registered callback URL) — the admin
+# console never does its own code exchange.
+ENABLE_CLOUDFRONT = os.environ.get("ENABLE_CLOUDFRONT", "false") == "true"
+CLOUDFRONT_DOMAIN = os.environ.get("CLOUDFRONT_DOMAIN", "")
+SELF_COGNITO_DOMAIN = os.environ.get("SELF_COGNITO_DOMAIN", "")
+SELF_COGNITO_CLIENT_ID = os.environ.get("SELF_COGNITO_CLIENT_ID", "")
+SESSION_SIGNING_SECRET_ARN = os.environ.get("SESSION_SIGNING_SECRET_ARN", "")
+
 s3_client = boto3.client("s3")
+_secretsmanager_client = boto3.client("secretsmanager") if ENABLE_CLOUDFRONT else None
+_session_signing_secret_cache = None
+
+
+def _get_session_signing_secret():
+    """Fetch (and cache) the shared HMAC key used to validate the landing
+    page's session cookie. Same secret the landing page signs with."""
+    global _session_signing_secret_cache
+    if _session_signing_secret_cache is None:
+        if not SESSION_SIGNING_SECRET_ARN:
+            raise RuntimeError("SESSION_SIGNING_SECRET_ARN is not configured")
+        resp = _secretsmanager_client.get_secret_value(SecretId=SESSION_SIGNING_SECRET_ARN)
+        secret_dict = json.loads(resp["SecretString"])
+        _session_signing_secret_cache = secret_dict["key"].encode("utf-8")
+    return _session_signing_secret_cache
+
+
+def _sign(payload_b64: str) -> str:
+    key = _get_session_signing_secret()
+    digest = hmac.new(key, payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def _parse_cookies(cookie_header: str) -> dict:
+    cookies = {}
+    if cookie_header:
+        for item in cookie_header.split(";"):
+            if "=" in item:
+                k, v = item.strip().split("=", 1)
+                cookies[k] = v
+    return cookies
+
+
+def validate_session(session_token: str):
+    """Verify the landing page's HMAC-signed session token. Returns the
+    decoded payload if valid and unexpired, else None."""
+    if not session_token:
+        return None
+    try:
+        payload_b64, signature_b64 = session_token.split(".", 1)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(signature_b64, _sign(payload_b64)):
+        return None
+    try:
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        session_data = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    if session_data.get("exp", 0) < time.time():
+        return None
+    return session_data
+
+
+def redirect_to_login():
+    """Redirect an unauthenticated CloudFront request to Cognito login. The
+    redirect_uri is the landing page's /callback (already a registered
+    callback URL); after login it sets the shared session cookie domain-wide
+    and the user can return to /admin."""
+    base_url = f"https://{CLOUDFRONT_DOMAIN}"
+    login_url = (
+        f"https://{SELF_COGNITO_DOMAIN}/login?"
+        f"client_id={SELF_COGNITO_CLIENT_ID}&"
+        f"response_type=code&"
+        f"scope=openid+email+profile&"
+        f"redirect_uri={urllib.parse.quote(base_url + '/callback')}"
+    )
+    return {"statusCode": 302, "headers": {"Location": login_url}, "body": ""}
 bedrock_client = boto3.client("bedrock")
 sso_admin_client = boto3.client("sso-admin", region_name=IDC_REGION)
 identity_store_client = boto3.client("identitystore", region_name=IDC_REGION)
@@ -146,8 +231,13 @@ def verify_request_origin(headers: dict) -> bool:
     Referer fallback) header to match BASE_URL, or one of
     ADDITIONAL_TRUSTED_ORIGINS (see admin-console.yaml's
     AdditionalTrustedOrigins parameter — needed for SSM-tunnel/VPN access to
-    an internal-scheme ALB). Fails closed if neither header is present."""
+    an internal-scheme ALB). Fails closed if neither header is present.
+
+    In CloudFront mode the admin console is reached at https://CLOUDFRONT_DOMAIN
+    (not BASE_URL's custom domain), so that origin is trusted too."""
     allowed = [BASE_URL.rstrip("/")] + ADDITIONAL_TRUSTED_ORIGINS
+    if ENABLE_CLOUDFRONT and CLOUDFRONT_DOMAIN:
+        allowed.append(f"https://{CLOUDFRONT_DOMAIN}")
     origin = headers.get("origin", headers.get("Origin", ""))
     if not origin:
         origin = headers.get("referer", headers.get("Referer", ""))
@@ -572,15 +662,19 @@ def generate_mdm_configs(
     mcp_server_templates = mcp_server_templates or []
     deployment_uuid = str(uuid.uuid4()).upper()
 
-    # Bootstrap URL base — normally BASE_URL (this stack's CustomDomainName),
-    # but for ALBScheme=internal deployments accessed via an SSM tunnel/VPN
-    # whose hostname Claude Desktop can't actually resolve/reach (the
-    # CustomDomainName is often a placeholder like "*.internal" that only
-    # resolves manually in a browser via a tunnel), the admin can override it
-    # with the tunnel's own protocol/host/port (see "Bootstrap URL Override"
-    # on the Policies page) — e.g. https://localhost:8443. Only affects
-    # newly generated configs; falls back to BASE_URL when disabled/unset.
-    bootstrap_base_url = BASE_URL
+    # Bootstrap URL base — the URL Claude Desktop polls for dynamic config.
+    # Priority:
+    #   1. Admin's explicit "Bootstrap URL Override" (any real domain or an
+    #      SSM-tunnel host like https://localhost:8443) — always wins.
+    #   2. The CloudFront domain, when the stack is deployed with CloudFront
+    #      in front of the internal ALB — publicly reachable by Claude
+    #      Desktop over a real HTTPS cert, no tunnel needed.
+    #   3. BASE_URL (the ALB's CustomDomainName) — the original behavior;
+    #      only reachable if that domain actually resolves for the client.
+    if ENABLE_CLOUDFRONT and CLOUDFRONT_DOMAIN:
+        bootstrap_base_url = f"https://{CLOUDFRONT_DOMAIN}"
+    else:
+        bootstrap_base_url = BASE_URL
     if policies.get("bootstrapUrlOverrideEnabled") and policies.get("bootstrapUrlOverrideHost"):
         override_protocol = policies.get("bootstrapUrlOverrideProtocol") or "https"
         override_host = policies["bootstrapUrlOverrideHost"].strip()
@@ -800,6 +894,10 @@ def serve_admin_page(user_email: str) -> dict:
     with its JS wired to this Lambda's existing /admin/api/* endpoints, which
     already match the same request/response shapes the original UI expects.
     """
+    # The default bootstrap URL base shown in the "Bootstrap URL Override"
+    # hint — the CloudFront domain when this deployment is fronted by
+    # CloudFront, otherwise the ALB's custom domain (BASE_URL).
+    bootstrap_default_hint = f"https://{CLOUDFRONT_DOMAIN}" if (ENABLE_CLOUDFRONT and CLOUDFRONT_DOMAIN) else BASE_URL
     return html_response(
         f"""<!DOCTYPE html>
 <html lang="en">
@@ -1594,13 +1692,14 @@ def serve_admin_page(user_email: str) -> dict:
                 <div class="section">
                     <h3>Bootstrap URL Override</h3>
                     <p class="section-description">
-                        The bootstrap config URL embedded in generated MDM profiles normally
-                        uses this stack's custom domain (<code>{html.escape(BASE_URL)}</code>).
-                        For an internal-scheme ALB with a domain that only resolves through an
-                        SSM tunnel or VPN (not directly reachable by Claude Desktop), override it
-                        here with the tunnel's protocol/host/port instead — e.g.
-                        <code>https://localhost:8443</code>. Only affects newly generated configs;
-                        click Deploy again on Models &amp; Groups to regenerate existing ones.
+                        The bootstrap config URL embedded in generated MDM profiles defaults to
+                        <code>{html.escape(bootstrap_default_hint)}</code>. Override it here with
+                        any protocol/host/port when you want Claude Desktop to reach a different
+                        address — for example a real custom domain once you point one at this
+                        deployment via Route 53 (e.g. <code>https://claude.example.com</code>),
+                        or an SSM-tunnel/VPN host for testing (e.g. <code>https://localhost:8443</code>).
+                        Only affects newly generated configs; click Deploy again on Models &amp;
+                        Groups to regenerate existing ones.
                     </p>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                         <input type="checkbox" id="policy-bootstrapUrlOverrideEnabled">
@@ -1611,7 +1710,7 @@ def serve_admin_page(user_email: str) -> dict:
                             <option value="https">https</option>
                             <option value="http">http</option>
                         </select>
-                        <input type="text" id="bootstrap-url-override-host" placeholder="localhost" style="flex: 2;">
+                        <input type="text" id="bootstrap-url-override-host" placeholder="claude.example.com" style="flex: 2;">
                         <input type="number" id="bootstrap-url-override-port" placeholder="443" min="1" max="65535" style="flex: 1;">
                     </div>
                 </div>
@@ -2143,7 +2242,17 @@ def lambda_handler(event, context):
         if event.get("isBase64Encoded"):
             body = base64.b64decode(body).decode("utf-8")
 
-        user_email = extract_user_email(headers)
+        # CloudFront mode: no ALB auth header — resolve identity from the
+        # shared session cookie, and redirect unauthenticated callers into
+        # the Cognito login flow. ALB mode is unchanged (trusts the header).
+        if ENABLE_CLOUDFRONT:
+            cookie_header = headers.get("cookie", headers.get("Cookie", ""))
+            session_info = validate_session(_parse_cookies(cookie_header).get("session", ""))
+            if not session_info:
+                return redirect_to_login()
+            user_email = session_info.get("email", "")
+        else:
+            user_email = extract_user_email(headers)
         if not user_email:
             return html_response("<html><body><h1>Authentication required</h1></body></html>", 401)
 
