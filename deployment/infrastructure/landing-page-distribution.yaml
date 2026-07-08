@@ -356,7 +356,11 @@ Conditions:
   # which only exist when IsIdc is true.
   HasIdcSamlMetadata: !And [!Condition IsIdc, !Not [!Equals [!Ref IdcSamlMetadataUrl, '']]]
   HasIdcGroupLookupRegion: !Not [!Equals [!Ref IdcGroupLookupRegion, '']]
-  ShouldEnableCloudFront: !And [!Equals [!Ref EnableCloudFront, 'true'], !Condition IsCognitoOrIdc]
+  # CloudFront + Lambda-driven session auth is IDC-only on purpose: the
+  # non-idc landing pages (Okta/Azure/Auth0/Cognito/generic) must stay
+  # byte-for-byte behavior-identical to main, using ALB-native
+  # authenticate-oidc. Only IdPProvider=idc opts into the CloudFront path.
+  ShouldEnableCloudFront: !And [!Equals [!Ref EnableCloudFront, 'true'], !Condition IsIdc]
 
 Resources:
   # S3 Bucket for package distribution
@@ -447,10 +451,11 @@ Resources:
   # HMAC key used to sign/verify the landing page's own session cookie for
   # requests that arrive without an ALB-set x-amzn-oidc-data header (i.e.
   # via the CloudFront + plain-HTTP-listener path — see EnableCloudFront).
-  # Always created (cheap, no ongoing cost) but only read when
-  # ShouldEnableCloudFront is true.
+  # Only created for the IDC CloudFront path (ShouldEnableCloudFront); non-idc
+  # landing pages never provision it, so their stack stays identical to main.
   SessionSigningSecret:
     Type: AWS::SecretsManager::Secret
+    Condition: ShouldEnableCloudFront
     Properties:
       Description: !Sub 'HMAC key for signing the ${IdentityPoolName} landing page session cookie (CloudFront path only)'
       GenerateSecretString:
@@ -505,7 +510,9 @@ Resources:
                 - Effect: Allow
                   Action: secretsmanager:GetSecretValue
                   Resource:
-                    - !If [IsIdc, !GetAtt IdcUserPoolClientSecret.SecretArn, !Ref CognitoClientSecretArn]
+                    # ShouldEnableCloudFront implies IsIdc — always the
+                    # IDC-bridge client secret.
+                    - !GetAtt IdcUserPoolClientSecret.SecretArn
                     - !Ref SessionSigningSecret
           - !Ref 'AWS::NoValue'
         # IdPProvider=idc only: read-only group-membership lookups so the
@@ -600,20 +607,16 @@ Resources:
           # ALB-native authenticate-oidc path is unaffected either way.
           ENABLE_CLOUDFRONT: !If [ShouldEnableCloudFront, 'true', 'false']
           CLOUDFRONT_DOMAIN: !If [ShouldEnableCloudFront, !GetAtt CloudFrontDistribution.DomainName, '']
+          # ShouldEnableCloudFront implies IsIdc, so these always resolve to
+          # this stack's own IDC-bridge Cognito pool/client.
           SELF_COGNITO_DOMAIN: !If
             - ShouldEnableCloudFront
-            - !If
-              - IsIdc
-              - !Sub '${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
-              - !Sub '${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+            - !Sub '${IdcUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
             - ''
-          SELF_COGNITO_CLIENT_ID: !If
-            - ShouldEnableCloudFront
-            - !If [IsIdc, !Ref IdcUserPoolClient, !Ref CognitoClientId]
-            - ''
+          SELF_COGNITO_CLIENT_ID: !If [ShouldEnableCloudFront, !Ref IdcUserPoolClient, '']
           SELF_COGNITO_CLIENT_SECRET_ARN: !If
             - ShouldEnableCloudFront
-            - !If [IsIdc, !GetAtt IdcUserPoolClientSecret.SecretArn, !Ref CognitoClientSecretArn]
+            - !GetAtt IdcUserPoolClientSecret.SecretArn
             - ''
           SESSION_SIGNING_SECRET_ARN: !If [ShouldEnableCloudFront, !Ref SessionSigningSecret, '']
       Code:
@@ -3120,6 +3123,7 @@ Outputs:
       Name: !Sub '${AWS::StackName}-CloudFrontHTTPListenerArn'
 
   SessionSigningSecretArn:
+    Condition: ShouldEnableCloudFront
     Description: >-
       Secrets Manager ARN of the HMAC key used to sign the landing page's
       session cookie in CloudFront mode. Exported so the admin-console stack
