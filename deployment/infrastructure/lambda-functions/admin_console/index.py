@@ -704,23 +704,8 @@ def generate_mdm_configs(
         "deploymentOrganizationUuid": deployment_uuid,
     }
 
-    add_mcp_servers(config, managed_servers=managed_mcp_servers or None, local_templates=mcp_server_templates or None)
-
-    # Policy / feature-control layer — the admin UI's "Tool Restrictions" +
-    # "Feature Controls" (disabled tools, per-tool ask/allow, allowed folders,
-    # egress allowlist, and the feature toggles incl. coworkTabEnabled).
-    #
-    # These are applied to a SEPARATE copy that feeds only the dynamic
-    # bootstrap config and the static default.json fallback — deliberately NOT
-    # the mobileconfig/.reg MDM profile. MDM keys are highest-precedence and
-    # cannot be overridden, so baking a policy into the profile pins it and
-    # forces an MDM re-push to change it (this is exactly why toggling cowork
-    # in the console had no effect on already-provisioned devices). Keeping the
-    # policy layer out of MDM lets the bootstrap server own it: toggle in the
-    # admin console -> next sign-in / bootstrap refresh picks it up, no re-push.
-    policy_config = dict(config)
     add_policies(
-        policy_config,
+        config,
         disabled_tools=policies.get("disabledBuiltinTools"),
         tool_policies=policies.get("builtinToolPolicy"),
         allowed_folders=policies.get("allowedWorkspaceFolders"),
@@ -734,11 +719,11 @@ def generate_mdm_configs(
             "disableDeploymentModeChooser": policies.get("disableDeploymentModeChooser", True),
         },
     )
+    add_mcp_servers(config, managed_servers=managed_mcp_servers or None, local_templates=mcp_server_templates or None)
 
-    # Static download (default.json): full config INCLUDING policies — this is
-    # the standalone fallback for orgs that install a static config without the
-    # bootstrap mechanism, so it still carries the policy layer.
-    json_content = json.dumps(policy_config, indent=2)
+    # Static download (default.json / mobileconfig / reg): only non-default
+    # values need to be explicit, since the app already defaults to them.
+    json_content = json.dumps(config, indent=2)
     s3_client.put_object(
         Bucket=BUCKET_NAME,
         Key=f"config/{config_key}/default.json",
@@ -747,11 +732,10 @@ def generate_mdm_configs(
     )
 
     # Bootstrap config (dynamic, served by the landing page's /api/bootstrap):
-    # base + policy layer. Every feature toggle must be explicit here — Claude
-    # Desktop treats a bootstrap-settable key the response omits as unset, not
-    # inherited from MDM. This is now the authoritative source for the policy
-    # layer on bootstrap-enabled devices.
-    bootstrap_config = dict(policy_config)
+    # every feature toggle must be explicit here — Claude Desktop treats a
+    # bootstrap-settable key the response omits as unset, not inherited from
+    # MDM (unlike default.json/MDM, which only needs non-default overrides).
+    bootstrap_config = dict(config)
     add_bootstrap_config(bootstrap_config, bootstrap_url=f"{bootstrap_base_url}/api/bootstrap")
     bootstrap_config["_configKey"] = config_key
     bootstrap_config["_version"] = deployment_uuid
@@ -778,11 +762,6 @@ def generate_mdm_configs(
         if IDC_BOOTSTRAP_REDIRECT_PORT:
             bootstrap_oidc["redirectPort"] = int(IDC_BOOTSTRAP_REDIRECT_PORT)
 
-    # Derives from `config` (base connection settings + MCP), NOT
-    # `policy_config` — the mobileconfig/.reg profile intentionally omits the
-    # Tool Restrictions / Feature Controls layer so those stay bootstrap-
-    # controlled (see the policy_config comment above). It carries only what
-    # the device needs to connect and to reach /api/bootstrap.
     mdm_config = dict(config)
     add_bootstrap_config(mdm_config, bootstrap_url=f"{bootstrap_base_url}/api/bootstrap", oidc_config=bootstrap_oidc)
 
