@@ -1,7 +1,19 @@
 #!/bin/bash
 # ABOUTME: Lightweight shell wrapper for otel-helper that ensures the local OTEL collector
 # ABOUTME: sidecar is running (when present), then checks file cache for headers (avoids PyInstaller startup)
-PROFILE="${AWS_PROFILE:-ClaudeCode}"
+# Resolve profile: explicit --profile argument wins, then CCWB_PROFILE (the
+# ccwb-specific override, same convention as credential-process), then
+# AWS_PROFILE, then the "ClaudeCode" default. Keep in sync with the Go
+# binary's resolveProfile and otel-helper.ps1.
+PROFILE="${CCWB_PROFILE:-${AWS_PROFILE:-ClaudeCode}}"
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "--profile" ] && [ -n "$arg" ]; then
+        PROFILE="$arg"
+    fi
+    prev="$arg"
+done
+export AWS_PROFILE="$PROFILE"
 INSTALL_DIR="$HOME/claude-code-with-bedrock"
 PID_FILE="$INSTALL_DIR/collector.pid"
 CACHE_DIR="$HOME/.claude-code-session"
