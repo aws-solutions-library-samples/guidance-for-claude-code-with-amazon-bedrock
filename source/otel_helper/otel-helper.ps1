@@ -69,10 +69,15 @@ if ((Test-Path $otelcol) -and (Test-Path $collectorConfig)) {
     }
     if (-not $collectorRunning) {
         try {
+            # stdout and stderr must go to SEPARATE files: Start-Process throws
+            # "same file for redirecting both standard output and standard error
+            # is not supported" on Windows if they share one path, which used to
+            # silently prevent the collector from ever starting.
             $logFile = Join-Path $cacheDir "collector.log"
+            $errFile = Join-Path $cacheDir "collector.err"
             $env:AWS_PROFILE = "$ProfileName-collector"
             $proc = Start-Process -FilePath $otelcol -ArgumentList "--config", $collectorConfig `
-                -RedirectStandardOutput $logFile -RedirectStandardError $logFile `
+                -RedirectStandardOutput $logFile -RedirectStandardError $errFile `
                 -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
             if ($proc) {
                 Set-Content -Path $pidFile -Value $proc.Id

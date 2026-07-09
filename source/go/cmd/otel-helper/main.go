@@ -114,6 +114,13 @@ func resolveProfile(flagValue string) string {
 }
 
 func run(testMode bool, profile string) int {
+	// Sidecar mode: make sure the local OTEL collector is running before
+	// Claude Code starts exporting to localhost (no-op unless otelcol is
+	// installed). The shell/PowerShell wrappers do the same; this binary is
+	// the primary entry point on Windows (otel-helper.cmd tries it first),
+	// so without this the collector never starts there.
+	ensureCollectorRunning(profile)
+
 	// Layer 1: Serve attribution from the file cache. The cache stores
 	// attribution headers only, never the token, so the Bearer is still
 	// resolved below (env var, then credential-process). credential-process

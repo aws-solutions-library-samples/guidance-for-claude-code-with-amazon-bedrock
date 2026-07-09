@@ -909,11 +909,15 @@ def ensure_collector_running():
 
     cache_dir = Path.home() / ".claude-code-session"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # stdout and stderr go to SEPARATE files — Windows does not support
+    # redirecting both streams into one file (parity with the Go binary and
+    # otel-helper.ps1, which enforce the same split).
     log_file = cache_dir / "collector.log"
+    err_file = cache_dir / "collector.err"
 
     try:
-        with open(log_file, "a") as lf:
-            kwargs = {"stdout": lf, "stderr": lf, "env": collector_env}
+        with open(log_file, "a", encoding="utf-8") as lf, open(err_file, "a", encoding="utf-8") as ef:
+            kwargs = {"stdout": lf, "stderr": ef, "env": collector_env}
             if platform_mod.system() == "Windows":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
