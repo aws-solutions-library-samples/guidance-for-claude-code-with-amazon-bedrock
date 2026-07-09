@@ -718,6 +718,14 @@ def generate_mdm_configs(
     # in the console had no effect on already-provisioned devices). Keeping the
     # policy layer out of MDM lets the bootstrap server own it: toggle in the
     # admin console -> next sign-in / bootstrap refresh picks it up, no re-push.
+    #
+    # Known tradeoff (accepted): for cowork, the MDM profile governs TAB
+    # VISIBILITY while bootstrap governs functional ACCESS. Because the profile
+    # omits coworkTabEnabled, the tab renders by default and bootstrap gates
+    # whether requests are accepted. So an enable->disable change takes effect
+    # functionally right away (tab still shown, requests blocked); only tab
+    # visibility would lag until an MDM re-push. This is preferred over
+    # re-pushing MDM on every policy change.
     policy_config = dict(config)
     add_policies(
         policy_config,
