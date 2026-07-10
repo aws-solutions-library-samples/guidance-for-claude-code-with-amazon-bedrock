@@ -5,6 +5,39 @@
 
 This guidance enables enterprise deployment of Claude Code and Claude Cowork on Amazon Bedrock across command-line (CLI) and desktop surfaces — with secure single sign-on (SSO), usage monitoring, and cost controls.
 
+## ℹ️ Maintenance Mode
+
+**This repository is now in maintenance mode on a best-efforts basis.** It remains available as a reference implementation. New contributions without GitHub issues approved by maintainers will not be accepted.
+
+For new deployments of Claude Apps on Amazon Bedrock, we recommend [Claude Apps Gateway](https://code.claude.com/docs/en/claude-apps-gateway) — a self-hosted service that sits between your Claude clients and your model provider. It is included in the `claude` binary, so the same executable that runs Claude Code also runs the gateway. It provides:
+
+- Corporate SSO (OIDC) with centralized policy enforcement
+- Per-user cost attribution and spend caps
+- Managed settings delivery
+- OTLP telemetry routing
+- Single stateless container deployment
+
+**👉 [Get started with Claude Apps Gateway on AWS](https://github.com/aws-samples/anthropic-on-aws/tree/main/claude-apps-gateway)**
+
+**💻 [Deploying both Claude Code CLI and Claude Desktop? Add the Bootstrap Server](https://github.com/aws-samples/anthropic-on-aws/tree/main/claude-apps-gateway-bootstrap)** — delivers managed settings, organization plugins, and per-user configuration to Claude Desktop at sign-in.
+
+<details>
+<summary><strong>Areas where this reference solution complements Claude Apps Gateway today</strong></summary>
+
+The following capabilities are not yet available in Claude Apps Gateway but may appear on its future roadmap. This solution provides reference patterns in the meantime:
+
+- **Claude Desktop** — spend controls and model discovery may be functional, however configuration and managed settings delivery requires MDM or per-user bootstrap server.
+- **AWS IAM Identity Center** — native IDC authentication without external OIDC
+- **Historical usage analytics** — S3 + Athena for long-term usage queries
+- **Multi-platform packaging** — automated installers for Windows, macOS, Linux (note: Claude Apps Gateway is native to Claude Code and requires no additional client-side packages)
+- **Cost tracking via IAM principal-based cost allocation** — Gateway spend controls are based on cost estimates
+
+As Claude Apps Gateway evolves, check Anthropic's documentation for the latest capabilities.
+
+</details>
+
+---
+
 ## Key Features
 
 - **Secure Access**: Secure single sign-on (SSO) with enterprise identity providers such as Okta, Entra ID, Auth0, Google, Cognito, or AWS IAM Identity Center — temporary credentials, automatic refresh, no API keys to manage
