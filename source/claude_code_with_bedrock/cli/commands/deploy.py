@@ -138,11 +138,15 @@ class DeployCommand(Command):
                 else:
                     console.print("[yellow]Bedrock invocation logging is not enabled in your configuration.[/yellow]")
                     return 1
+            elif stack_arg == "bedrock-access":
+                # Explicitly deployable even when the opt-in flag is False, so operators
+                # can stand it up on demand without editing config first.
+                stacks_to_deploy.append(("bedrock-access", "Bedrock Access Enforcement (quota-based IAM deny)"))
             else:
                 console.print(f"[red]Unknown stack: {stack_arg}[/red]")
                 console.print(
                     "Valid stacks: auth, distribution, networking, monitoring, "
-                    "dashboard, analytics, quota, codebuild, logging"
+                    "dashboard, analytics, quota, codebuild, logging, bedrock-access"
                 )
                 return 1
         else:
@@ -167,6 +171,9 @@ class DeployCommand(Command):
             if getattr(profile, "invocation_logging_enabled", False):
                 region = getattr(profile, "invocation_logging_region", "us-west-2")
                 stacks_to_deploy.append(("logging", f"Bedrock Invocation Logging (CW + S3 in {region})"))
+            # Bedrock access enforcement (server-side quota block) — opt-in
+            if getattr(profile, "bedrock_access_enforcement_enabled", False):
+                stacks_to_deploy.append(("bedrock-access", "Bedrock Access Enforcement (quota-based IAM deny)"))
 
         # Initialize CloudFormation manager (most stacks deploy to profile.aws_region).
         # The "logging" stack is special — it must be deployed to the Bedrock invocation
@@ -664,6 +671,32 @@ class DeployCommand(Command):
                     stack_name,
                     params,
                     task_description="Deploying Bedrock invocation logging (us-west-2)...",
+                )
+
+            elif stack_type == "bedrock-access":
+                # Self-contained stack: inline Lambda code (stdlib + boto3), no S3
+                # artifacts bucket required, so no `cloudformation package` step.
+                template = project_root / "deployment" / "infrastructure" / "bedrock-access-enforcement.yaml"
+                stack_name = profile.stack_names.get(
+                    "bedrock-access", f"{profile.identity_pool_name}-bedrock-access"
+                )
+                params = [
+                    f"TargetRoleName={getattr(profile, 'bedrock_access_role_name', 'BedrockOktaFederatedRole')}",
+                    f"DenyPolicyName={getattr(profile, 'bedrock_access_deny_policy_name', 'DenyBedrock-users')}",
+                    f"QuotaApiUrl={profile.bedrock_access_quota_export_url}",
+                    f"BlockThresholdPercent={getattr(profile, 'bedrock_access_block_threshold', 100)}",
+                    f"QuotaTokenSecretId={getattr(profile, 'bedrock_access_quota_token_secret', 'shared/claude-code-quota-api-token')}",
+                    f"ScheduleExpression={getattr(profile, 'bedrock_access_schedule', 'rate(30 minutes)')}",
+                    f"PermissionsBoundaryArn={getattr(profile, 'bedrock_access_permissions_boundary_arn', '')}",
+                    f"SlackChannel={getattr(profile, 'bedrock_access_slack_channel', '')}",
+                    f"SlackTokenSecretId={getattr(profile, 'bedrock_access_slack_token_secret', 'shared/claude-code-alerts-slack-bot-token')}",
+                ]
+                return deploy_with_cf(
+                    template,
+                    stack_name,
+                    params,
+                    ["CAPABILITY_NAMED_IAM"],  # names the enforcer execution role
+                    task_description="Deploying Bedrock access enforcement...",
                 )
 
             else:

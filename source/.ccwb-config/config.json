@@ -14,7 +14,8 @@
         "monitoring": "claude-code-auth-monitoring",
         "dashboard": "claude-code-auth-dashboard",
         "analytics": "claude-code-auth-analytics",
-        "logging": "claude-code-bedrock-invocation-logging"
+        "logging": "claude-code-bedrock-invocation-logging",
+        "bedrock-access": "claude-code-auth-bedrock-access"
       },
       "monitoring_enabled": false,
       "monitoring_config": {},
@@ -76,7 +77,17 @@
       "quota_api_endpoint": "https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota",
       "quota_fail_mode": "open",
       "quota_check_interval": 30,
-      "quota_check_timeout": 5
+      "quota_check_timeout": 5,
+      "bedrock_access_enforcement_enabled": true,
+      "bedrock_access_role_name": "BedrockOktaFederatedRole",
+      "bedrock_access_deny_policy_name": "DenyBedrock-users",
+      "bedrock_access_quota_export_url": "https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota-usage-export",
+      "bedrock_access_block_threshold": 100,
+      "bedrock_access_quota_token_secret": "shared/claude-code-quota-api-token",
+      "bedrock_access_schedule": "rate(30 minutes)",
+      "bedrock_access_permissions_boundary_arn": "arn:aws:iam::136113531821:policy/aft/aft-boundary",
+      "bedrock_access_slack_channel": "#claude-code-alerts",
+      "bedrock_access_slack_token_secret": "shared/claude-code-alerts-slack-bot-token"
     }
   }
 }

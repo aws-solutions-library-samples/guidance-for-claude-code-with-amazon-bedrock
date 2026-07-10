@@ -1,0 +1,355 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Bedrock access enforcement. A scheduled Lambda fetches over-quota users from the
+  SmartNews quota-usage-export API and rewrites the DenyBedrock-users inline policy on
+  the federated role so over-quota users are blocked from Bedrock at the IAM layer.
+
+Parameters:
+  TargetRoleName:
+    Type: String
+    Default: BedrockOktaFederatedRole
+    Description: Name of the IAM role every end user assumes; its inline deny policy is managed here.
+
+  DenyPolicyName:
+    Type: String
+    Default: DenyBedrock-users
+    Description: Name of the inline deny policy on the target role (managed/overwritten by the Lambda).
+
+  QuotaApiUrl:
+    Type: String
+    Default: https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota-usage-export
+    Description: Base URL of the quota-usage-export API (min_percent is appended by the Lambda).
+
+  BlockThresholdPercent:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 1000
+    Description: Users at/over this percent of their monthly limit are blocked.
+
+  QuotaTokenSecretId:
+    Type: String
+    Default: shared/claude-code-quota-api-token
+    Description: Secrets Manager secret id holding the quota API bearer token (JSON key quota_api_token).
+
+  ScheduleExpression:
+    Type: String
+    Default: rate(30 minutes)
+    Description: EventBridge schedule for the enforcer.
+
+  SlackChannel:
+    Type: String
+    Default: ''
+    Description: >-
+      Slack channel (e.g. #claude-code-alerts) to notify on block-list changes and
+      errors. Leave empty to disable Slack notifications.
+
+  SlackTokenSecretId:
+    Type: String
+    Default: shared/claude-code-alerts-slack-bot-token
+    Description: Secrets Manager secret id holding the Slack bot token (JSON key slack_bot_token).
+
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional IAM permissions-boundary ARN to attach to the Lambda execution role.
+      Required in AWS Control Tower / AFT-governed accounts (e.g. genai-studio-dev,
+      where arn:aws:iam::<acct>:policy/aft/aft-boundary denies iam:CreateRole for roles
+      created without it). Leave empty in accounts with no such guardrail.
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+
+Resources:
+  # IAM role for the enforcer Lambda. Least-privilege: manage exactly the target
+  # role's deny policy, read exactly the token secret, write its own logs.
+  BedrockAccessEnforcerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-enforcer-role'
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ManageTargetRoleDenyPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Only read + overwrite the deny policy in place. No DeleteRolePolicy,
+              # and scoped to the single target role, so this can never regress any
+              # other policy on the role.
+              - Sid: ManageDenyInlinePolicy
+                Effect: Allow
+                Action:
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${TargetRoleName}'
+              - Sid: ReadApiAndSlackTokens
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${QuotaTokenSecretId}*'
+                  - !Sub 'arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${SlackTokenSecretId}*'
+
+  BedrockAccessEnforcerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock-access-enforcer
+      Description: Blocks over-quota users by rewriting the DenyBedrock-users inline policy.
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt BedrockAccessEnforcerRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TARGET_ROLE_NAME: !Ref TargetRoleName
+          DENY_POLICY_NAME: !Ref DenyPolicyName
+          QUOTA_API_URL: !Ref QuotaApiUrl
+          BLOCK_THRESHOLD_PERCENT: !Ref BlockThresholdPercent
+          SECRET_ID: !Ref QuotaTokenSecretId
+          SECRET_JSON_KEY: quota_api_token
+          HTTP_TIMEOUT_SECONDS: '10'
+          SLACK_CHANNEL: !Ref SlackChannel
+          SLACK_SECRET_ID: !Ref SlackTokenSecretId
+          SLACK_SECRET_JSON_KEY: slack_bot_token
+      # NOTE: This inline copy is the authoritative deployed code. Keep it in sync with
+      # deployment/infrastructure/lambda-functions/bedrock_access_enforcer/index.py
+      # (the unit-tested source of truth). See that module's README.
+      Code:
+        ZipFile: |
+          # ABOUTME: Lambda that blocks over-quota users at the IAM layer by rewriting the
+          # ABOUTME: DenyBedrock-users inline policy on BedrockOktaFederatedRole every 30 minutes.
+          import json
+          import os
+          import re
+          import urllib.request
+
+          import boto3
+
+          TARGET_ROLE_NAME = os.environ.get("TARGET_ROLE_NAME", "BedrockOktaFederatedRole")
+          DENY_POLICY_NAME = os.environ.get("DENY_POLICY_NAME", "DenyBedrock-users")
+          QUOTA_API_URL = os.environ["QUOTA_API_URL"]
+          BLOCK_THRESHOLD_PERCENT = os.environ.get("BLOCK_THRESHOLD_PERCENT", "100")
+          SECRET_ID = os.environ.get("SECRET_ID", "shared/claude-code-quota-api-token")
+          SECRET_JSON_KEY = os.environ.get("SECRET_JSON_KEY", "quota_api_token")
+          HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "10"))
+
+          SLACK_SECRET_ID = os.environ.get("SLACK_SECRET_ID", "shared/claude-code-alerts-slack-bot-token")
+          SLACK_SECRET_JSON_KEY = os.environ.get("SLACK_SECRET_JSON_KEY", "slack_bot_token")
+          SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
+
+          NONE_SENTINEL = "*:claude-code-__none__"
+          _INVALID_SESSION_CHARS = re.compile(r"[^\w+=,.@-]")
+
+          iam = boto3.client("iam")
+          _secrets = boto3.client("secretsmanager")
+
+
+          def userid_for_email(email):
+              local_part = email.split("@")[0][:32]
+              sanitized = _INVALID_SESSION_CHARS.sub("-", local_part)
+              return f"*:claude-code-{sanitized}"
+
+
+          def _secret_json(secret_id, json_key):
+              resp = _secrets.get_secret_value(SecretId=secret_id)
+              secret_string = resp["SecretString"]
+              try:
+                  data = json.loads(secret_string)
+              except (ValueError, TypeError):
+                  return secret_string.strip()
+              if isinstance(data, dict):
+                  return data[json_key]
+              return str(data)
+
+
+          def get_api_token():
+              return _secret_json(SECRET_ID, SECRET_JSON_KEY)
+
+
+          def fetch_over_quota_emails(token):
+              url = f"{QUOTA_API_URL}?min_percent={BLOCK_THRESHOLD_PERCENT}"
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+              with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
+                  if resp.status != 200:
+                      raise RuntimeError(f"Quota API returned HTTP {resp.status}")
+                  payload = json.loads(resp.read().decode("utf-8"))
+              emails = []
+              for row in payload.get("rows", []):
+                  email = (row.get("email") or "").strip()
+                  if email:
+                      emails.append(email)
+              return emails
+
+
+          def build_deny_document(userids):
+              return {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                          "Sid": "DenyBedrockOverQuota",
+                          "Effect": "Deny",
+                          "Action": "bedrock:*",
+                          "Resource": "*",
+                          "Condition": {"StringLike": {"aws:userid": userids}},
+                      }
+                  ],
+              }
+
+
+          def _current_userids():
+              try:
+                  resp = iam.get_role_policy(RoleName=TARGET_ROLE_NAME, PolicyName=DENY_POLICY_NAME)
+              except iam.exceptions.NoSuchEntityException:
+                  return None
+              doc = resp["PolicyDocument"]
+              for stmt in doc.get("Statement", []):
+                  cond = stmt.get("Condition", {}).get("StringLike", {})
+                  ids = cond.get("aws:userid")
+                  if ids is not None:
+                      if isinstance(ids, str):
+                          ids = [ids]
+                      return sorted(ids)
+              return []
+
+
+          def desired_userids(emails):
+              userids = sorted({userid_for_email(e) for e in emails})
+              return userids or [NONE_SENTINEL]
+
+
+          def _userid_to_label(userid):
+              return userid.replace("*:claude-code-", "", 1)
+
+
+          def post_slack(text):
+              if not SLACK_CHANNEL:
+                  return
+              try:
+                  token = _secret_json(SLACK_SECRET_ID, SLACK_SECRET_JSON_KEY)
+                  body = json.dumps({"channel": SLACK_CHANNEL, "text": text}).encode("utf-8")
+                  req = urllib.request.Request(
+                      "https://slack.com/api/chat.postMessage",
+                      data=body,
+                      headers={
+                          "Authorization": f"Bearer {token}",
+                          "Content-Type": "application/json; charset=utf-8",
+                      },
+                  )
+                  with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
+                      result = json.loads(resp.read().decode("utf-8"))
+                  if not result.get("ok"):
+                      print(f"bedrock-access-enforcer: slack post failed: {result.get('error')}")
+              except Exception as exc:
+                  print(f"bedrock-access-enforcer: slack post error: {type(exc).__name__}")
+
+
+          def _notify_change(added, removed, total_blocked):
+              # Suppress pure reformat churn: a removed userid that maps to the same
+              # person (label) as an added one is NOT a real unblock. Header reports the
+              # current total so the message isn't an ambiguous delta.
+              added_labels = {_userid_to_label(u) for u in added if u != NONE_SENTINEL}
+              removed_labels = {_userid_to_label(u) for u in removed if u != NONE_SENTINEL}
+              newly_blocked = sorted(added_labels - removed_labels)
+              newly_unblocked = sorted(removed_labels - added_labels)
+              if not newly_blocked and not newly_unblocked:
+                  return
+              lines = [
+                  f":lock: *Bedrock access enforcement* — now blocking {total_blocked} "
+                  f"user{'s' if total_blocked != 1 else ''} (threshold {BLOCK_THRESHOLD_PERCENT}%)"
+              ]
+              if newly_blocked:
+                  lines.append(f"*Newly blocked ({len(newly_blocked)}):* " + ", ".join(newly_blocked))
+              if newly_unblocked:
+                  lines.append(f"*Newly unblocked ({len(newly_unblocked)}):* " + ", ".join(newly_unblocked))
+              post_slack("\n".join(lines))
+
+
+          def _enforce(event, context):
+              token = get_api_token()
+              emails = fetch_over_quota_emails(token)  # FAIL-SAFE: raises => policy untouched
+              desired = desired_userids(emails)
+              current = _current_userids()
+              print(
+                  f"bedrock-access-enforcer: threshold={BLOCK_THRESHOLD_PERCENT}% "
+                  f"over_quota_users={len(emails)} desired_userids={len(desired)} "
+                  f"current_userids={0 if current is None else len(current)}"
+              )
+              if current is not None and current == desired:
+                  print("bedrock-access-enforcer: no change; policy already up to date")
+                  return {"statusCode": 200, "changed": False, "blocked": len([u for u in desired if u != NONE_SENTINEL])}
+              added = sorted(set(desired) - set(current or []))
+              removed = sorted(set(current or []) - set(desired))
+              if added:
+                  print(f"bedrock-access-enforcer: adding {added}")
+              if removed:
+                  print(f"bedrock-access-enforcer: removing {removed}")
+              iam.put_role_policy(
+                  RoleName=TARGET_ROLE_NAME,
+                  PolicyName=DENY_POLICY_NAME,
+                  PolicyDocument=json.dumps(build_deny_document(desired)),
+              )
+              print(f"bedrock-access-enforcer: updated {DENY_POLICY_NAME} on {TARGET_ROLE_NAME}")
+              total_blocked = len([u for u in desired if u != NONE_SENTINEL])
+              _notify_change(added, removed, total_blocked)
+              return {
+                  "statusCode": 200,
+                  "changed": True,
+                  "blocked": total_blocked,
+                  "added": added,
+                  "removed": removed,
+              }
+
+
+          def lambda_handler(event, context):
+              try:
+                  return _enforce(event, context)
+              except Exception as exc:
+                  detail = str(exc)[:200]
+                  post_slack(
+                      f":warning: *Bedrock access enforcement failed* — {type(exc).__name__}: {detail}\n"
+                      "Block list left unchanged (fail-safe)."
+                  )
+                  raise
+
+  EnforcerScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-schedule'
+      Description: Trigger the Bedrock access enforcer on a schedule.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt BedrockAccessEnforcerFunction.Arn
+          Id: BedrockAccessEnforcerTarget
+
+  EnforcerSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BedrockAccessEnforcerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EnforcerScheduleRule.Arn
+
+Outputs:
+  EnforcerFunctionArn:
+    Description: ARN of the Bedrock access enforcer Lambda function.
+    Value: !GetAtt BedrockAccessEnforcerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EnforcerFunctionArn'
+
+  EnforcerRoleArn:
+    Description: ARN of the enforcer Lambda execution role.
+    Value: !GetAtt BedrockAccessEnforcerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EnforcerRoleArn'
