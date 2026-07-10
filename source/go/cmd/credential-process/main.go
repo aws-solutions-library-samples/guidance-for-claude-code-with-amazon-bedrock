@@ -274,12 +274,13 @@ func (a *credentialApp) clearCache() {
 	if a.cfg.CredentialStorage == "keyring" {
 		_ = storage.ClearKeyring(a.profile)
 	}
-	// Also clear session file
-	expired := &federation.AWSCredentials{
-		Version: 1, AccessKeyID: "EXPIRED", SecretAccessKey: "EXPIRED",
-		SessionToken: "EXPIRED", Expiration: "2000-01-01T00:00:00Z",
-	}
-	_ = storage.SaveToCredentialsFile(expired, a.profile)
+	// Remove the profile section from ~/.aws/credentials rather than writing an
+	// EXPIRED placeholder. That file outranks credential_process in the AWS SDK
+	// resolution chain, so a placeholder entry would permanently wedge SDK
+	// consumers (Claude Code): they'd keep reading the static EXPIRED keys and
+	// never invoke this binary again. With the section removed, the SDK falls
+	// through to credential_process and recovery is automatic.
+	_ = storage.RemoveFromCredentialsFile(a.profile)
 	// Clear refresh token
 	storage.ClearRefreshToken(a.profile)
 	fmt.Fprintf(os.Stderr, "Cleared cached credentials for profile '%s'\n", a.profile)
