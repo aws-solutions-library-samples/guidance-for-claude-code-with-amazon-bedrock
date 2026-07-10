@@ -69,6 +69,25 @@ class Profile:
     invocation_logging_log_image: bool = True
     invocation_logging_log_embedding: bool = True
 
+    # Bedrock access enforcement (server-side quota block — separate stack).
+    # A scheduled Lambda rewrites the DenyBedrock-users inline policy on the federated
+    # role so users at/over their monthly USD quota are blocked at the IAM layer.
+    bedrock_access_enforcement_enabled: bool = False  # opt-in; excluded from deploy-all when False
+    bedrock_access_role_name: str = "BedrockOktaFederatedRole"  # role whose deny policy is managed
+    bedrock_access_deny_policy_name: str = "DenyBedrock-users"  # inline policy the Lambda overwrites
+    bedrock_access_quota_export_url: str = (
+        "https://prototyping.dev.smartnews.com/midgard-dashboard/api/quota-usage-export"
+    )
+    bedrock_access_block_threshold: int = 100  # block users at/over this monthly percent
+    bedrock_access_quota_token_secret: str = "shared/claude-code-quota-api-token"  # Secrets Manager id
+    bedrock_access_schedule: str = "rate(30 minutes)"  # EventBridge schedule expression
+    bedrock_access_slack_channel: str = ""  # Slack channel for alerts (empty ⇒ disabled)
+    bedrock_access_slack_token_secret: str = "shared/claude-code-alerts-slack-bot-token"  # Secrets Manager id
+    # Optional IAM permissions-boundary ARN for the enforcer's Lambda role. Required in
+    # AFT/Control-Tower accounts (genai-studio-dev denies iam:CreateRole for boundary-less
+    # roles). Empty ⇒ no boundary attached.
+    bedrock_access_permissions_boundary_arn: str = ""
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
