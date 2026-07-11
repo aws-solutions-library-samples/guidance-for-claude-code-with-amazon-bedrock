@@ -3658,7 +3658,7 @@ REM external command" and silently drops all metrics, so we fail the install
 REM loudly rather than leave a broken telemetry config.
 if exist "otel-helper.cmd" (
     copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo ERROR: Failed to copy otel-helper.cmd
         pause
         exit /b 1
@@ -3676,7 +3676,7 @@ if exist "otel-helper.cmd" (
 )
 if exist "otel-helper.ps1" (
     copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo ERROR: Failed to copy otel-helper.ps1
         pause
         exit /b 1
@@ -3741,7 +3741,7 @@ if exist "claude-settings" (
 
         REM Check for Administrator privileges
         net session >nul 2>&1
-        if %errorlevel% neq 0 (
+        if !errorlevel! neq 0 (
             echo ERROR: Managed settings require Administrator privileges.
             echo        Right-click install.bat and select "Run as administrator"
             echo        [Target: C:\\Program Files\\ClaudeCode\\managed-settings.json]
@@ -3760,25 +3760,31 @@ if exist "claude-settings" (
 
     REM Copy user-scope settings.json if present (with merge support)
     if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
+        set WRITE_SETTINGS=false
         if exist "%USERPROFILE%\\.claude\\settings.json" (
             echo Existing Claude Code settings found - merging...
 
-            REM Merge new settings into existing (preserves user customizations)
-            powershell -NoProfile -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
-            if %errorlevel% equ 0 (
+            REM Merge new settings into existing. Top-level keys from the new
+            REM settings win, but the 'env' object is DEEP-merged so custom env
+            REM vars the user added survive. $ErrorActionPreference=Stop plus
+            REM the catch/exit 1 makes any failure visible via !errorlevel!.
+            powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try {{ $otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $settingsPath = Join-Path $env:USERPROFILE '.claude\\settings.json'; $existing = Get-Content $settingsPath -Raw | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json' -Raw) -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{ if ($prop.Name -eq 'env' -and $existing.PSObject.Properties['env']) {{ foreach ($envProp in $prop.Value.PSObject.Properties) {{ $existing.env | Add-Member -MemberType NoteProperty -Name $envProp.Name -Value $envProp.Value -Force }} }} else {{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }} }}; $existing | ConvertTo-Json -Depth 10 | Set-Content $settingsPath }} catch {{ Write-Error $_; exit 1 }}"
+            if !errorlevel! equ 0 (
                 echo OK Claude Code settings merged [user settings preserved]
             ) else (
                 set /p OVERWRITE="Merge failed. Overwrite with new settings? (y/n): "
-                if /i not "%OVERWRITE%"=="y" (
+                if /i "!OVERWRITE!"=="y" (
+                    set WRITE_SETTINGS=true
+                ) else (
                     echo Skipping Claude Code settings...
-                    set SKIP_SETTINGS=true
                 )
             )
+        ) else (
+            set WRITE_SETTINGS=true
         )
 
-        if not "%SKIP_SETTINGS%"=="true" if not exist "%USERPROFILE%\\.claude\\settings.json" (
-            REM No existing settings - write directly
+        if "!WRITE_SETTINGS!"=="true" (
+            REM No existing settings [or user chose overwrite] - write directly
             powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
