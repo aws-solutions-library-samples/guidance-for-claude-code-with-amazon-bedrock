@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "beta"
     schedule:
       interval: "weekly"
     commit-message:
@@ -12,6 +13,7 @@ updates:
 
   - package-ecosystem: "pip"
     directory: "/source"
+    target-branch: "beta"
     schedule:
       interval: "weekly"
     commit-message:
