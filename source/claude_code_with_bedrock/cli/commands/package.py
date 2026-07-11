@@ -4396,7 +4396,10 @@ Available metrics include:
                     _is_idc = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
                     _idc_zero_binary = _is_idc and not bool(getattr(profile, "quota_api_endpoint", None))
                     if not _idc_zero_binary:
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                        # Pass the profile explicitly (same as AWS_CREDENTIAL_PROCESS /
+                        # awsAuthRefresh above) so the helper serves THIS profile even
+                        # when AWS_PROFILE in the helper's environment points elsewhere.
+                        settings["otelHeadersHelper"] = f"__OTEL_HELPER_PATH__ --profile {profile_name}"
 
                     is_https = endpoint.startswith("https://")
                     console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")

@@ -487,7 +487,10 @@ class PackageCbCommand(Command):
                                 "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
                             }
                         )
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                        # Pass the profile explicitly (same as the credential-process
+                        # settings) so the helper serves THIS profile even when
+                        # AWS_PROFILE in the helper's environment points elsewhere.
+                        settings["otelHeadersHelper"] = f"__OTEL_HELPER_PATH__ --profile {profile_name}"
 
                         is_https = endpoint.startswith("https://")
                         console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")

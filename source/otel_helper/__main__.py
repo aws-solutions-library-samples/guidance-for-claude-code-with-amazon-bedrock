@@ -67,6 +67,11 @@ def parse_args():
     parser.add_argument("--test", action="store_true", help="Run in test mode with verbose output")
     parser.add_argument("--verbose", action="store_true", help="Show verbose output")
     parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="AWS profile name (overrides the AWS_PROFILE environment variable)",
+    )
+    parser.add_argument(
         "--anonymous",
         action="store_true",
         help="Force anonymous mode using AWS caller identity instead of JWT auth",
@@ -84,6 +89,17 @@ def parse_args():
         help="Port for the local OTLP proxy (default: 4318)",
     )
     args = parser.parse_args()
+
+    # Single source of truth for profile resolution: --profile flag >
+    # CCWB_PROFILE env (the ccwb-specific override, same convention as
+    # credential-process) > AWS_PROFILE env > "ClaudeCode" default at the
+    # read sites. The winner is exported to AWS_PROFILE so every downstream
+    # consumer — the cache path, the credential-process subprocess, and the
+    # collector sidecar — resolves the SAME profile from the environment.
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
+    elif os.environ.get("CCWB_PROFILE"):
+        os.environ["AWS_PROFILE"] = os.environ["CCWB_PROFILE"]
 
     global TEST_MODE, ANONYMOUS_MODE
     TEST_MODE = args.test
