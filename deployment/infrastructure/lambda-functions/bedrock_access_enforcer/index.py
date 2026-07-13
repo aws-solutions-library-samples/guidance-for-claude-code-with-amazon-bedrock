@@ -38,12 +38,24 @@ QUOTA_API_URL = os.environ["QUOTA_API_URL"]  # e.g. https://.../api/quota-usage-
 BLOCK_THRESHOLD_PERCENT = os.environ.get("BLOCK_THRESHOLD_PERCENT", "100")
 SECRET_ID = os.environ.get("SECRET_ID", "shared/claude-code-quota-api-token")
 SECRET_JSON_KEY = os.environ.get("SECRET_JSON_KEY", "quota_api_token")
-HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "10"))
+HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "25"))
 
 # Slack (optional). If SLACK_CHANNEL is unset, Slack notifications are skipped.
 SLACK_SECRET_ID = os.environ.get("SLACK_SECRET_ID", "shared/claude-code-alerts-slack-bot-token")
 SLACK_SECRET_JSON_KEY = os.environ.get("SLACK_SECRET_JSON_KEY", "slack_bot_token")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
+
+# Consecutive-failure suppression. The quota API is intermittently slow (occasional
+# read-timeouts); alerting on every single failure produced Slack bursts for transient
+# blips. We instead track how many times in a row the run has failed and only alert once
+# the streak reaches SLACK_FAILURE_THRESHOLD. The counter is persisted in this function's
+# OWN CONSECUTIVE_FAILURES env var via UpdateFunctionConfiguration — no extra resources.
+# Safe because runs are serial (rate(30 min), no overlap); it is NOT concurrency-safe.
+CONSECUTIVE_FAILURES = int(os.environ.get("CONSECUTIVE_FAILURES", "0"))
+SLACK_FAILURE_THRESHOLD = int(os.environ.get("SLACK_FAILURE_THRESHOLD", "3"))
+_FUNCTION_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "bedrock-access-enforcer")
+
+_lambda = boto3.client("lambda")
 
 # Sentinel userid used when nobody is over quota. IAM rejects an empty StringLike list,
 # and this value can never match a real session name (`__none__` is not a valid email
@@ -179,6 +191,25 @@ def post_slack(text):
         print(f"bedrock-access-enforcer: slack post error: {type(exc).__name__}")
 
 
+def _persist_failure_count(new_count):
+    """Persist the consecutive-failure streak into this function's own env var.
+
+    Best-effort: never raises (a persistence failure must not mask the real error or
+    break enforcement). Skips the API call when the value is unchanged to avoid churn.
+    """
+    if new_count == CONSECUTIVE_FAILURES:
+        return
+    try:
+        current = _lambda.get_function_configuration(FunctionName=_FUNCTION_NAME)
+        env = current.get("Environment", {}).get("Variables", {})
+        env["CONSECUTIVE_FAILURES"] = str(new_count)
+        _lambda.update_function_configuration(
+            FunctionName=_FUNCTION_NAME, Environment={"Variables": env}
+        )
+    except Exception as exc:  # noqa: BLE001 - counter persistence is best-effort
+        print(f"bedrock-access-enforcer: failed to persist failure count: {type(exc).__name__}")
+
+
 def _notify_change(added, removed, total_blocked):
     """Post a Slack message describing the block-list change.
 
@@ -253,14 +284,31 @@ def _enforce(event, context):
 
 def lambda_handler(event, context):
     try:
-        return _enforce(event, context)
+        result = _enforce(event, context)
     except Exception as exc:
-        # Notify Slack with a sanitized message (type + short str, no traceback,
-        # no secrets), then re-raise so the invocation is marked failed and the
-        # deny policy is left untouched.
+        # A run failed. Bump the consecutive-failure streak and only alert Slack the
+        # first time it reaches the threshold — so transient API blips stay silent and
+        # a sustained outage pages the channel exactly once (not on every retry/run).
+        streak = CONSECUTIVE_FAILURES + 1
         detail = str(exc)[:200]
-        post_slack(
-            f":warning: *Bedrock access enforcement failed* — {type(exc).__name__}: {detail}\n"
-            "Block list left unchanged (fail-safe)."
+        print(
+            f"bedrock-access-enforcer: run failed ({type(exc).__name__}); "
+            f"consecutive_failures={streak}/{SLACK_FAILURE_THRESHOLD}"
         )
+        if streak == SLACK_FAILURE_THRESHOLD:
+            post_slack(
+                f":warning: *Bedrock access enforcement failing* — {type(exc).__name__}: {detail}\n"
+                f"Failed {streak} runs in a row. Block list left unchanged (fail-safe)."
+            )
+        _persist_failure_count(streak)
+        # Re-raise so the invocation is still marked failed and the policy stays intact.
         raise
+
+    # Success: if we were in an alerting failure streak, tell Slack it recovered.
+    if CONSECUTIVE_FAILURES >= SLACK_FAILURE_THRESHOLD:
+        post_slack(
+            ":white_check_mark: *Bedrock access enforcement recovered* — "
+            f"quota API reachable again after {CONSECUTIVE_FAILURES} failed runs."
+        )
+    _persist_failure_count(0)
+    return result

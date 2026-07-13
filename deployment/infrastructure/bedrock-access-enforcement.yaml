@@ -37,6 +37,28 @@ Parameters:
     Default: rate(30 minutes)
     Description: EventBridge schedule for the enforcer.
 
+  HttpTimeoutSeconds:
+    Type: Number
+    Default: 25
+    MinValue: 1
+    MaxValue: 55
+    Description: >-
+      Read timeout (seconds) for the quota API / Slack HTTP calls. Kept under the
+      Lambda's 60s function timeout. Raised from 10 to 25 because the quota API's
+      time-to-first-byte is slow and variable and intermittently exceeded 10s.
+
+  SlackFailureThreshold:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 100
+    Description: >-
+      Alert Slack only after this many CONSECUTIVE failed runs (transient blips below
+      this stay silent). Alerts once on crossing, plus a recovery message on the next
+      success. NOTE: the failure streak is tracked in the function's own
+      CONSECUTIVE_FAILURES env var and is only safe while runs are serial (no overlap) —
+      keep ScheduleExpression well above a single run's duration.
+
   SlackChannel:
     Type: String
     Default: ''
@@ -99,6 +121,15 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${QuotaTokenSecretId}*'
                   - !Sub 'arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${SlackTokenSecretId}*'
+              # Persist the consecutive-failure streak into the function's OWN env var so
+              # transient failures are suppressed until SlackFailureThreshold in a row.
+              # Scoped to this one function.
+              - Sid: PersistFailureCounter
+                Effect: Allow
+                Action:
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionConfiguration
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bedrock-access-enforcer'
 
   BedrockAccessEnforcerFunction:
     Type: AWS::Lambda::Function
@@ -118,10 +149,15 @@ Resources:
           BLOCK_THRESHOLD_PERCENT: !Ref BlockThresholdPercent
           SECRET_ID: !Ref QuotaTokenSecretId
           SECRET_JSON_KEY: quota_api_token
-          HTTP_TIMEOUT_SECONDS: '10'
+          HTTP_TIMEOUT_SECONDS: !Ref HttpTimeoutSeconds
           SLACK_CHANNEL: !Ref SlackChannel
           SLACK_SECRET_ID: !Ref SlackTokenSecretId
           SLACK_SECRET_JSON_KEY: slack_bot_token
+          SLACK_FAILURE_THRESHOLD: !Ref SlackFailureThreshold
+          # Persisted across runs by the function itself (UpdateFunctionConfiguration).
+          # Seeded to 0; do not manage further from CloudFormation or updates would
+          # clobber the live streak. See the module README.
+          CONSECUTIVE_FAILURES: '0'
       # NOTE: This inline copy is the authoritative deployed code. Keep it in sync with
       # deployment/infrastructure/lambda-functions/bedrock_access_enforcer/index.py
       # (the unit-tested source of truth). See that module's README.
@@ -142,17 +178,25 @@ Resources:
           BLOCK_THRESHOLD_PERCENT = os.environ.get("BLOCK_THRESHOLD_PERCENT", "100")
           SECRET_ID = os.environ.get("SECRET_ID", "shared/claude-code-quota-api-token")
           SECRET_JSON_KEY = os.environ.get("SECRET_JSON_KEY", "quota_api_token")
-          HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "10"))
+          HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "25"))
 
           SLACK_SECRET_ID = os.environ.get("SLACK_SECRET_ID", "shared/claude-code-alerts-slack-bot-token")
           SLACK_SECRET_JSON_KEY = os.environ.get("SLACK_SECRET_JSON_KEY", "slack_bot_token")
           SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
+
+          # Consecutive-failure suppression: only alert Slack after SLACK_FAILURE_THRESHOLD
+          # failures in a row. Streak persisted in this function's own env var (serial-safe
+          # only). See index.py / README.
+          CONSECUTIVE_FAILURES = int(os.environ.get("CONSECUTIVE_FAILURES", "0"))
+          SLACK_FAILURE_THRESHOLD = int(os.environ.get("SLACK_FAILURE_THRESHOLD", "3"))
+          _FUNCTION_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "bedrock-access-enforcer")
 
           NONE_SENTINEL = "*:claude-code-__none__"
           _INVALID_SESSION_CHARS = re.compile(r"[^\w+=,.@-]")
 
           iam = boto3.client("iam")
           _secrets = boto3.client("secretsmanager")
+          _lambda = boto3.client("lambda")
 
 
           def userid_for_email(email):
@@ -254,6 +298,22 @@ Resources:
                   print(f"bedrock-access-enforcer: slack post error: {type(exc).__name__}")
 
 
+          def _persist_failure_count(new_count):
+              # Best-effort persist of the consecutive-failure streak into this function's
+              # own env var. Never raises; skips the API call when unchanged.
+              if new_count == CONSECUTIVE_FAILURES:
+                  return
+              try:
+                  current = _lambda.get_function_configuration(FunctionName=_FUNCTION_NAME)
+                  env = current.get("Environment", {}).get("Variables", {})
+                  env["CONSECUTIVE_FAILURES"] = str(new_count)
+                  _lambda.update_function_configuration(
+                      FunctionName=_FUNCTION_NAME, Environment={"Variables": env}
+                  )
+              except Exception as exc:
+                  print(f"bedrock-access-enforcer: failed to persist failure count: {type(exc).__name__}")
+
+
           def _notify_change(added, removed, total_blocked):
               # Suppress pure reformat churn: a removed userid that maps to the same
               # person (label) as an added one is NOT a real unblock. Header reports the
@@ -313,14 +373,29 @@ Resources:
 
           def lambda_handler(event, context):
               try:
-                  return _enforce(event, context)
+                  result = _enforce(event, context)
               except Exception as exc:
+                  streak = CONSECUTIVE_FAILURES + 1
                   detail = str(exc)[:200]
-                  post_slack(
-                      f":warning: *Bedrock access enforcement failed* — {type(exc).__name__}: {detail}\n"
-                      "Block list left unchanged (fail-safe)."
+                  print(
+                      f"bedrock-access-enforcer: run failed ({type(exc).__name__}); "
+                      f"consecutive_failures={streak}/{SLACK_FAILURE_THRESHOLD}"
                   )
+                  if streak == SLACK_FAILURE_THRESHOLD:
+                      post_slack(
+                          f":warning: *Bedrock access enforcement failing* — {type(exc).__name__}: {detail}\n"
+                          f"Failed {streak} runs in a row. Block list left unchanged (fail-safe)."
+                      )
+                  _persist_failure_count(streak)
                   raise
+
+              if CONSECUTIVE_FAILURES >= SLACK_FAILURE_THRESHOLD:
+                  post_slack(
+                      ":white_check_mark: *Bedrock access enforcement recovered* — "
+                      f"quota API reachable again after {CONSECUTIVE_FAILURES} failed runs."
+                  )
+              _persist_failure_count(0)
+              return result
 
   EnforcerScheduleRule:
     Type: AWS::Events::Rule

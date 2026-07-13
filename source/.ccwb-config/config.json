@@ -87,7 +87,9 @@
       "bedrock_access_schedule": "rate(30 minutes)",
       "bedrock_access_permissions_boundary_arn": "arn:aws:iam::136113531821:policy/aft/aft-boundary",
       "bedrock_access_slack_channel": "#claude-code-alerts",
-      "bedrock_access_slack_token_secret": "shared/claude-code-alerts-slack-bot-token"
+      "bedrock_access_slack_token_secret": "shared/claude-code-alerts-slack-bot-token",
+      "bedrock_access_http_timeout_seconds": 25,
+      "bedrock_access_slack_failure_threshold": 3
     }
   }
 }

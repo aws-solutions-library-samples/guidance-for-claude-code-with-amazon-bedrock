@@ -48,13 +48,43 @@ via `chat.postMessage` using a bot token from Secrets Manager
   users`) plus `Newly blocked` / `Newly unblocked` deltas. Idempotent no-op runs post
   nothing. Pure reformat churn (a userid in both added and removed) is suppressed so it
   doesn't read as a spurious unblock.
-- **On error:** a sanitized message (exception type + first 200 chars, no secrets, no
-  traceback) noting the block list was left unchanged, then the error re-raises so the
-  invocation is marked failed.
+- **On error:** alerts are **suppressed until `SLACK_FAILURE_THRESHOLD` (default 3)
+  runs fail in a row.** A single transient quota-API blip (see below) is therefore
+  silent; only a sustained problem pages the channel — and it pages **once** (on the run
+  that crosses the threshold), not on every subsequent failed run. The message is
+  sanitized (exception type + first 200 chars, no secrets, no traceback), notes the
+  block list was left unchanged, and the error re-raises so the invocation is marked
+  failed. When the next run succeeds after an alerting streak, a
+  `:white_check_mark: … recovered` message is posted.
 
 Slack posting is best-effort: a Slack failure logs but never breaks enforcement or
 un-does the policy update. The bot must be a member of the channel
 (`/invite @Bedrock-Bouncer`); only the `chat:write` scope is required to post.
+
+### Consecutive-failure suppression & HTTP timeout
+
+The quota API's time-to-first-byte is slow and variable (observed ~2.6s steady,
+~7.4s cold) and **intermittently exceeded the old 10s HTTP read timeout**, producing
+bursts of `TimeoutError: The read operation timed out` in Slack (each EventBridge async
+retry posted its own alert). Two changes address this:
+
+- **`HTTP_TIMEOUT_SECONDS` raised 10 → 25** (kept well under the 60s Lambda timeout).
+- **Failure alerts gated behind a consecutive-failure counter** (`SLACK_FAILURE_THRESHOLD`,
+  default 3). The streak is persisted in the function's **own `CONSECUTIVE_FAILURES`
+  env var** via `lambda:UpdateFunctionConfiguration` (scoped to this one function) — no
+  DynamoDB/S3/table needed. On success the counter resets to 0 (writing config only if
+  it was non-zero, to avoid churn).
+
+> ⚠️ **The env-var counter is serial-safe only, NOT concurrency-safe.** It relies on
+> runs never overlapping — safe at `rate(30 minutes)` where a run finishes in seconds.
+> If you ever shorten the schedule below a single run's worst-case duration (or add a
+> manual invoke while a scheduled run is in flight), two invocations could read the same
+> `CONSECUTIVE_FAILURES` and last-writer-wins, miscounting the streak. It self-heals on
+> the next clean serial run. If you need sub-minute cadence, move the counter to
+> DynamoDB (atomic `ADD`) or a CloudWatch metric + alarm instead.
+
+Note: a stack `deploy` reseeds `CONSECUTIVE_FAILURES` to `0` (the template sets it),
+so deploying resets any in-flight failure streak — harmless.
 
 ### AFT permissions boundary (this account)
 
@@ -155,6 +185,8 @@ aws logs tail /aws/lambda/bedrock-access-enforcer --region ap-northeast-1 --foll
 | `bedrock_access_schedule`            | `rate(30 minutes)`                        | EventBridge schedule                         |
 | `bedrock_access_slack_channel`       | `` (empty) / `#claude-code-alerts` (SN)   | Slack channel; empty disables notifications  |
 | `bedrock_access_slack_token_secret`  | `shared/claude-code-alerts-slack-bot-token` | Secrets Manager id for the Slack bot token |
+| `bedrock_access_http_timeout_seconds`| `25`                                      | HTTP read timeout for quota/Slack calls (< 60s Lambda timeout) |
+| `bedrock_access_slack_failure_threshold` | `3`                                   | alert Slack only after N consecutive failed runs |
 | `bedrock_access_permissions_boundary_arn` | `` / `…/aft/aft-boundary` (SN)       | IAM boundary for the Lambda role (AFT accts) |
 
 ## Tests
