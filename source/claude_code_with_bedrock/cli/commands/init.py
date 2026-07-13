@@ -1248,75 +1248,80 @@ class InitCommand(Command):
                             "[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]"
                         )
 
-                        # Set token limits to 0 (disabled) when using cost mode
+                        # Cost mode: token-denominated limits are DISABLED (0).
+                        # The Lambdas skip token checks at 0, so the budgets
+                        # above are the sole control — do NOT prompt for token
+                        # counts (previously the token block below ran anyway
+                        # and overwrote these zeros with a token answer).
                         config["quota"]["monthly_limit"] = 0
                         config["quota"]["daily_limit"] = 0
+                        config["quota"]["warning_threshold_80"] = 0
+                        config["quota"]["warning_threshold_90"] = 0
                         monthly_limit = 0
+                        daily_limit = 0
 
                     else:
                         # Token-based limits (existing behavior)
                         config["quota"]["monthly_cost_limit"] = 0
                         config["quota"]["daily_cost_limit"] = 0
 
-                    # Monthly token limit (only prompted for token mode)
-                    if limit_type == "token":
                         console.print("\n[bold]Monthly Limit[/bold]")
-                    monthly_limit_millions = questionary.text(
-                        "Monthly token limit per user (in millions):",
-                        default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
-                        validate=lambda x: x.isdigit() and int(x) > 0,
-                    ).ask()
+                        monthly_limit_millions = questionary.text(
+                            "Monthly token limit per user (in millions):",
+                            default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
+                            validate=lambda x: x.isdigit() and int(x) > 0,
+                        ).ask()
 
-                    monthly_limit = int(monthly_limit_millions) * 1000000
-                    warning_80 = int(monthly_limit * 0.8)
-                    warning_90 = int(monthly_limit * 0.9)
+                        monthly_limit = int(monthly_limit_millions) * 1000000
+                        warning_80 = int(monthly_limit * 0.8)
+                        warning_90 = int(monthly_limit * 0.9)
 
-                    config["quota"]["monthly_limit"] = monthly_limit
-                    config["quota"]["warning_threshold_80"] = warning_80
-                    config["quota"]["warning_threshold_90"] = warning_90
+                        config["quota"]["monthly_limit"] = monthly_limit
+                        config["quota"]["warning_threshold_80"] = warning_80
+                        config["quota"]["warning_threshold_90"] = warning_90
 
-                    console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
-                    console.print(f"  → Warning at 80%: {warning_80:,} tokens")
-                    console.print(f"  → Critical at 90%: {warning_90:,} tokens")
+                        console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
+                        console.print(f"  → Warning at 80%: {warning_80:,} tokens")
+                        console.print(f"  → Critical at 90%: {warning_90:,} tokens")
 
-                    # Daily limit configuration (Bill Shock Protection)
-                    console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
-                    console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
+                        # Daily limit configuration (Bill Shock Protection)
+                        console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
+                        console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
 
-                    base_daily = monthly_limit / 30
+                        base_daily = monthly_limit / 30
 
-                    # Show burst buffer options
-                    console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
-                    console.print("\nBurst buffer allows daily variation above the average:")
-                    console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
-                    console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
-                    console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
+                        # Show burst buffer options
+                        console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
+                        console.print("\nBurst buffer allows daily variation above the average:")
+                        console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
+                        console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
+                        console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
 
-                    burst_buffer = questionary.text(
-                        "Burst buffer percentage (5-25%):",
-                        default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
-                        validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
-                    ).ask()
+                        burst_buffer = questionary.text(
+                            "Burst buffer percentage (5-25%):",
+                            default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
+                            validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
+                        ).ask()
 
-                    burst_percent = int(burst_buffer)
-                    calculated_daily = int(base_daily * (1 + burst_percent / 100))
+                        burst_percent = int(burst_buffer)
+                        calculated_daily = int(base_daily * (1 + burst_percent / 100))
 
-                    console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
+                        console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
 
-                    # Allow custom override
-                    custom_daily = questionary.text(
-                        f"Custom daily limit (Enter to accept {calculated_daily:,}):",
-                        default="",
-                        validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
-                    ).ask()
+                        # Allow custom override
+                        custom_daily = questionary.text(
+                            f"Custom daily limit (Enter to accept {calculated_daily:,}):",
+                            default="",
+                            validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
+                        ).ask()
 
-                    daily_limit = int(custom_daily) if custom_daily else calculated_daily
+                        daily_limit = int(custom_daily) if custom_daily else calculated_daily
 
-                    config["quota"]["daily_limit"] = daily_limit
-                    config["quota"]["burst_buffer_percent"] = burst_percent
+                        config["quota"]["daily_limit"] = daily_limit
+                        config["quota"]["burst_buffer_percent"] = burst_percent
 
-                    if custom_daily:
-                        console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
+                        if custom_daily:
+                            console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
 
                     # Enforcement mode configuration
                     console.print("\n[bold]Enforcement Modes[/bold]")
@@ -1343,6 +1348,9 @@ class InitCommand(Command):
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
+                    # (Previously never saved — the wizard's monthly enforcement
+                    # answer was silently dropped and the default always won.)
+                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
@@ -1380,9 +1388,18 @@ class InitCommand(Command):
                         config["quota"]["enable_bypass_detection"] = False
 
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
-                    console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
-                    console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
-                    console.print(f"  • Burst buffer: {burst_percent}%")
+                    if limit_type == "cost":
+                        console.print(
+                            f"  • Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user ({monthly_enforcement})"
+                        )
+                        if config["quota"]["daily_cost_limit"] > 0:
+                            console.print(
+                                f"  • Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user ({daily_enforcement})"
+                            )
+                    else:
+                        console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
+                        console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
+                        console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
                     if config["quota"].get("enable_bypass_detection"):
                         console.print("  • Sidecar bypass detection: enabled")
@@ -2825,6 +2842,9 @@ class InitCommand(Command):
             "daily_token_limit": config_data.get("quota", {}).get("daily_limit"),
             "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
             "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            "quota_limit_type": config_data.get("quota", {}).get("limit_type", "token"),
+            "monthly_cost_limit_usd": config_data.get("quota", {}).get("monthly_cost_limit", 0),
+            "daily_cost_limit_usd": config_data.get("quota", {}).get("daily_cost_limit", 0),
             "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
@@ -3254,6 +3274,9 @@ class InitCommand(Command):
                     "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
                     "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
                     "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "limit_type": getattr(profile, "quota_limit_type", "token"),
+                    "monthly_cost_limit": getattr(profile, "monthly_cost_limit_usd", 0),
+                    "daily_cost_limit": getattr(profile, "daily_cost_limit_usd", 0),
                     "check_interval": getattr(profile, "quota_check_interval", 30),
                     "enable_bypass_detection": getattr(profile, "enable_bypass_detection", False),
                 }
