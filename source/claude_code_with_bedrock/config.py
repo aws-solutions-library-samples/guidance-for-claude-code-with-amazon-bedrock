@@ -83,6 +83,13 @@ class Profile:
     bedrock_access_schedule: str = "rate(30 minutes)"  # EventBridge schedule expression
     bedrock_access_slack_channel: str = ""  # Slack channel for alerts (empty ⇒ disabled)
     bedrock_access_slack_token_secret: str = "shared/claude-code-alerts-slack-bot-token"  # Secrets Manager id
+    # HTTP read timeout (s) for the quota API / Slack calls; kept under the 60s Lambda
+    # timeout. Raised from 10 because the quota API's TTFB intermittently exceeded 10s.
+    bedrock_access_http_timeout_seconds: int = 25
+    # Only alert Slack after this many CONSECUTIVE failed runs (transient blips stay
+    # silent). Streak tracked in the Lambda's own env var — serial-safe only; keep the
+    # schedule interval well above a single run's duration.
+    bedrock_access_slack_failure_threshold: int = 3
     # Optional IAM permissions-boundary ARN for the enforcer's Lambda role. Required in
     # AFT/Control-Tower accounts (genai-studio-dev denies iam:CreateRole for boundary-less
     # roles). Empty ⇒ no boundary attached.

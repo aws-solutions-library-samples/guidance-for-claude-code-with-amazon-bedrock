@@ -690,6 +690,8 @@ class DeployCommand(Command):
                     f"PermissionsBoundaryArn={getattr(profile, 'bedrock_access_permissions_boundary_arn', '')}",
                     f"SlackChannel={getattr(profile, 'bedrock_access_slack_channel', '')}",
                     f"SlackTokenSecretId={getattr(profile, 'bedrock_access_slack_token_secret', 'shared/claude-code-alerts-slack-bot-token')}",
+                    f"HttpTimeoutSeconds={getattr(profile, 'bedrock_access_http_timeout_seconds', 25)}",
+                    f"SlackFailureThreshold={getattr(profile, 'bedrock_access_slack_failure_threshold', 3)}",
                 ]
                 return deploy_with_cf(
                     template,
