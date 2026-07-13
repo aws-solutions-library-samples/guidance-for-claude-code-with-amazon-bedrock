@@ -31,6 +31,14 @@ from claude_code_with_bedrock.cli.utils.validators import (
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
 
+# questionary.Choice treats value=None as "no value given" and FALLS BACK TO
+# THE TITLE STRING — so a "Disabled"/"Skip" choice built with value=None
+# returns its title (e.g. "Disabled") from .ask(), which is truthy and leaks
+# into the profile (enable_distribution flipped on, title strings stored as
+# codebuild region / hosted zone ID). Use this sentinel for "none" choices and
+# map it back to None right after .ask().
+_CHOICE_NONE = "__none__"
+
 
 def validate_identity_pool_name(value: str) -> bool | str:
     """Validate identity pool name format.
@@ -1445,9 +1453,11 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice(nearest_label, value=nearest),
                         *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
-                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=_CHOICE_NONE),
                     ],
                 ).ask()
+                if cb_choice == _CHOICE_NONE:
+                    cb_choice = None
 
                 prior_region = config["codebuild"].get("region")
                 config["codebuild"]["region"] = cb_choice
@@ -1655,7 +1665,7 @@ class InitCommand(Command):
         distribution_choices = [
             questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
             questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
-            questionary.Choice("Disabled", value=None),
+            questionary.Choice("Disabled", value=_CHOICE_NONE),
         ]
 
         # Get saved value or default to None
@@ -1667,6 +1677,8 @@ class InitCommand(Command):
             choices=distribution_choices,
             default=default_choice,
         ).ask()
+        if distribution_type == _CHOICE_NONE:
+            distribution_type = None
 
         # Preserve existing distribution settings, only update enabled/type
         if "distribution" not in config:
@@ -1954,7 +1966,7 @@ class InitCommand(Command):
                         )
                         for zone in hosted_zones
                     ]
-                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=_CHOICE_NONE))
 
                     # Find the default choice based on existing zone
                     default_choice = None
@@ -1969,6 +1981,8 @@ class InitCommand(Command):
                         choices=zone_choices,
                         default=default_choice if default_choice else zone_choices[0],
                     ).ask()
+                    if hosted_zone_id == _CHOICE_NONE:
+                        hosted_zone_id = None
                 else:
                     console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
                     console.print("You can still use custom domain if it's managed externally")

@@ -282,6 +282,22 @@ class Profile:
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
 
+        # Heal profiles corrupted by questionary's value=None fallback: Choice
+        # values of None fall back to the choice TITLE, so the wizard's
+        # "Disabled" option saved enable_distribution=True with
+        # distribution_type="Disabled" — making sidecar deploys schedule the
+        # networking + distribution stacks. The same fallback could store
+        # choice titles as the CodeBuild region or Route53 hosted zone ID
+        # (titles contain spaces; valid values never do). Must run BEFORE the
+        # legacy migration below, which would otherwise legitimize the value.
+        if data.get("distribution_type") not in (None, "presigned-s3", "landing-page"):
+            data["distribution_type"] = None
+            data["enable_distribution"] = False
+        if data.get("codebuild_region") and " " in str(data["codebuild_region"]):
+            data["codebuild_region"] = None
+        if data.get("distribution_hosted_zone_id") and " " in str(data["distribution_hosted_zone_id"]):
+            data["distribution_hosted_zone_id"] = None
+
         # Migrate legacy distribution configuration
         if "enable_distribution" in data and data.get("enable_distribution"):
             # If distribution was enabled but no type specified, default to presigned-s3
