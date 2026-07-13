@@ -1954,6 +1954,10 @@ class DeployCommand(Command):
         deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
 
         # Check for orphaned stacks
+        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+        profile_partition = aws_partition_for_region(profile.aws_region)
+
         orphaned = []
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
@@ -1961,16 +1965,36 @@ class DeployCommand(Command):
                 # CodeBuild and websearch may live in a different region, so
                 # check them there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-                mgr = cf_manager
+                check_region = profile.aws_region
                 if stack_type == "codebuild":
-                    cb_region = get_codebuild_region(profile)
-                    if cb_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=cb_region)
+                    check_region = get_codebuild_region(profile)
                 elif stack_type == "websearch":
-                    ws_region = get_websearch_region(profile)
-                    if ws_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=ws_region)
-                status = mgr.get_stack_status(stack_name)
+                    check_region = get_websearch_region(profile)
+
+                # Never probe across partitions: websearch defaults to
+                # us-east-1 (commercial-only service), so a GovCloud deploy
+                # would call a commercial CloudFormation endpoint — typically
+                # unreachable there (SSL/connect errors), and the stack cannot
+                # exist in another partition anyway.
+                if aws_partition_for_region(check_region) != profile_partition:
+                    continue
+
+                mgr = cf_manager
+                if check_region != profile.aws_region:
+                    mgr = CloudFormationManager(region=check_region)
+
+                # Best-effort advisory check: a network/endpoint failure
+                # (air-gapped or proxied environments) must not abort the
+                # deploy — get_stack_status only handles ClientError, so
+                # connection/SSL errors would otherwise propagate.
+                try:
+                    status = mgr.get_stack_status(stack_name)
+                except Exception as e:
+                    console.print(
+                        f"[dim]Skipping orphaned-stack check for {stack_type} "
+                        f"({check_region}): {type(e).__name__}[/dim]"
+                    )
+                    continue
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
                     orphaned.append((stack_type, stack_name, status))
