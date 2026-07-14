@@ -6,12 +6,32 @@
 import json
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
+    _to_windows_credential_helper,
     build_mdm_config,
     generate_all,
     generate_intune_script,
     generate_json,
     generate_reg_file,
 )
+
+
+class TestToWindowsCredentialHelper:
+    """Direct regression tests for the unix->windows helper-path conversion.
+
+    Pins the PR #733 bug class: the value is a bare wrapper path, so the
+    converter must swap .sh->.cmd and rewrite slashes WITHOUT appending .exe or
+    splitting on spaces, and must be a no-op for non-placeholder values.
+    """
+
+    def test_sh_wrapper_becomes_cmd_no_exe(self):
+        out = _to_windows_credential_helper("__CCWB_HOME__/claude-code-with-bedrock/cowork-credential-helper.sh")
+        assert out == "__CCWB_HOME__\\claude-code-with-bedrock\\cowork-credential-helper.cmd"
+        assert ".exe" not in out
+        assert " " not in out  # bare path, no inline args
+
+    def test_noop_for_non_placeholder_value(self):
+        for val in ("C:\\some\\abs\\path.cmd", "/usr/local/bin/helper", ""):
+            assert _to_windows_credential_helper(val) == val
 
 
 class TestBuildMdmConfigCredentialHelper:
