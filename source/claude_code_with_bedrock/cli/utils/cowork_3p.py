@@ -117,22 +117,34 @@ def _infer_tier_from_model_id(model_id: str) -> str | None:
     return None
 
 
+# Wrapper scripts that Claude Desktop invokes as inferenceCredentialHelper.
+# Per Anthropic's contract, Claude Desktop "runs the executable at the configured
+# path with no arguments" — it does NOT parse a command line. So the helper value
+# must be a bare path to a script, and the --desktop/--profile arguments are
+# baked INSIDE the wrapper (which calls the co-located credential-process binary).
+# Pointing inferenceCredentialHelper directly at "credential-process --desktop
+# --profile X" makes Claude Desktop treat the whole string as one filename and
+# fail to spawn it (ENOENT).
+COWORK_HELPER_SCRIPT_UNIX = "cowork-credential-helper.sh"
+COWORK_HELPER_SCRIPT_WINDOWS = "cowork-credential-helper.cmd"
+
+
 def _credential_process_path(profile_name: str) -> dict[str, str]:
-    """Return platform-specific credential-process paths for inferenceCredentialHelper.
+    """Return platform-specific, argument-free wrapper-script paths for
+    inferenceCredentialHelper.
 
-    The installer places the binary at a predictable location per-platform:
-    - macOS/Linux: <home>/claude-code-with-bedrock/credential-process
-    - Windows: <home>\\claude-code-with-bedrock\\credential-process.exe
+    The installer places the wrapper alongside the binary per-platform:
+    - macOS/Linux: <home>/claude-code-with-bedrock/cowork-credential-helper.sh
+    - Windows: <home>\\claude-code-with-bedrock\\cowork-credential-helper.cmd
 
-    Claude Desktop does NOT expand "~"/env vars in MDM values on EITHER platform,
-    so both paths embed CCWB_HOME_PLACEHOLDER. `install.sh` (macOS/Linux) and
-    `install.bat` (Windows) substitute it with the real home at install time —
-    Windows escapes it for the .reg (see generate_reg_file). Using %USERPROFILE%
-    here would NOT work: Claude reads the literal string from the registry.
+    The wrapper hardcodes `--desktop --profile <name>` and execs the co-located
+    credential-process binary. Claude Desktop does NOT expand "~"/env vars in MDM
+    values, so both paths embed CCWB_HOME_PLACEHOLDER; `install.sh`/`install.bat`
+    substitute it with the real home at install time.
     """
     return {
-        "unix": f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/credential-process --desktop --profile {profile_name}",
-        "windows": f"{CCWB_HOME_PLACEHOLDER}\\claude-code-with-bedrock\\credential-process.exe --desktop --profile {profile_name}",
+        "unix": f"{CCWB_HOME_PLACEHOLDER}/claude-code-with-bedrock/{COWORK_HELPER_SCRIPT_UNIX}",
+        "windows": f"{CCWB_HOME_PLACEHOLDER}\\claude-code-with-bedrock\\{COWORK_HELPER_SCRIPT_WINDOWS}",
     }
 
 
@@ -537,21 +549,21 @@ def generate_mobileconfig(output_dir: Path, mdm_config: dict) -> Path:
 
 
 def _to_windows_credential_helper(value: str) -> str:
-    """Convert the unix inferenceCredentialHelper path to the Windows form.
+    """Convert the unix inferenceCredentialHelper wrapper path to the Windows form.
 
-    ``__CCWB_HOME__/claude-code-with-bedrock/credential-process --profile X``
-    becomes ``__CCWB_HOME__\\claude-code-with-bedrock\\credential-process.exe --profile X``.
+    ``__CCWB_HOME__/claude-code-with-bedrock/cowork-credential-helper.sh``
+    becomes ``__CCWB_HOME__\\claude-code-with-bedrock\\cowork-credential-helper.cmd``.
     Keeps the ``__CCWB_HOME__`` placeholder (resolved at install/deploy time by
-    install.bat / the Intune .ps1); only rewrites slashes and adds the ``.exe``
-    suffix. No-op when the value is not a placeholder path.
+    install.bat / the Intune .ps1); rewrites slashes and swaps the .sh wrapper
+    for its .cmd counterpart. The value is a bare, argument-free path (Claude
+    Desktop runs it with no arguments). No-op when not a placeholder path.
     """
     if not (isinstance(value, str) and value.startswith(f"{CCWB_HOME_PLACEHOLDER}/")):
         return value
-    parts = value.split(" ", 1)
-    binary_part = parts[0].replace("/", "\\")
-    if not binary_part.endswith(".exe"):
-        binary_part += ".exe"
-    return f"{binary_part} {parts[1]}" if len(parts) > 1 else binary_part
+    windows = value.replace("/", "\\")
+    if windows.endswith(COWORK_HELPER_SCRIPT_UNIX):
+        windows = windows[: -len(COWORK_HELPER_SCRIPT_UNIX)] + COWORK_HELPER_SCRIPT_WINDOWS
+    return windows
 
 
 def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
@@ -598,8 +610,48 @@ def generate_reg_file(output_dir: Path, mdm_config: dict) -> Path:
     return reg_path
 
 
+def generate_helper_wrappers(output_dir: Path, profile_name: str) -> list[str]:
+    """Write the argument-free credential-helper wrapper scripts.
+
+    Claude Desktop runs inferenceCredentialHelper "at the configured path with no
+    arguments", so the --desktop/--profile flags live inside these wrappers, which
+    exec the co-located credential-process binary. The installer places them next
+    to the binary; %~dp0 / $(dirname) resolves the binary relative to the wrapper.
+
+    Returns the generated filenames.
+    """
+    sh = (
+        "#!/bin/bash\n"
+        "# ABOUTME: CoWork 3P credential helper — emits a Bedrock bearer token.\n"
+        "# Invoked by Claude Desktop as inferenceCredentialHelper (no arguments).\n"
+        "set -euo pipefail\n"
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f'exec "$SCRIPT_DIR/credential-process" --desktop --profile {profile_name}\n'
+    )
+    sh_path = output_dir / COWORK_HELPER_SCRIPT_UNIX
+    with open(sh_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(sh)
+    try:
+        sh_path.chmod(0o755)
+    except OSError:
+        pass  # no-op on Windows
+
+    cmd = (
+        "@echo off\r\n"
+        "REM CoWork 3P credential helper - emits a Bedrock bearer token.\r\n"
+        "REM Invoked by Claude Desktop as inferenceCredentialHelper (no arguments).\r\n"
+        f'"%~dp0credential-process.exe" --desktop --profile {profile_name}\r\n'
+        "exit /b %errorlevel%\r\n"
+    )
+    cmd_path = output_dir / COWORK_HELPER_SCRIPT_WINDOWS
+    with open(cmd_path, "w", encoding="utf-8", newline="") as f:
+        f.write(cmd)
+
+    return [COWORK_HELPER_SCRIPT_UNIX, COWORK_HELPER_SCRIPT_WINDOWS]
+
+
 def generate_all(output_dir: Path, mdm_config: dict, console: Console) -> list[str]:
-    """Generate all three CoWork 3P MDM configuration files.
+    """Generate all CoWork 3P MDM configuration files (+ helper wrappers).
 
     Args:
         output_dir: Directory to write files to.
@@ -622,6 +674,12 @@ def generate_all(output_dir: Path, mdm_config: dict, console: Console) -> list[s
     generate_reg_file(output_dir, mdm_config)
     generated.append("cowork-3p.reg")
     console.print("[green]✓[/green] Generated cowork-3p.reg (Windows)")
+
+    # helper-script mode: ship the wrapper scripts Claude Desktop invokes.
+    if "inferenceCredentialHelper" in mdm_config:
+        profile_name = mdm_config.get("inferenceBedrockProfile", "ClaudeCode")
+        generated += generate_helper_wrappers(output_dir, profile_name)
+        console.print("[green]✓[/green] Generated cowork-credential-helper.sh / .cmd")
 
     return generated
 
