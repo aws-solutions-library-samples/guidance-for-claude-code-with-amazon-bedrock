@@ -4245,8 +4245,6 @@ Available metrics include:
                 model_aliases=model_aliases,
                 profile_name=profile_name,
                 extra_keys=profile.cowork_3p_extra_keys or None,
-                credential_mode=getattr(profile, "cowork_credential_mode", "helper"),
-                credential_helper_ttl_sec=getattr(profile, "cowork_credential_helper_ttl_sec", 3500),
             )
 
             # Beta features (per-feature managed configuration keys)

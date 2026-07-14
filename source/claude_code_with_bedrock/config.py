@@ -156,10 +156,6 @@ class Profile:
     cowork_3p_enabled: bool = True  # Generate CoWork 3P MDM configs during packaging
     cowork_3p_extra_keys: dict[str, str] = field(default_factory=dict)  # Custom MDM keys merged into CoWork 3P output
     cowork_service_token: str = ""  # Static token for CoWork ALB auth bypass (set during init)
-    cowork_credential_mode: str = (
-        "helper"  # "helper" (inferenceCredentialHelper) or "profile" (inferenceBedrockProfile)
-    )
-    cowork_credential_helper_ttl_sec: int = 3500  # inferenceCredentialHelperTtlSec (refresh before 1h STS expiry)
     cowork_config_delivery: str = "static"  # "static" | "bootstrap-device-code" | "bootstrap-oidc-bearer"
 
     # Cowork beta features (managed configuration keys)
