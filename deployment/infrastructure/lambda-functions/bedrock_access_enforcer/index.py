@@ -44,6 +44,12 @@ HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "25"))
 SLACK_SECRET_ID = os.environ.get("SLACK_SECRET_ID", "shared/claude-code-alerts-slack-bot-token")
 SLACK_SECRET_JSON_KEY = os.environ.get("SLACK_SECRET_JSON_KEY", "slack_bot_token")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
+# Quota usage dashboard, linked in block-list change notifications so recipients can see
+# where they stand. Overridable via env; empty string omits the link.
+DASHBOARD_URL = os.environ.get(
+    "DASHBOARD_URL",
+    "https://prototyping.dev.smartnews.com/midgard-dashboard/admin/quota",
+)
 
 # Consecutive-failure suppression. The quota API is intermittently slow (occasional
 # read-timeouts); alerting on every single failure produced Slack bursts for transient
@@ -173,7 +179,12 @@ def post_slack(text):
         return
     try:
         token = _secret_json(SLACK_SECRET_ID, SLACK_SECRET_JSON_KEY)
-        body = json.dumps({"channel": SLACK_CHANNEL, "text": text}).encode("utf-8")
+        # link_names lets Slack resolve "@handle" in the text into a real mention/ping
+        # (matched against the user's Slack username, which for SmartNews users is their
+        # email local part). Handles that don't resolve fall back to plain @text.
+        body = json.dumps(
+            {"channel": SLACK_CHANNEL, "text": text, "link_names": True}
+        ).encode("utf-8")
         req = urllib.request.Request(
             "https://slack.com/api/chat.postMessage",
             data=body,
@@ -231,10 +242,16 @@ def _notify_change(added, removed, total_blocked):
         f":lock: *Bedrock access enforcement* — now blocking {total_blocked} "
         f"user{'s' if total_blocked != 1 else ''} (threshold {BLOCK_THRESHOLD_PERCENT}%)"
     ]
+    # "@label" + link_names:true (see post_slack) asks Slack to resolve each label into a
+    # real mention so blocked/unblocked users get pinged.
     if newly_blocked:
-        lines.append(f"*Newly blocked ({len(newly_blocked)}):* " + ", ".join(newly_blocked))
+        mentions = ", ".join(f"@{name}" for name in newly_blocked)
+        lines.append(f"*Newly blocked ({len(newly_blocked)}):* " + mentions)
     if newly_unblocked:
-        lines.append(f"*Newly unblocked ({len(newly_unblocked)}):* " + ", ".join(newly_unblocked))
+        mentions = ", ".join(f"@{name}" for name in newly_unblocked)
+        lines.append(f"*Newly unblocked ({len(newly_unblocked)}):* " + mentions)
+    if DASHBOARD_URL:
+        lines.append(f":bar_chart: <{DASHBOARD_URL}|Quota usage dashboard>")
     post_slack("\n".join(lines))
 
 
