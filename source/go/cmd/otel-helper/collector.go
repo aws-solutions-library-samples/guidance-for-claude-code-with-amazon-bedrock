@@ -70,7 +70,13 @@ func ensureCollectorRunning(profile string) {
 	cmd := exec.Command(otelcol, "--config", configPath) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd.Stdout = outFile
 	cmd.Stderr = errFile
-	cmd.Env = append(envWithout(os.Environ(), "AWS_PROFILE"), "AWS_PROFILE="+profile+"-collector")
+	// AWS_SDK_LOAD_CONFIG: collector components built on aws-sdk-go v1 (the
+	// awsemf exporter's awsutil layer) do not read ~/.aws/config — where the
+	// "<profile>-collector" profile and its credential_process live — unless
+	// this is set. SDK v2 components (sigv4auth) read it regardless, which is
+	// why AMP export worked while EMF export failed without it.
+	env := envWithout(envWithout(os.Environ(), "AWS_PROFILE"), "AWS_SDK_LOAD_CONFIG")
+	cmd.Env = append(env, "AWS_PROFILE="+profile+"-collector", "AWS_SDK_LOAD_CONFIG=1")
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		debugPrint("Failed to start collector sidecar: %v", err)

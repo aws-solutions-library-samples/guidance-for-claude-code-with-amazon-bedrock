@@ -85,7 +85,10 @@ class TestCollectorSeparateLogFiles:
         install_dir = tmp_path / "claude-code-with-bedrock"
         install_dir.mkdir()
         otelcol = install_dir / "otelcol"
-        otelcol.write_text("#!/bin/sh\necho stdout-marker\necho stderr-marker >&2\nsleep 10\n", encoding="utf-8")
+        otelcol.write_text(
+            '#!/bin/sh\necho "stdout-marker sdkconfig=$AWS_SDK_LOAD_CONFIG"\necho stderr-marker >&2\nsleep 10\n',
+            encoding="utf-8",
+        )
         otelcol.chmod(0o755)
         (install_dir / "collector-config.yaml").write_text("receivers:\n", encoding="utf-8")
 
@@ -113,6 +116,9 @@ class TestCollectorSeparateLogFiles:
                 "collector stderr must go to its own file — Windows cannot redirect both streams into one"
             )
             assert "stderr-marker" not in log_file.read_text()
+            # aws-sdk-go v1 components (awsemf exporter) can't read the
+            # -collector profile from ~/.aws/config without this.
+            assert "sdkconfig=1" in log_file.read_text(), "collector must run with AWS_SDK_LOAD_CONFIG=1"
         finally:
             try:
                 os.kill(pid, signal.SIGKILL)

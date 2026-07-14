@@ -903,9 +903,12 @@ def ensure_collector_running():
         except (ProcessLookupError, ValueError, OSError):
             pass  # stale PID file
 
-    # Launch collector with the -collector profile
+    # Launch collector with the -collector profile. AWS_SDK_LOAD_CONFIG:
+    # aws-sdk-go v1 components in the collector (the awsemf exporter) don't
+    # read ~/.aws/config — where the -collector profile's credential_process
+    # lives — without it; SDK v2 components (sigv4auth) always do.
     profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
-    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector"}
+    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector", "AWS_SDK_LOAD_CONFIG": "1"}
 
     cache_dir = Path.home() / ".claude-code-session"
     cache_dir.mkdir(parents=True, exist_ok=True)

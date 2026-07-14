@@ -56,9 +56,10 @@ func TestEnsureCollectorRunning_StartsWithSeparateLogFiles(t *testing.T) {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Stand-in collector: proves which AWS profile it was launched under,
-	// writes distinct stdout/stderr content, then stays alive briefly.
-	script := "#!/bin/sh\necho \"profile=$AWS_PROFILE\"\necho stderr-marker >&2\nsleep 10\n"
+	// Stand-in collector: proves which AWS profile and SDK config-loading
+	// env it was launched under, writes distinct stdout/stderr content,
+	// then stays alive briefly.
+	script := "#!/bin/sh\necho \"profile=$AWS_PROFILE sdkconfig=$AWS_SDK_LOAD_CONFIG\"\necho stderr-marker >&2\nsleep 10\n"
 	if err := os.WriteFile(filepath.Join(installDir, "otelcol"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,9 @@ func TestEnsureCollectorRunning_StartsWithSeparateLogFiles(t *testing.T) {
 	}
 
 	cacheDir := filepath.Join(tmp, ".claude-code-session")
-	waitForContent(t, filepath.Join(cacheDir, "collector.log"), "profile=TestProfile-collector")
+	// AWS_SDK_LOAD_CONFIG=1 is required for aws-sdk-go v1 components (the
+	// awsemf exporter) to read the -collector profile from ~/.aws/config.
+	waitForContent(t, filepath.Join(cacheDir, "collector.log"), "profile=TestProfile-collector sdkconfig=1")
 	waitForContent(t, filepath.Join(cacheDir, "collector.err"), "stderr-marker")
 
 	// A second invocation with a live PID must not respawn.

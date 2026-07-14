@@ -27,7 +27,10 @@ RAW_FILE="$CACHE_DIR/${PROFILE}-otel-headers.raw"
 if [ -x "$INSTALL_DIR/otelcol" ] && [ -f "$INSTALL_DIR/collector-config.yaml" ]; then
     if ! { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; }; then
         mkdir -p "$CACHE_DIR"
-        AWS_PROFILE="${PROFILE}-collector" \
+        # AWS_SDK_LOAD_CONFIG: aws-sdk-go v1 components in the collector (the
+        # awsemf exporter) don't read ~/.aws/config (credential_process
+        # profiles) without it; SDK v2 components (sigv4auth) always do.
+        AWS_PROFILE="${PROFILE}-collector" AWS_SDK_LOAD_CONFIG=1 \
         "$INSTALL_DIR/otelcol" --config "$INSTALL_DIR/collector-config.yaml" \
             >> "$CACHE_DIR/collector.log" 2>&1 &
         echo $! > "$PID_FILE"

@@ -76,6 +76,10 @@ if ((Test-Path $otelcol) -and (Test-Path $collectorConfig)) {
             $logFile = Join-Path $cacheDir "collector.log"
             $errFile = Join-Path $cacheDir "collector.err"
             $env:AWS_PROFILE = "$ProfileName-collector"
+            # aws-sdk-go v1 components in the collector (awsemf exporter) don't
+            # read ~/.aws/config (credential_process profiles) without this;
+            # SDK v2 components (sigv4auth) always do.
+            $env:AWS_SDK_LOAD_CONFIG = "1"
             $proc = Start-Process -FilePath $otelcol -ArgumentList "--config", $collectorConfig `
                 -RedirectStandardOutput $logFile -RedirectStandardError $errFile `
                 -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
