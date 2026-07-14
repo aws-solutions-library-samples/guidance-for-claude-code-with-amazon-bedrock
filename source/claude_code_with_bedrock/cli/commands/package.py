@@ -3189,6 +3189,16 @@ for _ccwb_mdm in "cowork-3p.mobileconfig" "cowork-3p-config.json"; do
     fi
 done
 
+# Install the CoWork credential-helper wrapper (helper-script mode). Claude
+# Desktop runs inferenceCredentialHelper with no arguments, so the --desktop
+# --profile flags live inside this wrapper, which execs the co-located binary.
+if [ -f "cowork-credential-helper.sh" ]; then
+    cp "cowork-credential-helper.sh" "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"
+    chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"; fi
+    echo "OK Installed cowork-credential-helper.sh"
+fi
+
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
@@ -3728,6 +3738,14 @@ if exist "cowork-3p.reg" (
     echo Resolving home directory in cowork-3p.reg...
     powershell -NoProfile -Command "$h = $env:USERPROFILE.Replace('\\','\\\\'); (Get-Content 'cowork-3p.reg' -Raw).Replace('__CCWB_HOME__', $h) | Set-Content 'cowork-3p.reg'"
     echo OK Resolved home directory in cowork-3p.reg ^(import it with: reg import cowork-3p.reg, then fully restart Claude^)
+)
+
+REM Install the CoWork credential-helper wrapper (helper-script mode). Claude
+REM Desktop runs inferenceCredentialHelper with no arguments, so the --desktop
+REM --profile flags live inside this wrapper, which calls the co-located binary.
+if exist "cowork-credential-helper.cmd" (
+    copy /Y "cowork-credential-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\cowork-credential-helper.cmd" >nul
+    echo OK Installed cowork-credential-helper.cmd
 )
 
 REM Copy Claude Code settings if they exist

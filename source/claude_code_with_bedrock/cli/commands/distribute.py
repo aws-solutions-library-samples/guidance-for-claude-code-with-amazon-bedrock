@@ -596,6 +596,7 @@ class DistributeCommand(Command):
                 ("README.md", "README.md"),
                 ("cowork-3p.reg", "cowork-3p.reg"),
                 ("cowork-3p-config.json", "cowork-3p-config.json"),
+                ("cowork-credential-helper.cmd", "cowork-credential-helper.cmd"),
             ],
             "linux": [
                 ("credential-process-linux-x64", "credential-process-linux-x64"),
@@ -613,6 +614,7 @@ class DistributeCommand(Command):
                 ("config.json", "config.json"),
                 ("README.md", "README.md"),
                 ("cowork-3p-config.json", "cowork-3p-config.json"),
+                ("cowork-credential-helper.sh", "cowork-credential-helper.sh"),
             ],
             "mac": [
                 ("credential-process-macos-arm64", "credential-process-macos-arm64"),
@@ -628,6 +630,7 @@ class DistributeCommand(Command):
                 ("README.md", "README.md"),
                 ("cowork-3p.mobileconfig", "cowork-3p.mobileconfig"),
                 ("cowork-3p-config.json", "cowork-3p-config.json"),
+                ("cowork-credential-helper.sh", "cowork-credential-helper.sh"),
             ],
         }
 
@@ -1514,6 +1517,8 @@ class DistributeCommand(Command):
             "cowork-3p.reg",
             "cowork-3p.mobileconfig",
             "cowork-3p-config.json",
+            "cowork-credential-helper.sh",
+            "cowork-credential-helper.cmd",
         ]
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
