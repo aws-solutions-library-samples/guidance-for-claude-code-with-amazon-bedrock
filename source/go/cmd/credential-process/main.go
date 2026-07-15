@@ -50,6 +50,7 @@ func main() {
 	checkExpiration := flag.Bool("check-expiration", false, "Check if credentials are expired")
 	refreshIfNeeded := flag.Bool("refresh-if-needed", false, "Refresh credentials if expired")
 	showTags := flag.Bool("show-tags", false, "Print the https://aws.amazon.com/tags claim from the cached ID token (debug)")
+	showClaims := flag.Bool("show-claims", false, "Print ALL claims from the ID token as JSON (diagnostic: shows exactly what the IdP is sending — groups, department, custom claims). Uses the cached token; signs in only when none is cached.")
 	getTag := flag.String("get-tag", "", "Print the value of a single principal tag from the cached ID token (e.g. --get-tag Zone). Exit codes: 0 hit, 2 absent, 4 expired.")
 	login := flag.Bool("login", false, "Interactively sign in (IDC: run device authorization and cache the SSO token), then exit. Use this once on headless/SSH hosts before Claude Code runs.")
 	setClientSecret := flag.Bool("set-client-secret", false, "Store Azure AD client secret in OS secure storage. Set CCWB_CLIENT_SECRET env var for non-interactive use, or enter it at the prompt.")
@@ -125,6 +126,9 @@ func main() {
 	}
 	if *showTags {
 		os.Exit(app.showTags())
+	}
+	if *showClaims {
+		os.Exit(app.showClaims())
 	}
 	if *getTag != "" {
 		os.Exit(app.getTag(*getTag))
@@ -455,6 +459,50 @@ func (a *credentialApp) showTags() int {
 	pretty, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not format tags claim: %v\n", err)
+		return 1
+	}
+	fmt.Println(string(pretty))
+	return 0
+}
+
+// showClaims prints ALL claims from the ID token as JSON. It is the
+// full-token sibling of showTags: it answers "what is my IdP actually
+// sending?" when wiring group-based quota policies or attribution
+// (groups, department, custom claims) without hand-decoding JWTs. Same
+// token acquisition as showTags: cached monitoring token first, fresh
+// OIDC flow only when nothing is cached.
+//
+// The Python provider's equivalent is the COGNITO_AUTH_DEBUG=1 claim dump
+// during auth (credential-helper-parity: both variants expose the claims).
+// Note: prints the token's real claims (email, sub, groups) — it is a local
+// diagnostic of the caller's own identity, same exposure as --show-tags.
+func (a *credentialApp) showClaims() int {
+	token, _ := storage.GetMonitoringToken(a.profile, a.cfg.CredentialStorage)
+	var claims jwt.Claims
+	if token != "" {
+		if c, err := jwt.DecodePayload(token); err == nil {
+			claims = c
+		}
+	}
+	if claims == nil {
+		debugPrint("No cached monitoring token; running OIDC flow to read claims")
+		authResult, err := a.authenticate()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		claims = authResult.TokenClaims
+		a.saveMonitoringTokenAndHeaders(authResult.IDToken, map[string]interface{}(claims))
+	}
+	if len(claims) == 0 {
+		fmt.Fprintln(os.Stderr, "No ID token claims available for this profile.")
+		fmt.Fprintln(os.Stderr, "(IDC auth has no JWT — identity comes from the IAM ARN, not IdP claims.)")
+		return 1
+	}
+
+	pretty, err := json.MarshalIndent(map[string]interface{}(claims), "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not format claims: %v\n", err)
 		return 1
 	}
 	fmt.Println(string(pretty))
