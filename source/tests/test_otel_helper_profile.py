@@ -1,7 +1,7 @@
-# ABOUTME: Tests for otel-helper profile resolution (--profile flag) across
-# ABOUTME: the cache path, credential-process subprocess, and collector sidecar.
+# ABOUTME: Tests for otel-helper profile resolution (--profile flag) and the
+# ABOUTME: collector sidecar's separate stdout/stderr log files.
 
-"""Profile resolution regression tests.
+"""Profile resolution and collector-launch regression tests.
 
 The otel-helper previously resolved its profile ONLY from AWS_PROFILE, so a
 Claude Code config pointing the helper at a non-default profile was ignored.
@@ -13,10 +13,16 @@ Resolution order (kept in sync with the Go binary's resolveProfile and the
 The winner is exported to AWS_PROFILE so every downstream consumer (cache
 path, credential-process subprocess, collector sidecar) resolves the same
 profile.
+
+The collector sidecar must also write stdout and stderr to SEPARATE files:
+Windows does not support redirecting both streams into one file, which made
+the PowerShell fallback silently never start the collector.
 """
 
 import os
+import signal
 import sys
+import time
 
 import pytest
 
@@ -65,3 +71,56 @@ class TestProfileResolution:
         monkeypatch.setenv("AWS_PROFILE", "EnvProfile")
         _parse(monkeypatch, ["--profile", "FlagProfile"])
         assert get_cache_path().name == "FlagProfile-otel-headers.json"
+
+
+class TestCollectorSeparateLogFiles:
+    @pytest.mark.skipif(sys.platform == "win32", reason="uses a shell-script stand-in for otelcol")
+    def test_collector_stdout_stderr_go_to_separate_files(self, monkeypatch, tmp_path):
+        from otel_helper.__main__ import ensure_collector_running
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("AWS_PROFILE", "TestProfile")
+
+        install_dir = tmp_path / "claude-code-with-bedrock"
+        install_dir.mkdir()
+        otelcol = install_dir / "otelcol"
+        otelcol.write_text(
+            '#!/bin/sh\necho "stdout-marker sdkconfig=$AWS_SDK_LOAD_CONFIG"\necho stderr-marker >&2\nsleep 10\n',
+            encoding="utf-8",
+        )
+        otelcol.chmod(0o755)
+        (install_dir / "collector-config.yaml").write_text("receivers:\n", encoding="utf-8")
+
+        ensure_collector_running()
+
+        pid_file = install_dir / "collector.pid"
+        assert pid_file.exists(), "collector.pid must be written"
+        pid = int(pid_file.read_text().strip())
+        try:
+            cache_dir = tmp_path / ".claude-code-session"
+            log_file = cache_dir / "collector.log"
+            err_file = cache_dir / "collector.err"
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                if (
+                    log_file.exists()
+                    and "stdout-marker" in log_file.read_text()
+                    and err_file.exists()
+                    and "stderr-marker" in err_file.read_text()
+                ):
+                    break
+                time.sleep(0.02)
+            assert log_file.exists() and "stdout-marker" in log_file.read_text()
+            assert err_file.exists() and "stderr-marker" in err_file.read_text(), (
+                "collector stderr must go to its own file — Windows cannot redirect both streams into one"
+            )
+            assert "stderr-marker" not in log_file.read_text()
+            # aws-sdk-go v1 components (awsemf exporter) can't read the
+            # -collector profile from ~/.aws/config without this.
+            assert "sdkconfig=1" in log_file.read_text(), "collector must run with AWS_SDK_LOAD_CONFIG=1"
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
