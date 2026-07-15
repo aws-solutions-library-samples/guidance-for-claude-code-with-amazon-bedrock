@@ -1323,11 +1323,19 @@ class DeployCommand(Command):
                 # Sidecar bypass detection: opt-in detective control (default off).
                 enable_bypass_detection = getattr(profile, "enable_bypass_detection", False)
 
+                # Cost-based limits ($/user, 0 disables). In cost mode the token
+                # limits above are 0 and the Lambdas skip token checks; cost
+                # enforcement in quota_check takes precedence when configured.
+                monthly_cost_limit = getattr(profile, "monthly_cost_limit_usd", 0) or 0
+                daily_cost_limit = getattr(profile, "daily_cost_limit_usd", 0) or 0
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"WarningThreshold80={warning_80}",
                     f"WarningThreshold90={warning_90}",
                     f"DailyTokenLimit={daily_limit or 0}",
+                    f"MonthlyCostLimitUsd={monthly_cost_limit}",
+                    f"DailyCostLimitUsd={daily_cost_limit}",
                     f"DailyEnforcementMode={daily_enforcement}",
                     f"MonthlyEnforcementMode={monthly_enforcement}",
                     f"OidcIssuerUrl={oidc_issuer_url}",
@@ -1743,6 +1751,8 @@ class DeployCommand(Command):
                 f"WarningThreshold80={getattr(profile, 'warning_threshold_80', int(monthly_limit * 0.8))}",
                 f"WarningThreshold90={getattr(profile, 'warning_threshold_90', int(monthly_limit * 0.9))}",
                 f"DailyTokenLimit={daily_limit or 0}",
+                f"MonthlyCostLimitUsd={getattr(profile, 'monthly_cost_limit_usd', 0) or 0}",
+                f"DailyCostLimitUsd={getattr(profile, 'daily_cost_limit_usd', 0) or 0}",
                 f"DailyEnforcementMode={getattr(profile, 'daily_enforcement_mode', 'alert')}",
                 f"MonthlyEnforcementMode={getattr(profile, 'monthly_enforcement_mode', 'block')}",
                 f"OidcIssuerUrl={profile.provider_domain}",

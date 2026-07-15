@@ -101,6 +101,12 @@ class Profile:
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
     enable_bypass_detection: bool = False  # Detect Bedrock use without a running OTEL sidecar (opt-in)
+    # Cost-based quota (limit_type "cost"): dollar budgets per user, enforced
+    # server-side from per-model Bedrock pricing. In cost mode the token limits
+    # above are set to 0 (disabled) and these become the sole control.
+    quota_limit_type: str = "token"  # "token" (raw counts) or "cost" ($ budgets)
+    monthly_cost_limit_usd: float = 0.0  # Monthly $ budget per user (0 = no cost limit)
+    daily_cost_limit_usd: float = 0.0  # Daily $ cap per user (0 = no daily cap)
 
     # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
     otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL

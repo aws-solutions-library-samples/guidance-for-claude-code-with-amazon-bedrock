@@ -24,6 +24,11 @@ ERROR_HANDLING_MODE = os.environ.get("ERROR_HANDLING_MODE", "fail_closed")
 ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", "0"))
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "0"))
+# Cost-based limits ($/user). 0 disables. When configured, the cost checks in
+# the enforcement section take precedence over token checks; the wizard's cost
+# mode also sets the token limits to 0 so cost is the sole control.
+MONTHLY_COST_LIMIT_USD = float(os.environ.get("MONTHLY_COST_LIMIT_USD", "0") or 0)
+DAILY_COST_LIMIT_USD = float(os.environ.get("DAILY_COST_LIMIT_USD", "0") or 0)
 MONTHLY_ENFORCEMENT_MODE = os.environ.get("MONTHLY_ENFORCEMENT_MODE", "block")
 DAILY_ENFORCEMENT_MODE = os.environ.get("DAILY_ENFORCEMENT_MODE", "alert")
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
@@ -332,13 +337,18 @@ def resolve_quota_for_user(email: str, groups: list) -> dict | None:
     Returns:
         Policy dict or None if no policy applies (unlimited).
     """
-    if not ENABLE_FINEGRAINED_QUOTAS and MONTHLY_TOKEN_LIMIT > 0:
+    # Cost mode sets token limits to 0, so the default policy must also
+    # activate when only a cost limit is configured — otherwise cost-based
+    # deployments resolved no policy at all and every user was unlimited.
+    if not ENABLE_FINEGRAINED_QUOTAS and (MONTHLY_TOKEN_LIMIT > 0 or MONTHLY_COST_LIMIT_USD > 0):
         # Return default limits from environment
         return {
             "policy_type": "default",
             "identifier": "environment",
             "monthly_token_limit": MONTHLY_TOKEN_LIMIT,
             "daily_token_limit": DAILY_TOKEN_LIMIT if DAILY_TOKEN_LIMIT > 0 else None,
+            "monthly_cost_limit": MONTHLY_COST_LIMIT_USD,
+            "daily_cost_limit": DAILY_COST_LIMIT_USD,
             "warning_threshold_80": WARNING_THRESHOLD_80,
             "warning_threshold_90": WARNING_THRESHOLD_90,
             "enforcement_mode": MONTHLY_ENFORCEMENT_MODE,
