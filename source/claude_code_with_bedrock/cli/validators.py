@@ -50,8 +50,12 @@ def validate_profile_for_packaging(profile) -> list[ValidationError]:
                 )
             )
 
-    # Monitoring consistency
-    if getattr(profile, "monitoring_enabled", False):
+    # Monitoring consistency — CENTRAL mode only. Sidecar packages hardcode
+    # the local collector endpoint (http://localhost:4318) at package time and
+    # never have an ALB endpoint in the profile, so this warning was spurious
+    # for every sidecar deployment — and its advice (deploy the central
+    # monitoring stack) is exactly what sidecar mode must NOT do.
+    if getattr(profile, "monitoring_enabled", False) and getattr(profile, "monitoring_mode", "central") == "central":
         endpoint = getattr(profile, "otel_collector_endpoint", None)
         config_mode = getattr(profile, "cowork_config_mode", "static")
         if not endpoint and config_mode != "dynamic":
