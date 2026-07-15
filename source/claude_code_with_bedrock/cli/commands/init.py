@@ -40,6 +40,26 @@ from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config,
 _CHOICE_NONE = "__none__"
 
 
+def _model_keys_for_region(region: str | None) -> list[str]:
+    """Model registry keys the wizard should offer for a target AWS region.
+
+    GovCloud is a separate partition: only models with a "us-gov" CRIS profile
+    are invokable there, and those profiles are not invokable from commercial
+    regions. Filtering keeps the wizard from offering models the selected
+    region can never serve (previously a GovCloud admin saw every commercial
+    model, and picking one produced a deployment that 400s on invoke).
+    """
+    from claude_code_with_bedrock.models import CLAUDE_MODELS, get_available_profiles_for_model
+    from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+    in_govcloud = aws_partition_for_region(region or "") == "aws-us-gov"
+    return [
+        model_key
+        for model_key in CLAUDE_MODELS
+        if ("us-gov" in get_available_profiles_for_model(model_key)) == in_govcloud
+    ]
+
+
 def validate_identity_pool_name(value: str) -> bool | str:
     """Validate identity pool name format.
 
@@ -2065,10 +2085,18 @@ class InitCommand(Command):
                     if saved_model_key:
                         break
 
-            # Step 1: Select Claude model
+            # Step 1: Select Claude model. Offer only models the selected
+            # region's partition can invoke (GovCloud ↔ commercial).
+            offered_model_keys = _model_keys_for_region(config.get("aws", {}).get("region"))
+
             model_choices = []
-            default_model_key = saved_model_key or "sonnet-4-5"
-            for model_key, model_info in CLAUDE_MODELS.items():
+            default_model_key = saved_model_key if saved_model_key in offered_model_keys else None
+            if default_model_key is None:
+                default_model_key = (
+                    "sonnet-4-5-govcloud" if "sonnet-4-5-govcloud" in offered_model_keys else "sonnet-4-5"
+                )
+            for model_key in offered_model_keys:
+                model_info = CLAUDE_MODELS[model_key]
                 # Build region list from available profiles
                 available_profiles = get_available_profiles_for_model(model_key)
                 regions = []
@@ -2076,10 +2104,12 @@ class InitCommand(Command):
                     regions.append("Global")
                 if "us" in available_profiles:
                     regions.append("US")
-                if "europe" in available_profiles:
+                if "eu" in available_profiles or "europe" in available_profiles:
                     regions.append("Europe")
                 if "apac" in available_profiles:
                     regions.append("APAC")
+                if "us-gov" in available_profiles:
+                    regions.append("GovCloud")
                 regions_text = ", ".join(regions)
 
                 choice_text = f"{model_info['name']} ({regions_text})"
