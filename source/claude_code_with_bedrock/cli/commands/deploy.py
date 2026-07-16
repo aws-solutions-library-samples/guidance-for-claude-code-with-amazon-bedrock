@@ -833,11 +833,14 @@ class DeployCommand(Command):
                     template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
                     stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
 
                     bedrock_regions = profile.allowed_bedrock_regions
                     if not bedrock_regions:
                         bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                    # Expand sentinels (e.g. "all-commercial") into real regions so they
+                    # never land in the role's aws:RequestedRegion IAM condition.
+                    bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                     idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
                     params = [
@@ -947,6 +950,11 @@ class DeployCommand(Command):
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
 
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                # Expand sentinels (e.g. "all-commercial") into real regions so they
+                # never land in the role's aws:RequestedRegion IAM condition.
+                from claude_code_with_bedrock.models import expand_bedrock_regions
+
+                bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                 params.extend(
                     [
@@ -1602,11 +1610,14 @@ class DeployCommand(Command):
             console.print("\n[cyan]" + "\n".join(lines) + "[/cyan]")
 
         if stack_type == "auth":
+            from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
+
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
-                from claude_code_with_bedrock.models import get_all_bedrock_regions
-
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+            # Expand sentinels (e.g. "all-commercial") into real regions so they
+            # never land in the role's aws:RequestedRegion IAM condition.
+            bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
             auth_type = profile.effective_auth_type

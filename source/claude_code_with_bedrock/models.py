@@ -1590,6 +1590,43 @@ def get_all_bedrock_regions() -> list[str]:
     return sorted(regions)
 
 
+def expand_bedrock_regions(regions: list[str]) -> list[str]:
+    """Expand model destination-region sentinels into concrete AWS regions.
+
+    Global inference profiles carry the sentinel ``"all-commercial"`` in their
+    ``destination_regions`` (see CLAUDE_MODELS). That sentinel is fine as model
+    metadata, but it is NOT a real region — it must never reach an IAM policy's
+    ``aws:RequestedRegion`` condition, where it would match nothing and silently
+    deny every Bedrock invoke (a global model routes to real regions like
+    us-east-1, so the condition value must be those regions, not the sentinel).
+
+    This normalizes a region list for use as the ``AllowedBedrockRegions``
+    CloudFormation parameter:
+    - ``"all-commercial"`` expands to every non-GovCloud Bedrock region.
+    - Any other ``"all-*"`` sentinel is dropped (defensive; only all-commercial
+      exists today) so it can never leak into a policy condition.
+    - Concrete regions pass through unchanged.
+
+    Order is preserved for concrete regions; expanded regions are appended
+    sorted and de-duplicated. Returns a list with no sentinel values.
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for r in regions:
+        if r == "all-commercial":
+            for cr in get_all_bedrock_regions():  # already excludes all-* sentinels
+                if "gov" not in cr and cr not in seen:
+                    expanded.append(cr)
+                    seen.add(cr)
+        elif r.startswith("all-"):
+            # Unknown sentinel — never emit it into an IAM condition.
+            continue
+        elif r not in seen:
+            expanded.append(r)
+            seen.add(r)
+    return expanded
+
+
 # Default rate limits by model family (TPM = tokens per minute, RPM = requests per minute).
 # These are approximate on-demand defaults; actual limits depend on account quotas.
 MODEL_RATE_LIMITS = {
