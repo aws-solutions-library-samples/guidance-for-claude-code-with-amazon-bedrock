@@ -535,3 +535,51 @@ class TestResolveModelForTier:
                     assert f"{prefix}." in result, (
                         f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
                     )
+
+
+class TestExpandBedrockRegions:
+    """Region sentinels must never reach an IAM aws:RequestedRegion condition.
+
+    A global inference profile stores the sentinel "all-commercial" in its
+    destination_regions. If that string is passed verbatim as the
+    AllowedBedrockRegions CFN parameter, the role's StringEquals condition on
+    aws:RequestedRegion matches no real region and every bedrock:InvokeModel*
+    call is denied with AccessDenied. expand_bedrock_regions() prevents this.
+    """
+
+    def test_all_commercial_expands_to_real_regions(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        result = expand_bedrock_regions(["all-commercial"])
+        assert "all-commercial" not in result, "sentinel must never survive expansion"
+        assert "us-east-1" in result, "commercial expansion must include us-east-1"
+        # Must be actual AWS region tokens, and exclude GovCloud.
+        assert all("gov" not in r for r in result)
+        assert all(r.count("-") >= 2 for r in result), f"non-region token leaked: {result}"
+
+    def test_no_all_star_sentinel_survives(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        # Any all-* sentinel (even an unknown future one) must be dropped.
+        result = expand_bedrock_regions(["all-commercial", "all-something-new"])
+        assert not any(r.startswith("all-") for r in result)
+
+    def test_concrete_regions_pass_through_and_dedupe(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        assert expand_bedrock_regions(["us-east-1", "us-west-2"]) == ["us-east-1", "us-west-2"]
+        # Duplicates collapse; order of first occurrence preserved.
+        assert expand_bedrock_regions(["us-east-1", "us-east-1"]) == ["us-east-1"]
+
+    def test_empty_list_returns_empty(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        assert expand_bedrock_regions([]) == []
+
+    def test_mixed_sentinel_and_concrete_no_duplicates(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        # us-east-1 appears both explicitly and via the expansion — only once.
+        result = expand_bedrock_regions(["us-east-1", "all-commercial"])
+        assert result.count("us-east-1") == 1
+        assert "all-commercial" not in result

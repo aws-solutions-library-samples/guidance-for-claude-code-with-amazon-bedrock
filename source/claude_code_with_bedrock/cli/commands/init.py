@@ -3049,11 +3049,15 @@ class InitCommand(Command):
         sso_enabled = config.get("sso_enabled", True)
         okta_domain = config.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         okta_client_id = config.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+        # Expand region sentinels (e.g. "all-commercial") before they reach the
+        # AllowedBedrockRegions CFN param → aws:RequestedRegion IAM condition.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         param_map = {
             "OktaDomain": okta_domain,
             "OktaClientId": okta_client_id,
             "IdentityPoolName": config["aws"]["identity_pool_name"],
-            "AllowedBedrockRegions": ",".join(config["aws"]["allowed_bedrock_regions"]),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(config["aws"]["allowed_bedrock_regions"])),
             "EnableMonitoring": "true" if config["monitoring"]["enabled"] else "false",
             "MaxSessionDuration": "28800",  # 8 hours
         }

@@ -41,7 +41,13 @@ def validate_profile_for_packaging(profile) -> list[ValidationError]:
 
     allowed_regions = getattr(profile, "allowed_bedrock_regions", None)
     if allowed_regions and getattr(profile, "aws_region", None):
-        if profile.aws_region not in allowed_regions:
+        # Expand model region sentinels (e.g. "all-commercial") before comparing —
+        # a global-model profile legitimately stores the sentinel, which expands to
+        # include aws_region. Comparing against the raw list warned spuriously.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        effective_regions = expand_bedrock_regions(allowed_regions)
+        if profile.aws_region not in effective_regions:
             errors.append(
                 ValidationError(
                     "aws_region",

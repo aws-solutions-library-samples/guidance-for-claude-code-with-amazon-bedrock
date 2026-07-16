@@ -591,10 +591,15 @@ class Config:
         if not profile:
             raise ValueError(f"Profile not found: {profile_name}")
 
+        # Expand sentinels (e.g. "all-commercial") into concrete regions — the
+        # value feeds the role's aws:RequestedRegion IAM condition, which would
+        # deny every invoke if handed a sentinel that matches no real region.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         return {
             "OktaDomain": profile.okta_domain,
             "OktaClientId": profile.okta_client_id,
             "IdentityPoolName": profile.identity_pool_name,
-            "AllowedBedrockRegions": ",".join(profile.allowed_bedrock_regions),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(profile.allowed_bedrock_regions)),
             "EnableMonitoring": "true" if profile.monitoring_enabled else "false",
         }
