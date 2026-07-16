@@ -793,6 +793,27 @@ class InitCommand(Command):
                 config["client_certificate_path"] = client_certificate_path
                 config["client_certificate_key_path"] = client_certificate_key_path
 
+            elif provider_type == "google":
+                # Google's installed-app OAuth flow requires a client_secret for the
+                # token exchange (PKCE alone is insufficient). Google documents this
+                # secret as NON-confidential for installed apps, so — unlike Azure —
+                # it is stored in config.json and shipped to end users by `ccwb
+                # package`, not held in the OS keyring. See config-sync.md.
+                console.print("\n[bold]Google OAuth Client Secret[/bold]")
+                console.print(
+                    "Google's installed-app flow requires the OAuth client secret\n"
+                    "(the GOCSPX-… value from your Google Cloud OAuth client).\n"
+                )
+                client_secret = questionary.password(
+                    "Enter your Google OAuth client secret:",
+                    validate=lambda x: bool(x) or "Client secret cannot be empty",
+                    default=config.get("client_secret", "") or "",
+                ).ask()
+                if not client_secret:
+                    return None
+                config["client_secret"] = client_secret
+                console.print("[dim]  ✓ Client secret saved to profile (shipped to users by 'ccwb package')[/dim]")
+
             # Credential Storage Method
             from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
 
@@ -2856,6 +2877,9 @@ class InitCommand(Command):
             "idc_permission_set_name": config_data.get("idc_permission_set_name"),
             "sso_region": config_data.get("sso_region"),
             "azure_auth_mode": config_data.get("azure_auth_mode"),
+            # Google's client_secret is non-confidential and persisted in config.json
+            # (Azure's confidential secret lives in the OS keyring and stays None here).
+            "client_secret": config_data.get("client_secret"),
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
@@ -3330,9 +3354,13 @@ class InitCommand(Command):
                 existing_config["analytics"] = {"enabled": profile.analytics_enabled}
 
             # Preserve confidential client configuration if present
-            # client_secret is never written to config — it lives in the OS keyring
+            # Azure's client_secret lives in the OS keyring (never in config); Google's
+            # client_secret is non-confidential and persisted in the profile — restore
+            # it so re-running init pre-fills the value instead of losing it.
             if getattr(profile, "azure_auth_mode", None):
                 existing_config["azure_auth_mode"] = profile.azure_auth_mode
+            if getattr(profile, "client_secret", None):
+                existing_config["client_secret"] = profile.client_secret
             if getattr(profile, "client_certificate_path", None):
                 existing_config["client_certificate_path"] = profile.client_certificate_path
                 existing_config["client_certificate_key_path"] = profile.client_certificate_key_path

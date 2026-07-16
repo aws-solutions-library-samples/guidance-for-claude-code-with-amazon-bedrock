@@ -136,7 +136,11 @@ class Profile:
     # If azure_auth_mode == "certificate", certificate paths are stored in config.json
     #   and used to build a signed JWT assertion.
     azure_auth_mode: str | None = None  # "public", "secret", or "certificate"
-    client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
+    # Azure (azure_auth_mode == "secret"): confidential — loaded from OS keyring at runtime,
+    #   never written to config.json.
+    # Google: non-confidential per Google's installed-app OAuth docs — persisted in
+    #   config.json and shipped to end users by `ccwb package`. See config-sync.md.
+    client_secret: str | None = None
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
