@@ -56,3 +56,33 @@ class TestMonitoringEndpointCheck:
     def test_monitoring_disabled_is_clean(self):
         profile = _profile(monitoring_enabled=False, monitoring_mode="central")
         assert _endpoint_warnings(profile) == []
+
+
+def _region_warnings(profile):
+    return [e for e in validate_profile_for_packaging(profile) if e.field == "aws_region"]
+
+
+class TestAllowedRegionSentinelCheck:
+    """The aws_region check must expand "all-commercial" before comparing.
+
+    A global-model profile legitimately stores allowed_bedrock_regions =
+    ["all-commercial"]. Comparing aws_region against the raw sentinel warned
+    spuriously ("Region 'us-east-1' not in allowed_bedrock_regions:
+    ['all-commercial']") even though the region is authorized once the sentinel
+    is expanded at the CFN-param boundary.
+    """
+
+    def test_all_commercial_does_not_warn_for_commercial_region(self):
+        profile = _profile(aws_region="us-east-1", allowed_bedrock_regions=["all-commercial"])
+        assert _region_warnings(profile) == []
+
+    def test_concrete_region_mismatch_still_warns(self):
+        # Genuine misconfiguration must still surface.
+        profile = _profile(aws_region="us-east-1", allowed_bedrock_regions=["eu-west-1"])
+        warnings = _region_warnings(profile)
+        assert len(warnings) == 1
+        assert warnings[0].severity == "warning"
+
+    def test_concrete_region_match_is_clean(self):
+        profile = _profile(aws_region="us-east-1", allowed_bedrock_regions=["us-east-1", "us-west-2"])
+        assert _region_warnings(profile) == []
