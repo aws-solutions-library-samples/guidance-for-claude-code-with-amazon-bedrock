@@ -98,6 +98,22 @@ class TestBuildMdmConfigCredentialHelper:
         )
         assert config["inferenceCredentialHelper"].startswith("__CCWB_HOME__/")
 
+    def test_helper_mode_declares_credential_kind(self):
+        """Helper mode ships both inferenceCredentialHelper and inferenceBedrockProfile
+        (the latter as an SDK-level region/metadata fallback). Without an explicit
+        inferenceCredentialKind, Claude Desktop logs "Multiple credential methods
+        configured (vendor-profile, helper-script); using vendor-profile" and
+        silently authenticates via the unsupported SDK profile path instead of the
+        helper — producing repeated "Authentication Failed" for the user even though
+        credential-process itself works fine. Setting the key removes the ambiguity.
+        """
+        config = build_mdm_config(
+            bedrock_region="us-west-2",
+            model_aliases=["sonnet"],
+            profile_name="Test",
+        )
+        assert config["inferenceCredentialKind"] == "helper-script"
+
 
 class TestBuildMdmConfigProfileMode:
     """Test build_mdm_config with credential_mode='profile' (legacy)."""
@@ -114,6 +130,20 @@ class TestBuildMdmConfigProfileMode:
         assert "inferenceCredentialHelper" not in config
         assert "inferenceCredentialHelperTtlSec" not in config
         assert "inferenceCredentialHelperSilentRefreshEnabled" not in config
+
+    def test_profile_mode_omits_credential_kind(self):
+        """Profile mode sets only inferenceBedrockProfile, so there is no
+        credential-method ambiguity for Claude Desktop to resolve. Deliberately
+        do NOT emit inferenceCredentialKind here — its name/values are inferred
+        from a Desktop log string, unverified against any published schema, and
+        should not be shipped to a mode with no reported bug to fix."""
+        config = build_mdm_config(
+            bedrock_region="us-west-2",
+            model_aliases=["opus"],
+            profile_name="LegacyProfile",
+            credential_mode="profile",
+        )
+        assert "inferenceCredentialKind" not in config
 
     def test_profile_mode_backward_compatible(self):
         """Legacy mode output should match previous behavior exactly."""

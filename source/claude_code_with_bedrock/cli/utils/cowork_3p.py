@@ -210,8 +210,21 @@ def build_mdm_config(
         config["inferenceCredentialHelperSilentRefreshEnabled"] = "true"
         # Keep the AWS profile as fallback for SDK-level operations (region, etc.)
         config["inferenceBedrockProfile"] = profile_name
+        # Disambiguate for Claude Desktop: shipping both inferenceCredentialHelper
+        # and inferenceBedrockProfile together is intentional (the profile is a
+        # region/metadata fallback, not the active auth path), but Desktop logs
+        # "Multiple credential methods configured (vendor-profile, helper-script);
+        # using vendor-profile" and silently prefers the WRONG one without this key
+        # — causing repeated "Authentication Failed" since the SDK profile path was
+        # never the supported one. Setting it explicitly removes the ambiguity.
+        config["inferenceCredentialKind"] = "helper-script"
     else:
-        # Legacy profile mode — rely on AWS SDK credential_process chain.
+        # Legacy profile mode — rely on AWS SDK credential_process chain. Only
+        # inferenceBedrockProfile is set here, so there is no ambiguity for
+        # Claude Desktop to resolve — do not add inferenceCredentialKind, whose
+        # name/values are inferred from a Desktop log string and unverified
+        # against any published schema. Confine that unverified key to the one
+        # mode (helper) that has the reported ambiguity bug.
         config["inferenceBedrockProfile"] = profile_name
 
     if extra_keys:
