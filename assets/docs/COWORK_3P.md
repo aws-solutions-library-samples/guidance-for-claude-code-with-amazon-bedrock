@@ -177,6 +177,7 @@ When Claude Cowork starts a session:
 3. The output is cached for `inferenceCredentialHelperTtlSec` seconds (default: 3500, just under the 1h STS token lifetime)
 4. When the cache expires, Claude Desktop automatically re-runs the helper — **no restart required**
 5. If credentials are rejected mid-session, Claude Desktop re-runs with `CLAUDE_HELPER_CONTEXT=mid-session-refresh` for seamless recovery (20s timeout)
+6. Because this mode also sets `inferenceBedrockProfile` (as an AWS SDK region/metadata fallback, not the active auth path), `ccwb package` additionally sets `inferenceCredentialKind` to `helper-script` so Claude Desktop doesn't have to pick between the two — without it, Desktop may prefer the profile instead and authentication fails
 
 The credential-process binary handles the `CLAUDE_HELPER_CONTEXT` environment variable:
 - `interactive` → Full browser-based OIDC authentication
