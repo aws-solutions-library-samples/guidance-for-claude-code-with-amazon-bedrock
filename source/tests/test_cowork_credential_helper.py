@@ -131,17 +131,19 @@ class TestBuildMdmConfigProfileMode:
         assert "inferenceCredentialHelperTtlSec" not in config
         assert "inferenceCredentialHelperSilentRefreshEnabled" not in config
 
-    def test_profile_mode_declares_credential_kind(self):
-        """Legacy/profile mode has no ambiguity (only inferenceBedrockProfile is
-        set), but declaring inferenceCredentialKind explicitly keeps both modes
-        symmetric and future-proofs against Desktop tightening its ambiguity check."""
+    def test_profile_mode_omits_credential_kind(self):
+        """Profile mode sets only inferenceBedrockProfile, so there is no
+        credential-method ambiguity for Claude Desktop to resolve. Deliberately
+        do NOT emit inferenceCredentialKind here — its name/values are inferred
+        from a Desktop log string, unverified against any published schema, and
+        should not be shipped to a mode with no reported bug to fix."""
         config = build_mdm_config(
             bedrock_region="us-west-2",
             model_aliases=["opus"],
             profile_name="LegacyProfile",
             credential_mode="profile",
         )
-        assert config["inferenceCredentialKind"] == "vendor-profile"
+        assert "inferenceCredentialKind" not in config
 
     def test_profile_mode_backward_compatible(self):
         """Legacy mode output should match previous behavior exactly."""
@@ -155,7 +157,6 @@ class TestBuildMdmConfigProfileMode:
             "inferenceProvider": "bedrock",
             "inferenceBedrockRegion": "eu-west-1",
             "inferenceBedrockProfile": "ClaudeCode",
-            "inferenceCredentialKind": "vendor-profile",
             "inferenceModels": ["opus", "sonnet", "haiku"],
             "isClaudeCodeForDesktopEnabled": True,
             "isDesktopExtensionEnabled": True,
