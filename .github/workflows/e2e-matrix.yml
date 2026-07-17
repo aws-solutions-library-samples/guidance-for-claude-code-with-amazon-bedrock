@@ -59,7 +59,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: source/go/go.mod
 
