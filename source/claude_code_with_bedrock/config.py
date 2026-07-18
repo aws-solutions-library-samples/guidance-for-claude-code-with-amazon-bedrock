@@ -85,6 +85,9 @@ class Profile:
     distribution_idp_token_endpoint: str | None = None  # Full token endpoint URL
     distribution_idp_userinfo_endpoint: str | None = None  # Full userinfo endpoint URL
 
+    # IDC/SAML distribution config (only populated when auth_type == "idc" and distribution_type == "landing-page")
+    distribution_saml_metadata_url: str | None = None  # SAML metadata URL from IAM Identity Center
+
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
     monthly_token_limit: int = 225000000  # Monthly token limit per user (225M default)
