@@ -1861,13 +1861,13 @@ class InitCommand(Command):
                     questionary.Choice("Google", value="google"),
                     questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
                 ]
-    
+
                 idp_provider = questionary.select(
                     "Identity provider for web authentication:",
                     choices=idp_choices,
                     default=config.get("distribution", {}).get("idp_provider", "okta"),
                 ).ask()
-    
+
                 # Auto-detection for Cognito User Pool
                 cognito_auto_configured = False
                 if idp_provider == "cognito":
@@ -1875,45 +1875,45 @@ class InitCommand(Command):
                         detect_cognito_stack,
                         validate_cognito_stack_for_distribution,
                     )
-    
+
                     console.print("\n[bold]Cognito Configuration Detection[/bold]")
                     console.print("Searching for deployed Cognito User Pool stack...")
-    
+
                     # Try to auto-detect Cognito stack (region resolved at top of landing-page block)
                     cognito_stack_info = detect_cognito_stack(region)
-    
+
                     if cognito_stack_info:
                         console.print(f"[green]✓[/green] Found Cognito stack: {cognito_stack_info['stack_name']}")
-    
+
                         # Validate it has distribution support
                         is_valid, message = validate_cognito_stack_for_distribution(
                             cognito_stack_info["stack_name"], region
                         )
-    
+
                         if is_valid:
                             console.print(f"[green]✓[/green] {message}")
-    
+
                             # Show detected values
                             outputs = cognito_stack_info["outputs"]
                             console.print("\n[cyan]Detected Configuration:[/cyan]")
                             console.print(f"  • User Pool ID: {outputs.get('UserPoolId', 'N/A')}")
-    
+
                             # Extract domain prefix from full domain
                             full_domain = outputs.get("UserPoolDomain", "")
                             domain_prefix = full_domain.split(".")[0] if full_domain else "N/A"
                             console.print(f"  • Domain: {domain_prefix}")
-    
+
                             console.print(f"  • Client ID: {outputs.get('DistributionWebClientId', 'N/A')}")
                             console.print(f"  • Secret ARN: {outputs.get('DistributionWebClientSecretArn', 'N/A')}")
-    
+
                             use_detected = questionary.confirm("\nUse these detected values?", default=True).ask()
-    
+
                             if use_detected:
                                 # Auto-populate configuration
                                 idp_domain = domain_prefix
                                 idp_client_id = outputs["DistributionWebClientId"]
                                 secret_arn = outputs["DistributionWebClientSecretArn"]
-    
+
                                 # Store in config immediately
                                 config.setdefault("distribution", {}).update(
                                     {
@@ -1923,11 +1923,11 @@ class InitCommand(Command):
                                         "idp_client_secret_arn": secret_arn,
                                     }
                                 )
-    
+
                                 # Also store Cognito User Pool ID for auth
                                 if "cognito_user_pool_id" not in config:
                                     config["cognito_user_pool_id"] = outputs["UserPoolId"]
-    
+
                                 console.print("[green]✓[/green] Configuration auto-populated from stack outputs")
                                 cognito_auto_configured = True
                             else:
@@ -1940,7 +1940,7 @@ class InitCommand(Command):
                         console.print("You can either:")
                         console.print("  1. Deploy the Cognito stack first")
                         console.print("  2. Enter configuration manually")
-    
+
                 # Only prompt for manual configuration if not auto-configured
                 if not cognito_auto_configured:
                     # IdP domain
@@ -1952,18 +1952,18 @@ class InitCommand(Command):
                         "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
                         default=config.get("distribution", {}).get("idp_domain") or "",
                     ).ask()
-    
+
                     # Web app client ID
                     idp_client_id = questionary.text(
                         "Web application client ID (separate from CLI native app):",
                         default=config.get("distribution", {}).get("idp_client_id") or "",
                     ).ask()
-    
+
                     # Web app client secret
                     idp_client_secret = questionary.password(
                         "Web application client secret:",
                     ).ask()
-    
+
                 # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP) can't have
                 # their ALB authenticate-oidc endpoints derived from a single domain the way
                 # Okta/Azure/Auth0/Cognito can, so collect each one explicitly. Try OIDC discovery
@@ -1977,20 +1977,20 @@ class InitCommand(Command):
                         OidcDiscoveryError,
                         discover_oidc_endpoints,
                     )
-    
+
                     console.print("\n[bold]Generic OIDC Landing Page Configuration[/bold]")
                     console.print(
                         "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
                         "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
                     )
-    
+
                     # Use the domain entered above as the default issuer; let the user override.
                     default_issuer = (
                         idp_domain
                         if idp_domain and idp_domain.startswith(("http://", "https://"))
                         else (f"https://{idp_domain}" if idp_domain else "")
                     ).rstrip("/")
-    
+
                     dist_oidc_issuer = questionary.text(
                         "OIDC issuer URL:",
                         validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
@@ -2000,7 +2000,7 @@ class InitCommand(Command):
                     if not dist_oidc_issuer:
                         return None
                     dist_oidc_issuer = dist_oidc_issuer.rstrip("/")
-    
+
                     discovered: dict[str, str] = {}
                     console.print(f"[dim]Querying {dist_oidc_issuer}/.well-known/openid-configuration ...[/dim]")
                     try:
@@ -2009,7 +2009,7 @@ class InitCommand(Command):
                     except OidcDiscoveryError as e:
                         console.print(f"[yellow]Discovery failed: {e}[/yellow]")
                         console.print("[dim]Falling back to manual entry.[/dim]")
-    
+
                     dist_oidc_authorization_endpoint = questionary.text(
                         "Authorization endpoint:",
                         validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
@@ -2022,7 +2022,7 @@ class InitCommand(Command):
                     ).ask()
                     if not dist_oidc_authorization_endpoint:
                         return None
-    
+
                     dist_oidc_token_endpoint = questionary.text(
                         "Token endpoint:",
                         validate=lambda x: bool(x) or "Token endpoint cannot be empty",
@@ -2035,7 +2035,7 @@ class InitCommand(Command):
                     ).ask()
                     if not dist_oidc_token_endpoint:
                         return None
-    
+
                     dist_oidc_userinfo_endpoint = questionary.text(
                         "UserInfo endpoint:",
                         validate=lambda x: bool(x) or "UserInfo endpoint cannot be empty",
@@ -2048,17 +2048,17 @@ class InitCommand(Command):
                     ).ask()
                     if not dist_oidc_userinfo_endpoint:
                         return None
-    
+
                 # Store secret in AWS Secrets Manager (only if not auto-configured)
                 import boto3
-    
+
                 if not cognito_auto_configured:
                     try:
                         secrets_client = boto3.client("secretsmanager", region_name=region)
                         account_id = boto3.client("sts").get_caller_identity()["Account"]
-    
+
                         secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
-    
+
                         secret_arn = self._store_idp_secret(
                             secrets_client,
                             secret_name,
@@ -2066,9 +2066,9 @@ class InitCommand(Command):
                             description=f"IdP client secret for "
                             f"{config['aws']['identity_pool_name']} distribution landing page",
                         )
-    
+
                         console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
-    
+
                     except Exception as e:
                         console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
                         console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
@@ -2081,17 +2081,17 @@ class InitCommand(Command):
                             # Partition-aware so the fallback ARN is valid in GovCloud
                             # (aws-us-gov) and China (aws-cn), not just commercial AWS.
                             from claude_code_with_bedrock.utils.partition import aws_partition_for_region
-    
+
                             partition = aws_partition_for_region(region)
                             secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
-    
+
                 # Custom domain (REQUIRED for authenticated landing page)
                 console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
                 console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
                 console.print("You will need:")
                 console.print("  • A custom domain (e.g., downloads.company.com)")
                 console.print("  • An ACM certificate for this domain in the same region")
-    
+
                 custom_domain = questionary.text(
                     "Custom domain (e.g., downloads.company.com):",
                     default=config.get("distribution", {}).get("custom_domain") or "",
@@ -2099,23 +2099,23 @@ class InitCommand(Command):
                         len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
                     ),
                 ).ask()
-    
+
                 # Check for Route53 hosted zones
                 console.print("\n[bold]Route53 Configuration[/bold]")
                 console.print("Looking for Route53 hosted zones...")
-    
+
                 hosted_zone_id = None
                 try:
                     route53_client = boto3.client("route53")
                     zones_response = route53_client.list_hosted_zones()
                     hosted_zones = zones_response.get("HostedZones", [])
-    
+
                     if hosted_zones:
                         console.print(f"Found {len(hosted_zones)} hosted zone(s)")
-    
+
                         # Get existing hosted zone if configured
                         existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
-    
+
                         # Create zone choices
                         zone_choices = [
                             questionary.Choice(
@@ -2124,7 +2124,7 @@ class InitCommand(Command):
                             for zone in hosted_zones
                         ]
                         zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
-    
+
                         # Find the default choice based on existing zone
                         default_choice = None
                         if existing_zone_id:
@@ -2132,7 +2132,7 @@ class InitCommand(Command):
                                 if choice.value == existing_zone_id:
                                     default_choice = choice
                                     break
-    
+
                         hosted_zone_id = questionary.select(
                             "Select Route53 hosted zone:",
                             choices=zone_choices,
@@ -2142,11 +2142,11 @@ class InitCommand(Command):
                         console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
                         console.print("You can still use custom domain if it's managed externally")
                         hosted_zone_id = None
-    
+
                 except Exception as e:
                     console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
                     hosted_zone_id = None
-    
+
                 # Save landing page configuration
                 config["distribution"].update(
                     {
@@ -2158,7 +2158,7 @@ class InitCommand(Command):
                         "hosted_zone_id": hosted_zone_id,
                     }
                 )
-    
+
                 # Generic OIDC: persist the explicit endpoints (only set for provider == "generic")
                 if idp_provider == "generic":
                     config["distribution"].update(
@@ -2169,7 +2169,7 @@ class InitCommand(Command):
                             "idp_userinfo_endpoint": dist_oidc_userinfo_endpoint,
                         }
                     )
-    
+
                 console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
         elif distribution_type == "presigned-s3":
