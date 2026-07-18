@@ -93,13 +93,13 @@ def _generate(profile: Profile) -> dict:
 class TestOtelHeadersHelperWiring:
     def test_oidc_wires_helper(self):
         settings = _generate(_oidc_profile())
-        assert settings.get("otelHeadersHelper") == "__OTEL_HELPER_PATH__"
+        assert settings.get("otelHeadersHelper") == "__OTEL_HELPER_PATH__ --profile test"
 
     def test_idc_with_binary_wires_helper(self):
         """The bug: IDC + binary previously skipped the helper, so dashboards
         attributed every IDC user to one static identity."""
         settings = _generate(_idc_with_binary_profile())
-        assert settings.get("otelHeadersHelper") == "__OTEL_HELPER_PATH__", (
+        assert settings.get("otelHeadersHelper") == "__OTEL_HELPER_PATH__ --profile test", (
             "IDC with credential-process binary must wire otelHeadersHelper for per-user attribution"
         )
 

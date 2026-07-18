@@ -3,6 +3,8 @@
 
 """Tests for CoWork dashboard metric filter schema coverage."""
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -133,4 +135,83 @@ class TestCoWorkDashboardMetricFilters:
             for transform in res["Properties"]["MetricTransformations"]:
                 assert transform["MetricNamespace"] == "ClaudeCoWork", (
                     f"{name}: expected ClaudeCoWork namespace, got {transform['MetricNamespace']}"
+                )
+
+
+class TestCoWorkDashboardBody:
+    """Verify the CloudWatch DashboardBody widgets pass CloudWatch validation.
+
+    Regression: PromQL queries (properties.data.queries) are only valid for the
+    newer "chart" widget type. When such a query lived on a "metric" widget,
+    CloudWatch rejected the dashboard with "Should have required property
+    'metrics'" (18 validation errors), breaking `ccwb deploy` of the
+    cowork-dashboard stack.
+    """
+
+    @pytest.fixture(autouse=True)
+    def load_body(self):
+        text = DASHBOARD_PATH.read_text()
+        # Extract the DashboardBody block that follows `DashboardBody: !Sub |`
+        marker = "DashboardBody: !Sub |"
+        block = text[text.index(marker) :].splitlines()[1:]
+        body_lines = []
+        for line in block:
+            if line.strip() == "":
+                body_lines.append("")
+            elif line.startswith("        "):
+                body_lines.append(line[8:])
+            else:
+                break
+        raw = "\n".join(body_lines)
+        # Neutralize the !Sub variable so the block is parseable JSON.
+        raw = re.sub(r"\$\{[^}]+\}", "us-east-1", raw)
+        self.body = json.loads(raw)
+        self.widgets = self.body["widgets"]
+
+    def test_body_is_valid_json(self):
+        """DashboardBody must be valid JSON (this fixture would raise otherwise)."""
+        assert isinstance(self.widgets, list) and self.widgets
+
+    def test_promql_queries_only_on_chart_widgets(self):
+        """PromQL data.queries are only valid on 'chart' widgets, never 'metric'.
+
+        A 'metric' widget carrying data.queries has neither a `metrics` array
+        nor `annotations`, which CloudWatch rejects at deploy time.
+        """
+        for i, widget in enumerate(self.widgets):
+            props = widget.get("properties", {})
+            if "data" in props and "queries" in props["data"]:
+                assert widget["type"] == "chart", (
+                    f"widget {i} ({props.get('title')!r}) uses data.queries (PromQL) "
+                    f"but has type {widget['type']!r}; PromQL requires type 'chart'"
+                )
+
+    def test_metric_widgets_have_metrics_array(self):
+        """Every 'metric' widget must define a metrics array (CloudWatch requirement)."""
+        for i, widget in enumerate(self.widgets):
+            if widget["type"] == "metric":
+                props = widget.get("properties", {})
+                assert "metrics" in props, (
+                    f"widget {i} ({props.get('title')!r}) is a metric widget without a "
+                    "'metrics' array; CloudWatch will reject the dashboard"
+                )
+
+    def test_chart_widgets_do_not_use_metric_only_view_or_stacked(self):
+        """Chart widgets use chart views (line/number/pie/bar), not metric-only keys.
+
+        `singleValue`/`timeSeries` views and the top-level `stacked` flag belong to
+        'metric' widgets; on a chart widget they are the fingerprint of a
+        mis-typed PromQL widget.
+        """
+        metric_only_views = {"singleValue", "timeSeries"}
+        for i, widget in enumerate(self.widgets):
+            if widget["type"] == "chart":
+                props = widget.get("properties", {})
+                assert props.get("view") not in metric_only_views, (
+                    f"widget {i} ({props.get('title')!r}) is a chart widget using "
+                    f"metric-only view {props.get('view')!r}"
+                )
+                assert "stacked" not in props, (
+                    f"widget {i} ({props.get('title')!r}) uses top-level 'stacked'; "
+                    "chart widgets stack via plotOptions.style.lineOptions.stacked"
                 )

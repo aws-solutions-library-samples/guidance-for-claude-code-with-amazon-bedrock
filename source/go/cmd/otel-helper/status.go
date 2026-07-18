@@ -39,12 +39,10 @@ type CacheStatus struct {
 }
 
 // runStatus prints otel-helper status as JSON and returns exit code.
-func runStatus(proxyPort int) int {
-	profile := os.Getenv("AWS_PROFILE")
-	if profile == "" {
-		profile = "ClaudeCode"
-	}
-
+// The profile is resolved by the caller via resolveProfile (--profile flag >
+// CCWB_PROFILE > AWS_PROFILE > default) so --status reports the same profile
+// the header-serving path would use.
+func runStatus(proxyPort int, profile string) int {
 	output := StatusOutput{
 		Version:  version.Version,
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,

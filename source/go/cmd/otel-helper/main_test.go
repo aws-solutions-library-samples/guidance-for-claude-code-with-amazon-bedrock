@@ -57,7 +57,7 @@ func TestRun_NoToken_EmitsEmptyHeadersAndExitsZero(t *testing.T) {
 	// No credential-process binary exists under tmpDir/claude-code-with-bedrock,
 	// so getTokenViaCredentialProcess returns an error -> emitEmptyHeaders.
 
-	if code := run(false); code != 0 {
+	if code := run(false, "ClaudeCode"); code != 0 {
 		t.Fatalf("run() exit code = %d, want 0", code)
 	}
 
@@ -95,7 +95,7 @@ func TestRun_TestMode_NoToken_DoesNotWriteCache(t *testing.T) {
 	t.Setenv("AWS_PROFILE", "ClaudeCode")
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "")
 
-	if code := run(true); code != 0 {
+	if code := run(true, "ClaudeCode"); code != 0 {
 		t.Fatalf("run(testMode) exit code = %d, want 0", code)
 	}
 
@@ -129,7 +129,7 @@ func TestRun_FreshEmptyCache_ServedViaLayer1(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 
-	if code := run(false); code != 0 {
+	if code := run(false, "ClaudeCode"); code != 0 {
 		t.Fatalf("run() exit code = %d, want 0", code)
 	}
 
@@ -172,7 +172,7 @@ func TestRun_PopulatedExpiredEntry_ServedNotRewritten(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 
-	if code := run(false); code != 0 {
+	if code := run(false, "ClaudeCode"); code != 0 {
 		t.Fatalf("run() exit code = %d, want 0", code)
 	}
 
@@ -212,7 +212,7 @@ func TestRun_WithToken_IncludesBearerHeader(t *testing.T) {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	code := run(false)
+	code := run(false, "ClaudeCode")
 	w.Close()
 	os.Stdout = old
 
@@ -252,7 +252,7 @@ func TestRun_NoToken_NoBearerInOutput(t *testing.T) {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	run(false)
+	run(false, "ClaudeCode")
 	w.Close()
 	os.Stdout = old
 
@@ -285,7 +285,7 @@ func TestRun_BearerTokenNotInCacheFile(t *testing.T) {
 	_, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	run(false)
+	run(false, "ClaudeCode")
 	w.Close()
 	os.Stdout = old
 
@@ -335,7 +335,7 @@ func TestRun_CacheHit_ResolvesTokenFromEnv(t *testing.T) {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	code := run(false)
+	code := run(false, "ClaudeCode")
 	w.Close()
 	os.Stdout = old
 
@@ -389,7 +389,7 @@ func TestRun_Layer1_CacheHit_NoToken_OmitsBearerGracefully(t *testing.T) {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	code := run(false)
+	code := run(false, "ClaudeCode")
 	w.Close()
 	os.Stdout = old
 
@@ -471,7 +471,7 @@ func TestRun_TestMode_ServesCachedHeaders(t *testing.T) {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	code := run(true)
+	code := run(true, "idc-test")
 	w.Close()
 	os.Stdout = old
 
@@ -484,5 +484,38 @@ func TestRun_TestMode_ServesCachedHeaders(t *testing.T) {
 	out := string(buf[:n])
 	if !strings.Contains(out, "qnamzn+developer@amazon.com") {
 		t.Errorf("test-mode output must surface the cached email; got:\n%s", out)
+	}
+}
+
+// TestResolveProfile_Precedence locks in the resolution order:
+// --profile flag > CCWB_PROFILE env > AWS_PROFILE env > "ClaudeCode" default.
+func TestResolveProfile_Precedence(t *testing.T) {
+	t.Setenv("CCWB_PROFILE", "CcwbProfile")
+	t.Setenv("AWS_PROFILE", "EnvProfile")
+
+	// CCWB_PROFILE (ccwb-specific override, same convention as
+	// credential-process) beats the ambient AWS_PROFILE.
+	if got := resolveProfile(""); got != "CcwbProfile" {
+		t.Errorf("resolveProfile(\"\") = %q, want CCWB_PROFILE value \"CcwbProfile\"", got)
+	}
+
+	if got := resolveProfile("FlagProfile"); got != "FlagProfile" {
+		t.Errorf("resolveProfile(flag) = %q, want \"FlagProfile\"", got)
+	}
+	// The flag must be exported so child processes (credential-process) and
+	// the AWS SDK in proxy mode resolve the same profile.
+	if got := os.Getenv("AWS_PROFILE"); got != "FlagProfile" {
+		t.Errorf("AWS_PROFILE after flag resolution = %q, want \"FlagProfile\"", got)
+	}
+
+	t.Setenv("CCWB_PROFILE", "")
+	t.Setenv("AWS_PROFILE", "EnvProfile")
+	if got := resolveProfile(""); got != "EnvProfile" {
+		t.Errorf("resolveProfile(\"\") = %q, want AWS_PROFILE value \"EnvProfile\"", got)
+	}
+
+	t.Setenv("AWS_PROFILE", "")
+	if got := resolveProfile(""); got != "ClaudeCode" {
+		t.Errorf("resolveProfile with no flag/env = %q, want \"ClaudeCode\"", got)
 	}
 }

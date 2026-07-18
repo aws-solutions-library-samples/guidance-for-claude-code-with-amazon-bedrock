@@ -833,11 +833,14 @@ class DeployCommand(Command):
                     template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
                     stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
 
                     bedrock_regions = profile.allowed_bedrock_regions
                     if not bedrock_regions:
                         bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                    # Expand sentinels (e.g. "all-commercial") into real regions so they
+                    # never land in the role's aws:RequestedRegion IAM condition.
+                    bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                     idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
                     params = [
@@ -947,6 +950,11 @@ class DeployCommand(Command):
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
 
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                # Expand sentinels (e.g. "all-commercial") into real regions so they
+                # never land in the role's aws:RequestedRegion IAM condition.
+                from claude_code_with_bedrock.models import expand_bedrock_regions
+
+                bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                 params.extend(
                     [
@@ -1323,11 +1331,19 @@ class DeployCommand(Command):
                 # Sidecar bypass detection: opt-in detective control (default off).
                 enable_bypass_detection = getattr(profile, "enable_bypass_detection", False)
 
+                # Cost-based limits ($/user, 0 disables). In cost mode the token
+                # limits above are 0 and the Lambdas skip token checks; cost
+                # enforcement in quota_check takes precedence when configured.
+                monthly_cost_limit = getattr(profile, "monthly_cost_limit_usd", 0) or 0
+                daily_cost_limit = getattr(profile, "daily_cost_limit_usd", 0) or 0
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"WarningThreshold80={warning_80}",
                     f"WarningThreshold90={warning_90}",
                     f"DailyTokenLimit={daily_limit or 0}",
+                    f"MonthlyCostLimitUsd={monthly_cost_limit}",
+                    f"DailyCostLimitUsd={daily_cost_limit}",
                     f"DailyEnforcementMode={daily_enforcement}",
                     f"MonthlyEnforcementMode={monthly_enforcement}",
                     f"OidcIssuerUrl={oidc_issuer_url}",
@@ -1594,11 +1610,14 @@ class DeployCommand(Command):
             console.print("\n[cyan]" + "\n".join(lines) + "[/cyan]")
 
         if stack_type == "auth":
+            from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
+
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
-                from claude_code_with_bedrock.models import get_all_bedrock_regions
-
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+            # Expand sentinels (e.g. "all-commercial") into real regions so they
+            # never land in the role's aws:RequestedRegion IAM condition.
+            bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
             auth_type = profile.effective_auth_type
@@ -1743,6 +1762,8 @@ class DeployCommand(Command):
                 f"WarningThreshold80={getattr(profile, 'warning_threshold_80', int(monthly_limit * 0.8))}",
                 f"WarningThreshold90={getattr(profile, 'warning_threshold_90', int(monthly_limit * 0.9))}",
                 f"DailyTokenLimit={daily_limit or 0}",
+                f"MonthlyCostLimitUsd={getattr(profile, 'monthly_cost_limit_usd', 0) or 0}",
+                f"DailyCostLimitUsd={getattr(profile, 'daily_cost_limit_usd', 0) or 0}",
                 f"DailyEnforcementMode={getattr(profile, 'daily_enforcement_mode', 'alert')}",
                 f"MonthlyEnforcementMode={getattr(profile, 'monthly_enforcement_mode', 'block')}",
                 f"OidcIssuerUrl={profile.provider_domain}",
@@ -1954,6 +1975,10 @@ class DeployCommand(Command):
         deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
 
         # Check for orphaned stacks
+        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+        profile_partition = aws_partition_for_region(profile.aws_region)
+
         orphaned = []
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
@@ -1961,16 +1986,36 @@ class DeployCommand(Command):
                 # CodeBuild and websearch may live in a different region, so
                 # check them there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-                mgr = cf_manager
+                check_region = profile.aws_region
                 if stack_type == "codebuild":
-                    cb_region = get_codebuild_region(profile)
-                    if cb_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=cb_region)
+                    check_region = get_codebuild_region(profile)
                 elif stack_type == "websearch":
-                    ws_region = get_websearch_region(profile)
-                    if ws_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=ws_region)
-                status = mgr.get_stack_status(stack_name)
+                    check_region = get_websearch_region(profile)
+
+                # Never probe across partitions: websearch defaults to
+                # us-east-1 (commercial-only service), so a GovCloud deploy
+                # would call a commercial CloudFormation endpoint — typically
+                # unreachable there (SSL/connect errors), and the stack cannot
+                # exist in another partition anyway.
+                if aws_partition_for_region(check_region) != profile_partition:
+                    continue
+
+                mgr = cf_manager
+                if check_region != profile.aws_region:
+                    mgr = CloudFormationManager(region=check_region)
+
+                # Best-effort advisory check: a network/endpoint failure
+                # (air-gapped or proxied environments) must not abort the
+                # deploy — get_stack_status only handles ClientError, so
+                # connection/SSL errors would otherwise propagate.
+                try:
+                    status = mgr.get_stack_status(stack_name)
+                except Exception as e:
+                    console.print(
+                        f"[dim]Skipping orphaned-stack check for {stack_type} "
+                        f"({check_region}): {type(e).__name__}[/dim]"
+                    )
+                    continue
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
                     orphaned.append((stack_type, stack_name, status))

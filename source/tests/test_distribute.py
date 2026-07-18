@@ -270,6 +270,78 @@ class TestCreatePerOsArchives:
         assert archives[0][0] == "linux-x64"
 
 
+class TestExtraFilesInArchives:
+    """Tests for admin-defined extra_files across the three archive builders."""
+
+    @pytest.fixture
+    def package_with_extras(self, package_dir):
+        """Add extra files (a folder + two OS-specific scripts) into the build dir."""
+        certs = package_dir / "certs"
+        certs.mkdir()
+        (certs / "ca.pem").write_text("CERT")
+        (package_dir / "preinstall-mac.sh").write_text("#!/bin/bash")
+        (package_dir / "preinstall-windows.ps1").write_text("# ps1")
+        return package_dir
+
+    _EXTRAS = [
+        {"name": "certs", "targets": "all", "from": "~/x/certs"},
+        {"name": "preinstall-mac.sh", "targets": "macos", "from": "~/x/pre.sh"},
+        {"name": "preinstall-windows.ps1", "targets": "windows", "from": "~/x/pre.ps1"},
+    ]
+
+    def test_all_os_archive_contains_every_extra(self, cmd, package_with_extras):
+        archive = cmd._create_archive(package_with_extras, self._EXTRAS)
+        with zipfile.ZipFile(archive, "r") as zf:
+            names = zf.namelist()
+        assert "claude-code-package/certs/ca.pem" in names
+        assert "claude-code-package/preinstall-mac.sh" in names
+        assert "claude-code-package/preinstall-windows.ps1" in names
+
+    def test_all_os_archive_without_extras_unchanged(self, cmd, package_with_extras):
+        """No extra_files arg → extras present in the build dir are NOT auto-added."""
+        archive = cmd._create_archive(package_with_extras)
+        with zipfile.ZipFile(archive, "r") as zf:
+            names = zf.namelist()
+        assert "claude-code-package/certs/ca.pem" not in names
+        assert "claude-code-package/preinstall-mac.sh" not in names
+
+    def test_per_os_filters_by_platform(self, cmd, package_with_extras):
+        archives = cmd._create_per_os_archives(package_with_extras, self._EXTRAS)
+        by_platform = {p: a for p, _label, a in archives}
+
+        with zipfile.ZipFile(by_platform["macos-arm64"], "r") as zf:
+            mac_names = zf.namelist()
+        assert "claude-code-package/certs/ca.pem" in mac_names  # all
+        assert "claude-code-package/preinstall-mac.sh" in mac_names  # macos
+        assert "claude-code-package/preinstall-windows.ps1" not in mac_names  # windows excluded
+
+        with zipfile.ZipFile(by_platform["windows"], "r") as zf:
+            win_names = zf.namelist()
+        assert "claude-code-package/certs/ca.pem" in win_names  # all
+        assert "claude-code-package/preinstall-windows.ps1" in win_names  # windows
+        assert "claude-code-package/preinstall-mac.sh" not in win_names  # macos excluded
+
+    def test_per_os_arch_target_lands_in_family_zip(self, cmd, package_dir):
+        """An arch-specific target (macos-arm64) belongs in the macos-arm64 per-OS zip."""
+        (package_dir / "arm-only.sh").write_text("arm")
+        entries = [{"name": "arm-only.sh", "targets": "macos-arm64", "from": "~/x"}]
+        archives = cmd._create_per_os_archives(package_dir, entries)
+        by_platform = {p: a for p, _label, a in archives}
+
+        with zipfile.ZipFile(by_platform["macos-arm64"], "r") as zf:
+            assert "claude-code-package/arm-only.sh" in zf.namelist()
+        with zipfile.ZipFile(by_platform["macos-intel"], "r") as zf:
+            assert "claude-code-package/arm-only.sh" not in zf.namelist()
+
+    def test_invalid_entries_skipped_silently(self, cmd, package_with_extras):
+        """A colliding/invalid entry must not crash or ship — package fails fast upstream."""
+        bad = [{"name": "config.json", "targets": "all", "from": "~/x"}]
+        archive = cmd._create_archive(package_with_extras, bad)
+        with zipfile.ZipFile(archive, "r") as zf:
+            # config.json is the generated one, not clobbered by the extra
+            assert "claude-code-package/config.json" in zf.namelist()
+
+
 class TestCalculateChecksum:
     """Tests for _calculate_checksum."""
 

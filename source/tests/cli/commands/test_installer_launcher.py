@@ -16,6 +16,8 @@ with the launcher as optional, and, for bash, that both the installer and the
 launcher it writes are syntactically valid shell.
 """
 
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -185,3 +187,105 @@ class TestWindowsInstallerLauncher:
         assert "claude-bedrock.cmd" in content
         # The old "run the launcher, NOT 'claude' directly" framing must be gone.
         assert "NOT 'claude' directly" not in content
+
+
+class TestWindowsInstallerSettingsMerge:
+    """Regression tests for merging claude-settings/settings.json into an
+    existing %USERPROFILE%\\.claude\\settings.json.
+
+    The original merge one-liner rendered with DOUBLED braces (f-string
+    `{{{{` -> `{{` in the .bat), so PowerShell parsed the foreach body as a
+    scriptblock LITERAL that was never invoked — the existing file was
+    rewritten unchanged and the new settings were silently dropped.
+    """
+
+    def _generate(self) -> str:
+        cmd = PackageCommand()
+        out = Path(tempfile.mkdtemp())
+        path = cmd._create_windows_installer(out, _idc_profile())
+        return path.read_text(encoding="utf-8")
+
+    def _merge_command(self, content: str) -> str:
+        """Extract the PowerShell merge command from the generated install.bat."""
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("powershell") and "$ErrorActionPreference" in stripped:
+                # Strip `powershell -NoProfile -Command "` prefix and closing quote.
+                # The command body uses only single-quoted strings, so the outer
+                # double quotes delimit it unambiguously.
+                start = stripped.index('"') + 1
+                return stripped[start:-1]
+        raise AssertionError("merge powershell command not found in install.bat")
+
+    def test_merge_command_has_no_doubled_braces(self):
+        """`{{` in the emitted batch means the foreach body is a scriptblock
+        literal (a no-op) — the exact bug that made the merge do nothing."""
+        content = self._generate()
+        assert "{{" not in content, "install.bat must not contain doubled braces (PowerShell no-op scriptblock)"
+        merge = self._merge_command(content)
+        assert "foreach ($prop in $incoming.PSObject.Properties) {" in merge
+
+    def test_merge_deep_merges_env(self):
+        """Top-level Add-Member -Force would replace the whole `env` object,
+        wiping user-added env vars. The merge must descend into `env`."""
+        merge = self._merge_command(self._generate())
+        assert "$existing.env | Add-Member" in merge
+
+    def test_merge_failure_is_detectable(self):
+        """The merge runs inside a parenthesized batch block, where %errorlevel%
+        expands at PARSE time (always the pre-block value). The check must use
+        delayed expansion, and the command must exit non-zero on failure."""
+        content = self._generate()
+        assert "if !errorlevel! equ 0 (" in content
+        merge = self._merge_command(content)
+        assert "$ErrorActionPreference = 'Stop'" in merge
+        assert "exit 1" in merge
+
+    def test_overwrite_choice_actually_overwrites(self):
+        """Answering 'y' to 'Merge failed. Overwrite?' previously did nothing:
+        the write branch also required the settings file to NOT exist. The
+        rewritten flow funnels both paths through a delayed-expansion flag."""
+        content = self._generate()
+        assert 'if "!WRITE_SETTINGS!"=="true" (' in content
+        assert 'if /i "!OVERWRITE!"=="y" (' in content
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="executes the merge under real PowerShell")
+    def test_merge_executes_and_preserves_user_settings(self, tmp_path):
+        """Functional check on Windows CI: run the extracted merge command and
+        assert (1) new keys land, (2) placeholders are resolved, (3) the user's
+        pre-existing top-level keys and custom env vars survive."""
+        merge = self._merge_command(self._generate())
+
+        userprofile = tmp_path / "home"
+        (userprofile / ".claude").mkdir(parents=True)
+        existing = {"model": "opus", "env": {"MY_CUSTOM_VAR": "keep-me"}}
+        (userprofile / ".claude" / "settings.json").write_text(json.dumps(existing), encoding="utf-8")
+
+        workdir = tmp_path / "package"
+        (workdir / "claude-settings").mkdir(parents=True)
+        incoming = {
+            "env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "idc-test"},
+            "otelHeadersHelper": "__OTEL_HELPER_PATH__ --profile idc-test",
+            "awsAuthRefresh": "__CREDENTIAL_PROCESS_PATH__ --login --profile idc-test",
+        }
+        (workdir / "claude-settings" / "settings.json").write_text(json.dumps(incoming), encoding="utf-8")
+
+        env = dict(os.environ, USERPROFILE=str(userprofile))
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", merge],
+            cwd=workdir,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"merge command failed: {result.stderr}"
+
+        merged = json.loads((userprofile / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        # New settings applied (the original bug: nothing changed at all).
+        assert merged["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert "otel-helper.cmd --profile idc-test" in merged["otelHeadersHelper"].replace("\\\\", "\\")
+        assert "__OTEL_HELPER_PATH__" not in merged["otelHeadersHelper"]
+        assert "__CREDENTIAL_PROCESS_PATH__" not in merged["awsAuthRefresh"]
+        # User customizations preserved (top-level and inside env).
+        assert merged["model"] == "opus"
+        assert merged["env"]["MY_CUSTOM_VAR"] == "keep-me"

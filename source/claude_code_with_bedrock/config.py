@@ -101,6 +101,12 @@ class Profile:
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
     enable_bypass_detection: bool = False  # Detect Bedrock use without a running OTEL sidecar (opt-in)
+    # Cost-based quota (limit_type "cost"): dollar budgets per user, enforced
+    # server-side from per-model Bedrock pricing. In cost mode the token limits
+    # above are set to 0 (disabled) and these become the sole control.
+    quota_limit_type: str = "token"  # "token" (raw counts) or "cost" ($ budgets)
+    monthly_cost_limit_usd: float = 0.0  # Monthly $ budget per user (0 = no cost limit)
+    daily_cost_limit_usd: float = 0.0  # Daily $ cap per user (0 = no daily cap)
 
     # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
     otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL
@@ -130,7 +136,11 @@ class Profile:
     # If azure_auth_mode == "certificate", certificate paths are stored in config.json
     #   and used to build a signed JWT assertion.
     azure_auth_mode: str | None = None  # "public", "secret", or "certificate"
-    client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
+    # Azure (azure_auth_mode == "secret"): confidential — loaded from OS keyring at runtime,
+    #   never written to config.json.
+    # Google: non-confidential per Google's installed-app OAuth docs — persisted in
+    #   config.json and shipped to end users by `ccwb package`. See config-sync.md.
+    client_secret: str | None = None
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
@@ -178,6 +188,12 @@ class Profile:
     websearch_jwt_audience: str | None = None  # Entra ID (audience mode) only: aud the authorizer accepts
     websearch_domain_denylist: list[str] = field(default_factory=list)  # Optional domains to exclude from results
     websearch_headers_helper_path: str = ""  # Absolute path override for the Cowork headersHelper (default: ~/claude-code-with-bedrock/websearch-headers)
+
+    # Admin-only extra files copied into the package on top of generated artifacts.
+    # Consumed ONLY by `package`/`distribute` — deliberately NOT mirrored in the Go
+    # ProfileConfig (config-sync.md) and NOT written to the runtime config.json.
+    # Each entry: {"name": str, "targets": str | list[str], "from": str}
+    extra_files: list[dict[str, Any]] = field(default_factory=list)
 
     # Legacy field support
     @property
@@ -275,6 +291,22 @@ class Profile:
                             data["provider_type"] = "google"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
+
+        # Heal profiles corrupted by questionary's value=None fallback: Choice
+        # values of None fall back to the choice TITLE, so the wizard's
+        # "Disabled" option saved enable_distribution=True with
+        # distribution_type="Disabled" — making sidecar deploys schedule the
+        # networking + distribution stacks. The same fallback could store
+        # choice titles as the CodeBuild region or Route53 hosted zone ID
+        # (titles contain spaces; valid values never do). Must run BEFORE the
+        # legacy migration below, which would otherwise legitimize the value.
+        if data.get("distribution_type") not in (None, "presigned-s3", "landing-page"):
+            data["distribution_type"] = None
+            data["enable_distribution"] = False
+        if data.get("codebuild_region") and " " in str(data["codebuild_region"]):
+            data["codebuild_region"] = None
+        if data.get("distribution_hosted_zone_id") and " " in str(data["distribution_hosted_zone_id"]):
+            data["distribution_hosted_zone_id"] = None
 
         # Migrate legacy distribution configuration
         if "enable_distribution" in data and data.get("enable_distribution"):
@@ -559,10 +591,15 @@ class Config:
         if not profile:
             raise ValueError(f"Profile not found: {profile_name}")
 
+        # Expand sentinels (e.g. "all-commercial") into concrete regions — the
+        # value feeds the role's aws:RequestedRegion IAM condition, which would
+        # deny every invoke if handed a sentinel that matches no real region.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         return {
             "OktaDomain": profile.okta_domain,
             "OktaClientId": profile.okta_client_id,
             "IdentityPoolName": profile.identity_pool_name,
-            "AllowedBedrockRegions": ",".join(profile.allowed_bedrock_regions),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(profile.allowed_bedrock_regions)),
             "EnableMonitoring": "true" if profile.monitoring_enabled else "false",
         }

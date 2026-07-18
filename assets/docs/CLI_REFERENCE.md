@@ -278,6 +278,22 @@ With `--go`, all 5 platforms are always available regardless of the admin's OS. 
 
 **Offline Packaging:**
 
+`ccwb package` normally needs internet on the admin machine for three things: Go module downloads for `source/go`, the OCB (OpenTelemetry Collector Builder) binary from GitHub, and Go module downloads for the OCB-generated collector module (sidecar mode only). A `vendor/` directory cannot cover the collector build — OCB generates a fresh Go module in a temp directory on every run.
+
+For air-gapped environments, use `--prepare-offline` to pre-seed everything:
+
+```bash
+# On an internet-connected machine (same OS/arch and Go version as the offline box):
+poetry run ccwb package --prepare-offline
+# Transfer ccwb-offline-go-bundle.tar.gz to the offline machine, extract, then:
+tar xzf ccwb-offline-go-bundle.tar.gz
+./scripts/prepare-offline-go-bundle.sh install
+source ccwb-offline-go-bundle/offline-env.sh
+poetry run ccwb package
+```
+
+The bundle contains the pinned OCB binary (installed to `~/.cache/ocb/`, where `package.py` looks before downloading) and a pre-populated Go module cache covering both `source/go` and the collector. Because every `go`/`ocb` subprocess inherits the environment, `GOPROXY=off` plus the seeded `GOMODCACHE` satisfies all module resolution — including the `go mod tidy` OCB runs internally. The `prepare` step rehearses a fully offline collector build before archiving, so a bundle that ships is a bundle that works.
+
 **Legacy mode platform details (PyInstaller / Nuitka / Docker):**
 
 PyInstaller is a runtime bundler, not a cross-OS compiler. It emits binaries in the host OS's native format (Mach-O on macOS, ELF on Linux). That constrains which targets each build host can produce:
