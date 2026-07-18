@@ -324,13 +324,14 @@ Resources:
               }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 12, "y": 12, "width": 12, "height": 6,
               "properties": {
                 "title": "Avg Cost Per Turn (USD)",
-                "view": "timeSeries",
+                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"ClaudeCoWork\", MetricName=\"cost.usage\"}) / sum({\"ClaudeCoWork\", MetricName=\"session.turns\"})", "step": 60, "label": "$/turn" }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "sum({\"ClaudeCoWork\", MetricName=\"cost.usage\"}) / sum({\"ClaudeCoWork\", MetricName=\"session.turns\"})", "step": 60, "label": "$/turn" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
@@ -339,57 +340,58 @@ Resources:
               "properties": { "markdown": "## Per-User Breakdown\n*Desktop mode only — LAM events do not emit user_email*" }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 0, "y": 19, "width": 12, "height": 6,
               "properties": {
                 "title": "Top Users by Token Usage",
-                "view": "timeSeries",
-                "stacked": true,
+                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"token.usage.input\"}))", "step": 60 }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"token.usage.input\"}))", "step": 60 }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 12, "y": 19, "width": 12, "height": 6,
               "properties": {
                 "title": "Estimated Cost by User (USD)",
-                "view": "timeSeries",
-                "stacked": true,
+                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 0, "y": 25, "width": 12, "height": 6,
               "properties": {
                 "title": "Session Turns by User",
-                "view": "timeSeries",
-                "stacked": true,
+                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60 }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60 }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 12, "y": 25, "width": 12, "height": 6,
               "properties": {
                 "title": "Cost by Model",
-                "view": "timeSeries",
-                "stacked": true,
+                "view": "line",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"model\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "topk(10, sum by (\"model\")({\"ClaudeCoWork\", MetricName=\"cost.usage\"}))", "step": 60 }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": true, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {
-              "type": "metric",
+              "type": "chart",
               "x": 0, "y": 31, "width": 6, "height": 4,
               "properties": {
                 "title": "Active Users",
-                "view": "singleValue",
+                "view": "number",
                 "region": "${MetricsRegion}",
-                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60, "label": "Active Users" }] }
+                "data": { "queries": [{ "id": "a", "type": "cloudwatch-metrics", "language": "PromQL", "query": "count(group by (\"user_email\")({\"ClaudeCoWork\", MetricName=\"session.turns\"}))", "step": 60, "label": "Active Users" }] },
+                "plotOptions": { "legend": { "position": "bottom", "show": true }, "xAxis": { "type": "datetime" }, "yAxis": [{ "type": "linear" }], "style": { "lineOptions": { "filled": false, "stacked": false, "width": 2, "pattern": "solid", "spline": false }, "numberOptions": { "sparkline": true }, "pieOptions": { "innerSize": "50%" }, "barOptions": {}, "gaugeOptions": {} } }
               }
             },
             {

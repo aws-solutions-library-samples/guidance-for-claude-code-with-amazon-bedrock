@@ -1679,14 +1679,12 @@ class MultiProviderAuth:
                 except Exception:
                     pass  # nosec B110
 
-            # Get AWS credentials (we need them but won't output them)
-            self._debug_print("Exchanging token for AWS credentials...")
-            credentials = self.get_aws_credentials(id_token, token_claims)
-
-            # Cache credentials for future use
-            self.save_credentials(credentials)
-
-            # Save monitoring token
+            # Persist the monitoring token only. Deliberately NO AWS credential
+            # exchange here: this entrypoint serves OTEL attribution, and
+            # minting credentials on it would bypass quota enforcement (#761) —
+            # every credential-minting path must enforce quota first. A blocked
+            # user still gets a monitoring token so their telemetry stays
+            # attributed.
             self.save_monitoring_token(id_token, token_claims)
 
             # Return just the monitoring token
@@ -2268,29 +2266,43 @@ class MultiProviderAuth:
     # End Quota Check Methods
     # ===========================================
 
-    def _try_silent_refresh(self):
-        """Attempt to refresh AWS credentials using a cached, still-valid OIDC id_token.
+    def _get_cached_token_for_silent_refresh(self):
+        """Return (id_token, token_claims) from the cached monitoring token, or (None, None).
 
-        Returns:
-            Tuple of (credentials, id_token, token_claims) if successful, (None, None, None) otherwise.
+        Read-only: no STS exchange happens here so the caller can enforce
+        quota with the token BEFORE any credentials are minted.
         """
         try:
             id_token = self.get_monitoring_token()
             if not id_token:
                 self._debug_print("No valid cached id_token for silent refresh")
-                return None, None, None
-
-            self._debug_print("Found valid cached id_token, attempting silent credential refresh...")
+                return None, None
             token_claims = jwt.decode(id_token, options={"verify_signature": False})
+            return id_token, token_claims
+        except Exception as e:
+            self._debug_print(f"Could not load cached id_token for silent refresh: {e}")
+            return None, None
 
+    def _try_silent_refresh(self, id_token, token_claims):
+        """Exchange a quota-cleared cached id_token for AWS credentials and persist them.
+
+        Callers MUST run the quota check first — this method mints and caches
+        credentials, so calling it before quota clearance would hand an
+        over-quota user a full STS session.
+
+        Returns:
+            Credentials dict if successful, None otherwise (caller falls back to browser auth).
+        """
+        try:
+            self._debug_print("Found valid cached id_token, attempting silent credential refresh...")
             credentials = self.get_aws_credentials(id_token, token_claims)
             self.save_credentials(credentials)
             self.save_monitoring_token(id_token, token_claims)
             self._debug_print("Silent credential refresh succeeded")
-            return credentials, id_token, token_claims
+            return credentials
         except Exception as e:
             self._debug_print(f"Silent refresh failed, will require browser auth: {e}")
-            return None, None, None
+            return None
 
     def _run_passthrough(self):
         """Emit credentials from the ambient AWS credential chain (Identity Center, env vars, instance profile).
@@ -2417,21 +2429,23 @@ class MultiProviderAuth:
                     print(json.dumps(cached))  # noqa: S105
                     return 0
 
-                # Try silent refresh using cached id_token before opening browser
-                silent_creds, id_token, token_claims = self._try_silent_refresh()
-                if silent_creds:
-                    # Check quota if configured (reuse token/claims already fetched above)
+                # Try silent refresh using cached id_token before opening browser.
+                # Quota is enforced BEFORE the STS exchange, using the id_token
+                # already in hand, so an over-quota user never mints or caches
+                # fresh credentials on this path (#761).
+                id_token, token_claims = self._get_cached_token_for_silent_refresh()
+                if id_token:
                     if self._should_check_quota():
-                        if id_token and token_claims:
-                            quota_result = self._check_quota(token_claims, id_token)
-                            self._save_quota_check_timestamp()
-                            if not quota_result.get("allowed", True):
-                                return self._handle_quota_blocked(quota_result)
-                            else:
-                                self._handle_quota_warning(quota_result)
+                        quota_result = self._check_quota(token_claims, id_token)
+                        self._save_quota_check_timestamp()
+                        if not quota_result.get("allowed", True):
+                            return self._handle_quota_blocked(quota_result)
+                        self._handle_quota_warning(quota_result)
 
-                    print(json.dumps(silent_creds))
-                    return 0
+                    silent_creds = self._try_silent_refresh(id_token, token_claims)
+                    if silent_creds:
+                        print(json.dumps(silent_creds))
+                        return 0
 
                 # Authenticate with OIDC provider (browser popup - only when id_token is also expired).
                 # Hand the still-bound lock socket to the OAuth callback server so

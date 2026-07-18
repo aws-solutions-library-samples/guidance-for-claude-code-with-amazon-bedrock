@@ -130,6 +130,31 @@ are only populated for OIDC. IDC attributes `user.email` only. See
 [Cost Attribution](COST_ATTRIBUTION.md#idc-limitation) for the CUR/ABAC path to
 per-user team/department breakdowns under IDC.
 
+### Tracking deployed package versions (`settings_version`)
+
+`ccwb package` stamps the dist-folder timestamp (e.g. `2026-07-08-120000`) into
+the generated `settings.json` as a `settings_version` entry in
+`OTEL_RESOURCE_ATTRIBUTES`. Every user's telemetry then carries the version of
+the distribution package they installed, so you can see who is running an
+outdated package. Installs from packages built before this attribute existed
+simply report no `settings_version` — itself a signal that the user is on an
+old package.
+
+When the analytics pipeline is enabled, the `awsemf` exporter converts resource
+attributes to fields on every metric event in `/aws/claude-code/metrics`, so
+adoption is queryable in CloudWatch Logs Insights without any collector change:
+
+```
+fields @timestamp
+| stats count_distinct(`user.email`) as users by settings_version
+```
+
+To surface `settings_version` as a first-class CloudWatch metric dimension for
+dashboards or alarms, add a `metric_declarations` entry for it in
+`otel-collector.yaml` — scope it to a single metric (e.g.
+`claude_code.token.usage`) rather than `.*`, since every package release adds a
+new dimension value and broad declarations multiply custom-metric cost.
+
 ## Usage Quota Monitoring
 
 Quota monitoring uses the CloudWatch Prometheus-compatible API (`monitoring.<region>.amazonaws.com/api/v1/query`) to query per-user token usage via PromQL. The quota monitor Lambda runs every 15 minutes, fetches usage data via PromQL, writes results to a DynamoDB table (`UserQuotaMetrics`), and checks against quota policies.

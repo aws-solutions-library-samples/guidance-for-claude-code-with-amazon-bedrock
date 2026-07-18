@@ -60,6 +60,7 @@ func main() {
 	verboseFlag := flag.Bool("verbose", false, "Show verbose output")
 	versionFlag := flag.Bool("version", false, "Show version")
 	statusFlag := flag.Bool("status", false, "Print current otel-helper status as JSON and exit (proxy running? port? mode?)")
+	profileFlag := flag.String("profile", "", "Profile name (overrides CCWB_PROFILE/AWS_PROFILE environment variables)")
 	proxyMode := flag.Bool("proxy", false, "Run as SigV4 signing proxy for CoWork OTLP logs")
 	proxyPort := flag.Int("proxy-port", defaultProxyPort, "Port for the signing proxy (default 4318)")
 	proxyRegion := flag.String("proxy-region", "", "AWS region for CloudWatch OTLP (default: AWS_REGION env)")
@@ -70,18 +71,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *statusFlag {
-		os.Exit(runStatus(*proxyPort))
-	}
-
 	verbose = *verboseFlag || *testMode
 	debug = os.Getenv("DEBUG_MODE") != "" || verbose
 
+	profile := resolveProfile(*profileFlag)
+
+	if *statusFlag {
+		os.Exit(runStatus(*proxyPort, profile))
+	}
+
 	if *proxyMode {
-		profile := os.Getenv("AWS_PROFILE")
-		if profile == "" {
-			profile = "ClaudeCode"
-		}
 		os.Exit(startProxy(proxyConfig{
 			port:    *proxyPort,
 			region:  *proxyRegion,
@@ -89,14 +88,38 @@ func main() {
 		}))
 	}
 
-	os.Exit(run(*testMode))
+	os.Exit(run(*testMode, profile))
 }
 
-func run(testMode bool) int {
-	profile := os.Getenv("AWS_PROFILE")
-	if profile == "" {
-		profile = "ClaudeCode"
+// resolveProfile determines which named profile this invocation serves.
+// Precedence: explicit --profile flag > CCWB_PROFILE env var (the ccwb-specific
+// override, same convention as credential-process) > AWS_PROFILE env var
+// (legacy behaviour — Claude Code settings export it) > "ClaudeCode".
+// When the flag is supplied it is also exported to AWS_PROFILE so everything
+// downstream — credential-process subprocesses and the AWS SDK credential
+// chain in proxy mode — resolves the SAME profile from one place.
+func resolveProfile(flagValue string) string {
+	if flagValue != "" {
+		os.Setenv("AWS_PROFILE", flagValue)
+		return flagValue
 	}
+	if p := os.Getenv("CCWB_PROFILE"); p != "" {
+		os.Setenv("AWS_PROFILE", p)
+		return p
+	}
+	if p := os.Getenv("AWS_PROFILE"); p != "" {
+		return p
+	}
+	return "ClaudeCode"
+}
+
+func run(testMode bool, profile string) int {
+	// Sidecar mode: make sure the local OTEL collector is running before
+	// Claude Code starts exporting to localhost (no-op unless otelcol is
+	// installed). The shell/PowerShell wrappers do the same; this binary is
+	// the primary entry point on Windows (otel-helper.cmd tries it first),
+	// so without this the collector never starts there.
+	ensureCollectorRunning(profile)
 
 	// Layer 1: Serve attribution from the file cache. The cache stores
 	// attribution headers only, never the token, so the Bearer is still

@@ -318,6 +318,20 @@ _CLAUDE_MODELS_RAW = {
             },
         },
     },
+    "opus-4-8-govcloud": {
+        "name": "Claude Opus 4.8 (GovCloud)",
+        "base_model_id": "anthropic.claude-opus-4-8",
+        "profiles": {
+            "us-gov": {
+                "model_id": "us-gov.anthropic.claude-opus-4-8",
+                "description": "US GovCloud regions",
+                # Geo CRIS entry points: in-region in us-gov-west-1, geo-routed
+                # from us-gov-east-1 (model hosted in the West region).
+                "source_regions": ["us-gov-west-1", "us-gov-east-1"],
+                "destination_regions": ["us-gov-west-1", "us-gov-east-1"],
+            },
+        },
+    },
     "opus-4-7": {
         "name": "Claude Opus 4.7",
         "base_model_id": "anthropic.claude-opus-4-7",
@@ -1576,6 +1590,43 @@ def get_all_bedrock_regions() -> list[str]:
     return sorted(regions)
 
 
+def expand_bedrock_regions(regions: list[str]) -> list[str]:
+    """Expand model destination-region sentinels into concrete AWS regions.
+
+    Global inference profiles carry the sentinel ``"all-commercial"`` in their
+    ``destination_regions`` (see CLAUDE_MODELS). That sentinel is fine as model
+    metadata, but it is NOT a real region — it must never reach an IAM policy's
+    ``aws:RequestedRegion`` condition, where it would match nothing and silently
+    deny every Bedrock invoke (a global model routes to real regions like
+    us-east-1, so the condition value must be those regions, not the sentinel).
+
+    This normalizes a region list for use as the ``AllowedBedrockRegions``
+    CloudFormation parameter:
+    - ``"all-commercial"`` expands to every non-GovCloud Bedrock region.
+    - Any other ``"all-*"`` sentinel is dropped (defensive; only all-commercial
+      exists today) so it can never leak into a policy condition.
+    - Concrete regions pass through unchanged.
+
+    Order is preserved for concrete regions; expanded regions are appended
+    sorted and de-duplicated. Returns a list with no sentinel values.
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for r in regions:
+        if r == "all-commercial":
+            for cr in get_all_bedrock_regions():  # already excludes all-* sentinels
+                if "gov" not in cr and cr not in seen:
+                    expanded.append(cr)
+                    seen.add(cr)
+        elif r.startswith("all-"):
+            # Unknown sentinel — never emit it into an IAM condition.
+            continue
+        elif r not in seen:
+            expanded.append(r)
+            seen.add(r)
+    return expanded
+
+
 # Default rate limits by model family (TPM = tokens per minute, RPM = requests per minute).
 # These are approximate on-demand defaults; actual limits depend on account quotas.
 MODEL_RATE_LIMITS = {
@@ -1633,9 +1684,21 @@ def get_throttle_metrics() -> list[dict]:
 # Note: Haiku 3.5 is deprecated and not in CLAUDE_MODELS.
 # The "haiku" tier uses Haiku 4.5 first, then falls back to the latest Sonnet.
 MODEL_TIER_PREFERENCES = {
-    "haiku": ["haiku-4-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
-    "sonnet": ["sonnet-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4", "sonnet-3-7"],
-    "opus": ["opus-4-8", "opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
+    # GovCloud keys are safe to include everywhere: commercial CRIS prefixes
+    # never match their us-gov-only profiles, and the us-gov prefix never
+    # matches commercial models — each partition resolves only its own entries.
+    # GovCloud has no Haiku, so its haiku tier falls through to Sonnet.
+    "haiku": ["haiku-4-5", "sonnet-4-6", "sonnet-4-5", "sonnet-4-5-govcloud", "sonnet-4", "sonnet-3-7"],
+    "sonnet": [
+        "sonnet-5",
+        "sonnet-4-6",
+        "sonnet-4-5",
+        "sonnet-4-5-govcloud",
+        "sonnet-4",
+        "sonnet-3-7",
+        "sonnet-3-7-govcloud",
+    ],
+    "opus": ["opus-4-8", "opus-4-8-govcloud", "opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
     "fable": ["fable-5"],
 }
 
@@ -1650,8 +1713,10 @@ PROFILE_KEY_ALIASES = {
 }
 
 # Data-residency prefixes: must NOT fall back to global/us.
-# These geographies have strict data residency requirements.
-DATA_RESIDENCY_PREFIXES = {"au", "jp", "eu"}
+# These geographies have strict data residency requirements. us-gov is also
+# a separate PARTITION — commercial CRIS profiles aren't invokable from
+# GovCloud at all, so falling back would produce a model ID that can't work.
+DATA_RESIDENCY_PREFIXES = {"au", "jp", "eu", "us-gov"}
 
 # Auto-derived from MODEL_TIER_PREFERENCES: model_key → tier
 MODEL_KEY_TO_TIER: dict[str, str] = {
@@ -1720,15 +1785,18 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
         all_model_keys = [
             "sonnet-5",
             "opus-4-8",
+            "opus-4-8-govcloud",
             "opus-4-7",
             "sonnet-4-6",
             "sonnet-4-5",
+            "sonnet-4-5-govcloud",
             "sonnet-4",
             "opus-4-6",
             "opus-4-5",
             "haiku-4-5",
             "fable-5",
             "sonnet-3-7",
+            "sonnet-3-7-govcloud",
             "opus-4-1",
             "opus-4",
         ]

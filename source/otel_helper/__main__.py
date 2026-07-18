@@ -67,6 +67,11 @@ def parse_args():
     parser.add_argument("--test", action="store_true", help="Run in test mode with verbose output")
     parser.add_argument("--verbose", action="store_true", help="Show verbose output")
     parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="AWS profile name (overrides the AWS_PROFILE environment variable)",
+    )
+    parser.add_argument(
         "--anonymous",
         action="store_true",
         help="Force anonymous mode using AWS caller identity instead of JWT auth",
@@ -84,6 +89,17 @@ def parse_args():
         help="Port for the local OTLP proxy (default: 4318)",
     )
     args = parser.parse_args()
+
+    # Single source of truth for profile resolution: --profile flag >
+    # CCWB_PROFILE env (the ccwb-specific override, same convention as
+    # credential-process) > AWS_PROFILE env > "ClaudeCode" default at the
+    # read sites. The winner is exported to AWS_PROFILE so every downstream
+    # consumer — the cache path, the credential-process subprocess, and the
+    # collector sidecar — resolves the SAME profile from the environment.
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
+    elif os.environ.get("CCWB_PROFILE"):
+        os.environ["AWS_PROFILE"] = os.environ["CCWB_PROFILE"]
 
     global TEST_MODE, ANONYMOUS_MODE
     TEST_MODE = args.test
@@ -887,17 +903,24 @@ def ensure_collector_running():
         except (ProcessLookupError, ValueError, OSError):
             pass  # stale PID file
 
-    # Launch collector with the -collector profile
+    # Launch collector with the -collector profile. AWS_SDK_LOAD_CONFIG:
+    # aws-sdk-go v1 components in the collector (the awsemf exporter) don't
+    # read ~/.aws/config — where the -collector profile's credential_process
+    # lives — without it; SDK v2 components (sigv4auth) always do.
     profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
-    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector"}
+    collector_env = {**os.environ, "AWS_PROFILE": f"{profile}-collector", "AWS_SDK_LOAD_CONFIG": "1"}
 
     cache_dir = Path.home() / ".claude-code-session"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # stdout and stderr go to SEPARATE files — Windows does not support
+    # redirecting both streams into one file (parity with the Go binary and
+    # otel-helper.ps1, which enforce the same split).
     log_file = cache_dir / "collector.log"
+    err_file = cache_dir / "collector.err"
 
     try:
-        with open(log_file, "a") as lf:
-            kwargs = {"stdout": lf, "stderr": lf, "env": collector_env}
+        with open(log_file, "a", encoding="utf-8") as lf, open(err_file, "a", encoding="utf-8") as ef:
+            kwargs = {"stdout": lf, "stderr": ef, "env": collector_env}
             if platform_mod.system() == "Windows":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:

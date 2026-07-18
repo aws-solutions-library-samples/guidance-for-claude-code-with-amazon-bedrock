@@ -31,6 +31,34 @@ from claude_code_with_bedrock.cli.utils.validators import (
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
 
+# questionary.Choice treats value=None as "no value given" and FALLS BACK TO
+# THE TITLE STRING — so a "Disabled"/"Skip" choice built with value=None
+# returns its title (e.g. "Disabled") from .ask(), which is truthy and leaks
+# into the profile (enable_distribution flipped on, title strings stored as
+# codebuild region / hosted zone ID). Use this sentinel for "none" choices and
+# map it back to None right after .ask().
+_CHOICE_NONE = "__none__"
+
+
+def _model_keys_for_region(region: str | None) -> list[str]:
+    """Model registry keys the wizard should offer for a target AWS region.
+
+    GovCloud is a separate partition: only models with a "us-gov" CRIS profile
+    are invokable there, and those profiles are not invokable from commercial
+    regions. Filtering keeps the wizard from offering models the selected
+    region can never serve (previously a GovCloud admin saw every commercial
+    model, and picking one produced a deployment that 400s on invoke).
+    """
+    from claude_code_with_bedrock.models import CLAUDE_MODELS, get_available_profiles_for_model
+    from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+    in_govcloud = aws_partition_for_region(region or "") == "aws-us-gov"
+    return [
+        model_key
+        for model_key in CLAUDE_MODELS
+        if ("us-gov" in get_available_profiles_for_model(model_key)) == in_govcloud
+    ]
+
 
 def validate_identity_pool_name(value: str) -> bool | str:
     """Validate identity pool name format.
@@ -765,6 +793,27 @@ class InitCommand(Command):
                 config["client_certificate_path"] = client_certificate_path
                 config["client_certificate_key_path"] = client_certificate_key_path
 
+            elif provider_type == "google":
+                # Google's installed-app OAuth flow requires a client_secret for the
+                # token exchange (PKCE alone is insufficient). Google documents this
+                # secret as NON-confidential for installed apps, so — unlike Azure —
+                # it is stored in config.json and shipped to end users by `ccwb
+                # package`, not held in the OS keyring. See config-sync.md.
+                console.print("\n[bold]Google OAuth Client Secret[/bold]")
+                console.print(
+                    "Google's installed-app flow requires the OAuth client secret\n"
+                    "(the GOCSPX-… value from your Google Cloud OAuth client).\n"
+                )
+                client_secret = questionary.password(
+                    "Enter your Google OAuth client secret:",
+                    validate=lambda x: bool(x) or "Client secret cannot be empty",
+                    default=config.get("client_secret", "") or "",
+                ).ask()
+                if not client_secret:
+                    return None
+                config["client_secret"] = client_secret
+                console.print("[dim]  ✓ Client secret saved to profile (shipped to users by 'ccwb package')[/dim]")
+
             # Credential Storage Method
             from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
 
@@ -1248,75 +1297,80 @@ class InitCommand(Command):
                             "[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]"
                         )
 
-                        # Set token limits to 0 (disabled) when using cost mode
+                        # Cost mode: token-denominated limits are DISABLED (0).
+                        # The Lambdas skip token checks at 0, so the budgets
+                        # above are the sole control — do NOT prompt for token
+                        # counts (previously the token block below ran anyway
+                        # and overwrote these zeros with a token answer).
                         config["quota"]["monthly_limit"] = 0
                         config["quota"]["daily_limit"] = 0
+                        config["quota"]["warning_threshold_80"] = 0
+                        config["quota"]["warning_threshold_90"] = 0
                         monthly_limit = 0
+                        daily_limit = 0
 
                     else:
                         # Token-based limits (existing behavior)
                         config["quota"]["monthly_cost_limit"] = 0
                         config["quota"]["daily_cost_limit"] = 0
 
-                    # Monthly token limit (only prompted for token mode)
-                    if limit_type == "token":
                         console.print("\n[bold]Monthly Limit[/bold]")
-                    monthly_limit_millions = questionary.text(
-                        "Monthly token limit per user (in millions):",
-                        default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
-                        validate=lambda x: x.isdigit() and int(x) > 0,
-                    ).ask()
+                        monthly_limit_millions = questionary.text(
+                            "Monthly token limit per user (in millions):",
+                            default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
+                            validate=lambda x: x.isdigit() and int(x) > 0,
+                        ).ask()
 
-                    monthly_limit = int(monthly_limit_millions) * 1000000
-                    warning_80 = int(monthly_limit * 0.8)
-                    warning_90 = int(monthly_limit * 0.9)
+                        monthly_limit = int(monthly_limit_millions) * 1000000
+                        warning_80 = int(monthly_limit * 0.8)
+                        warning_90 = int(monthly_limit * 0.9)
 
-                    config["quota"]["monthly_limit"] = monthly_limit
-                    config["quota"]["warning_threshold_80"] = warning_80
-                    config["quota"]["warning_threshold_90"] = warning_90
+                        config["quota"]["monthly_limit"] = monthly_limit
+                        config["quota"]["warning_threshold_80"] = warning_80
+                        config["quota"]["warning_threshold_90"] = warning_90
 
-                    console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
-                    console.print(f"  → Warning at 80%: {warning_80:,} tokens")
-                    console.print(f"  → Critical at 90%: {warning_90:,} tokens")
+                        console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
+                        console.print(f"  → Warning at 80%: {warning_80:,} tokens")
+                        console.print(f"  → Critical at 90%: {warning_90:,} tokens")
 
-                    # Daily limit configuration (Bill Shock Protection)
-                    console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
-                    console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
+                        # Daily limit configuration (Bill Shock Protection)
+                        console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
+                        console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
 
-                    base_daily = monthly_limit / 30
+                        base_daily = monthly_limit / 30
 
-                    # Show burst buffer options
-                    console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
-                    console.print("\nBurst buffer allows daily variation above the average:")
-                    console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
-                    console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
-                    console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
+                        # Show burst buffer options
+                        console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
+                        console.print("\nBurst buffer allows daily variation above the average:")
+                        console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
+                        console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
+                        console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
 
-                    burst_buffer = questionary.text(
-                        "Burst buffer percentage (5-25%):",
-                        default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
-                        validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
-                    ).ask()
+                        burst_buffer = questionary.text(
+                            "Burst buffer percentage (5-25%):",
+                            default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
+                            validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
+                        ).ask()
 
-                    burst_percent = int(burst_buffer)
-                    calculated_daily = int(base_daily * (1 + burst_percent / 100))
+                        burst_percent = int(burst_buffer)
+                        calculated_daily = int(base_daily * (1 + burst_percent / 100))
 
-                    console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
+                        console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
 
-                    # Allow custom override
-                    custom_daily = questionary.text(
-                        f"Custom daily limit (Enter to accept {calculated_daily:,}):",
-                        default="",
-                        validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
-                    ).ask()
+                        # Allow custom override
+                        custom_daily = questionary.text(
+                            f"Custom daily limit (Enter to accept {calculated_daily:,}):",
+                            default="",
+                            validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
+                        ).ask()
 
-                    daily_limit = int(custom_daily) if custom_daily else calculated_daily
+                        daily_limit = int(custom_daily) if custom_daily else calculated_daily
 
-                    config["quota"]["daily_limit"] = daily_limit
-                    config["quota"]["burst_buffer_percent"] = burst_percent
+                        config["quota"]["daily_limit"] = daily_limit
+                        config["quota"]["burst_buffer_percent"] = burst_percent
 
-                    if custom_daily:
-                        console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
+                        if custom_daily:
+                            console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
 
                     # Enforcement mode configuration
                     console.print("\n[bold]Enforcement Modes[/bold]")
@@ -1343,6 +1397,9 @@ class InitCommand(Command):
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
+                    # (Previously never saved — the wizard's monthly enforcement
+                    # answer was silently dropped and the default always won.)
+                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
@@ -1380,9 +1437,18 @@ class InitCommand(Command):
                         config["quota"]["enable_bypass_detection"] = False
 
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
-                    console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
-                    console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
-                    console.print(f"  • Burst buffer: {burst_percent}%")
+                    if limit_type == "cost":
+                        console.print(
+                            f"  • Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user ({monthly_enforcement})"
+                        )
+                        if config["quota"]["daily_cost_limit"] > 0:
+                            console.print(
+                                f"  • Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user ({daily_enforcement})"
+                            )
+                    else:
+                        console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
+                        console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
+                        console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
                     if config["quota"].get("enable_bypass_detection"):
                         console.print("  • Sidecar bypass detection: enabled")
@@ -1445,9 +1511,11 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice(nearest_label, value=nearest),
                         *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
-                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=_CHOICE_NONE),
                     ],
                 ).ask()
+                if cb_choice == _CHOICE_NONE:
+                    cb_choice = None
 
                 prior_region = config["codebuild"].get("region")
                 config["codebuild"]["region"] = cb_choice
@@ -1655,7 +1723,7 @@ class InitCommand(Command):
         distribution_choices = [
             questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
             questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
-            questionary.Choice("Disabled", value=None),
+            questionary.Choice("Disabled", value=_CHOICE_NONE),
         ]
 
         # Get saved value or default to None
@@ -1667,6 +1735,8 @@ class InitCommand(Command):
             choices=distribution_choices,
             default=default_choice,
         ).ask()
+        if distribution_type == _CHOICE_NONE:
+            distribution_type = None
 
         # Preserve existing distribution settings, only update enabled/type
         if "distribution" not in config:
@@ -2133,10 +2203,18 @@ class InitCommand(Command):
                     if saved_model_key:
                         break
 
-            # Step 1: Select Claude model
+            # Step 1: Select Claude model. Offer only models the selected
+            # region's partition can invoke (GovCloud ↔ commercial).
+            offered_model_keys = _model_keys_for_region(config.get("aws", {}).get("region"))
+
             model_choices = []
-            default_model_key = saved_model_key or "sonnet-4-5"
-            for model_key, model_info in CLAUDE_MODELS.items():
+            default_model_key = saved_model_key if saved_model_key in offered_model_keys else None
+            if default_model_key is None:
+                default_model_key = (
+                    "sonnet-4-5-govcloud" if "sonnet-4-5-govcloud" in offered_model_keys else "sonnet-4-5"
+                )
+            for model_key in offered_model_keys:
+                model_info = CLAUDE_MODELS[model_key]
                 # Build region list from available profiles
                 available_profiles = get_available_profiles_for_model(model_key)
                 regions = []
@@ -2144,10 +2222,12 @@ class InitCommand(Command):
                     regions.append("Global")
                 if "us" in available_profiles:
                     regions.append("US")
-                if "europe" in available_profiles:
+                if "eu" in available_profiles or "europe" in available_profiles:
                     regions.append("Europe")
                 if "apac" in available_profiles:
                     regions.append("APAC")
+                if "us-gov" in available_profiles:
+                    regions.append("GovCloud")
                 regions_text = ", ".join(regions)
 
                 choice_text = f"{model_info['name']} ({regions_text})"
@@ -2894,6 +2974,9 @@ class InitCommand(Command):
             "idc_permission_set_name": config_data.get("idc_permission_set_name"),
             "sso_region": config_data.get("sso_region"),
             "azure_auth_mode": config_data.get("azure_auth_mode"),
+            # Google's client_secret is non-confidential and persisted in config.json
+            # (Azure's confidential secret lives in the OS keyring and stays None here).
+            "client_secret": config_data.get("client_secret"),
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
@@ -2925,6 +3008,9 @@ class InitCommand(Command):
             "daily_token_limit": config_data.get("quota", {}).get("daily_limit"),
             "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
             "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            "quota_limit_type": config_data.get("quota", {}).get("limit_type", "token"),
+            "monthly_cost_limit_usd": config_data.get("quota", {}).get("monthly_cost_limit", 0),
+            "daily_cost_limit_usd": config_data.get("quota", {}).get("daily_cost_limit", 0),
             "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
@@ -3061,11 +3147,15 @@ class InitCommand(Command):
         sso_enabled = config.get("sso_enabled", True)
         okta_domain = config.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         okta_client_id = config.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+        # Expand region sentinels (e.g. "all-commercial") before they reach the
+        # AllowedBedrockRegions CFN param → aws:RequestedRegion IAM condition.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         param_map = {
             "OktaDomain": okta_domain,
             "OktaClientId": okta_client_id,
             "IdentityPoolName": config["aws"]["identity_pool_name"],
-            "AllowedBedrockRegions": ",".join(config["aws"]["allowed_bedrock_regions"]),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(config["aws"]["allowed_bedrock_regions"])),
             "EnableMonitoring": "true" if config["monitoring"]["enabled"] else "false",
             "MaxSessionDuration": "28800",  # 8 hours
         }
@@ -3355,6 +3445,9 @@ class InitCommand(Command):
                     "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
                     "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
                     "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "limit_type": getattr(profile, "quota_limit_type", "token"),
+                    "monthly_cost_limit": getattr(profile, "monthly_cost_limit_usd", 0),
+                    "daily_cost_limit": getattr(profile, "daily_cost_limit_usd", 0),
                     "check_interval": getattr(profile, "quota_check_interval", 30),
                     "enable_bypass_detection": getattr(profile, "enable_bypass_detection", False),
                 }
@@ -3364,9 +3457,13 @@ class InitCommand(Command):
                 existing_config["analytics"] = {"enabled": profile.analytics_enabled}
 
             # Preserve confidential client configuration if present
-            # client_secret is never written to config — it lives in the OS keyring
+            # Azure's client_secret lives in the OS keyring (never in config); Google's
+            # client_secret is non-confidential and persisted in the profile — restore
+            # it so re-running init pre-fills the value instead of losing it.
             if getattr(profile, "azure_auth_mode", None):
                 existing_config["azure_auth_mode"] = profile.azure_auth_mode
+            if getattr(profile, "client_secret", None):
+                existing_config["client_secret"] = profile.client_secret
             if getattr(profile, "client_certificate_path", None):
                 existing_config["client_certificate_path"] = profile.client_certificate_path
                 existing_config["client_certificate_key_path"] = profile.client_certificate_key_path

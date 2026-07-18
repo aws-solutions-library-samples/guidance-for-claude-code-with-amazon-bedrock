@@ -10,6 +10,7 @@ import pytest
 from claude_code_with_bedrock.extra_files import (
     VALID_TARGET_TOKENS,
     extra_applies_to,
+    extra_applies_to_any,
     normalize_targets,
     validate_extra_files,
 )
@@ -104,6 +105,40 @@ class TestExtraAppliesToList:
 
     def test_empty_targets_matches_nothing(self):
         assert extra_applies_to([], "windows") is False
+
+
+class TestExtraAppliesToAny:
+    """Matcher used by ``package`` to filter extras against --target-platform.
+
+    Regression: a windows-only extra must not land in a macos-only build."""
+
+    def test_windows_extra_excluded_from_macos_build(self):
+        assert extra_applies_to_any("windows", ["macos-arm64"]) is False
+        assert extra_applies_to_any(["windows"], ["macos-arm64", "macos-intel"]) is False
+
+    def test_all_matches_any_build(self):
+        assert extra_applies_to_any("all", ["macos-arm64"]) is True
+        assert extra_applies_to_any("all", ["windows"]) is True
+
+    def test_family_target_matches_arch_build(self):
+        assert extra_applies_to_any("macos", ["macos-arm64"]) is True
+        assert extra_applies_to_any(["macos", "macos-arm64", "macos-intel"], ["macos-arm64"]) is True
+
+    def test_arch_target_matches_generic_family_build(self):
+        # The non-Go build path can produce generic "macos"/"linux" tokens;
+        # arch-targeted extras must still ship in those builds.
+        assert extra_applies_to_any("macos-arm64", ["macos"]) is True
+        assert extra_applies_to_any("linux-arm64", ["linux"]) is True
+
+    def test_arch_target_excluded_from_sibling_arch_build(self):
+        assert extra_applies_to_any("macos-intel", ["macos-arm64"]) is False
+
+    def test_matches_when_any_platform_applies(self):
+        assert extra_applies_to_any("windows", ["macos-arm64", "windows"]) is True
+
+    def test_empty_platforms_matches_nothing(self):
+        assert extra_applies_to_any("all", []) is False
+        assert extra_applies_to_any("all", None) is False
 
 
 class TestValidateExtraFiles:

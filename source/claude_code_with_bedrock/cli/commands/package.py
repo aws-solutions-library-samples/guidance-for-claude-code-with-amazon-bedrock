@@ -250,6 +250,11 @@ class PackageCommand(Command):
             description="Skip configuration validation checks",
             flag=True,
         ),
+        option(
+            "prepare-offline",
+            description="Prepare an offline bundle (OCB binary + Go module cache) for air-gapped builds",
+            flag=True,
+        ),
     ]
 
     def handle(self) -> int:
@@ -268,6 +273,10 @@ class PackageCommand(Command):
             console.print("  • [cyan]poetry run ccwb builds --status latest[/cyan]    (check latest build)")
             console.print("\nRedirecting to builds command...\n")
             return self._check_build_status(self.option("status"), console)
+
+        # Prepare offline bundle for air-gapped environments
+        if self.option("prepare-offline"):
+            return self._prepare_offline_bundle(console)
 
         # Load configuration first (needed to check CodeBuild status)
         config = Config.load()
@@ -795,6 +804,7 @@ class PackageCommand(Command):
             profile_name,
             otel_resource_attributes,
             is_idc_zero_binary=is_idc_zero_binary,
+            settings_version=timestamp,
         )
 
         # Generate CoWork 3P MDM configuration if enabled
@@ -802,11 +812,11 @@ class PackageCommand(Command):
             console.print("\n[cyan]Generating CoWork 3P MDM configuration...[/cyan]")
             self._generate_cowork_3p_mdm_config(output_dir, profile, profile_name)
 
-        # Copy admin-defined extra files into the build folder (superset; per-OS
-        # filtering happens in distribute at zip time). Fail fast on a missing
-        # source or a validation error — a listed cert the admin expects shipped
-        # must not be silently skipped.
-        copied_extra_files = self._copy_extra_files(profile, output_dir, console)
+        # Copy admin-defined extra files into the build folder, filtered to the
+        # platforms actually being built (distribute filters again per-OS at zip
+        # time). Fail fast on a missing source or a validation error — a listed
+        # cert the admin expects shipped must not be silently skipped.
+        copied_extra_files = self._copy_extra_files(profile, output_dir, console, platforms_to_build)
         if copied_extra_files is None:
             return 1
 
@@ -869,17 +879,21 @@ class PackageCommand(Command):
 
         return 0
 
-    def _copy_extra_files(self, profile, output_dir: Path, console: Console) -> list[tuple[str, str]] | None:
+    def _copy_extra_files(
+        self, profile, output_dir: Path, console: Console, platforms_to_build: list[str] | None = None
+    ) -> list[tuple[str, str]] | None:
         """Copy admin-defined extra files into the build folder.
 
-        Copies the full superset of entries (per-OS filtering happens later at
-        zip time in distribute). Returns a list of ``(name, targets)`` tuples for
-        the package summary, or ``None`` to signal a fatal error (missing source
-        or validation failure) — the caller must return a non-zero exit code.
+        Copies only the entries whose ``targets`` apply to at least one platform
+        in ``platforms_to_build`` (``None`` disables filtering and copies every
+        entry). Distribute filters again per-OS at zip time. Returns a list of
+        ``(name, targets)`` tuples for the package summary, or ``None`` to signal
+        a fatal error (missing source or validation failure) — the caller must
+        return a non-zero exit code.
         """
         import shutil
 
-        from claude_code_with_bedrock.extra_files import validate_extra_files
+        from claude_code_with_bedrock.extra_files import extra_applies_to_any, validate_extra_files
 
         entries = getattr(profile, "extra_files", []) or []
         if not entries:
@@ -896,6 +910,9 @@ class PackageCommand(Command):
         copied: list[tuple[str, str]] = []
         for entry in entries:
             name = entry["name"]
+            if platforms_to_build is not None and not extra_applies_to_any(entry["targets"], platforms_to_build):
+                console.print(f"  [dim]– {name} skipped (not targeted for this build)[/dim]")
+                continue
             src = Path(entry["from"]).expanduser()
             if not src.exists():
                 console.print(f"[red]Extra file source not found for '{name}': {src}[/red]")
@@ -1161,7 +1178,15 @@ class PackageCommand(Command):
                 f"cmd%2Fbuilder%2Fv{OCB_VERSION}/ocb_{OCB_VERSION}_{ocb_os}_{ocb_arch}{ocb_suffix}"
             )
             console.print(f"[dim]Downloading OCB v{OCB_VERSION}...[/dim]")
-            urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            try:
+                urllib.request.urlretrieve(url, ocb_path)  # noqa: S310 (trusted GitHub release URL)
+            except (urllib.error.URLError, OSError) as e:
+                console.print(f"[red]Failed to download OCB: {e}[/red]")
+                console.print(
+                    "[yellow]For air-gapped environments, run "
+                    "'ccwb package --prepare-offline' on a connected machine first.[/yellow]"
+                )
+                raise
             if ocb_os != "windows":
                 ocb_path.chmod(0o755)
 
@@ -2457,6 +2482,41 @@ RUN pyinstaller \
 
         return output_dir / binary_name
 
+    def _prepare_offline_bundle(self, console: Console) -> int:
+        """Prepare an offline bundle for air-gapped Go and OTEL collector builds.
+
+        Downloads the OCB binary and pre-seeds the Go module cache so that
+        `ccwb package` can run without network access. The bundle is saved
+        to `ccwb-offline-go-bundle/` in the repo root.
+        """
+        import subprocess
+
+        script_path = Path(__file__).resolve().parents[4] / "scripts" / "prepare-offline-go-bundle.sh"
+        if not script_path.exists():
+            console.print(f"[red]Offline bundle script not found at {script_path}[/red]")
+            return 1
+
+        console.print("[bold]Preparing offline bundle...[/bold]")
+        console.print("[dim]This downloads OCB + Go modules and verifies the bundle with a test build.[/dim]\n")
+
+        try:
+            result = subprocess.run(
+                ["bash", str(script_path), "prepare"],
+                cwd=script_path.parent.parent,
+            )
+            if result.returncode == 0:
+                console.print("\n[green]✓ Offline bundle ready.[/green]")
+                console.print("\n[bold]Next steps:[/bold]")
+                console.print("  1. Transfer [cyan]ccwb-offline-go-bundle.tar.gz[/cyan] to the air-gapped machine")
+                console.print("  2. Extract: [cyan]tar xzf ccwb-offline-go-bundle.tar.gz[/cyan]")
+                console.print("  3. Install: [cyan]./scripts/prepare-offline-go-bundle.sh install[/cyan]")
+                console.print("  4. Source env: [cyan]source ccwb-offline-go-bundle/offline-env.sh[/cyan]")
+                console.print("  5. Build: [cyan]poetry run ccwb package[/cyan]")
+            return result.returncode
+        except FileNotFoundError:
+            console.print("[red]bash not found. This command requires a Unix-like environment.[/red]")
+            return 1
+
     def _regenerate_installers(self, profile, profile_name: str, console: Console) -> int:
         """Regenerate installer scripts using existing binaries from the latest dist folder."""
         import shutil
@@ -2583,7 +2643,14 @@ RUN pyinstaller \
 
         # Regenerate Claude Code settings
         console.print("[cyan]Generating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            settings_version=timestamp,
+        )
 
         # Summary
         console.print("\n[green]✓ Installers regenerated successfully![/green]")
@@ -3122,6 +3189,16 @@ for _ccwb_mdm in "cowork-3p.mobileconfig" "cowork-3p-config.json"; do
     fi
 done
 
+# Install the CoWork credential-helper wrapper (helper-script mode). Claude
+# Desktop runs inferenceCredentialHelper with no arguments, so the --desktop
+# --profile flags live inside this wrapper, which execs the co-located binary.
+if [ -f "cowork-credential-helper.sh" ]; then
+    cp "cowork-credential-helper.sh" "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"
+    chmod +x "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"
+    if [ -n "$SUDO_USER" ]; then chown "$ACTUAL_USER" "$ACTUAL_HOME/claude-code-with-bedrock/cowork-credential-helper.sh"; fi
+    echo "OK Installed cowork-credential-helper.sh"
+fi
+
 # macOS Gatekeeper + Keychain notices
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Remove quarantine flag added by macOS when downloading unsigned binaries.
@@ -3591,7 +3668,7 @@ REM external command" and silently drops all metrics, so we fail the install
 REM loudly rather than leave a broken telemetry config.
 if exist "otel-helper.cmd" (
     copy /Y "otel-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.cmd" >nul
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo ERROR: Failed to copy otel-helper.cmd
         pause
         exit /b 1
@@ -3609,7 +3686,7 @@ if exist "otel-helper.cmd" (
 )
 if exist "otel-helper.ps1" (
     copy /Y "otel-helper.ps1" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.ps1" >nul
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo ERROR: Failed to copy otel-helper.ps1
         pause
         exit /b 1
@@ -3663,6 +3740,14 @@ if exist "cowork-3p.reg" (
     echo OK Resolved home directory in cowork-3p.reg ^(import it with: reg import cowork-3p.reg, then fully restart Claude^)
 )
 
+REM Install the CoWork credential-helper wrapper (helper-script mode). Claude
+REM Desktop runs inferenceCredentialHelper with no arguments, so the --desktop
+REM --profile flags live inside this wrapper, which calls the co-located binary.
+if exist "cowork-credential-helper.cmd" (
+    copy /Y "cowork-credential-helper.cmd" "%USERPROFILE%\\claude-code-with-bedrock\\cowork-credential-helper.cmd" >nul
+    echo OK Installed cowork-credential-helper.cmd
+)
+
 REM Copy Claude Code settings if they exist
 if exist "claude-settings" (
     echo Copying Claude Code telemetry settings...
@@ -3674,7 +3759,7 @@ if exist "claude-settings" (
 
         REM Check for Administrator privileges
         net session >nul 2>&1
-        if %errorlevel% neq 0 (
+        if !errorlevel! neq 0 (
             echo ERROR: Managed settings require Administrator privileges.
             echo        Right-click install.bat and select "Run as administrator"
             echo        [Target: C:\\Program Files\\ClaudeCode\\managed-settings.json]
@@ -3693,25 +3778,31 @@ if exist "claude-settings" (
 
     REM Copy user-scope settings.json if present (with merge support)
     if exist "claude-settings\\settings.json" (
-        set SKIP_SETTINGS=false
+        set WRITE_SETTINGS=false
         if exist "%USERPROFILE%\\.claude\\settings.json" (
             echo Existing Claude Code settings found - merging...
 
-            REM Merge new settings into existing (preserves user customizations)
-            powershell -NoProfile -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $existing = Get-Content (Join-Path $env:USERPROFILE '.claude\\settings.json') | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{{{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }}}}; $existing | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
-            if %errorlevel% equ 0 (
+            REM Merge new settings into existing. Top-level keys from the new
+            REM settings win, but the 'env' object is DEEP-merged so custom env
+            REM vars the user added survive. $ErrorActionPreference=Stop plus
+            REM the catch/exit 1 makes any failure visible via !errorlevel!.
+            powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try {{ $otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; $settingsPath = Join-Path $env:USERPROFILE '.claude\\settings.json'; $existing = Get-Content $settingsPath -Raw | ConvertFrom-Json; $incoming = (Get-Content 'claude-settings\\settings.json' -Raw) -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | ConvertFrom-Json; foreach ($prop in $incoming.PSObject.Properties) {{ if ($prop.Name -eq 'env' -and $existing.PSObject.Properties['env']) {{ foreach ($envProp in $prop.Value.PSObject.Properties) {{ $existing.env | Add-Member -MemberType NoteProperty -Name $envProp.Name -Value $envProp.Value -Force }} }} else {{ $existing | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force }} }}; $existing | ConvertTo-Json -Depth 10 | Set-Content $settingsPath }} catch {{ Write-Error $_; exit 1 }}"
+            if !errorlevel! equ 0 (
                 echo OK Claude Code settings merged [user settings preserved]
             ) else (
                 set /p OVERWRITE="Merge failed. Overwrite with new settings? (y/n): "
-                if /i not "%OVERWRITE%"=="y" (
+                if /i "!OVERWRITE!"=="y" (
+                    set WRITE_SETTINGS=true
+                ) else (
                     echo Skipping Claude Code settings...
-                    set SKIP_SETTINGS=true
                 )
             )
+        ) else (
+            set WRITE_SETTINGS=true
         )
 
-        if not "%SKIP_SETTINGS%"=="true" if not exist "%USERPROFILE%\\.claude\\settings.json" (
-            REM No existing settings - write directly
+        if "!WRITE_SETTINGS!"=="true" (
+            REM No existing settings [or user chose overwrite] - write directly
             powershell -Command "$otelPath = ($env:USERPROFILE + '\\claude-code-with-bedrock\\otel-helper.cmd').Replace('\\','\\\\'); $credPath = $env:USERPROFILE + '\\claude-code-with-bedrock\\credential-process.exe' -replace '\\\\', '/'; (Get-Content 'claude-settings\\settings.json') -replace '__OTEL_HELPER_PATH__', $otelPath -replace '__CREDENTIAL_PROCESS_PATH__', $credPath | Set-Content (Join-Path $env:USERPROFILE '.claude\\settings.json')"
             echo OK Claude Code settings configured
         )
@@ -4045,6 +4136,7 @@ Available metrics include:
         profile_name: str = "ClaudeCode",
         otel_resource_attributes: str | None = None,
         is_idc_zero_binary: bool = False,
+        settings_version: str | None = None,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -4281,10 +4373,15 @@ Available metrics include:
                     # already resolved to http://localhost:4318 above; in central
                     # mode it is the ALB address from the profile/CloudFormation.
                     resource_attrs = otel_resource_attributes or (
-                        "department=default,team.id=default,"
-                        "cost_center=default,organization=default,"
-                        "project=default"
+                        "department=default,team.id=default,cost_center=default,organization=default,project=default"
                     )
+                    # Stamp the dist-folder timestamp so telemetry records which
+                    # packaged distribution each user runs. The collector's
+                    # resource_to_telemetry_conversion surfaces it as a field on
+                    # every EMF event in /aws/claude-code/metrics, so adoption is
+                    # queryable without any collector change.
+                    if settings_version:
+                        resource_attrs += f",settings_version={settings_version}"
 
                     settings["env"].update(
                         {
@@ -4317,7 +4414,10 @@ Available metrics include:
                     _is_idc = getattr(profile, "effective_auth_type", profile.auth_type) == "idc"
                     _idc_zero_binary = _is_idc and not bool(getattr(profile, "quota_api_endpoint", None))
                     if not _idc_zero_binary:
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                        # Pass the profile explicitly (same as AWS_CREDENTIAL_PROCESS /
+                        # awsAuthRefresh above) so the helper serves THIS profile even
+                        # when AWS_PROFILE in the helper's environment points elsewhere.
+                        settings["otelHeadersHelper"] = f"__OTEL_HELPER_PATH__ --profile {profile_name}"
 
                     is_https = endpoint.startswith("https://")
                     console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")

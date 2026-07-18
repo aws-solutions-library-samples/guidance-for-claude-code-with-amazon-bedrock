@@ -5,8 +5,10 @@ Parameters:
   MonthlyTokenLimit:
     Type: Number
     Default: 10000000
-    Description: Default monthly token limit per user (10M tokens) - used when no policy is defined
-    MinValue: 1000000
+    Description: >-
+      Default monthly token limit per user (10M tokens) - used when no policy
+      is defined. 0 disables token-denominated limits (cost-based quota mode).
+    MinValue: 0
     MaxValue: 1000000000
 
   WarningThreshold80:
@@ -265,6 +267,8 @@ Resources:
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas
+          MONTHLY_COST_LIMIT_USD: !Ref MonthlyCostLimitUsd
+          DAILY_COST_LIMIT_USD: !Ref DailyCostLimitUsd
           METRICS_REGION: !Ref 'AWS::Region'
       Code: ./lambda-functions/quota_monitor/
 
@@ -435,6 +439,8 @@ Resources:
           POLICIES_TABLE: !Ref QuotaPolicies
           MONTHLY_TOKEN_LIMIT: !Ref MonthlyTokenLimit
           DAILY_TOKEN_LIMIT: !Ref DailyTokenLimit
+          MONTHLY_COST_LIMIT_USD: !Ref MonthlyCostLimitUsd
+          DAILY_COST_LIMIT_USD: !Ref DailyCostLimitUsd
           DAILY_ENFORCEMENT_MODE: !Ref DailyEnforcementMode
           MONTHLY_ENFORCEMENT_MODE: !Ref MonthlyEnforcementMode
           ENABLE_FINEGRAINED_QUOTAS: !Ref EnableFinegrainedQuotas

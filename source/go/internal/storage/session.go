@@ -105,6 +105,46 @@ func credentialsFilePath() string {
 	return filepath.Join(home, ".aws", "credentials")
 }
 
+// RemoveFromCredentialsFile deletes a profile's section from ~/.aws/credentials.
+// Leaving a stale or placeholder section behind is harmful: ~/.aws/credentials
+// outranks credential_process in the AWS SDK resolution chain, so any static
+// entry for the profile prevents the SDK from ever invoking this binary again.
+// Removing the section lets the SDK fall through to credential_process and
+// recover automatically. Other profiles in the file are preserved.
+func RemoveFromCredentialsFile(profile string) error {
+	credPath := credentialsFilePath()
+	if _, err := os.Stat(credPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	cfg, err := ini.LoadSources(ini.LoadOptions{
+		IgnoreInlineComment: true,
+	}, credPath)
+	if err != nil {
+		return fmt.Errorf("reading credentials file: %w", err)
+	}
+
+	if _, err := cfg.GetSection(profile); err != nil {
+		return nil // Section doesn't exist — nothing to remove
+	}
+	cfg.DeleteSection(profile)
+
+	// Atomic write, same pattern as SaveToCredentialsFile
+	tmpPath := credPath + ".tmp"
+	if err := cfg.SaveTo(tmpPath); err != nil {
+		return fmt.Errorf("writing credentials: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, credPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 // IsExpiredDummy checks if credentials are the "EXPIRED" placeholder.
 func IsExpiredDummy(creds *federation.AWSCredentials) bool {
 	return creds != nil && creds.AccessKeyID == "EXPIRED"
