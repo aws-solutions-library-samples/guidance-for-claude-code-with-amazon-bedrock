@@ -117,6 +117,13 @@ class Profile:
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation
+    # ARN of a pre-existing IAM OIDC provider to reuse instead of creating one
+    # (multi-profile same-account deployments). See issue #528.
+    existing_oidc_provider_arn: str | None = None
+    # Name for the federation IAM role. None -> template default (e.g.
+    # BedrockAzureFederatedRole). Set to a per-profile name so multiple profiles
+    # in one account don't collide on the role name. See issue #528.
+    federated_role_name: str | None = None
     max_session_duration: int = 28800  # 8 hours default, 43200 (12 hours) for Direct STS
     sso_enabled: bool = True  # Enable SSO authentication (Okta, Auth0, Azure, Cognito)
 
