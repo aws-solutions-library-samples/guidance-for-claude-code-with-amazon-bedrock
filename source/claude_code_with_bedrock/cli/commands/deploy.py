@@ -1011,8 +1011,11 @@ class DeployCommand(Command):
                         f"VpcId={vpc_id}",
                         f"PublicSubnetIds={public_subnets}",
                         f"PrivateSubnetIds={private_subnets}",
-                        f"IdPProvider={profile.distribution_idp_provider}",
                     ]
+
+                    # Only add IdPProvider for OIDC-based landing pages (not IDC)
+                    if profile.distribution_idp_provider:
+                        params.append(f"IdPProvider={profile.distribution_idp_provider}")
 
                     # Add IdP-specific parameters
                     if profile.distribution_idp_provider == "okta":
@@ -1789,8 +1792,9 @@ class DeployCommand(Command):
                     f"VpcId=<VpcId from {networking_stack}>",
                     f"PublicSubnetIds=<SubnetIds from {networking_stack}>",
                     f"PrivateSubnetIds=<SubnetIds from {networking_stack}>",
-                    f"IdPProvider={profile.distribution_idp_provider}",
                 ]
+                if profile.distribution_idp_provider:
+                    params.append(f"IdPProvider={profile.distribution_idp_provider}")
             else:
                 template = project_root / "deployment" / "infrastructure" / "presigned-s3-distribution.yaml"
                 params = [f"IdentityPoolName={profile.identity_pool_name}"]
