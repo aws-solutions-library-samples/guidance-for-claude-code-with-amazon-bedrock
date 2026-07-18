@@ -1812,7 +1812,7 @@ class InitCommand(Command):
                             )
                             for zone in hosted_zones
                         ]
-                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=_CHOICE_NONE))
 
                         default_choice = None
                         if existing_zone_id:
@@ -1826,6 +1826,8 @@ class InitCommand(Command):
                             choices=zone_choices,
                             default=default_choice if default_choice else zone_choices[0],
                         ).ask()
+                        if hosted_zone_id == _CHOICE_NONE:
+                            hosted_zone_id = None
                     else:
                         console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
                         console.print("You can still use custom domain if it's managed externally")
@@ -2123,7 +2125,7 @@ class InitCommand(Command):
                             )
                             for zone in hosted_zones
                         ]
-                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
+                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=_CHOICE_NONE))
 
                         # Find the default choice based on existing zone
                         default_choice = None
@@ -2138,6 +2140,8 @@ class InitCommand(Command):
                             choices=zone_choices,
                             default=default_choice if default_choice else zone_choices[0],
                         ).ask()
+                        if hosted_zone_id == _CHOICE_NONE:
+                            hosted_zone_id = None
                     else:
                         console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
                         console.print("You can still use custom domain if it's managed externally")
