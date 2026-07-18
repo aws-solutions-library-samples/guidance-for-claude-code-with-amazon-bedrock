@@ -140,6 +140,8 @@ class TestIAMPolicyValidity:
         "cur",
         "es",
         "aoss",
+        "sso",  # IAM Identity Center SSO Admin API (boto3 client name "sso-admin", IAM prefix "sso")
+        "identitystore",  # IAM Identity Center Identity Store API
     }
 
     def _extract_actions(self, template: dict) -> list[str]:

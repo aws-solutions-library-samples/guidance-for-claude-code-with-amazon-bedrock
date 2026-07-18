@@ -27,6 +27,9 @@ DESTROYABLE_STACKS = [
     "cowork-dashboard",
     "dashboard",
     "monitoring",
+    "admin-console",  # Must precede distribution: it attaches a listener rule to
+    # the distribution stack's ALB and references its outputs (Cognito client,
+    # secret, listener ARN) — those resources must still exist to destroy cleanly.
     "distribution",
     "networking",
     "s3bucket",
@@ -143,8 +146,14 @@ class DestroyCommand(Command):
                 continue
             if stack == "quota" and not getattr(profile, "quota_monitoring_enabled", False):
                 continue
-            if stack == "distribution" and not getattr(profile, "enable_distribution", False):
-                continue
+            if stack == "distribution":
+                if not getattr(profile, "enable_distribution", False):
+                    continue
+                # The IDC landing page (landing-page + auth_type=idc) uses the
+                # same CloudFormation distribution stack as the other
+                # distribution types (landing-page-distribution.yaml with
+                # AuthType=idc) — handled by the standard _delete_stack path
+                # below, no special-casing needed.
             if stack == "codebuild" and not getattr(profile, "enable_codebuild", False):
                 continue
             if stack == "websearch" and not getattr(profile, "web_search_enabled", False):

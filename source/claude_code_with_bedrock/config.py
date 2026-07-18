@@ -67,13 +67,39 @@ class Profile:
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
-    distribution_type: str | None = None  # "presigned-s3" | "landing-page" | None (disabled)
+    distribution_type: str | None = (
+        None  # "presigned-s3" | "landing-page" | None (IDC is landing-page + auth_type="idc")
+    )
     distribution_idp_provider: str | None = None  # okta|azure|auth0|cognito|generic (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
     distribution_idp_client_secret_arn: str | None = None  # Secrets Manager ARN for client secret
     distribution_custom_domain: str | None = None  # Optional custom domain (e.g., "downloads.company.com")
     distribution_hosted_zone_id: str | None = None  # Optional Route53 hosted zone ID
+    distribution_existing_certificate_arn: str | None = (
+        None  # Optional ACM cert ARN to use instead of requesting a new DNS-validated one
+    )
+
+    # IAM Identity Center landing page configuration. An IDC landing page is
+    # distribution_type == "landing-page" with auth_type == "idc" (beta
+    # vocabulary), deployed via landing-page-distribution.yaml with
+    # AuthType=idc — the same CloudFormation template used for the other
+    # landing-page IdP types, not a separate stack. User Pool ID / client ID /
+    # landing page URL are read directly from that stack's outputs
+    # (get_stack_outputs), not stored here. The SAML metadata URL is stored in
+    # distribution_saml_metadata_url (shared with beta), set by `ccwb configure-saml`.
+    distribution_idc_instance_arn: str | None = (
+        None  # IAM Identity Center instance ARN (used by the separate admin-console stack)
+    )
+    distribution_idc_admin_group: str = (
+        "Claude-Code-Admins"  # Admin group name pattern (used by the separate admin-console stack)
+    )
+    distribution_alb_scheme: str | None = (
+        None  # "internal" | "internet-facing" (defaults to "internal" for the IDC landing page)
+    )
+    distribution_enable_cloudfront: bool = False  # Put a CloudFront distribution (VPC origin) in front of an
+    # internal ALB so an internet-facing HTTPS URL is available without a public cert on the origin. Only
+    # meaningful for AuthType=idc; moves OIDC auth into the Lambda (self-contained session cookies).
 
     # Generic OIDC distribution config (distribution_idp_provider == "generic").
     # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,
@@ -215,6 +241,16 @@ class Profile:
         if hasattr(self, "auth_type") and self.auth_type:
             return self.auth_type
         return "oidc" if self.sso_enabled else "none"
+
+    @property
+    def is_idc_distribution(self) -> bool:
+        """True when the distribution is the IAM Identity Center landing page.
+
+        Beta vocabulary: an IDC landing page is distribution_type == "landing-page"
+        with auth_type == "idc" (deployed via landing-page-distribution.yaml with
+        AuthType=idc), rather than a distinct "landing-page-idc" distribution type.
+        """
+        return self.distribution_type == "landing-page" and self.effective_auth_type == "idc"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary."""
