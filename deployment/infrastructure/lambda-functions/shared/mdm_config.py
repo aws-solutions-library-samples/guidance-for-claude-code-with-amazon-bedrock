@@ -51,6 +51,7 @@ MDM_KEYS_BOOTSTRAP = {
 MDM_KEYS_POLICIES = {
     "disabledBuiltinTools",        # List of disabled tools
     "builtinToolPolicy",           # Per-tool policy overrides
+    "permissions",                 # Command-level rules {allow,ask,deny} (Claude Code permission rules, e.g. Bash(git push:*))
     "isLocalDevMcpEnabled",        # Allow user MCP servers
     "isDesktopExtensionEnabled",   # Allow desktop extensions
     "isDesktopExtensionSignatureRequired",  # Require signed extensions
@@ -319,6 +320,7 @@ def add_policies(
     allowed_folders: list[dict | str] | None = None,
     egress_hosts: list[str] | None = None,
     feature_toggles: dict[str, bool] | None = None,
+    permissions: dict[str, list[str]] | None = None,
 ) -> None:
     """Add policy settings to MDM config.
 
@@ -329,12 +331,28 @@ def add_policies(
         allowed_folders: List of allowed workspace folders
         egress_hosts: Network egress allowlist
         feature_toggles: Feature toggle overrides
+        permissions: Command-level Claude Code permission rules — a dict with
+            any of "allow"/"ask"/"deny" arrays of rule strings (e.g.
+            "Bash(git push:*)", "Read(./.env)", or a bare tool name like
+            "WebFetch"). Unlike builtinToolPolicy (whole-tool ask/allow/block),
+            these gate individual commands/arguments and are evaluated
+            deny -> ask -> allow, first match wins. Only non-empty tiers are
+            emitted so cleared rules revert to the client default.
     """
     if disabled_tools:
         config["disabledBuiltinTools"] = disabled_tools
 
     if tool_policies:
         config["builtinToolPolicy"] = tool_policies
+
+    if permissions:
+        perms = {
+            tier: permissions[tier]
+            for tier in ("allow", "ask", "deny")
+            if permissions.get(tier)
+        }
+        if perms:
+            config["permissions"] = perms
 
     if allowed_folders:
         # Normalize to list of dicts with 'path' key

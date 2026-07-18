@@ -202,7 +202,7 @@ class TestGenericDistributionTemplate:
 
     def test_template_allows_generic(self):
         text = LANDING_TEMPLATE.read_text(encoding="utf-8")
-        assert "AllowedValues: [okta, azure, auth0, cognito, generic, idc]" in text
+        assert 'AllowedValues: [okta, azure, auth0, cognito, generic, ""]' in text
 
     def test_template_has_generic_parameters(self):
         text = LANDING_TEMPLATE.read_text(encoding="utf-8")

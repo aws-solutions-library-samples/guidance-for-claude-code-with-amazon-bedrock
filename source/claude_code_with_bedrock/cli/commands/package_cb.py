@@ -276,7 +276,14 @@ class PackageCbCommand(Command):
                 pkg._create_documentation(output_dir, profile, timestamp)
 
         console.print("[cyan]Creating Claude Code settings...[/cyan]")
-        self._create_claude_settings(output_dir, profile, include_coauthored_by, profile_name, otel_resource_attributes)
+        self._create_claude_settings(
+            output_dir,
+            profile,
+            include_coauthored_by,
+            profile_name,
+            otel_resource_attributes,
+            settings_version=timestamp,
+        )
 
         # Show configuration
         console.print()
@@ -400,6 +407,7 @@ class PackageCbCommand(Command):
         include_coauthored_by: bool,
         profile_name: str,
         otel_resource_attributes: str | None = None,
+        settings_version: str | None = None,
     ) -> None:
         """Create Claude Code settings.json with Bedrock and optional monitoring configuration."""
         console = Console()
@@ -457,10 +465,15 @@ class PackageCbCommand(Command):
 
                     if endpoint:
                         resource_attrs = otel_resource_attributes or (
-                            "department=engineering,team.id=default,"
+                            "department=default,team.id=default,"
                             "cost_center=default,organization=default,"
                             "project=default"
                         )
+                        # Stamp the dist-folder timestamp so telemetry records
+                        # which packaged distribution each user runs (mirrors
+                        # package.py — keep both in sync).
+                        if settings_version:
+                            resource_attrs += f",settings_version={settings_version}"
                         settings["env"].update(
                             {
                                 "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
@@ -474,7 +487,10 @@ class PackageCbCommand(Command):
                                 "OTEL_RESOURCE_ATTRIBUTES": resource_attrs,
                             }
                         )
-                        settings["otelHeadersHelper"] = "__OTEL_HELPER_PATH__"
+                        # Pass the profile explicitly (same as the credential-process
+                        # settings) so the helper serves THIS profile even when
+                        # AWS_PROFILE in the helper's environment points elsewhere.
+                        settings["otelHeadersHelper"] = f"__OTEL_HELPER_PATH__ --profile {profile_name}"
 
                         is_https = endpoint.startswith("https://")
                         console.print(f"[dim]Added monitoring with {'HTTPS' if is_https else 'HTTP'} endpoint[/dim]")

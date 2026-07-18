@@ -67,7 +67,9 @@ class Profile:
     enable_distribution: bool = False  # Enable package distribution features (legacy, use distribution_type)
 
     # Distribution platform configuration
-    distribution_type: str | None = None  # "presigned-s3" | "landing-page" | "landing-page-idc" | None
+    distribution_type: str | None = (
+        None  # "presigned-s3" | "landing-page" | None (IDC is landing-page + auth_type="idc")
+    )
     distribution_idp_provider: str | None = None  # okta|azure|auth0|cognito|generic (landing-page only)
     distribution_idp_domain: str | None = None  # IdP domain for web auth (e.g., "company.okta.com")
     distribution_idp_client_id: str | None = None  # Web application client ID
@@ -78,24 +80,26 @@ class Profile:
         None  # Optional ACM cert ARN to use instead of requesting a new DNS-validated one
     )
 
-    # IAM Identity Center landing page configuration (distribution_type == "landing-page-idc").
-    # Deployed via landing-page-distribution.yaml (IdPProvider=idc) — the same
-    # CloudFormation template used for the other landing-page IdP types, not a
-    # separate stack. User Pool ID / client ID / landing page URL are read
-    # directly from that stack's outputs (get_stack_outputs), not stored here.
+    # IAM Identity Center landing page configuration. An IDC landing page is
+    # distribution_type == "landing-page" with auth_type == "idc" (beta
+    # vocabulary), deployed via landing-page-distribution.yaml with
+    # AuthType=idc — the same CloudFormation template used for the other
+    # landing-page IdP types, not a separate stack. User Pool ID / client ID /
+    # landing page URL are read directly from that stack's outputs
+    # (get_stack_outputs), not stored here. The SAML metadata URL is stored in
+    # distribution_saml_metadata_url (shared with beta), set by `ccwb configure-saml`.
     distribution_idc_instance_arn: str | None = (
         None  # IAM Identity Center instance ARN (used by the separate admin-console stack)
     )
     distribution_idc_admin_group: str = (
         "Claude-Code-Admins"  # Admin group name pattern (used by the separate admin-console stack)
     )
-    distribution_idc_saml_metadata_url: str | None = None  # SAML metadata URL, set by `ccwb configure-saml`
     distribution_alb_scheme: str | None = (
-        None  # "internal" | "internet-facing" (defaults to "internal" for landing-page-idc)
+        None  # "internal" | "internet-facing" (defaults to "internal" for the IDC landing page)
     )
     distribution_enable_cloudfront: bool = False  # Put a CloudFront distribution (VPC origin) in front of an
     # internal ALB so an internet-facing HTTPS URL is available without a public cert on the origin. Only
-    # meaningful for IdPProvider=idc/cognito; moves OIDC auth into the Lambda (self-contained session cookies).
+    # meaningful for AuthType=idc; moves OIDC auth into the Lambda (self-contained session cookies).
 
     # Generic OIDC distribution config (distribution_idp_provider == "generic").
     # Required when the landing-page IdP isn't Okta/Azure/Auth0/Cognito (e.g. PingFederate,
@@ -106,6 +110,9 @@ class Profile:
     distribution_idp_authorization_endpoint: str | None = None  # Full authorization endpoint URL
     distribution_idp_token_endpoint: str | None = None  # Full token endpoint URL
     distribution_idp_userinfo_endpoint: str | None = None  # Full userinfo endpoint URL
+
+    # IDC/SAML distribution config (only populated when auth_type == "idc" and distribution_type == "landing-page")
+    distribution_saml_metadata_url: str | None = None  # SAML metadata URL from IAM Identity Center
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring
@@ -123,6 +130,12 @@ class Profile:
     quota_fail_mode: str = "open"  # "open" (allow on error) or "closed" (deny on error)
     quota_check_interval: int = 30  # Minutes between quota re-checks (0 = every request)
     enable_bypass_detection: bool = False  # Detect Bedrock use without a running OTEL sidecar (opt-in)
+    # Cost-based quota (limit_type "cost"): dollar budgets per user, enforced
+    # server-side from per-model Bedrock pricing. In cost mode the token limits
+    # above are set to 0 (disabled) and these become the sole control.
+    quota_limit_type: str = "token"  # "token" (raw counts) or "cost" ($ budgets)
+    monthly_cost_limit_usd: float = 0.0  # Monthly $ budget per user (0 = no cost limit)
+    daily_cost_limit_usd: float = 0.0  # Daily $ cap per user (0 = no daily cap)
 
     # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
     otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL
@@ -152,7 +165,11 @@ class Profile:
     # If azure_auth_mode == "certificate", certificate paths are stored in config.json
     #   and used to build a signed JWT assertion.
     azure_auth_mode: str | None = None  # "public", "secret", or "certificate"
-    client_secret: str | None = None  # In-memory only — loaded from OS keyring at runtime
+    # Azure (azure_auth_mode == "secret"): confidential — loaded from OS keyring at runtime,
+    #   never written to config.json.
+    # Google: non-confidential per Google's installed-app OAuth docs — persisted in
+    #   config.json and shipped to end users by `ccwb package`. See config-sync.md.
+    client_secret: str | None = None
     client_certificate_path: str | None = None  # Path to PEM certificate file
     client_certificate_key_path: str | None = None  # Path to PEM private key file
 
@@ -201,6 +218,12 @@ class Profile:
     websearch_domain_denylist: list[str] = field(default_factory=list)  # Optional domains to exclude from results
     websearch_headers_helper_path: str = ""  # Absolute path override for the Cowork headersHelper (default: ~/claude-code-with-bedrock/websearch-headers)
 
+    # Admin-only extra files copied into the package on top of generated artifacts.
+    # Consumed ONLY by `package`/`distribute` — deliberately NOT mirrored in the Go
+    # ProfileConfig (config-sync.md) and NOT written to the runtime config.json.
+    # Each entry: {"name": str, "targets": str | list[str], "from": str}
+    extra_files: list[dict[str, Any]] = field(default_factory=list)
+
     # Legacy field support
     @property
     def okta_domain(self) -> str:
@@ -218,6 +241,16 @@ class Profile:
         if hasattr(self, "auth_type") and self.auth_type:
             return self.auth_type
         return "oidc" if self.sso_enabled else "none"
+
+    @property
+    def is_idc_distribution(self) -> bool:
+        """True when the distribution is the IAM Identity Center landing page.
+
+        Beta vocabulary: an IDC landing page is distribution_type == "landing-page"
+        with auth_type == "idc" (deployed via landing-page-distribution.yaml with
+        AuthType=idc), rather than a distinct "landing-page-idc" distribution type.
+        """
+        return self.distribution_type == "landing-page" and self.effective_auth_type == "idc"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary."""
@@ -297,6 +330,22 @@ class Profile:
                             data["provider_type"] = "google"
                 except Exception:
                     pass  # Leave provider_type unset if parsing fails
+
+        # Heal profiles corrupted by questionary's value=None fallback: Choice
+        # values of None fall back to the choice TITLE, so the wizard's
+        # "Disabled" option saved enable_distribution=True with
+        # distribution_type="Disabled" — making sidecar deploys schedule the
+        # networking + distribution stacks. The same fallback could store
+        # choice titles as the CodeBuild region or Route53 hosted zone ID
+        # (titles contain spaces; valid values never do). Must run BEFORE the
+        # legacy migration below, which would otherwise legitimize the value.
+        if data.get("distribution_type") not in (None, "presigned-s3", "landing-page"):
+            data["distribution_type"] = None
+            data["enable_distribution"] = False
+        if data.get("codebuild_region") and " " in str(data["codebuild_region"]):
+            data["codebuild_region"] = None
+        if data.get("distribution_hosted_zone_id") and " " in str(data["distribution_hosted_zone_id"]):
+            data["distribution_hosted_zone_id"] = None
 
         # Migrate legacy distribution configuration
         if "enable_distribution" in data and data.get("enable_distribution"):
@@ -581,10 +630,15 @@ class Config:
         if not profile:
             raise ValueError(f"Profile not found: {profile_name}")
 
+        # Expand sentinels (e.g. "all-commercial") into concrete regions — the
+        # value feeds the role's aws:RequestedRegion IAM condition, which would
+        # deny every invoke if handed a sentinel that matches no real region.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         return {
             "OktaDomain": profile.okta_domain,
             "OktaClientId": profile.okta_client_id,
             "IdentityPoolName": profile.identity_pool_name,
-            "AllowedBedrockRegions": ",".join(profile.allowed_bedrock_regions),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(profile.allowed_bedrock_regions)),
             "EnableMonitoring": "true" if profile.monitoring_enabled else "false",
         }

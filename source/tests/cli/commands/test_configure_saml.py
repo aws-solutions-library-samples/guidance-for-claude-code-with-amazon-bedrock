@@ -3,16 +3,17 @@
 
 """Tests for ConfigureSamlCommand (CloudFormation-based implementation).
 
-The landing-page-idc distribution type deploys via landing-page-distribution.yaml
-(IdPProvider=idc), the same template used by the other landing-page IdP types.
+The IAM Identity Center landing page is distribution_type "landing-page" with
+auth_type "idc" (beta vocabulary), deployed via landing-page-distribution.yaml
+with AuthType=idc — the same template used by the other landing-page IdP types.
 `ccwb configure-saml` doesn't call the Cognito API directly — it saves
-distribution_idc_saml_metadata_url to the profile and triggers a stack update via
+distribution_saml_metadata_url to the profile and triggers a stack update via
 DeployCommand._deploy_stack("distribution", ...), letting CloudFormation's
 conditional IdcSamlIdentityProvider resource (and the callback-updater custom
 resource) do the actual Cognito wiring.
 
 Covers:
-- Guard: command refuses to run for non-`landing-page-idc` profiles
+- Guard: command refuses to run for non-IDC profiles
 - Guard: command fails cleanly when the distribution stack hasn't been deployed yet
 - Happy path: saves metadata URL to profile, re-deploys, reports SAML status
 - Stack update failure is surfaced, not swallowed
@@ -39,7 +40,8 @@ def _profile(**overrides) -> Profile:
         "credential_storage": "session",
         "aws_region": "us-east-1",
         "identity_pool_name": "claude-code-test",
-        "distribution_type": "landing-page-idc",
+        "distribution_type": "landing-page",
+        "auth_type": "idc",
         "enable_distribution": True,
     }
     defaults.update(overrides)
@@ -57,14 +59,15 @@ def _run(metadata_url="https://portal.sso.us-east-1.amazonaws.com/saml/metadata/
 
 
 class TestDistributionTypeGuard:
-    """The command must refuse to run for anything other than landing-page-idc."""
+    """The command must refuse to run for anything other than the IDC landing page."""
 
     @patch("claude_code_with_bedrock.config.Config.get_profile")
     def test_rejects_non_idc_distribution_type(self, mock_get_profile, capsys):
-        mock_get_profile.return_value = _profile(distribution_type="landing-page")
+        # A landing page with OIDC (not IDC) auth must be rejected.
+        mock_get_profile.return_value = _profile(distribution_type="landing-page", auth_type="oidc")
         tester = _run()
         assert tester.status_code == 1
-        assert "landing-page-idc" in capsys.readouterr().out
+        assert "auth_type='idc'" in capsys.readouterr().out
 
     @patch("claude_code_with_bedrock.config.Config.get_profile")
     def test_rejects_none_distribution_type(self, mock_get_profile):
@@ -130,7 +133,7 @@ class TestSamlConfigurationFlow:
         ]
         # deploy.py's _deploy_stack("distribution", ...) separately looks up the
         # networking stack's VpcId/SubnetIds outputs before building CFN params.
-        # landing-page-idc defaults ALBScheme to internal, which requires the
+        # The IDC landing page defaults ALBScheme to internal, which requires the
         # networking stack's NAT-routed PrivateSubnetIds output.
         mock_get_outputs_deploy.return_value = {
             "VpcId": "vpc-123",
@@ -151,20 +154,18 @@ class TestSamlConfigurationFlow:
         assert tester.status_code == 0
 
         # Metadata URL was saved to the profile before redeploying.
-        assert (
-            profile.distribution_idc_saml_metadata_url == "https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc"
-        )
+        assert profile.distribution_saml_metadata_url == "https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc"
         mock_save_profile.assert_called_once()
 
         # The stack update actually happened (deploy_stack invoked with the
-        # distribution template and IdcSamlMetadataUrl param). Parameters are
+        # distribution template and SamlMetadataUrl param). Parameters are
         # in boto3 ParameterKey/ParameterValue dict format at this point
         # (deploy.py's _convert_params_to_boto3 already ran).
         mock_manager.deploy_stack.assert_called_once()
         call_kwargs = mock_manager.deploy_stack.call_args.kwargs
         params = call_kwargs.get("parameters") or []
         assert {
-            "ParameterKey": "IdcSamlMetadataUrl",
+            "ParameterKey": "SamlMetadataUrl",
             "ParameterValue": "https://portal.sso.us-east-1.amazonaws.com/saml/metadata/abc",
         } in params
 
@@ -224,7 +225,7 @@ class TestProfileOptionOverride:
         # named_profile has distribution_type="presigned-s3" -> command must reject it,
         # proving the named profile (not some other profile) was actually used.
         assert tester.status_code == 1
-        assert "landing-page-idc" in capsys.readouterr().out
+        assert "auth_type='idc'" in capsys.readouterr().out
 
     @patch("claude_code_with_bedrock.config.Config.get_profile")
     def test_no_profile_option_passes_none(self, mock_get_profile):

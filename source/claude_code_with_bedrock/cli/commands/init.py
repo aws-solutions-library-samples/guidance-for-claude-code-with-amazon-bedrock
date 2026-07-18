@@ -31,6 +31,34 @@ from claude_code_with_bedrock.cli.utils.validators import (
 )
 from claude_code_with_bedrock.config import WEBSEARCH_SUPPORTED_REGIONS, Config, Profile
 
+# questionary.Choice treats value=None as "no value given" and FALLS BACK TO
+# THE TITLE STRING — so a "Disabled"/"Skip" choice built with value=None
+# returns its title (e.g. "Disabled") from .ask(), which is truthy and leaks
+# into the profile (enable_distribution flipped on, title strings stored as
+# codebuild region / hosted zone ID). Use this sentinel for "none" choices and
+# map it back to None right after .ask().
+_CHOICE_NONE = "__none__"
+
+
+def _model_keys_for_region(region: str | None) -> list[str]:
+    """Model registry keys the wizard should offer for a target AWS region.
+
+    GovCloud is a separate partition: only models with a "us-gov" CRIS profile
+    are invokable there, and those profiles are not invokable from commercial
+    regions. Filtering keeps the wizard from offering models the selected
+    region can never serve (previously a GovCloud admin saw every commercial
+    model, and picking one produced a deployment that 400s on invoke).
+    """
+    from claude_code_with_bedrock.models import CLAUDE_MODELS, get_available_profiles_for_model
+    from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+    in_govcloud = aws_partition_for_region(region or "") == "aws-us-gov"
+    return [
+        model_key
+        for model_key in CLAUDE_MODELS
+        if ("us-gov" in get_available_profiles_for_model(model_key)) == in_govcloud
+    ]
+
 
 def validate_identity_pool_name(value: str) -> bool | str:
     """Validate identity pool name format.
@@ -765,6 +793,27 @@ class InitCommand(Command):
                 config["client_certificate_path"] = client_certificate_path
                 config["client_certificate_key_path"] = client_certificate_key_path
 
+            elif provider_type == "google":
+                # Google's installed-app OAuth flow requires a client_secret for the
+                # token exchange (PKCE alone is insufficient). Google documents this
+                # secret as NON-confidential for installed apps, so — unlike Azure —
+                # it is stored in config.json and shipped to end users by `ccwb
+                # package`, not held in the OS keyring. See config-sync.md.
+                console.print("\n[bold]Google OAuth Client Secret[/bold]")
+                console.print(
+                    "Google's installed-app flow requires the OAuth client secret\n"
+                    "(the GOCSPX-… value from your Google Cloud OAuth client).\n"
+                )
+                client_secret = questionary.password(
+                    "Enter your Google OAuth client secret:",
+                    validate=lambda x: bool(x) or "Client secret cannot be empty",
+                    default=config.get("client_secret", "") or "",
+                ).ask()
+                if not client_secret:
+                    return None
+                config["client_secret"] = client_secret
+                console.print("[dim]  ✓ Client secret saved to profile (shipped to users by 'ccwb package')[/dim]")
+
             # Credential Storage Method
             from claude_code_with_bedrock.cli.utils.helpers import is_keyring_available, is_wsl
 
@@ -873,7 +922,27 @@ class InitCommand(Command):
                 return None
 
             config["federation_type"] = federation_type
-            config["max_session_duration"] = 43200 if federation_type == "direct" else 28800
+
+            # Session duration — how long issued AWS credentials remain valid before
+            # re-authentication. Retain any previously configured value across re-runs;
+            # otherwise fall back to the federation-type recommended default.
+            _recommended_duration = 43200 if federation_type == "direct" else 28800
+            _existing_duration = config.get("max_session_duration")
+            _default_duration = _existing_duration if _existing_duration else _recommended_duration
+
+            console.print("\n[cyan]Session Duration[/cyan]")
+            console.print(
+                "How long issued AWS credentials stay valid before re-authentication "
+                f"(3600–43200 seconds; recommended {_recommended_duration})."
+            )
+            duration_str = questionary.text(
+                "Max session duration (seconds):",
+                validate=lambda x: (
+                    (x.isdigit() and 3600 <= int(x) <= 43200) or "Must be a number between 3600 and 43200"
+                ),
+                default=str(_default_duration),
+            ).ask()
+            config["max_session_duration"] = int(duration_str) if duration_str else _default_duration
 
             # Save progress
             progress.save_step("oidc_complete", config)
@@ -1228,75 +1297,80 @@ class InitCommand(Command):
                             "[dim]  \u26a0 Estimates use published on-demand Bedrock rates. Use AWS Cost Explorer for billing truth.[/dim]"
                         )
 
-                        # Set token limits to 0 (disabled) when using cost mode
+                        # Cost mode: token-denominated limits are DISABLED (0).
+                        # The Lambdas skip token checks at 0, so the budgets
+                        # above are the sole control — do NOT prompt for token
+                        # counts (previously the token block below ran anyway
+                        # and overwrote these zeros with a token answer).
                         config["quota"]["monthly_limit"] = 0
                         config["quota"]["daily_limit"] = 0
+                        config["quota"]["warning_threshold_80"] = 0
+                        config["quota"]["warning_threshold_90"] = 0
                         monthly_limit = 0
+                        daily_limit = 0
 
                     else:
                         # Token-based limits (existing behavior)
                         config["quota"]["monthly_cost_limit"] = 0
                         config["quota"]["daily_cost_limit"] = 0
 
-                    # Monthly token limit (only prompted for token mode)
-                    if limit_type == "token":
                         console.print("\n[bold]Monthly Limit[/bold]")
-                    monthly_limit_millions = questionary.text(
-                        "Monthly token limit per user (in millions):",
-                        default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
-                        validate=lambda x: x.isdigit() and int(x) > 0,
-                    ).ask()
+                        monthly_limit_millions = questionary.text(
+                            "Monthly token limit per user (in millions):",
+                            default=str(config.get("quota", {}).get("monthly_limit_millions", 225)),
+                            validate=lambda x: x.isdigit() and int(x) > 0,
+                        ).ask()
 
-                    monthly_limit = int(monthly_limit_millions) * 1000000
-                    warning_80 = int(monthly_limit * 0.8)
-                    warning_90 = int(monthly_limit * 0.9)
+                        monthly_limit = int(monthly_limit_millions) * 1000000
+                        warning_80 = int(monthly_limit * 0.8)
+                        warning_90 = int(monthly_limit * 0.9)
 
-                    config["quota"]["monthly_limit"] = monthly_limit
-                    config["quota"]["warning_threshold_80"] = warning_80
-                    config["quota"]["warning_threshold_90"] = warning_90
+                        config["quota"]["monthly_limit"] = monthly_limit
+                        config["quota"]["warning_threshold_80"] = warning_80
+                        config["quota"]["warning_threshold_90"] = warning_90
 
-                    console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
-                    console.print(f"  → Warning at 80%: {warning_80:,} tokens")
-                    console.print(f"  → Critical at 90%: {warning_90:,} tokens")
+                        console.print(f"  → Monthly limit: {monthly_limit:,} tokens")
+                        console.print(f"  → Warning at 80%: {warning_80:,} tokens")
+                        console.print(f"  → Critical at 90%: {warning_90:,} tokens")
 
-                    # Daily limit configuration (Bill Shock Protection)
-                    console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
-                    console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
+                        # Daily limit configuration (Bill Shock Protection)
+                        console.print("\n[bold]Daily Limit (Bill Shock Protection)[/bold]")
+                        console.print("Prevent runaway usage by setting a daily limit with a burst buffer.")
 
-                    base_daily = monthly_limit / 30
+                        base_daily = monthly_limit / 30
 
-                    # Show burst buffer options
-                    console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
-                    console.print("\nBurst buffer allows daily variation above the average:")
-                    console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
-                    console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
-                    console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
+                        # Show burst buffer options
+                        console.print(f"\nBase daily limit (monthly ÷ 30): {int(base_daily):,} tokens")
+                        console.print("\nBurst buffer allows daily variation above the average:")
+                        console.print(f"  • [dim]5%  (strict)[/dim]   → {int(base_daily * 1.05):,}/day")
+                        console.print(f"  • [cyan]10% (default)[/cyan]  → {int(base_daily * 1.10):,}/day")
+                        console.print(f"  • [dim]25% (flexible)[/dim] → {int(base_daily * 1.25):,}/day")
 
-                    burst_buffer = questionary.text(
-                        "Burst buffer percentage (5-25%):",
-                        default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
-                        validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
-                    ).ask()
+                        burst_buffer = questionary.text(
+                            "Burst buffer percentage (5-25%):",
+                            default=str(config.get("quota", {}).get("burst_buffer_percent", 10)),
+                            validate=lambda x: x.isdigit() and 5 <= int(x) <= 25,
+                        ).ask()
 
-                    burst_percent = int(burst_buffer)
-                    calculated_daily = int(base_daily * (1 + burst_percent / 100))
+                        burst_percent = int(burst_buffer)
+                        calculated_daily = int(base_daily * (1 + burst_percent / 100))
 
-                    console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
+                        console.print(f"  → Calculated daily limit: {calculated_daily:,} tokens")
 
-                    # Allow custom override
-                    custom_daily = questionary.text(
-                        f"Custom daily limit (Enter to accept {calculated_daily:,}):",
-                        default="",
-                        validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
-                    ).ask()
+                        # Allow custom override
+                        custom_daily = questionary.text(
+                            f"Custom daily limit (Enter to accept {calculated_daily:,}):",
+                            default="",
+                            validate=lambda x: x == "" or (x.isdigit() and int(x) > 0),
+                        ).ask()
 
-                    daily_limit = int(custom_daily) if custom_daily else calculated_daily
+                        daily_limit = int(custom_daily) if custom_daily else calculated_daily
 
-                    config["quota"]["daily_limit"] = daily_limit
-                    config["quota"]["burst_buffer_percent"] = burst_percent
+                        config["quota"]["daily_limit"] = daily_limit
+                        config["quota"]["burst_buffer_percent"] = burst_percent
 
-                    if custom_daily:
-                        console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
+                        if custom_daily:
+                            console.print(f"  → Using custom daily limit: {daily_limit:,} tokens")
 
                     # Enforcement mode configuration
                     console.print("\n[bold]Enforcement Modes[/bold]")
@@ -1323,6 +1397,9 @@ class InitCommand(Command):
                     ).ask()
 
                     config["quota"]["daily_enforcement_mode"] = daily_enforcement
+                    # (Previously never saved — the wizard's monthly enforcement
+                    # answer was silently dropped and the default always won.)
+                    config["quota"]["monthly_enforcement_mode"] = monthly_enforcement
 
                     # Quota re-check interval
                     console.print("\n[bold]Quota Re-Check Interval[/bold]")
@@ -1360,9 +1437,18 @@ class InitCommand(Command):
                         config["quota"]["enable_bypass_detection"] = False
 
                     console.print("\n[green]✓[/green] Quota monitoring configured:")
-                    console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
-                    console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
-                    console.print(f"  • Burst buffer: {burst_percent}%")
+                    if limit_type == "cost":
+                        console.print(
+                            f"  • Monthly budget: ${config['quota']['monthly_cost_limit']:.2f}/user ({monthly_enforcement})"
+                        )
+                        if config["quota"]["daily_cost_limit"] > 0:
+                            console.print(
+                                f"  • Daily cap: ${config['quota']['daily_cost_limit']:.2f}/user ({daily_enforcement})"
+                            )
+                    else:
+                        console.print(f"  • Monthly: {monthly_limit:,} tokens ({monthly_enforcement})")
+                        console.print(f"  • Daily:   {daily_limit:,} tokens ({daily_enforcement})")
+                        console.print(f"  • Burst buffer: {burst_percent}%")
                     console.print(f"  • Re-check interval: {check_interval} minutes")
                     if config["quota"].get("enable_bypass_detection"):
                         console.print("  • Sidecar bypass detection: enabled")
@@ -1425,9 +1511,11 @@ class InitCommand(Command):
                     choices=[
                         questionary.Choice(nearest_label, value=nearest),
                         *[questionary.Choice(r, value=r) for r in CODEBUILD_WINDOWS_REGIONS if r != nearest],
-                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=None),
+                        questionary.Choice("Skip CodeBuild (build Windows binaries manually)", value=_CHOICE_NONE),
                     ],
                 ).ask()
+                if cb_choice == _CHOICE_NONE:
+                    cb_choice = None
 
                 prior_region = config["codebuild"].get("region")
                 config["codebuild"]["region"] = cb_choice
@@ -1630,14 +1718,13 @@ class InitCommand(Command):
         console.print("\n[bold]Package Distribution[/bold]")
         console.print("Choose how to distribute Claude Code packages to end users:")
         console.print("  • Presigned S3 URLs: Simple, no authentication (good for < 20 users)")
-        console.print("  • Landing Page (OIDC): External IdP authentication (Okta/Azure/Auth0)")
-        console.print("  • Landing Page (IDC): AWS IAM Identity Center with admin console")
+        console.print("  • Landing Page: Authenticated download portal (IdP + ALB).")
+        console.print("    Uses IAM Identity Center automatically when this profile's auth_type is 'idc'.")
 
         distribution_choices = [
             questionary.Choice("Presigned S3 URLs (simple, no authentication)", value="presigned-s3"),
-            questionary.Choice("Authenticated Landing Page (external OIDC)", value="landing-page"),
-            questionary.Choice("Self-Service Portal (IAM Identity Center)", value="landing-page-idc"),
-            questionary.Choice("Disabled", value=None),
+            questionary.Choice("Authenticated Landing Page (IdP + ALB)", value="landing-page"),
+            questionary.Choice("Disabled", value=_CHOICE_NONE),
         ]
 
         # Get saved value or default to None
@@ -1649,6 +1736,8 @@ class InitCommand(Command):
             choices=distribution_choices,
             default=default_choice,
         ).ask()
+        if distribution_type == _CHOICE_NONE:
+            distribution_type = None
 
         # Preserve existing distribution settings, only update enabled/type
         if "distribution" not in config:
@@ -1665,436 +1754,523 @@ class InitCommand(Command):
             # when AWS setup was skipped (skip_aws=True), so region is bound for all IdP providers.
             region = config.get("aws", {}).get("region", get_current_region())
 
-            # IdP provider selection
-            idp_choices = [
-                questionary.Choice("Okta", value="okta"),
-                questionary.Choice("Azure AD / Entra ID", value="azure"),
-                questionary.Choice("Auth0", value="auth0"),
-                questionary.Choice("AWS Cognito User Pool", value="cognito"),
-                questionary.Choice("Google", value="google"),
-                questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
-            ]
+            # IDC/SAML auth path: skip OIDC IdP config, prompt for SAML metadata URL
+            auth_type = config.get("auth_type", "oidc")
+            if auth_type == "idc":
+                console.print("\n[bold]IAM Identity Center (SAML) Configuration[/bold]")
+                console.print("[dim]IAM Identity Center requires a SAML metadata URL.[/dim]")
+                console.print("[dim]Create a Custom SAML 2.0 application in IAM Identity Center first.[/dim]")
+                console.print("[dim]Set the ACS URL to: https://<your-domain>/oauth2/idpresponse[/dim]")
 
-            idp_provider = questionary.select(
-                "Identity provider for web authentication:",
-                choices=idp_choices,
-                default=config.get("distribution", {}).get("idp_provider", "okta"),
-            ).ask()
+                saml_url = questionary.text(
+                    "SAML metadata URL from IAM Identity Center:",
+                    validate=lambda x: x.startswith("https://") or "URL must start with https://",
+                    default=config.get("distribution", {}).get("saml_metadata_url") or "",
+                ).ask()
+                if saml_url is None:
+                    return None
 
-            # Auto-detection for Cognito User Pool
-            cognito_auto_configured = False
-            if idp_provider == "cognito":
-                from claude_code_with_bedrock.cli.utils.aws import (
-                    detect_cognito_stack,
-                    validate_cognito_stack_for_distribution,
-                )
+                config.setdefault("distribution", {})["saml_metadata_url"] = saml_url.strip()
 
-                console.print("\n[bold]Cognito Configuration Detection[/bold]")
-                console.print("Searching for deployed Cognito User Pool stack...")
+                # Custom domain (REQUIRED for authenticated landing page)
+                console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
+                console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB authentication[/yellow]")
+                console.print("You will need:")
+                console.print("  • A custom domain (e.g., downloads.company.com)")
+                console.print("  • An ACM certificate for this domain in the same region")
 
-                # Try to auto-detect Cognito stack (region resolved at top of landing-page block)
-                cognito_stack_info = detect_cognito_stack(region)
+                custom_domain = questionary.text(
+                    "Custom domain (e.g., downloads.company.com):",
+                    default=config.get("distribution", {}).get("custom_domain") or "",
+                    validate=lambda text: (
+                        len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
+                    ),
+                ).ask()
+                if custom_domain is None:
+                    return None
 
-                if cognito_stack_info:
-                    console.print(f"[green]✓[/green] Found Cognito stack: {cognito_stack_info['stack_name']}")
+                # Check for Route53 hosted zones
+                console.print("\n[bold]Route53 Configuration[/bold]")
+                console.print("Looking for Route53 hosted zones...")
 
-                    # Validate it has distribution support
-                    is_valid, message = validate_cognito_stack_for_distribution(
-                        cognito_stack_info["stack_name"], region
-                    )
+                hosted_zone_id = None
+                try:
+                    import boto3
 
-                    if is_valid:
-                        console.print(f"[green]✓[/green] {message}")
+                    route53_client = boto3.client("route53")
+                    zones_response = route53_client.list_hosted_zones()
+                    hosted_zones = zones_response.get("HostedZones", [])
 
-                        # Show detected values
-                        outputs = cognito_stack_info["outputs"]
-                        console.print("\n[cyan]Detected Configuration:[/cyan]")
-                        console.print(f"  • User Pool ID: {outputs.get('UserPoolId', 'N/A')}")
+                    if hosted_zones:
+                        console.print(f"Found {len(hosted_zones)} hosted zone(s)")
 
-                        # Extract domain prefix from full domain
-                        full_domain = outputs.get("UserPoolDomain", "")
-                        domain_prefix = full_domain.split(".")[0] if full_domain else "N/A"
-                        console.print(f"  • Domain: {domain_prefix}")
+                        existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
 
-                        console.print(f"  • Client ID: {outputs.get('DistributionWebClientId', 'N/A')}")
-                        console.print(f"  • Secret ARN: {outputs.get('DistributionWebClientSecretArn', 'N/A')}")
-
-                        use_detected = questionary.confirm("\nUse these detected values?", default=True).ask()
-
-                        if use_detected:
-                            # Auto-populate configuration
-                            idp_domain = domain_prefix
-                            idp_client_id = outputs["DistributionWebClientId"]
-                            secret_arn = outputs["DistributionWebClientSecretArn"]
-
-                            # Store in config immediately
-                            config.setdefault("distribution", {}).update(
-                                {
-                                    "idp_provider": "cognito",
-                                    "idp_domain": idp_domain,
-                                    "idp_client_id": idp_client_id,
-                                    "idp_client_secret_arn": secret_arn,
-                                }
+                        zone_choices = [
+                            questionary.Choice(
+                                f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})",
+                                value=zone["Id"].split("/")[-1],
                             )
+                            for zone in hosted_zones
+                        ]
+                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=_CHOICE_NONE))
 
-                            # Also store Cognito User Pool ID for auth
-                            if "cognito_user_pool_id" not in config:
-                                config["cognito_user_pool_id"] = outputs["UserPoolId"]
+                        default_choice = None
+                        if existing_zone_id:
+                            for choice in zone_choices:
+                                if choice.value == existing_zone_id:
+                                    default_choice = choice
+                                    break
 
-                            console.print("[green]✓[/green] Configuration auto-populated from stack outputs")
-                            cognito_auto_configured = True
-                        else:
-                            console.print("[yellow]Manual configuration selected[/yellow]")
+                        hosted_zone_id = questionary.select(
+                            "Select Route53 hosted zone:",
+                            choices=zone_choices,
+                            default=default_choice if default_choice else zone_choices[0],
+                        ).ask()
+                        if hosted_zone_id == _CHOICE_NONE:
+                            hosted_zone_id = None
                     else:
-                        console.print(f"[yellow]⚠[/yellow] {message}")
-                        console.print("[yellow]Falling back to manual configuration...[/yellow]")
-                else:
-                    console.print("[yellow]No Cognito User Pool stack detected[/yellow]")
-                    console.print("You can either:")
-                    console.print("  1. Deploy the Cognito stack first")
-                    console.print("  2. Enter configuration manually")
-
-            # Only prompt for manual configuration if not auto-configured
-            if not cognito_auto_configured:
-                # IdP domain
-                # Use `or ""`, not just the .get default: a reloaded profile stores these
-                # keys with an explicit None (see _build_config_from_profile), so the key
-                # is present and .get returns None — and questionary.text(default=None)
-                # crashes with "object of type 'NoneType' has no len()".
-                idp_domain = questionary.text(
-                    "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
-                    default=config.get("distribution", {}).get("idp_domain") or "",
-                ).ask()
-
-                # Web app client ID
-                idp_client_id = questionary.text(
-                    "Web application client ID (separate from CLI native app):",
-                    default=config.get("distribution", {}).get("idp_client_id") or "",
-                ).ask()
-
-                # Web app client secret
-                idp_client_secret = questionary.password(
-                    "Web application client secret:",
-                ).ask()
-
-            # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP) can't have
-            # their ALB authenticate-oidc endpoints derived from a single domain the way
-            # Okta/Azure/Auth0/Cognito can, so collect each one explicitly. Try OIDC discovery
-            # first (mirrors the SSO generic flow) and fall back to manual entry.
-            dist_oidc_issuer = None
-            dist_oidc_authorization_endpoint = None
-            dist_oidc_token_endpoint = None
-            dist_oidc_userinfo_endpoint = None
-            if idp_provider == "generic":
-                from claude_code_with_bedrock.cli.utils.oidc_discovery import (
-                    OidcDiscoveryError,
-                    discover_oidc_endpoints,
-                )
-
-                console.print("\n[bold]Generic OIDC Landing Page Configuration[/bold]")
-                console.print(
-                    "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
-                    "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
-                )
-
-                # Use the domain entered above as the default issuer; let the user override.
-                default_issuer = (
-                    idp_domain
-                    if idp_domain and idp_domain.startswith(("http://", "https://"))
-                    else (f"https://{idp_domain}" if idp_domain else "")
-                ).rstrip("/")
-
-                dist_oidc_issuer = questionary.text(
-                    "OIDC issuer URL:",
-                    validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
-                    default=config.get("distribution", {}).get("idp_issuer", default_issuer),
-                    instruction="(must match the 'iss' claim in tokens)",
-                ).ask()
-                if not dist_oidc_issuer:
-                    return None
-                dist_oidc_issuer = dist_oidc_issuer.rstrip("/")
-
-                discovered: dict[str, str] = {}
-                console.print(f"[dim]Querying {dist_oidc_issuer}/.well-known/openid-configuration ...[/dim]")
-                try:
-                    discovered = discover_oidc_endpoints(dist_oidc_issuer)
-                    console.print("[green]✓ Discovery succeeded.[/green]")
-                except OidcDiscoveryError as e:
-                    console.print(f"[yellow]Discovery failed: {e}[/yellow]")
-                    console.print("[dim]Falling back to manual entry.[/dim]")
-
-                dist_oidc_authorization_endpoint = questionary.text(
-                    "Authorization endpoint:",
-                    validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
-                    default=(
-                        discovered.get("authorization_endpoint")
-                        or config.get("distribution", {}).get("idp_authorization_endpoint")
-                        or f"{dist_oidc_issuer}/as/authorization.oauth2"
-                    ),
-                    instruction="(full URL)",
-                ).ask()
-                if not dist_oidc_authorization_endpoint:
-                    return None
-
-                dist_oidc_token_endpoint = questionary.text(
-                    "Token endpoint:",
-                    validate=lambda x: bool(x) or "Token endpoint cannot be empty",
-                    default=(
-                        discovered.get("token_endpoint")
-                        or config.get("distribution", {}).get("idp_token_endpoint")
-                        or f"{dist_oidc_issuer}/as/token.oauth2"
-                    ),
-                    instruction="(full URL)",
-                ).ask()
-                if not dist_oidc_token_endpoint:
-                    return None
-
-                dist_oidc_userinfo_endpoint = questionary.text(
-                    "UserInfo endpoint:",
-                    validate=lambda x: bool(x) or "UserInfo endpoint cannot be empty",
-                    default=(
-                        discovered.get("userinfo_endpoint")
-                        or config.get("distribution", {}).get("idp_userinfo_endpoint")
-                        or f"{dist_oidc_issuer}/idp/userinfo.openid"
-                    ),
-                    instruction="(full URL)",
-                ).ask()
-                if not dist_oidc_userinfo_endpoint:
-                    return None
-
-            # Store secret in AWS Secrets Manager (only if not auto-configured)
-            import boto3
-
-            if not cognito_auto_configured:
-                try:
-                    secrets_client = boto3.client("secretsmanager", region_name=region)
-                    account_id = boto3.client("sts").get_caller_identity()["Account"]
-
-                    secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
-
-                    secret_arn = self._store_idp_secret(
-                        secrets_client,
-                        secret_name,
-                        idp_client_secret,
-                        description=f"IdP client secret for "
-                        f"{config['aws']['identity_pool_name']} distribution landing page",
-                    )
-
-                    console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
+                        console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
+                        console.print("You can still use custom domain if it's managed externally")
 
                 except Exception as e:
-                    console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
-                    console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
-                    # Storing failed, so we have no API response. Recover the real
-                    # ARN (with its random suffix) via describe_secret if the secret
-                    # exists; only fall back to a hand-built ARN as a last resort.
-                    try:
-                        secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
-                    except Exception:
-                        # Partition-aware so the fallback ARN is valid in GovCloud
-                        # (aws-us-gov) and China (aws-cn), not just commercial AWS.
-                        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+                    console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
 
-                        partition = aws_partition_for_region(region)
-                        secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+                # IAM Identity Center instance ARN (used by the optional admin
+                # console stack for group/model/permission-set management). Try
+                # to auto-detect the account's IDC instance.
+                idc_instance_arn = config.get("distribution", {}).get("idc_instance_arn", "")
+                try:
+                    import boto3
 
-            # Custom domain (REQUIRED for authenticated landing page)
-            console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
-            console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
-            console.print("You will need:")
-            console.print("  • A custom domain (e.g., downloads.company.com)")
-            console.print("  • An ACM certificate for this domain in the same region")
+                    sso_admin = boto3.client("sso-admin")
+                    instances = sso_admin.list_instances()
+                    if instances.get("Instances"):
+                        detected_arn = instances["Instances"][0].get("InstanceArn", "")
+                        identity_store_id = instances["Instances"][0].get("IdentityStoreId", "")
+                        console.print("\n[green]✓[/green] Detected IAM Identity Center instance")
+                        console.print(f"  Instance ARN: {detected_arn}")
+                        console.print(f"  Identity Store ID: {identity_store_id}")
 
-            custom_domain = questionary.text(
-                "Custom domain (e.g., downloads.company.com):",
-                default=config.get("distribution", {}).get("custom_domain") or "",
-                validate=lambda text: (
-                    len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
-                ),
-            ).ask()
-
-            # Check for Route53 hosted zones
-            console.print("\n[bold]Route53 Configuration[/bold]")
-            console.print("Looking for Route53 hosted zones...")
-
-            hosted_zone_id = None
-            try:
-                route53_client = boto3.client("route53")
-                zones_response = route53_client.list_hosted_zones()
-                hosted_zones = zones_response.get("HostedZones", [])
-
-                if hosted_zones:
-                    console.print(f"Found {len(hosted_zones)} hosted zone(s)")
-
-                    # Get existing hosted zone if configured
-                    existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
-
-                    # Create zone choices
-                    zone_choices = [
-                        questionary.Choice(
-                            f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
-                        )
-                        for zone in hosted_zones
-                    ]
-                    zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=None))
-
-                    # Find the default choice based on existing zone
-                    default_choice = None
-                    if existing_zone_id:
-                        for choice in zone_choices:
-                            if choice.value == existing_zone_id:
-                                default_choice = choice
-                                break
-
-                    hosted_zone_id = questionary.select(
-                        "Select Route53 hosted zone:",
-                        choices=zone_choices,
-                        default=default_choice if default_choice else zone_choices[0],
+                        use_detected = questionary.confirm(
+                            "Use this IAM Identity Center instance?",
+                            default=True,
+                        ).ask()
+                        if use_detected:
+                            idc_instance_arn = detected_arn
+                        else:
+                            idc_instance_arn = questionary.text(
+                                "IAM Identity Center instance ARN:",
+                                default=idc_instance_arn,
+                            ).ask()
+                    else:
+                        console.print("[yellow]⚠[/yellow] No IAM Identity Center instance found")
+                        idc_instance_arn = questionary.text(
+                            "IAM Identity Center instance ARN:",
+                            default=idc_instance_arn,
+                        ).ask()
+                except Exception as e:
+                    console.print(f"[yellow]⚠[/yellow] Could not detect IAM Identity Center: {e}")
+                    idc_instance_arn = questionary.text(
+                        "IAM Identity Center instance ARN:",
+                        default=idc_instance_arn,
                     ).ask()
-                else:
-                    console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
-                    console.print("You can still use custom domain if it's managed externally")
-                    hosted_zone_id = None
 
-            except Exception as e:
-                console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
-                hosted_zone_id = None
+                # Admin group name (used if an admin console is deployed later)
+                console.print(
+                    "\n[dim]Admin group: reserved for the optional admin console stack, not required for "
+                    "the landing page itself.[/dim]"
+                )
+                idc_admin_group = questionary.text(
+                    "Admin group name:",
+                    default=config.get("distribution", {}).get("idc_admin_group", "Claude-Code-Admins"),
+                ).ask()
 
-            # Save landing page configuration
-            config["distribution"].update(
-                {
-                    "idp_provider": idp_provider,
-                    "idp_domain": idp_domain,
-                    "idp_client_id": idp_client_id,
-                    "idp_client_secret_arn": secret_arn,
-                    "custom_domain": custom_domain,
-                    "hosted_zone_id": hosted_zone_id,
-                }
-            )
+                # ALB scheme: internal (default — test via SSM port forwarding, or VPN/private
+                # network access) vs internet-facing (production, publicly reachable).
+                console.print(
+                    "\n[dim]Load balancer scheme: 'internal' restricts access to your VPC/private network "
+                    "(test via SSM port forwarding or VPN). Use 'internet-facing' for public access.[/dim]"
+                )
+                alb_scheme = questionary.select(
+                    "ALB scheme:",
+                    choices=["internal", "internet-facing"],
+                    default=config.get("distribution", {}).get("alb_scheme", "internal"),
+                ).ask()
 
-            # Generic OIDC: persist the explicit endpoints (only set for provider == "generic")
-            if idp_provider == "generic":
+                # CloudFront-in-front-of-internal-ALB. An internal ALB has no public
+                # IP and can't get a real public certificate, so it can normally
+                # only be reached via SSM port forwarding or a VPN. Enabling
+                # CloudFront puts a public HTTPS URL (*.cloudfront.net) in front of
+                # it via a VPC origin over the AWS private backbone. OIDC auth moves
+                # into the Lambda (self-contained signed session cookies) since
+                # CloudFront can't validate a self-signed origin cert.
+                enable_cloudfront = False
+                if alb_scheme == "internal":
+                    console.print(
+                        "\n[dim]CloudFront: expose the internal ALB through a public HTTPS URL "
+                        "(*.cloudfront.net) via a VPC origin, so users can reach the landing page "
+                        "without SSM tunneling, a VPN, or buying a domain. Authentication moves into "
+                        "the Lambda (signed session cookies).[/dim]"
+                    )
+                    enable_cloudfront = questionary.confirm(
+                        "Put a CloudFront distribution in front of the internal ALB?",
+                        default=config.get("distribution", {}).get("enable_cloudfront", False),
+                    ).ask()
+
+                # Save IDC landing page configuration
                 config["distribution"].update(
                     {
-                        "idp_issuer": dist_oidc_issuer,
-                        "idp_authorization_endpoint": dist_oidc_authorization_endpoint,
-                        "idp_token_endpoint": dist_oidc_token_endpoint,
-                        "idp_userinfo_endpoint": dist_oidc_userinfo_endpoint,
+                        "type": "landing-page",
+                        "enabled": True,
+                        "custom_domain": custom_domain,
+                        "hosted_zone_id": hosted_zone_id,
+                        "saml_metadata_url": saml_url.strip(),
+                        "idc_instance_arn": idc_instance_arn,
+                        "idc_admin_group": idc_admin_group,
+                        "alb_scheme": alb_scheme,
+                        "enable_cloudfront": enable_cloudfront,
                     }
                 )
 
-            console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
+                console.print(
+                    "\n[green]✓[/green] Landing page distribution will be deployed "
+                    "with IAM Identity Center (SAML) authentication"
+                )
+                console.print(
+                    "[dim]Note: after deployment, create a Custom SAML 2.0 application in IAM Identity Center "
+                    "using the printed ACS URL/Audience, then run 'ccwb configure-saml <metadata-url>'.[/dim]"
+                )
+                console.print(
+                    "[dim]Optional: once the landing page is deployed, run 'ccwb deploy admin-console' to add "
+                    f"a /admin UI (restricted to the '{idc_admin_group}' group) for managing group->model "
+                    "mappings, permission sets, and MCP server policies.[/dim]"
+                )
 
-        elif distribution_type == "landing-page-idc":
-            console.print("\n[bold]IAM Identity Center Landing Page Configuration[/bold]")
-            console.print("Configure the self-service download portal with IAM Identity Center authentication")
-            console.print("\nThis deploys the same ALB + Lambda + S3 CloudFormation stack used by the other")
-            console.print("landing page types (`ccwb deploy distribution`), with Cognito bridging SAML (IDC)")
-            console.print("to OIDC for the ALB.")
+            else:
+                # OIDC auth path: existing IdP configuration flow
 
-            # Try to auto-detect IDC instance
-            try:
+                # IdP provider selection
+                idp_choices = [
+                    questionary.Choice("Okta", value="okta"),
+                    questionary.Choice("Azure AD / Entra ID", value="azure"),
+                    questionary.Choice("Auth0", value="auth0"),
+                    questionary.Choice("AWS Cognito User Pool", value="cognito"),
+                    questionary.Choice("Google", value="google"),
+                    questionary.Choice("Generic OIDC (PingFederate, Keycloak, ForgeRock, etc.)", value="generic"),
+                ]
+
+                idp_provider = questionary.select(
+                    "Identity provider for web authentication:",
+                    choices=idp_choices,
+                    default=config.get("distribution", {}).get("idp_provider", "okta"),
+                ).ask()
+
+                # Auto-detection for Cognito User Pool
+                cognito_auto_configured = False
+                if idp_provider == "cognito":
+                    from claude_code_with_bedrock.cli.utils.aws import (
+                        detect_cognito_stack,
+                        validate_cognito_stack_for_distribution,
+                    )
+
+                    console.print("\n[bold]Cognito Configuration Detection[/bold]")
+                    console.print("Searching for deployed Cognito User Pool stack...")
+
+                    # Try to auto-detect Cognito stack (region resolved at top of landing-page block)
+                    cognito_stack_info = detect_cognito_stack(region)
+
+                    if cognito_stack_info:
+                        console.print(f"[green]✓[/green] Found Cognito stack: {cognito_stack_info['stack_name']}")
+
+                        # Validate it has distribution support
+                        is_valid, message = validate_cognito_stack_for_distribution(
+                            cognito_stack_info["stack_name"], region
+                        )
+
+                        if is_valid:
+                            console.print(f"[green]✓[/green] {message}")
+
+                            # Show detected values
+                            outputs = cognito_stack_info["outputs"]
+                            console.print("\n[cyan]Detected Configuration:[/cyan]")
+                            console.print(f"  • User Pool ID: {outputs.get('UserPoolId', 'N/A')}")
+
+                            # Extract domain prefix from full domain
+                            full_domain = outputs.get("UserPoolDomain", "")
+                            domain_prefix = full_domain.split(".")[0] if full_domain else "N/A"
+                            console.print(f"  • Domain: {domain_prefix}")
+
+                            console.print(f"  • Client ID: {outputs.get('DistributionWebClientId', 'N/A')}")
+                            console.print(f"  • Secret ARN: {outputs.get('DistributionWebClientSecretArn', 'N/A')}")
+
+                            use_detected = questionary.confirm("\nUse these detected values?", default=True).ask()
+
+                            if use_detected:
+                                # Auto-populate configuration
+                                idp_domain = domain_prefix
+                                idp_client_id = outputs["DistributionWebClientId"]
+                                secret_arn = outputs["DistributionWebClientSecretArn"]
+
+                                # Store in config immediately
+                                config.setdefault("distribution", {}).update(
+                                    {
+                                        "idp_provider": "cognito",
+                                        "idp_domain": idp_domain,
+                                        "idp_client_id": idp_client_id,
+                                        "idp_client_secret_arn": secret_arn,
+                                    }
+                                )
+
+                                # Also store Cognito User Pool ID for auth
+                                if "cognito_user_pool_id" not in config:
+                                    config["cognito_user_pool_id"] = outputs["UserPoolId"]
+
+                                console.print("[green]✓[/green] Configuration auto-populated from stack outputs")
+                                cognito_auto_configured = True
+                            else:
+                                console.print("[yellow]Manual configuration selected[/yellow]")
+                        else:
+                            console.print(f"[yellow]⚠[/yellow] {message}")
+                            console.print("[yellow]Falling back to manual configuration...[/yellow]")
+                    else:
+                        console.print("[yellow]No Cognito User Pool stack detected[/yellow]")
+                        console.print("You can either:")
+                        console.print("  1. Deploy the Cognito stack first")
+                        console.print("  2. Enter configuration manually")
+
+                # Only prompt for manual configuration if not auto-configured
+                if not cognito_auto_configured:
+                    # IdP domain
+                    # Use `or ""`, not just the .get default: a reloaded profile stores these
+                    # keys with an explicit None (see _build_config_from_profile), so the key
+                    # is present and .get returns None — and questionary.text(default=None)
+                    # crashes with "object of type 'NoneType' has no len()".
+                    idp_domain = questionary.text(
+                        "IdP domain (e.g., company.okta.com for Okta, company.auth0.com for Auth0):",
+                        default=config.get("distribution", {}).get("idp_domain") or "",
+                    ).ask()
+
+                    # Web app client ID
+                    idp_client_id = questionary.text(
+                        "Web application client ID (separate from CLI native app):",
+                        default=config.get("distribution", {}).get("idp_client_id") or "",
+                    ).ask()
+
+                    # Web app client secret
+                    idp_client_secret = questionary.password(
+                        "Web application client secret:",
+                    ).ask()
+
+                # Generic OIDC providers (PingFederate, Keycloak, ForgeRock, custom IdP) can't have
+                # their ALB authenticate-oidc endpoints derived from a single domain the way
+                # Okta/Azure/Auth0/Cognito can, so collect each one explicitly. Try OIDC discovery
+                # first (mirrors the SSO generic flow) and fall back to manual entry.
+                dist_oidc_issuer = None
+                dist_oidc_authorization_endpoint = None
+                dist_oidc_token_endpoint = None
+                dist_oidc_userinfo_endpoint = None
+                if idp_provider == "generic":
+                    from claude_code_with_bedrock.cli.utils.oidc_discovery import (
+                        OidcDiscoveryError,
+                        discover_oidc_endpoints,
+                    )
+
+                    console.print("\n[bold]Generic OIDC Landing Page Configuration[/bold]")
+                    console.print(
+                        "[dim]We'll try to auto-discover endpoints via the standard well-known URL,[/dim]\n"
+                        "[dim]and fall back to manual entry if your IdP doesn't expose one.[/dim]\n"
+                    )
+
+                    # Use the domain entered above as the default issuer; let the user override.
+                    default_issuer = (
+                        idp_domain
+                        if idp_domain and idp_domain.startswith(("http://", "https://"))
+                        else (f"https://{idp_domain}" if idp_domain else "")
+                    ).rstrip("/")
+
+                    dist_oidc_issuer = questionary.text(
+                        "OIDC issuer URL:",
+                        validate=lambda x: x.startswith("https://") or "Issuer must start with https://",
+                        default=config.get("distribution", {}).get("idp_issuer", default_issuer),
+                        instruction="(must match the 'iss' claim in tokens)",
+                    ).ask()
+                    if not dist_oidc_issuer:
+                        return None
+                    dist_oidc_issuer = dist_oidc_issuer.rstrip("/")
+
+                    discovered: dict[str, str] = {}
+                    console.print(f"[dim]Querying {dist_oidc_issuer}/.well-known/openid-configuration ...[/dim]")
+                    try:
+                        discovered = discover_oidc_endpoints(dist_oidc_issuer)
+                        console.print("[green]✓ Discovery succeeded.[/green]")
+                    except OidcDiscoveryError as e:
+                        console.print(f"[yellow]Discovery failed: {e}[/yellow]")
+                        console.print("[dim]Falling back to manual entry.[/dim]")
+
+                    dist_oidc_authorization_endpoint = questionary.text(
+                        "Authorization endpoint:",
+                        validate=lambda x: bool(x) or "Authorization endpoint cannot be empty",
+                        default=(
+                            discovered.get("authorization_endpoint")
+                            or config.get("distribution", {}).get("idp_authorization_endpoint")
+                            or f"{dist_oidc_issuer}/as/authorization.oauth2"
+                        ),
+                        instruction="(full URL)",
+                    ).ask()
+                    if not dist_oidc_authorization_endpoint:
+                        return None
+
+                    dist_oidc_token_endpoint = questionary.text(
+                        "Token endpoint:",
+                        validate=lambda x: bool(x) or "Token endpoint cannot be empty",
+                        default=(
+                            discovered.get("token_endpoint")
+                            or config.get("distribution", {}).get("idp_token_endpoint")
+                            or f"{dist_oidc_issuer}/as/token.oauth2"
+                        ),
+                        instruction="(full URL)",
+                    ).ask()
+                    if not dist_oidc_token_endpoint:
+                        return None
+
+                    dist_oidc_userinfo_endpoint = questionary.text(
+                        "UserInfo endpoint:",
+                        validate=lambda x: bool(x) or "UserInfo endpoint cannot be empty",
+                        default=(
+                            discovered.get("userinfo_endpoint")
+                            or config.get("distribution", {}).get("idp_userinfo_endpoint")
+                            or f"{dist_oidc_issuer}/idp/userinfo.openid"
+                        ),
+                        instruction="(full URL)",
+                    ).ask()
+                    if not dist_oidc_userinfo_endpoint:
+                        return None
+
+                # Store secret in AWS Secrets Manager (only if not auto-configured)
                 import boto3
 
-                sso_admin = boto3.client("sso-admin")
-                instances = sso_admin.list_instances()
-                if instances.get("Instances"):
-                    detected_arn = instances["Instances"][0].get("InstanceArn", "")
-                    identity_store_id = instances["Instances"][0].get("IdentityStoreId", "")
-                    console.print("\n[green]✓[/green] Detected IAM Identity Center instance")
-                    console.print(f"  Instance ARN: {detected_arn}")
-                    console.print(f"  Identity Store ID: {identity_store_id}")
+                if not cognito_auto_configured:
+                    try:
+                        secrets_client = boto3.client("secretsmanager", region_name=region)
+                        account_id = boto3.client("sts").get_caller_identity()["Account"]
 
-                    use_detected = questionary.confirm(
-                        "Use this IAM Identity Center instance?",
-                        default=True,
-                    ).ask()
+                        secret_name = f"{config['aws']['identity_pool_name']}-distribution-idp-secret"
 
-                    if use_detected:
-                        idc_instance_arn = detected_arn
-                    else:
-                        idc_instance_arn = questionary.text(
-                            "IAM Identity Center instance ARN:",
-                            default=config.get("distribution", {}).get("idc_instance_arn", ""),
+                        secret_arn = self._store_idp_secret(
+                            secrets_client,
+                            secret_name,
+                            idp_client_secret,
+                            description=f"IdP client secret for "
+                            f"{config['aws']['identity_pool_name']} distribution landing page",
+                        )
+
+                        console.print(f"[green]✓[/green] IdP client secret stored in Secrets Manager: {secret_name}")
+
+                    except Exception as e:
+                        console.print(f"[red]Error storing secret in Secrets Manager: {e}[/red]")
+                        console.print("[yellow]You'll need to configure the secret manually before deployment[/yellow]")
+                        # Storing failed, so we have no API response. Recover the real
+                        # ARN (with its random suffix) via describe_secret if the secret
+                        # exists; only fall back to a hand-built ARN as a last resort.
+                        try:
+                            secret_arn = secrets_client.describe_secret(SecretId=secret_name)["ARN"]
+                        except Exception:
+                            # Partition-aware so the fallback ARN is valid in GovCloud
+                            # (aws-us-gov) and China (aws-cn), not just commercial AWS.
+                            from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+                            partition = aws_partition_for_region(region)
+                            secret_arn = f"arn:{partition}:secretsmanager:{region}:{account_id}:secret:{secret_name}"  # allow-handbuilt-arn
+
+                # Custom domain (REQUIRED for authenticated landing page)
+                console.print("\n[bold]Custom Domain Configuration (REQUIRED)[/bold]")
+                console.print("[yellow]⚠️  Custom domain with HTTPS is required for ALB OIDC authentication[/yellow]")
+                console.print("You will need:")
+                console.print("  • A custom domain (e.g., downloads.company.com)")
+                console.print("  • An ACM certificate for this domain in the same region")
+
+                custom_domain = questionary.text(
+                    "Custom domain (e.g., downloads.company.com):",
+                    default=config.get("distribution", {}).get("custom_domain") or "",
+                    validate=lambda text: (
+                        len(text.strip()) > 0 or "Custom domain is required for authenticated landing page"
+                    ),
+                ).ask()
+
+                # Check for Route53 hosted zones
+                console.print("\n[bold]Route53 Configuration[/bold]")
+                console.print("Looking for Route53 hosted zones...")
+
+                hosted_zone_id = None
+                try:
+                    route53_client = boto3.client("route53")
+                    zones_response = route53_client.list_hosted_zones()
+                    hosted_zones = zones_response.get("HostedZones", [])
+
+                    if hosted_zones:
+                        console.print(f"Found {len(hosted_zones)} hosted zone(s)")
+
+                        # Get existing hosted zone if configured
+                        existing_zone_id = config.get("distribution", {}).get("hosted_zone_id")
+
+                        # Create zone choices
+                        zone_choices = [
+                            questionary.Choice(
+                                f"{zone['Name']} (ID: {zone['Id'].split('/')[-1]})", value=zone["Id"].split("/")[-1]
+                            )
+                            for zone in hosted_zones
+                        ]
+                        zone_choices.append(questionary.Choice("Skip (no Route53 managed domain)", value=_CHOICE_NONE))
+
+                        # Find the default choice based on existing zone
+                        default_choice = None
+                        if existing_zone_id:
+                            for choice in zone_choices:
+                                if choice.value == existing_zone_id:
+                                    default_choice = choice
+                                    break
+
+                        hosted_zone_id = questionary.select(
+                            "Select Route53 hosted zone:",
+                            choices=zone_choices,
+                            default=default_choice if default_choice else zone_choices[0],
                         ).ask()
-                else:
-                    console.print("[yellow]⚠[/yellow] No IAM Identity Center instance found")
-                    idc_instance_arn = questionary.text(
-                        "IAM Identity Center instance ARN:",
-                        default=config.get("distribution", {}).get("idc_instance_arn", ""),
-                    ).ask()
-            except Exception as e:
-                console.print(f"[yellow]⚠[/yellow] Could not detect IAM Identity Center: {e}")
-                idc_instance_arn = questionary.text(
-                    "IAM Identity Center instance ARN:",
-                    default=config.get("distribution", {}).get("idc_instance_arn", ""),
-                ).ask()
+                        if hosted_zone_id == _CHOICE_NONE:
+                            hosted_zone_id = None
+                    else:
+                        console.print("[yellow]No Route53 hosted zones found in this account[/yellow]")
+                        console.print("You can still use custom domain if it's managed externally")
+                        hosted_zone_id = None
 
-            # Admin group name (used if an admin console is deployed later)
-            console.print(
-                "\n[dim]Admin group: reserved for a future admin console stack, not required for the "
-                "landing page itself.[/dim]"
-            )
-            idc_admin_group = questionary.text(
-                "Admin group name:",
-                default=config.get("distribution", {}).get("idc_admin_group", "Claude-Code-Admins"),
-            ).ask()
+                except Exception as e:
+                    console.print(f"[yellow]Could not list Route53 zones: {e}[/yellow]")
+                    hosted_zone_id = None
 
-            # ALB scheme: internal (default — test via SSM port forwarding, or VPN/private
-            # network access) vs internet-facing (production, publicly reachable).
-            console.print(
-                "\n[dim]Load balancer scheme: 'internal' restricts access to your VPC/private network "
-                "(test via SSM port forwarding or VPN). Use 'internet-facing' for public access.[/dim]"
-            )
-            alb_scheme = questionary.select(
-                "ALB scheme:",
-                choices=["internal", "internet-facing"],
-                default=config.get("distribution", {}).get("alb_scheme", "internal"),
-            ).ask()
-
-            # CloudFront-in-front-of-internal-ALB. An internal ALB has no public
-            # IP and can't get a real public certificate, so it can normally
-            # only be reached via SSM port forwarding or a VPN. Enabling
-            # CloudFront puts a public HTTPS URL (*.cloudfront.net) in front of
-            # it via a VPC origin over the AWS private backbone, so users can
-            # reach the landing page directly without a domain/cert. OIDC auth
-            # moves into the Lambda (self-contained signed session cookies)
-            # since CloudFront can't validate a self-signed origin cert.
-            enable_cloudfront = False
-            if alb_scheme == "internal":
-                console.print(
-                    "\n[dim]CloudFront: expose the internal ALB through a public HTTPS URL "
-                    "(*.cloudfront.net) via a VPC origin, so users can reach the landing page "
-                    "without SSM tunneling, a VPN, or buying a domain. Authentication moves into "
-                    "the Lambda (signed session cookies).[/dim]"
+                # Save landing page configuration
+                config["distribution"].update(
+                    {
+                        "idp_provider": idp_provider,
+                        "idp_domain": idp_domain,
+                        "idp_client_id": idp_client_id,
+                        "idp_client_secret_arn": secret_arn,
+                        "custom_domain": custom_domain,
+                        "hosted_zone_id": hosted_zone_id,
+                    }
                 )
-                enable_cloudfront = questionary.confirm(
-                    "Put a CloudFront distribution in front of the internal ALB?",
-                    default=config.get("distribution", {}).get("enable_cloudfront", False),
-                ).ask()
 
-            # Store IDC configuration
-            config.setdefault("distribution", {}).update(
-                {
-                    "enabled": True,
-                    "type": "landing-page-idc",
-                    "idc_instance_arn": idc_instance_arn,
-                    "idc_admin_group": idc_admin_group,
-                    "alb_scheme": alb_scheme,
-                    "enable_cloudfront": enable_cloudfront,
-                }
-            )
+                # Generic OIDC: persist the explicit endpoints (only set for provider == "generic")
+                if idp_provider == "generic":
+                    config["distribution"].update(
+                        {
+                            "idp_issuer": dist_oidc_issuer,
+                            "idp_authorization_endpoint": dist_oidc_authorization_endpoint,
+                            "idp_token_endpoint": dist_oidc_token_endpoint,
+                            "idp_userinfo_endpoint": dist_oidc_userinfo_endpoint,
+                        }
+                    )
 
-            console.print("\n[green]✓[/green] IAM Identity Center landing page will be deployed")
-            console.print(
-                "[dim]Note: after deployment, create a Custom SAML 2.0 application in IAM Identity Center "
-                "using the printed ACS URL/Audience, then run 'ccwb configure-saml <metadata-url>'.[/dim]"
-            )
-            console.print(
-                "[dim]Optional: once the landing page is deployed, run 'ccwb deploy admin-console' to add "
-                f"a /admin UI (restricted to the '{idc_admin_group}' group) for managing group->model "
-                "mappings, permission sets, and MCP server policies.[/dim]"
-            )
+                console.print("\n[green]✓[/green] Landing page distribution will be deployed with IdP authentication")
 
         elif distribution_type == "presigned-s3":
             console.print("[green]✓[/green] Presigned S3 distribution will be deployed")
@@ -2127,10 +2303,18 @@ class InitCommand(Command):
                     if saved_model_key:
                         break
 
-            # Step 1: Select Claude model
+            # Step 1: Select Claude model. Offer only models the selected
+            # region's partition can invoke (GovCloud ↔ commercial).
+            offered_model_keys = _model_keys_for_region(config.get("aws", {}).get("region"))
+
             model_choices = []
-            default_model_key = saved_model_key or "sonnet-4-5"
-            for model_key, model_info in CLAUDE_MODELS.items():
+            default_model_key = saved_model_key if saved_model_key in offered_model_keys else None
+            if default_model_key is None:
+                default_model_key = (
+                    "sonnet-4-5-govcloud" if "sonnet-4-5-govcloud" in offered_model_keys else "sonnet-4-5"
+                )
+            for model_key in offered_model_keys:
+                model_info = CLAUDE_MODELS[model_key]
                 # Build region list from available profiles
                 available_profiles = get_available_profiles_for_model(model_key)
                 regions = []
@@ -2138,10 +2322,12 @@ class InitCommand(Command):
                     regions.append("Global")
                 if "us" in available_profiles:
                     regions.append("US")
-                if "europe" in available_profiles:
+                if "eu" in available_profiles or "europe" in available_profiles:
                     regions.append("Europe")
                 if "apac" in available_profiles:
                     regions.append("APAC")
+                if "us-gov" in available_profiles:
+                    regions.append("GovCloud")
                 regions_text = ", ".join(regions)
 
                 choice_text = f"{model_info['name']} ({regions_text})"
@@ -2379,7 +2565,138 @@ class InitCommand(Command):
         else:
             config["tags"] = config.get("tags", {})
 
+        # Extra files (optional) — admin-defined files/folders shipped on top of
+        # the generated package. Preserves the existing list on cancel.
+        config["extra_files"] = self._configure_extra_files(config.get("extra_files", []))
+
         return config
+
+    def _configure_extra_files(self, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Interactively add/edit/remove admin-defined extra files.
+
+        Extra files are copied on top of the generated package by `package` and
+        filtered per-OS by `distribute`. Returns the (possibly unchanged) list.
+
+        Non-interactive / cancel safety: any prompt returning None (Ctrl+C or no
+        TTY) leaves the existing list untouched — the wizard never crashes and
+        never silently drops configured entries.
+        """
+        from claude_code_with_bedrock.extra_files import VALID_TARGET_TOKENS, validate_extra_files
+
+        console = Console()
+        # Work on a copy so a mid-loop cancel can fall back to the original.
+        entries: list[dict[str, Any]] = [dict(e) for e in (existing or [])]
+
+        console.print("\n[bold]Extra Files (Optional)[/bold]")
+        console.print("[dim]Ship extra files/folders on top of the package (preinstall scripts, certs, etc.).[/dim]")
+
+        want = questionary.confirm(
+            "Add or edit extra files to include in the package?",
+            default=bool(entries),
+        ).ask()
+        if want is None:
+            return existing or []
+        if not want:
+            return entries
+
+        # Sorted for a stable checkbox order in the Add prompt.
+        token_choices = sorted(VALID_TARGET_TOKENS)
+
+        while True:
+            if entries:
+                console.print("\n[dim]Current extra files:[/dim]")
+                for i, e in enumerate(entries, 1):
+                    targets = e.get("targets")
+                    targets_str = ", ".join(targets) if isinstance(targets, list) else str(targets)
+                    console.print(f"  {i}. {e.get('name')}  → {targets_str}  ← {e.get('from')}")
+            else:
+                console.print("\n[dim]No extra files configured yet.[/dim]")
+
+            action = questionary.select(
+                "Extra files:",
+                choices=["Add", "Edit", "Remove", "Done"] if entries else ["Add", "Done"],
+            ).ask()
+            if action is None or action == "Done":
+                break
+
+            if action == "Remove":
+                idx = self._pick_extra_file_index(entries, "Remove which entry?")
+                if idx is not None:
+                    removed = entries.pop(idx)
+                    console.print(f"[yellow]✗[/yellow] Removed: {removed.get('name')}")
+                continue
+
+            # Add or Edit both gather the same three fields.
+            current = None
+            if action == "Edit":
+                idx = self._pick_extra_file_index(entries, "Edit which entry?")
+                if idx is None:
+                    continue
+                current = entries[idx]
+
+            src = questionary.text(
+                "Source path (file or folder) on this machine:",
+                default=(current.get("from") if current else "") or "",
+            ).ask()
+            if src is None or not src.strip():
+                console.print("[dim]Cancelled.[/dim]")
+                continue
+            src = src.strip()
+
+            default_name = (current.get("name") if current else "") or Path(src).expanduser().name
+            name = questionary.text(
+                "Name inside the package:",
+                default=default_name,
+            ).ask()
+            if name is None or not name.strip():
+                console.print("[dim]Cancelled.[/dim]")
+                continue
+            name = name.strip()
+
+            # Pre-check the entry's current targets when editing; nothing on Add.
+            # Save exactly what the admin checks — "all" is just another token and
+            # can be combined with specific platforms (the matcher treats "all" as
+            # matching everything, so extra picks alongside it are harmless).
+            current_targets = current.get("targets", []) if current else []
+            if isinstance(current_targets, str):
+                current_targets = [current_targets]
+            targets = questionary.checkbox(
+                "Which machines get this? (space to select, enter to confirm)",
+                choices=[questionary.Choice(t, value=t, checked=(t in current_targets)) for t in token_choices],
+            ).ask()
+            if targets is None or not targets:
+                console.print("[yellow]![/yellow] No targets selected — entry not saved.")
+                continue
+
+            entry = {"name": name, "targets": targets, "from": src}
+            errors = validate_extra_files([entry])
+            if errors:
+                for err in errors:
+                    console.print(f"[red]✗ {err}[/red]")
+                console.print("[dim]Entry not saved — fix the issue and try again.[/dim]")
+                continue
+
+            # Warn (don't block) if the source doesn't exist yet — the admin may
+            # create it before running `package`. Build time enforces presence.
+            if not Path(src).expanduser().exists():
+                console.print(f"[yellow]![/yellow] Source not found yet: {src} (must exist at package time)")
+
+            if current is not None:
+                entries[idx] = entry
+                console.print(f"[green]✓[/green] Updated: {name}")
+            else:
+                entries.append(entry)
+                console.print(f"[green]✓[/green] Added: {name}")
+
+        return entries
+
+    @staticmethod
+    def _pick_extra_file_index(entries: list[dict[str, Any]], prompt: str) -> int | None:
+        """Prompt for an entry by name; return its index or None if cancelled."""
+        if not entries:
+            return None
+        choices = [questionary.Choice(f"{e.get('name')} ← {e.get('from')}", value=i) for i, e in enumerate(entries)]
+        return questionary.select(prompt, choices=choices).ask()
 
     @staticmethod
     def _store_idp_secret(secrets_client, secret_name: str, secret_value: str, description: str = "") -> str:
@@ -2525,6 +2842,11 @@ class InitCommand(Command):
         extra_keys = config.get("cowork_3p", {}).get("extra_keys", {})
         if extra_keys:
             table.add_row("Custom MDM Keys", ", ".join(f"{k}={v}" for k, v in extra_keys.items()))
+
+        # Show admin-defined extra files
+        extra_files = config.get("extra_files", [])
+        if extra_files:
+            table.add_row("Extra Files", ", ".join(str(e.get("name", "?")) for e in extra_files))
 
         console.print(table)
 
@@ -2752,6 +3074,9 @@ class InitCommand(Command):
             "idc_permission_set_name": config_data.get("idc_permission_set_name"),
             "sso_region": config_data.get("sso_region"),
             "azure_auth_mode": config_data.get("azure_auth_mode"),
+            # Google's client_secret is non-confidential and persisted in config.json
+            # (Azure's confidential secret lives in the OS keyring and stays None here).
+            "client_secret": config_data.get("client_secret"),
             "client_certificate_path": config_data.get("client_certificate_path"),
             "client_certificate_key_path": config_data.get("client_certificate_key_path"),
             "enable_codebuild": config_data.get("codebuild", {}).get("enabled", False),
@@ -2771,6 +3096,7 @@ class InitCommand(Command):
             ),
             "distribution_idp_token_endpoint": config_data.get("distribution", {}).get("idp_token_endpoint"),
             "distribution_idp_userinfo_endpoint": config_data.get("distribution", {}).get("idp_userinfo_endpoint"),
+            "distribution_saml_metadata_url": config_data.get("distribution", {}).get("saml_metadata_url"),
             "distribution_idc_instance_arn": config_data.get("distribution", {}).get("idc_instance_arn"),
             "distribution_idc_admin_group": config_data.get("distribution", {}).get(
                 "idc_admin_group", "Claude-Code-Admins"
@@ -2788,6 +3114,9 @@ class InitCommand(Command):
             "daily_token_limit": config_data.get("quota", {}).get("daily_limit"),
             "burst_buffer_percent": config_data.get("quota", {}).get("burst_buffer_percent", 10),
             "daily_enforcement_mode": config_data.get("quota", {}).get("daily_enforcement_mode", "alert"),
+            "quota_limit_type": config_data.get("quota", {}).get("limit_type", "token"),
+            "monthly_cost_limit_usd": config_data.get("quota", {}).get("monthly_cost_limit", 0),
+            "daily_cost_limit_usd": config_data.get("quota", {}).get("daily_cost_limit", 0),
             "monthly_enforcement_mode": config_data.get("quota", {}).get("monthly_enforcement_mode", "block"),
             "quota_check_interval": config_data.get("quota", {}).get("check_interval", 30),
             "enable_bypass_detection": config_data.get("quota", {}).get("enable_bypass_detection", False),
@@ -2806,6 +3135,7 @@ class InitCommand(Command):
             "lock_default_model": config_data.get("lock_default_model", False),
             "tags": config_data.get("tags", {}),
             "redirect_port": config_data.get("redirect_port"),
+            "extra_files": config_data.get("extra_files", []),
         }
 
         if existing_profile:
@@ -2923,11 +3253,15 @@ class InitCommand(Command):
         sso_enabled = config.get("sso_enabled", True)
         okta_domain = config.get("okta", {}).get("domain", "none") if sso_enabled else "none"
         okta_client_id = config.get("okta", {}).get("client_id", "none") if sso_enabled else "none"
+        # Expand region sentinels (e.g. "all-commercial") before they reach the
+        # AllowedBedrockRegions CFN param → aws:RequestedRegion IAM condition.
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
         param_map = {
             "OktaDomain": okta_domain,
             "OktaClientId": okta_client_id,
             "IdentityPoolName": config["aws"]["identity_pool_name"],
-            "AllowedBedrockRegions": ",".join(config["aws"]["allowed_bedrock_regions"]),
+            "AllowedBedrockRegions": ",".join(expand_bedrock_regions(config["aws"]["allowed_bedrock_regions"])),
             "EnableMonitoring": "true" if config["monitoring"]["enabled"] else "false",
             "MaxSessionDuration": "28800",  # 8 hours
         }
@@ -3198,6 +3532,7 @@ class InitCommand(Command):
                     "idp_authorization_endpoint": getattr(profile, "distribution_idp_authorization_endpoint", None),
                     "idp_token_endpoint": getattr(profile, "distribution_idp_token_endpoint", None),
                     "idp_userinfo_endpoint": getattr(profile, "distribution_idp_userinfo_endpoint", None),
+                    "saml_metadata_url": getattr(profile, "distribution_saml_metadata_url", None),
                     "idc_instance_arn": getattr(profile, "distribution_idc_instance_arn", None),
                     "idc_admin_group": getattr(profile, "distribution_idc_admin_group", "Claude-Code-Admins"),
                     "alb_scheme": getattr(profile, "distribution_alb_scheme", None),
@@ -3220,6 +3555,9 @@ class InitCommand(Command):
                     "burst_buffer_percent": getattr(profile, "burst_buffer_percent", 10),
                     "daily_enforcement_mode": getattr(profile, "daily_enforcement_mode", "alert"),
                     "monthly_enforcement_mode": getattr(profile, "monthly_enforcement_mode", "block"),
+                    "limit_type": getattr(profile, "quota_limit_type", "token"),
+                    "monthly_cost_limit": getattr(profile, "monthly_cost_limit_usd", 0),
+                    "daily_cost_limit": getattr(profile, "daily_cost_limit_usd", 0),
                     "check_interval": getattr(profile, "quota_check_interval", 30),
                     "enable_bypass_detection": getattr(profile, "enable_bypass_detection", False),
                 }
@@ -3229,9 +3567,13 @@ class InitCommand(Command):
                 existing_config["analytics"] = {"enabled": profile.analytics_enabled}
 
             # Preserve confidential client configuration if present
-            # client_secret is never written to config — it lives in the OS keyring
+            # Azure's client_secret lives in the OS keyring (never in config); Google's
+            # client_secret is non-confidential and persisted in the profile — restore
+            # it so re-running init pre-fills the value instead of losing it.
             if getattr(profile, "azure_auth_mode", None):
                 existing_config["azure_auth_mode"] = profile.azure_auth_mode
+            if getattr(profile, "client_secret", None):
+                existing_config["client_secret"] = profile.client_secret
             if getattr(profile, "client_certificate_path", None):
                 existing_config["client_certificate_path"] = profile.client_certificate_path
                 existing_config["client_certificate_key_path"] = profile.client_certificate_key_path
@@ -3243,6 +3585,9 @@ class InitCommand(Command):
             # Add resource tags if present
             if hasattr(profile, "tags") and profile.tags:
                 existing_config["tags"] = profile.tags
+
+            # Restore admin-defined extra files so re-running init shows them.
+            existing_config["extra_files"] = getattr(profile, "extra_files", [])
 
             return existing_config
 

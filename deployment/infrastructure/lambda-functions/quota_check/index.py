@@ -24,6 +24,11 @@ ERROR_HANDLING_MODE = os.environ.get("ERROR_HANDLING_MODE", "fail_closed")
 ENABLE_FINEGRAINED_QUOTAS = os.environ.get("ENABLE_FINEGRAINED_QUOTAS", "false").lower() == "true"
 MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", "0"))
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "0"))
+# Cost-based limits ($/user). 0 disables. When configured, the cost checks in
+# the enforcement section take precedence over token checks; the wizard's cost
+# mode also sets the token limits to 0 so cost is the sole control.
+MONTHLY_COST_LIMIT_USD = float(os.environ.get("MONTHLY_COST_LIMIT_USD", "0") or 0)
+DAILY_COST_LIMIT_USD = float(os.environ.get("DAILY_COST_LIMIT_USD", "0") or 0)
 MONTHLY_ENFORCEMENT_MODE = os.environ.get("MONTHLY_ENFORCEMENT_MODE", "block")
 DAILY_ENFORCEMENT_MODE = os.environ.get("DAILY_ENFORCEMENT_MODE", "alert")
 WARNING_THRESHOLD_80 = int(os.environ.get("WARNING_THRESHOLD_80", "240000000"))
@@ -36,6 +41,7 @@ policies_table = dynamodb.Table(POLICIES_TABLE)
 
 class DecimalEncoder(json.JSONEncoder):
     """JSON encoder that handles Decimal types."""
+
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
@@ -88,43 +94,50 @@ def lambda_handler(event, context):
             # Neither JWT nor IAM identity resolved
             print(f"No user identity found. JWT claims: {list(jwt_claims.keys())}")
             allow_missing_email = MISSING_EMAIL_ENFORCEMENT != "block"
-            return build_response(200, {
-                "error": "No user identity found (no JWT email claim or IAM session name)",
-                "allowed": allow_missing_email,
-                "reason": "missing_identity",
-                "message": "Could not resolve user identity" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
-            })
+            return build_response(
+                200,
+                {
+                    "error": "No user identity found (no JWT email claim or IAM session name)",
+                    "allowed": allow_missing_email,
+                    "reason": "missing_identity",
+                    "message": "Could not resolve user identity"
+                    + (" - quota check skipped" if allow_missing_email else " - access denied for security"),
+                },
+            )
 
         # 1. Resolve the effective quota policy for this user
         policy = resolve_quota_for_user(email, groups)
 
         if policy is None:
             # No policy = unlimited (quota monitoring disabled)
-            return build_response(200, {
-                "allowed": True,
-                "reason": "no_policy",
-                "enforcement_mode": None,
-                "usage": None,
-                "policy": None,
-                "unblock_status": None,
-                "message": "No quota policy configured - unlimited access"
-            })
+            return build_response(
+                200,
+                {
+                    "allowed": True,
+                    "reason": "no_policy",
+                    "enforcement_mode": None,
+                    "usage": None,
+                    "policy": None,
+                    "unblock_status": None,
+                    "message": "No quota policy configured - unlimited access",
+                },
+            )
 
         # 2. Check for active unblock override
         unblock_status = get_unblock_status(email)
         if unblock_status and unblock_status.get("is_unblocked"):
-            return build_response(200, {
-                "allowed": True,
-                "reason": "unblocked",
-                "enforcement_mode": policy.get("enforcement_mode", "alert"),
-                "usage": get_user_usage_summary(email, policy),
-                "policy": {
-                    "type": policy.get("policy_type"),
-                    "identifier": policy.get("identifier")
+            return build_response(
+                200,
+                {
+                    "allowed": True,
+                    "reason": "unblocked",
+                    "enforcement_mode": policy.get("enforcement_mode", "alert"),
+                    "usage": get_user_usage_summary(email, policy),
+                    "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                    "unblock_status": unblock_status,
+                    "message": f"Access granted - temporarily unblocked until {unblock_status.get('expires_at')}",
                 },
-                "unblock_status": unblock_status,
-                "message": f"Access granted - temporarily unblocked until {unblock_status.get('expires_at')}"
-            })
+            )
 
         # 3. Get current usage
         usage = get_user_usage(email)
@@ -135,23 +148,23 @@ def lambda_handler(event, context):
 
         if enforcement_mode != "block":
             # Alert-only mode - always allow
-            return build_response(200, {
-                "allowed": True,
-                "reason": "within_quota",
-                "enforcement_mode": enforcement_mode,
-                "usage": usage_summary,
-                "policy": {
-                    "type": policy.get("policy_type"),
-                    "identifier": policy.get("identifier")
+            return build_response(
+                200,
+                {
+                    "allowed": True,
+                    "reason": "within_quota",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                    "unblock_status": {"is_unblocked": False},
+                    "message": "Access granted - enforcement mode is alert-only",
                 },
-                "unblock_status": {"is_unblocked": False},
-                "message": "Access granted - enforcement mode is alert-only"
-            })
+            )
 
         # 5. Check limits (monthly, daily) — supports both token and cost modes
         monthly_tokens = usage.get("total_tokens", 0)
         daily_tokens = usage.get("daily_tokens", 0)
-        monthly_cost = float(usage.get("cost_usd", 0))
+        monthly_cost = float(usage.get("estimated_cost", 0))
         daily_cost = float(usage.get("daily_cost_usd", 0))
 
         monthly_limit = policy.get("monthly_token_limit", 0)
@@ -161,98 +174,102 @@ def lambda_handler(event, context):
 
         # Cost-based enforcement (takes precedence when configured)
         if monthly_cost_limit > 0 and monthly_cost >= monthly_cost_limit:
-            return build_response(200, {
-                "allowed": False,
-                "reason": "monthly_cost_exceeded",
-                "enforcement_mode": enforcement_mode,
-                "usage": usage_summary,
-                "policy": {
-                    "type": policy.get("policy_type"),
-                    "identifier": policy.get("identifier")
+            return build_response(
+                200,
+                {
+                    "allowed": False,
+                    "reason": "monthly_cost_exceeded",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                    "unblock_status": {"is_unblocked": False},
+                    "message": f"Monthly spend limit exceeded: ${monthly_cost:.2f} / ${monthly_cost_limit:.2f} ({monthly_cost / monthly_cost_limit * 100:.1f}%). Contact your administrator.",
                 },
-                "unblock_status": {"is_unblocked": False},
-                "message": f"Monthly spend limit exceeded: ${monthly_cost:.2f} / ${monthly_cost_limit:.2f} ({monthly_cost/monthly_cost_limit*100:.1f}%). Contact your administrator."
-            })
+            )
 
         if daily_cost_limit > 0 and daily_cost >= daily_cost_limit:
             daily_mode = policy.get("daily_enforcement_mode", "alert")
             if daily_mode == "block":
-                return build_response(200, {
-                    "allowed": False,
-                    "reason": "daily_cost_exceeded",
-                    "enforcement_mode": enforcement_mode,
-                    "usage": usage_summary,
-                    "policy": {
-                        "type": policy.get("policy_type"),
-                        "identifier": policy.get("identifier")
+                return build_response(
+                    200,
+                    {
+                        "allowed": False,
+                        "reason": "daily_cost_exceeded",
+                        "enforcement_mode": enforcement_mode,
+                        "usage": usage_summary,
+                        "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                        "unblock_status": {"is_unblocked": False},
+                        "message": f"Daily spend limit exceeded: ${daily_cost:.2f} / ${daily_cost_limit:.2f}. Resets at UTC midnight.",
                     },
-                    "unblock_status": {"is_unblocked": False},
-                    "message": f"Daily spend limit exceeded: ${daily_cost:.2f} / ${daily_cost_limit:.2f}. Resets at UTC midnight."
-                })
+                )
 
         # Token-based enforcement (existing behavior)
         # Check monthly token limit
         if monthly_limit > 0 and monthly_tokens >= monthly_limit:
-            return build_response(200, {
-                "allowed": False,
-                "reason": "monthly_exceeded",
-                "enforcement_mode": enforcement_mode,
-                "usage": usage_summary,
-                "policy": {
-                    "type": policy.get("policy_type"),
-                    "identifier": policy.get("identifier")
+            return build_response(
+                200,
+                {
+                    "allowed": False,
+                    "reason": "monthly_exceeded",
+                    "enforcement_mode": enforcement_mode,
+                    "usage": usage_summary,
+                    "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                    "unblock_status": {"is_unblocked": False},
+                    "message": f"Monthly quota exceeded: {int(monthly_tokens):,} / {int(monthly_limit):,} tokens ({monthly_tokens / monthly_limit * 100:.1f}%). Contact your administrator for assistance.",
                 },
-                "unblock_status": {"is_unblocked": False},
-                "message": f"Monthly quota exceeded: {int(monthly_tokens):,} / {int(monthly_limit):,} tokens ({monthly_tokens/monthly_limit*100:.1f}%). Contact your administrator for assistance."
-            })
+            )
 
         # Check daily token limit (if configured)
         if daily_limit and daily_limit > 0 and daily_tokens >= daily_limit:
             daily_mode = policy.get("daily_enforcement_mode", "alert")
             if daily_mode == "block":
-                return build_response(200, {
-                    "allowed": False,
-                    "reason": "daily_exceeded",
-                    "enforcement_mode": enforcement_mode,
-                    "usage": usage_summary,
-                    "policy": {
-                        "type": policy.get("policy_type"),
-                        "identifier": policy.get("identifier")
+                return build_response(
+                    200,
+                    {
+                        "allowed": False,
+                        "reason": "daily_exceeded",
+                        "enforcement_mode": enforcement_mode,
+                        "usage": usage_summary,
+                        "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                        "unblock_status": {"is_unblocked": False},
+                        "message": f"Daily quota exceeded: {int(daily_tokens):,} / {int(daily_limit):,} tokens ({daily_tokens / daily_limit * 100:.1f}%). Quota resets at UTC midnight.",
                     },
-                    "unblock_status": {"is_unblocked": False},
-                    "message": f"Daily quota exceeded: {int(daily_tokens):,} / {int(daily_limit):,} tokens ({daily_tokens/daily_limit*100:.1f}%). Quota resets at UTC midnight."
-                })
+                )
 
         # All checks passed - access allowed
-        return build_response(200, {
-            "allowed": True,
-            "reason": "within_quota",
-            "enforcement_mode": enforcement_mode,
-            "usage": usage_summary,
-            "policy": {
-                "type": policy.get("policy_type"),
-                "identifier": policy.get("identifier")
+        return build_response(
+            200,
+            {
+                "allowed": True,
+                "reason": "within_quota",
+                "enforcement_mode": enforcement_mode,
+                "usage": usage_summary,
+                "policy": {"type": policy.get("policy_type"), "identifier": policy.get("identifier")},
+                "unblock_status": {"is_unblocked": False},
+                "message": "Access granted - within quota limits",
             },
-            "unblock_status": {"is_unblocked": False},
-            "message": "Access granted - within quota limits"
-        })
+        )
 
     except Exception as e:
         print(f"Error during quota check: {str(e)}")
         import traceback
+
         traceback.print_exc()
 
         # Security: Honor error handling mode - default to fail-closed for security
         allow_on_error = ERROR_HANDLING_MODE != "fail_closed"
-        return build_response(200, {
-            "allowed": allow_on_error,
-            "reason": "check_failed",
-            "enforcement_mode": None,
-            "usage": None,
-            "policy": None,
-            "unblock_status": None,
-            "message": f"Quota check failed ({ERROR_HANDLING_MODE}): {str(e)}"
-        })
+        return build_response(
+            200,
+            {
+                "allowed": allow_on_error,
+                "reason": "check_failed",
+                "enforcement_mode": None,
+                "usage": None,
+                "policy": None,
+                "unblock_status": None,
+                "message": f"Quota check failed ({ERROR_HANDLING_MODE}): {str(e)}",
+            },
+        )
 
 
 def build_response(status_code: int, body: dict) -> dict:
@@ -263,9 +280,9 @@ def build_response(status_code: int, body: dict) -> dict:
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization"
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
-        "body": json.dumps(body, cls=DecimalEncoder)
+        "body": json.dumps(body, cls=DecimalEncoder),
     }
 
 
@@ -320,13 +337,18 @@ def resolve_quota_for_user(email: str, groups: list) -> dict | None:
     Returns:
         Policy dict or None if no policy applies (unlimited).
     """
-    if not ENABLE_FINEGRAINED_QUOTAS and MONTHLY_TOKEN_LIMIT > 0:
+    # Cost mode sets token limits to 0, so the default policy must also
+    # activate when only a cost limit is configured — otherwise cost-based
+    # deployments resolved no policy at all and every user was unlimited.
+    if not ENABLE_FINEGRAINED_QUOTAS and (MONTHLY_TOKEN_LIMIT > 0 or MONTHLY_COST_LIMIT_USD > 0):
         # Return default limits from environment
         return {
             "policy_type": "default",
             "identifier": "environment",
             "monthly_token_limit": MONTHLY_TOKEN_LIMIT,
             "daily_token_limit": DAILY_TOKEN_LIMIT if DAILY_TOKEN_LIMIT > 0 else None,
+            "monthly_cost_limit": MONTHLY_COST_LIMIT_USD,
+            "daily_cost_limit": DAILY_COST_LIMIT_USD,
             "warning_threshold_80": WARNING_THRESHOLD_80,
             "warning_threshold_90": WARNING_THRESHOLD_90,
             "enforcement_mode": MONTHLY_ENFORCEMENT_MODE,
@@ -376,6 +398,8 @@ def get_policy(policy_type: str, identifier: str) -> dict | None:
             "identifier": item.get("identifier"),
             "monthly_token_limit": int(item.get("monthly_token_limit", 0)),
             "daily_token_limit": int(item.get("daily_token_limit", 0)) if item.get("daily_token_limit") else None,
+            "monthly_cost_limit": float(item.get("monthly_cost_limit", 0)),
+            "daily_cost_limit": float(item.get("daily_cost_limit", 0)),
             "warning_threshold_80": int(item.get("warning_threshold_80", 0)),
             "warning_threshold_90": int(item.get("warning_threshold_90", 0)),
             "enforcement_mode": item.get("enforcement_mode", "alert"),
@@ -412,7 +436,7 @@ def get_unblock_status(email: str) -> dict:
             "unblocked_by": item.get("unblocked_by"),
             "unblocked_at": item.get("unblocked_at"),
             "reason": item.get("reason"),
-            "duration_type": item.get("duration_type")
+            "duration_type": item.get("duration_type"),
         }
     except Exception as e:
         print(f"Error checking unblock status for {email}: {e}")
@@ -439,7 +463,9 @@ def get_user_usage(email: str) -> dict:
                 "daily_date": current_date,
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "cache_tokens": 0
+                "cache_tokens": 0,
+                "estimated_cost": 0,
+                "daily_cost_usd": 0,
             }
 
         # Check if daily tokens need to be reset (different day)
@@ -456,7 +482,9 @@ def get_user_usage(email: str) -> dict:
             "daily_date": daily_date,
             "input_tokens": float(item.get("input_tokens", 0)),
             "output_tokens": float(item.get("output_tokens", 0)),
-            "cache_tokens": float(item.get("cache_tokens", 0))
+            "cache_tokens": float(item.get("cache_tokens", 0)),
+            "estimated_cost": float(item.get("estimated_cost", 0)),
+            "daily_cost_usd": float(item.get("daily_cost_usd", 0)) if daily_date == current_date else 0,
         }
     except Exception as e:
         print(f"Error getting usage for {email}: {e}")
@@ -466,7 +494,9 @@ def get_user_usage(email: str) -> dict:
             "daily_date": current_date,
             "input_tokens": 0,
             "output_tokens": 0,
-            "cache_tokens": 0
+            "cache_tokens": 0,
+            "estimated_cost": 0,
+            "daily_cost_usd": 0,
         }
 
 
@@ -482,7 +512,7 @@ def build_usage_summary(usage: dict, policy: dict) -> dict:
         "monthly_tokens": int(monthly_tokens),
         "monthly_limit": monthly_limit,
         "monthly_percent": round(monthly_tokens / monthly_limit * 100, 1) if monthly_limit > 0 else 0,
-        "daily_tokens": int(daily_tokens)
+        "daily_tokens": int(daily_tokens),
     }
 
     if daily_limit:

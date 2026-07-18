@@ -201,3 +201,259 @@ class TestResolveFederation:
         assert identity_pool_id is None
         assert federated_role_arn is None
         mock_stack.assert_not_called()
+
+
+class TestPackageCommandOtelDefaults:
+    """Tests for the default OTEL_RESOURCE_ATTRIBUTES written into settings.json."""
+
+    def _make_monitoring_profile(self):
+        return Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client",
+            credential_storage="session",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            allowed_bedrock_regions=["us-east-1"],
+            monitoring_enabled=True,
+            stack_names={"monitoring": "test-otel-collector"},
+        )
+
+    def _render_settings(self, otel_resource_attributes=None, settings_version=None):
+        """Drive _create_claude_settings with a mocked monitoring stack endpoint."""
+        command = PackageCommand()
+        profile = self._make_monitoring_profile()
+
+        fake_outputs = json.dumps([{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}])
+        completed = MagicMock(returncode=0, stdout=fake_outputs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch(
+                "claude_code_with_bedrock.cli.commands.package.subprocess.run",
+                return_value=completed,
+            ):
+                command._create_claude_settings(
+                    output_dir,
+                    profile,
+                    include_coauthored_by=True,
+                    profile_name="test",
+                    otel_resource_attributes=otel_resource_attributes,
+                    settings_version=settings_version,
+                )
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            with open(settings_path, encoding="utf-8") as f:
+                return json.load(f)
+
+    def test_default_department_is_default_not_engineering(self):
+        """Regression: the default department must be 'default', not 'engineering'.
+
+        'engineering' is not a safe assumption for every deployment, so the
+        baseline OTEL attributes should be neutral and overridable.
+        """
+        settings = self._render_settings()
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert "department=default" in attrs
+        assert "department=engineering" not in attrs
+
+    def test_configured_attributes_override_default(self):
+        """An explicit OTEL_RESOURCE_ATTRIBUTES value takes precedence over the default."""
+        settings = self._render_settings(otel_resource_attributes="department=research,team.id=ml")
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs == "department=research,team.id=ml"
+
+    def test_settings_version_appended_to_default_attributes(self):
+        """The dist-folder timestamp is stamped as settings_version for telemetry."""
+        settings = self._render_settings(settings_version="2026-07-08-120000")
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs.endswith(",settings_version=2026-07-08-120000")
+        assert "department=default" in attrs
+
+    def test_settings_version_appended_to_custom_attributes(self):
+        """settings_version is stamped even when the admin customizes attributes."""
+        settings = self._render_settings(
+            otel_resource_attributes="department=research,team.id=ml",
+            settings_version="2026-07-08-120000",
+        )
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert attrs == "department=research,team.id=ml,settings_version=2026-07-08-120000"
+
+    def test_no_settings_version_omits_attribute(self):
+        """Without a version (backward compat), the attribute is absent entirely."""
+        settings = self._render_settings()
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+        assert "settings_version" not in attrs
+
+    def test_cowork_package_stamps_settings_version(self):
+        """Parity: the CodeBuild package variant stamps settings_version too."""
+        from claude_code_with_bedrock.cli.commands.package_cb import PackageCbCommand
+
+        command = PackageCbCommand()
+        profile = self._make_monitoring_profile()
+
+        fake_outputs = json.dumps([{"OutputKey": "CollectorEndpoint", "OutputValue": "https://otel.example.com"}])
+        completed = MagicMock(returncode=0, stdout=fake_outputs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch(
+                "claude_code_with_bedrock.cli.commands.package_cb.subprocess.run",
+                return_value=completed,
+            ):
+                command._create_claude_settings(
+                    output_dir,
+                    profile,
+                    include_coauthored_by=True,
+                    profile_name="test",
+                    settings_version="2026-07-08-120000",
+                )
+
+            settings_path = output_dir / "claude-settings" / "settings.json"
+            with open(settings_path, encoding="utf-8") as f:
+                settings = json.load(f)
+
+        attrs = settings["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+        assert attrs.endswith(",settings_version=2026-07-08-120000")
+
+
+class TestCopyExtraFiles:
+    """Tests for _copy_extra_files — the package-side extra-files copy step."""
+
+    def _profile(self, extra_files):
+        return Profile(
+            name="test",
+            provider_domain="test.okta.com",
+            client_id="test-client-id",
+            credential_storage="keyring",
+            aws_region="us-east-1",
+            identity_pool_name="test-pool",
+            monitoring_enabled=False,
+            extra_files=extra_files,
+        )
+
+    def test_empty_list_returns_empty(self, tmp_path):
+        command = PackageCommand()
+        profile = self._profile([])
+        result = command._copy_extra_files(profile, tmp_path, MagicMock())
+        assert result == []
+
+    def test_copies_file_and_folder(self, tmp_path):
+        # Source file
+        src_file = tmp_path / "src" / "preinstall.sh"
+        src_file.parent.mkdir(parents=True)
+        src_file.write_text("#!/bin/bash\necho hi")
+        # Source folder
+        src_dir = tmp_path / "src" / "certs"
+        src_dir.mkdir()
+        (src_dir / "ca.pem").write_text("CERT")
+
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [
+                {"name": "preinstall.sh", "targets": "macos", "from": str(src_file)},
+                {"name": "certs", "targets": "all", "from": str(src_dir)},
+            ]
+        )
+
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+
+        assert (out / "preinstall.sh").read_text() == "#!/bin/bash\necho hi"
+        assert (out / "certs" / "ca.pem").read_text() == "CERT"
+        names = {name for name, _ in result}
+        assert names == {"preinstall.sh", "certs"}
+
+    def test_missing_source_fails(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "missing.sh", "targets": "all", "from": str(tmp_path / "nope.sh")}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is None
+        assert not (out / "missing.sh").exists()
+
+    def test_validation_error_fails_and_copies_nothing(self, tmp_path):
+        src = tmp_path / "cfg"
+        src.write_text("x")
+        out = tmp_path / "out"
+        out.mkdir()
+        # 'config.json' collides with a generated artifact → validation error
+        profile = self._profile([{"name": "config.json", "targets": "all", "from": str(src)}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is None
+        assert not (out / "config.json").exists()
+
+    def test_nested_name_creates_parent_dirs(self, tmp_path):
+        src = tmp_path / "hook.sh"
+        src.write_text("hook")
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "hooks/pre.sh", "targets": "all", "from": str(src)}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is not None
+        assert (out / "hooks" / "pre.sh").read_text() == "hook"
+
+    def test_target_platform_filters_non_matching_extras(self, tmp_path):
+        """Regression: --target-platform macos must not copy windows-only extras."""
+        for fname in ("hook-win.bat", "hook-mac.sh", "ca.pem"):
+            (tmp_path / fname).write_text(fname)
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [
+                {"name": "ca.pem", "targets": "all", "from": str(tmp_path / "ca.pem")},
+                {
+                    "name": "hook-mac.sh",
+                    "targets": ["macos", "macos-arm64", "macos-intel"],
+                    "from": str(tmp_path / "hook-mac.sh"),
+                },
+                {
+                    "name": "hook-win.bat",
+                    "targets": ["windows"],
+                    "from": str(tmp_path / "hook-win.bat"),
+                },
+            ]
+        )
+
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+
+        assert result is not None
+        assert (out / "ca.pem").exists()
+        assert (out / "hook-mac.sh").exists()
+        assert not (out / "hook-win.bat").exists()
+        names = {name for name, _ in result}
+        assert names == {"ca.pem", "hook-mac.sh"}
+
+    def test_skipped_extra_does_not_require_source(self, tmp_path):
+        """A filtered-out entry's missing 'from' source must not fail the build."""
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [{"name": "win-only.bat", "targets": "windows", "from": str(tmp_path / "does-not-exist.bat")}]
+        )
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+        assert result == []
+
+    def test_applicable_extra_missing_source_still_fails(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile(
+            [{"name": "mac-only.sh", "targets": "macos", "from": str(tmp_path / "does-not-exist.sh")}]
+        )
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock(), ["macos-arm64"])
+        assert result is None
+
+    def test_no_platform_filter_copies_everything(self, tmp_path):
+        """platforms_to_build=None keeps the pre-filter superset behavior."""
+        (tmp_path / "w.bat").write_text("w")
+        out = tmp_path / "out"
+        out.mkdir()
+        profile = self._profile([{"name": "w.bat", "targets": "windows", "from": str(tmp_path / "w.bat")}])
+        result = PackageCommand()._copy_extra_files(profile, out, MagicMock())
+        assert result is not None
+        assert (out / "w.bat").exists()

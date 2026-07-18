@@ -8,7 +8,7 @@ must create the SAML app manually in the IDC console (using the ACS URL /
 Audience printed by `ccwb deploy distribution`). Once that's done and IDC
 provides a SAML metadata URL, this command saves it to the profile and
 re-deploys the distribution stack so CloudFormation's IdcSamlIdentityProvider
-resource (conditional on IdcSamlMetadataUrl being set) gets created and wired
+resource (conditional on SamlMetadataUrl being set) gets created and wired
 into both the web app client and the bootstrap client.
 """
 
@@ -59,9 +59,15 @@ class ConfigureSamlCommand(Command):
 
         console.print(f"Using profile: [cyan]{profile.name}[/cyan]\n")
 
-        if profile.distribution_type != "landing-page-idc":
-            console.print("[red]This command is only for 'landing-page-idc' distribution type.[/red]")
-            console.print(f"[dim]Current distribution type: {profile.distribution_type}[/dim]")
+        if not profile.is_idc_distribution:
+            console.print(
+                "[red]This command is only for the IAM Identity Center landing page "
+                "(distribution_type='landing-page' with auth_type='idc').[/red]"
+            )
+            console.print(
+                f"[dim]Current: distribution_type={profile.distribution_type}, "
+                f"auth_type={profile.effective_auth_type}[/dim]"
+            )
             return 1
 
         # Verify the distribution stack has already been deployed at least once
@@ -93,7 +99,7 @@ class ConfigureSamlCommand(Command):
         # conditional IdcSamlIdentityProvider resource (and the callback-updater
         # custom resource that adds IAMIdentityCenter to both app clients) will
         # be created/updated as part of this stack update.
-        profile.distribution_idc_saml_metadata_url = metadata_url
+        profile.distribution_saml_metadata_url = metadata_url
         config.save_profile(profile)
 
         console.print("\n[yellow]Updating distribution stack with SAML configuration...[/yellow]")

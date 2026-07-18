@@ -234,7 +234,7 @@ class TestClaudeSettingsGeneration:
                 settings = json.load(f)
 
             assert "otelHeadersHelper" in settings, "otelHeadersHelper must be configured when monitoring is enabled"
-            assert settings["otelHeadersHelper"] == "__OTEL_HELPER_PATH__"
+            assert settings["otelHeadersHelper"] == "__OTEL_HELPER_PATH__ --profile ClaudeCode"
             assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
             assert settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example.com:4318"
 

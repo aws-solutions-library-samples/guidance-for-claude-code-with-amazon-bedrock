@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Optional admin console for the IAM Identity Center landing page. Adds a
   /admin* listener rule + Lambda target group to the ALB provisioned by
-  landing-page-distribution.yaml (IdPProvider=idc). Deployed as a separate
+  landing-page-distribution.yaml (AuthType=idc). Deployed as a separate
   stack (`ccwb deploy admin-console`) so the landing page itself has no
   dependency on IDC group/permission-set management — only sites that need
   the admin UI deploy this stack.

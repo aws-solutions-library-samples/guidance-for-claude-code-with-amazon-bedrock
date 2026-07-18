@@ -731,6 +731,7 @@ def generate_mdm_configs(
         policy_config,
         disabled_tools=policies.get("disabledBuiltinTools"),
         tool_policies=policies.get("builtinToolPolicy"),
+        permissions=policies.get("permissions"),
         allowed_folders=policies.get("allowedWorkspaceFolders"),
         egress_hosts=policies.get("coworkEgressAllowedHosts"),
         feature_toggles={
@@ -1589,30 +1590,33 @@ def serve_admin_page(user_email: str) -> dict:
                             <span style="color:#888;font-size:13px;">None - all tools enabled</span>
                         </div>
                         <div class="add-row">
-                            <select id="add-disabled-tool">
-                                <option value="">Select tool to disable...</option>
-                                <option value="WebSearch">WebSearch</option>
-                                <option value="WebFetch">WebFetch</option>
-                                <option value="Bash">Bash (Shell commands)</option>
-                                <option value="Edit">Edit (File editing)</option>
-                                <option value="Write">Write (File writing)</option>
-                                <option value="NotebookEdit">NotebookEdit</option>
-                            </select>
+                            <input type="text" id="add-disabled-tool" list="builtin-tools-datalist" placeholder="Select or type a tool name..." autocomplete="off">
                             <button class="btn btn-primary btn-sm" onclick="addDisabledTool()">Block</button>
                         </div>
+                        <!-- Shared suggestion list for Disabled Tools and Tool Policies. These are
+                             the common built-in tools; because it's a datalist on a free-text input,
+                             admins can also type any other/newer tool name that isn't preset here
+                             (e.g. a client-side tool) and it's saved verbatim into the group config. -->
+                        <datalist id="builtin-tools-datalist">
+                            <option value="Bash"></option>
+                            <option value="Edit"></option>
+                            <option value="MultiEdit"></option>
+                            <option value="Write"></option>
+                            <option value="Read"></option>
+                            <option value="Glob"></option>
+                            <option value="Grep"></option>
+                            <option value="NotebookEdit"></option>
+                            <option value="WebFetch"></option>
+                            <option value="WebSearch"></option>
+                            <option value="TodoWrite"></option>
+                            <option value="Task"></option>
+                        </datalist>
 
                         <h4>Tool Policies</h4>
                         <p class="section-description">Set approval requirements for specific tools.</p>
                         <div id="tool-policies-list"></div>
                         <div class="add-row">
-                            <select id="add-tool-policy-name" style="flex: 2;">
-                                <option value="">Select tool...</option>
-                                <option value="Bash">Bash</option>
-                                <option value="Edit">Edit</option>
-                                <option value="Write">Write</option>
-                                <option value="WebFetch">WebFetch</option>
-                                <option value="WebSearch">WebSearch</option>
-                            </select>
+                            <input type="text" id="add-tool-policy-name" list="builtin-tools-datalist" placeholder="Select or type a tool..." style="flex: 2;" autocomplete="off">
                             <select id="add-tool-policy-value" style="flex: 1;">
                                 <option value="allow">Allow</option>
                                 <option value="ask">Ask</option>
@@ -1691,6 +1695,37 @@ def serve_admin_page(user_email: str) -> dict:
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Command Permissions</h3>
+                    <p class="section-description">Fine-grained, command-level rules for Claude's tools &mdash; distinct from the whole-tool policies above. Rules are evaluated <strong>deny &rarr; ask &rarr; allow</strong> (first match wins). Use Claude Code rule syntax: a bare tool name like <code>WebFetch</code>, or a scoped pattern like <code>Bash(git push:*)</code> or <code>Read(./.env)</code>.</p>
+                    <div class="grid-2">
+                        <div>
+                            <h4>Allow</h4>
+                            <p class="section-description">Auto-approved, no prompt.</p>
+                            <div id="perm-allow-list" class="tool-tags"></div>
+                        </div>
+                        <div>
+                            <h4>Ask</h4>
+                            <p class="section-description">Prompt for confirmation before running.</p>
+                            <div id="perm-ask-list" class="tool-tags"></div>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px;">
+                        <h4>Deny</h4>
+                        <p class="section-description">Blocked entirely (highest precedence).</p>
+                        <div id="perm-deny-list" class="tool-tags"></div>
+                    </div>
+                    <div class="add-row" style="margin-top:12px;">
+                        <input type="text" id="add-perm-rule" placeholder="e.g. Bash(git push:*)  or  WebFetch" style="flex: 2;" autocomplete="off">
+                        <select id="add-perm-tier" style="flex: 1;">
+                            <option value="allow">Allow</option>
+                            <option value="ask">Ask</option>
+                            <option value="deny">Deny</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" onclick="addPermissionRule()">Add</button>
                     </div>
                 </div>
 
@@ -1919,6 +1954,16 @@ def serve_admin_page(user_email: str) -> dict:
             return div.innerHTML;
         }}
 
+        // Escape a value for use as a JS argument inside a double-quoted HTML
+        // on* attribute. JSON-encode (valid JS string literal) then
+        // HTML-attribute-escape: escapeHtml covers &<>, and the extra
+        // " -> &quot; keeps the surrounding onclick="..." from terminating
+        // early. Without the &quot; step a key like "git" renders as
+        // onclick="fn("git")" and the handler silently does nothing.
+        function attrArg(value) {{
+            return escapeHtml(JSON.stringify(value)).replace(/"/g, '&quot;');
+        }}
+
         let groups = [];
         let models = [];
         let permissionSets = [];
@@ -1927,6 +1972,7 @@ def serve_admin_page(user_email: str) -> dict:
         let policies = {{
             disabledBuiltinTools: [],
             builtinToolPolicy: {{}},
+            permissions: {{ allow: [], ask: [], deny: [] }},
             isLocalDevMcpEnabled: true,
             isDesktopExtensionEnabled: true,
             isDesktopExtensionSignatureRequired: false,
@@ -2050,7 +2096,7 @@ def serve_admin_page(user_email: str) -> dict:
                 let addHtml = '<div class="add-row"><select id="add-model-' + group.groupId + '" style="font-size:13px;"><option value="">Select model...</option>';
                 models.filter(m => !gc.models.find(gm => gm.modelId === m.modelId)).forEach(m => {{ addHtml += '<option value="' + encodeURIComponent(m.modelId) + '|' + encodeURIComponent(m.modelName) + '">' + m.modelName + '</option>'; }});
                 addHtml += '</select><button class="btn btn-primary btn-sm" data-group="' + group.groupId + '" onclick="addModelFromBtn(this)">+</button></div>';
-                let psHtml = gc.permissionSetName ? escapeHtml(gc.permissionSetName) + ' <a href="#" onclick="viewPolicy(' + escapeHtml(JSON.stringify(gc.permissionSetName)) + ');return false;" style="font-size:11px;color:#667eea;">[view]</a>' : '-';
+                let psHtml = gc.permissionSetName ? escapeHtml(gc.permissionSetName) + ' <a href="#" onclick="viewPolicy(' + attrArg(gc.permissionSetName) + ');return false;" style="font-size:11px;color:#667eea;">[view]</a>' : '-';
                 html += '<tr><td><strong>' + escapeHtml(group.displayName) + '</strong></td><td>' + modelTagsHtml + '</td><td>' + addHtml + '</td><td>' + psHtml + '</td></tr>';
             }}
             tbody.innerHTML = html;
@@ -2082,7 +2128,7 @@ def serve_admin_page(user_email: str) -> dict:
 
             const tpl = document.getElementById('tool-policies-list');
             const pe = Object.entries(policies.builtinToolPolicy);
-            tpl.innerHTML = pe.length === 0 ? '<p style="color:#888;font-size:13px;">No custom tool policies.</p>' : pe.map(([t, p]) => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #eee;"><span>' + escapeHtml(t) + '</span><span class="tool-tag ' + escapeHtml(p) + '">' + escapeHtml(p) + ' <span class="remove" onclick="removeToolPolicy(' + escapeHtml(JSON.stringify(t)) + ')">&times;</span></span></div>').join('');
+            tpl.innerHTML = pe.length === 0 ? '<p style="color:#888;font-size:13px;">No custom tool policies.</p>' : pe.map(([t, p]) => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #eee;"><span>' + escapeHtml(t) + '</span><span class="tool-tag ' + escapeHtml(p) + '">' + escapeHtml(p) + ' <span class="remove" onclick="removeToolPolicy(' + attrArg(t) + ')">&times;</span></span></div>').join('');
 
             ['isLocalDevMcpEnabled', 'isDesktopExtensionEnabled', 'isDesktopExtensionSignatureRequired', 'coworkTabEnabled', 'disableBundledSkills', 'disableDeploymentModeChooser'].forEach(key => {{
                 const el = document.getElementById('policy-' + key);
@@ -2095,6 +2141,18 @@ def serve_admin_page(user_email: str) -> dict:
 
             const el = document.getElementById('egress-hosts-list');
             el.innerHTML = policies.coworkEgressAllowedHosts.length === 0 ? '<span style="color:#888;">No restrictions</span>' : policies.coworkEgressAllowedHosts.map((h, i) => '<span class="tool-tag">' + h + ' <span class="remove" onclick="removeEgressHost(' + i + ')">&times;</span></span>').join(' ');
+
+            // Command Permissions (allow/ask/deny). Reuses the tool-tag color
+            // classes: allow (neutral/green), ask (amber), deny -> 'blocked' (red).
+            if (!policies.permissions) policies.permissions = {{ allow: [], ask: [], deny: [] }};
+            const permBoxes = ['perm-allow-list', 'perm-ask-list', 'perm-deny-list'];
+            const permCls = ['allow', 'ask', 'blocked'];
+            ['allow', 'ask', 'deny'].forEach((tier, ti) => {{
+                if (!Array.isArray(policies.permissions[tier])) policies.permissions[tier] = [];
+                const box = document.getElementById(permBoxes[ti]);
+                const rules = policies.permissions[tier];
+                box.innerHTML = rules.length === 0 ? '<span style="color:#888;font-size:13px;">None</span>' : rules.map((r, i) => '<span class="tool-tag ' + permCls[ti] + '">' + escapeHtml(r) + ' <span class="remove" onclick="removePermRule(' + ti + ',' + i + ')">&times;</span></span>').join(' ');
+            }});
 
             const bootstrapCheckbox = document.getElementById('policy-bootstrapUrlOverrideEnabled');
             const bootstrapFields = document.getElementById('bootstrap-url-override-fields');
@@ -2112,14 +2170,34 @@ def serve_admin_page(user_email: str) -> dict:
             bootstrapPort.onchange = function() {{ policies.bootstrapUrlOverridePort = this.value.trim(); }};
         }}
 
-        function addDisabledTool() {{ const s = document.getElementById('add-disabled-tool'); if (s.value && !policies.disabledBuiltinTools.includes(s.value)) {{ policies.disabledBuiltinTools.push(s.value); s.value = ''; renderPolicies(); }} }}
+        function addDisabledTool() {{ const s = document.getElementById('add-disabled-tool'); const v = s.value.trim(); if (v && !policies.disabledBuiltinTools.includes(v)) {{ policies.disabledBuiltinTools.push(v); s.value = ''; renderPolicies(); }} }}
         function removeDisabledTool(i) {{ policies.disabledBuiltinTools.splice(i, 1); renderPolicies(); }}
-        function addToolPolicy() {{ const t = document.getElementById('add-tool-policy-name').value, p = document.getElementById('add-tool-policy-value').value; if (t) {{ policies.builtinToolPolicy[t] = p; document.getElementById('add-tool-policy-name').value = ''; renderPolicies(); }} }}
+        function addToolPolicy() {{ const t = document.getElementById('add-tool-policy-name').value.trim(), p = document.getElementById('add-tool-policy-value').value; if (t) {{ policies.builtinToolPolicy[t] = p; document.getElementById('add-tool-policy-name').value = ''; renderPolicies(); }} }}
         function removeToolPolicy(t) {{ delete policies.builtinToolPolicy[t]; renderPolicies(); }}
         function addAllowedFolder() {{ const v = document.getElementById('add-folder-path').value.trim(); if (v) {{ policies.allowedWorkspaceFolders.push({{ path: v }}); document.getElementById('add-folder-path').value = ''; renderPolicies(); }} }}
         function removeAllowedFolder(i) {{ policies.allowedWorkspaceFolders.splice(i, 1); renderPolicies(); }}
         function addEgressHost() {{ const v = document.getElementById('add-egress-host').value.trim(); if (v && !policies.coworkEgressAllowedHosts.includes(v)) {{ policies.coworkEgressAllowedHosts.push(v); document.getElementById('add-egress-host').value = ''; renderPolicies(); }} }}
         function removeEgressHost(i) {{ policies.coworkEgressAllowedHosts.splice(i, 1); renderPolicies(); }}
+
+        const PERM_TIERS = ['allow', 'ask', 'deny'];
+        function addPermissionRule() {{
+            const input = document.getElementById('add-perm-rule');
+            const rule = input.value.trim();
+            const tier = document.getElementById('add-perm-tier').value;
+            if (!rule) return;
+            if (!policies.permissions) policies.permissions = {{ allow: [], ask: [], deny: [] }};
+            // A rule lives in exactly one tier — drop it from any other tier first
+            // so re-adding to a different tier moves it rather than duplicating.
+            PERM_TIERS.forEach(t => {{
+                if (!Array.isArray(policies.permissions[t])) policies.permissions[t] = [];
+                const idx = policies.permissions[t].indexOf(rule);
+                if (idx !== -1) policies.permissions[t].splice(idx, 1);
+            }});
+            policies.permissions[tier].push(rule);
+            input.value = '';
+            renderPolicies();
+        }}
+        function removePermRule(ti, i) {{ const tier = PERM_TIERS[ti]; if (policies.permissions && Array.isArray(policies.permissions[tier])) {{ policies.permissions[tier].splice(i, 1); renderPolicies(); }} }}
 
         function renderMcpServers() {{
             const md = document.getElementById('managed-mcp-servers');
@@ -2162,7 +2240,8 @@ def serve_admin_page(user_email: str) -> dict:
 
         function updateDeploySummary() {{
             const gc = Object.values(groupConfig).filter(g => g.models.length > 0).length;
-            const pc = policies.disabledBuiltinTools.length + Object.keys(policies.builtinToolPolicy).length + policies.allowedWorkspaceFolders.length + policies.coworkEgressAllowedHosts.length;
+            const permCount = policies.permissions ? (['allow', 'ask', 'deny'].reduce((n, t) => n + ((policies.permissions[t] || []).length), 0)) : 0;
+            const pc = policies.disabledBuiltinTools.length + Object.keys(policies.builtinToolPolicy).length + policies.allowedWorkspaceFolders.length + policies.coworkEgressAllowedHosts.length + permCount;
             const mc = managedMcpServers.length + mcpServerTemplates.length;
             document.getElementById('summary-groups').textContent = gc;
             document.getElementById('summary-policies').textContent = pc;

@@ -2,14 +2,14 @@
 
 Self-service landing page for distributing Claude Desktop/Claude Code configurations with Amazon Bedrock, authenticated via IAM Identity Center (IDC). An optional admin console lets you manage per-group model access, enterprise policies, and MCP server configuration without redeploying or re-issuing installers.
 
-This is a `distribution_type: landing-page-idc` deployment of the same `landing-page-distribution.yaml` CloudFormation template used for the other landing-page IdP types (Okta/Azure/Auth0/Cognito/generic), with `IdPProvider=idc` — it is **not** a separate stack or a separate deployment tool. The optional admin console (`ccwb deploy admin-console`) is a second, independent CloudFormation stack that attaches a `/admin*` listener rule to the same Application Load Balancer.
+This is a `distribution_type: landing-page` deployment with `auth_type: idc` of the same `landing-page-distribution.yaml` CloudFormation template used for the other landing-page IdP types (Okta/Azure/Auth0/Cognito/generic), deployed with `AuthType=idc` — it is **not** a separate stack or a separate deployment tool. The optional admin console (`ccwb deploy admin-console`) is a second, independent CloudFormation stack that attaches a `/admin*` listener rule to the same Application Load Balancer.
 
 ## Features
 
 - **Self-Service Portal** — users download configs for their platform (macOS, Windows, JSON)
 - **Admin Console** *(optional stack)* — configure models, policies, and MCP servers per group
 - **IAM Identity Center Integration** — SSO authentication with group-based access control, via a Cognito User Pool that bridges SAML (IDC) to OIDC (the ALB's native `authenticate-oidc` listener action)
-- **Enterprise Policy Controls** — tool restrictions, workspace limits, network egress rules
+- **Enterprise Policy Controls** — tool restrictions (disable tools, per-tool ask/allow/block), command-level permission rules (allow/ask/deny for patterns like `Bash(git push:*)`), workspace limits, and network egress rules
 - **MCP Server Management** — pre-configure remote and local MCP servers for users
 - **Dynamic Config Updates** — changes propagate automatically via OIDC bootstrap (Claude Desktop polls every 30 minutes)
 - **CloudFormation only** — deployed via `ccwb deploy distribution` / `ccwb deploy admin-console`, same as every other distribution type. No CDK toolchain, no `cdk bootstrap`.
@@ -38,7 +38,7 @@ The admin console is a **separate, optional** CloudFormation stack (`admin-conso
 - **Groups for Claude Desktop/Code users** — typically synced from your identity provider (Active Directory, Okta, Azure AD). Groups should include `Claude` in the name for the admin console to filter them (e.g. `Claude-Code-Developers`, `Claude-Code-Contractors`)
 - **Admin group** — for administrators who manage the console. Must contain both `Claude` and `Admin` in the name (e.g. `Claude-Code-Admins`, the default)
 - **Permission to add applications in IAM Identity Center** — after deploying the distribution stack, you'll need permission to create a **Custom SAML 2.0 application** under IAM Identity Center → Applications. This is a manual, one-time step (see Step 2 below) — IDC has no API to create custom SAML applications, and the ACS URL/Audience depend on the Cognito User Pool this stack creates, so it can't be done before deployment.
-- A custom domain + ACM certificate reachable by your users. For test/internal deployments, `ALBScheme=internal` (the default for `landing-page-idc`) plus [SSM port forwarding](#testing-via-ssm-port-forwarding) lets you validate the setup without exposing the ALB to the internet.
+- A custom domain + ACM certificate reachable by your users. For test/internal deployments, `ALBScheme=internal` (the default for the IDC landing page) plus [SSM port forwarding](#testing-via-ssm-port-forwarding) lets you validate the setup without exposing the ALB to the internet.
 
 ## Deployment
 
@@ -46,7 +46,8 @@ The admin console is a **separate, optional** CloudFormation stack (`admin-conso
 
 ```bash
 poetry run ccwb init
-# distribution: enabled, type "Self-Service Portal (IAM Identity Center)"
+# auth_type: idc (IAM Identity Center)
+# distribution: enabled, method "Authenticated Landing Page" (becomes the IDC portal because auth_type is idc)
 # provide (or accept auto-detected) IAM Identity Center instance ARN
 # provide admin group name (default: Claude-Code-Admins)
 # provide ALB scheme: internal (default, for SSM-tunnel testing) or internet-facing
@@ -54,7 +55,7 @@ poetry run ccwb init
 poetry run ccwb deploy distribution
 ```
 
-This deploys `landing-page-distribution.yaml` with `IdPProvider=idc`, creating:
+This deploys `landing-page-distribution.yaml` with `AuthType=idc`, creating:
 - `IdcUserPool` / `IdcUserPoolDomain` / `IdcUserPoolClient` — the Cognito SAML↔OIDC bridge
 - The ALB, HTTPS listener, target group, and landing-page Lambda (same resources every landing-page type shares)
 
@@ -110,13 +111,24 @@ Once deployed, sign in to `/admin` (as a member of the admin group) to:
 
 Deploy is best-effort per group — one group's provisioning failure doesn't roll back others; results are reported per group.
 
+### Tool and command controls
+
+The **Policies** page offers two complementary layers for restricting what Claude can do. Both are delivered dynamically via bootstrap (no reinstall), and both are applied to every group's config on Deploy.
+
+- **Tool Restrictions** — operate at the whole built-in tool level:
+  - *Disabled Tools* (`disabledBuiltinTools`): remove a tool entirely (e.g. `Bash`, `NotebookEdit`). Pick from the suggested built-ins or type any tool name.
+  - *Tool Policies* (`builtinToolPolicy`): set a whole tool to `allow` / `ask` / `blocked`.
+- **Command Permissions** — fine-grained, command-level rules (`permissions`), the standard Claude Code allow/ask/deny model. Each rule is either a bare tool name (`WebFetch`) or a scoped pattern (`Bash(git push:*)`, `Read(./.env)`). Rules are evaluated **deny → ask → allow**, first match wins. Use this layer for command-specific gating such as "prompt before `git push`" — `builtinToolPolicy` only understands whole tool names, not shell commands, so a value like `git` there has no effect on the client.
+
+Rules that reference a tool your provider doesn't support are ignored by the client (for example, `WebSearch` is dropped automatically on Amazon Bedrock).
+
 ### Dynamic configuration updates
 
 MDM profiles generated by the admin console include a `bootstrapOidc` block. Claude Desktop uses it to authenticate via the same Cognito bridge and poll `/api/bootstrap` roughly every 30 minutes, picking up any config, policy, or model changes automatically — no re-distribution or reinstall needed. This is the capability that motivated adding IDC support in the first place: without it, every admin-side policy or model change would otherwise require re-pushing installers to every machine.
 
 ## Testing via SSM Port Forwarding
 
-With `ALBScheme=internal` (the default for `landing-page-idc`), the ALB has no public IP and is only reachable from within the VPC. To test from your workstation without exposing it to the internet, use an EC2 instance with the SSM agent (any small instance in the same VPC, e.g. an existing bastion or a throwaway `t3.micro`) as a tunnel:
+With `ALBScheme=internal` (the default for the IDC landing page), the ALB has no public IP and is only reachable from within the VPC. To test from your workstation without exposing it to the internet, use an EC2 instance with the SSM agent (any small instance in the same VPC, e.g. an existing bastion or a throwaway `t3.micro`) as a tunnel:
 
 ```bash
 aws ssm start-session \

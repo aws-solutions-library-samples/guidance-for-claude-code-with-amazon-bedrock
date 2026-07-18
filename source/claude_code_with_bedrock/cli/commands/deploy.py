@@ -71,12 +71,12 @@ def _resolve_alb_scheme(profile) -> str:
     deploy branch does, so the networking stack can decide whether a NAT
     Gateway is needed before the distribution stack itself is deployed.
 
-    Mirrors the landing-page-idc default (internal, since it's typically
+    Mirrors the IDC landing page default (internal, since it's typically
     tested via SSM port forwarding rather than exposed to the internet) while
     leaving every other distribution type at the template's own default
     (internet-facing) unless explicitly overridden on the profile.
     """
-    if profile.distribution_type == "landing-page-idc":
+    if profile.is_idc_distribution:
         return getattr(profile, "distribution_alb_scheme", None) or "internal"
     return getattr(profile, "distribution_alb_scheme", None) or "internet-facing"
 
@@ -544,10 +544,10 @@ class DeployCommand(Command):
                     console.print("Run 'poetry run ccwb init' and enable distribution features.")
                     return 1
             elif stack_arg == "admin-console":
-                if profile.distribution_type != "landing-page-idc":
+                if not profile.is_idc_distribution:
                     console.print(
-                        "[yellow]The admin console is only available for the 'landing-page-idc' "
-                        "distribution type.[/yellow]"
+                        "[yellow]The admin console is only available for the IAM Identity Center "
+                        "landing page (distribution_type='landing-page' with auth_type='idc').[/yellow]"
                     )
                     return 1
                 if not getattr(profile, "distribution_idc_instance_arn", None):
@@ -559,7 +559,7 @@ class DeployCommand(Command):
                 # Otherwise auto-deployed as part of monitoring/quota, but exposed
                 # directly too since admin-console/dashboard/quota's Lambda
                 # packaging step needs its CfnArtifactsBucket output and may be
-                # deployed standalone (e.g. distribution_type=landing-page-idc
+                # deployed standalone (e.g. the IDC landing page
                 # without monitoring enabled).
                 stacks_to_deploy.append(("s3bucket", "S3 Bucket (CloudFormation artifacts + packages)"))
             elif stack_arg == "codebuild":
@@ -908,11 +908,14 @@ class DeployCommand(Command):
                     template = project_root / "deployment" / "infrastructure" / "bedrock-auth-idc.yaml"
                     stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
 
-                    from claude_code_with_bedrock.models import get_all_bedrock_regions
+                    from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
 
                     bedrock_regions = profile.allowed_bedrock_regions
                     if not bedrock_regions:
                         bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                    # Expand sentinels (e.g. "all-commercial") into real regions so they
+                    # never land in the role's aws:RequestedRegion IAM condition.
+                    bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                     idc_role_name = getattr(profile, "idc_permission_set_name", None) or "BedrockIDCFederatedRole"
                     params = [
@@ -1022,6 +1025,11 @@ class DeployCommand(Command):
                     from claude_code_with_bedrock.models import get_all_bedrock_regions
 
                     bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+                # Expand sentinels (e.g. "all-commercial") into real regions so they
+                # never land in the role's aws:RequestedRegion IAM condition.
+                from claude_code_with_bedrock.models import expand_bedrock_regions
+
+                bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
                 params.extend(
                     [
@@ -1042,8 +1050,10 @@ class DeployCommand(Command):
             elif stack_type == "distribution":
                 stack_name = profile.stack_names.get("distribution", f"{profile.identity_pool_name}-distribution")
 
-                # Select template based on distribution type
-                if profile.distribution_type in ("landing-page", "landing-page-idc"):
+                # Select template based on distribution type. The IDC landing
+                # page is distribution_type == "landing-page" with auth_type ==
+                # "idc" (beta vocabulary), so it uses the same template.
+                if profile.distribution_type == "landing-page":
                     template = project_root / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
 
                     # Get VPC outputs from networking stack
@@ -1067,11 +1077,12 @@ class DeployCommand(Command):
                         console.print(f"[yellow]Got: {list(networking_outputs.keys())}[/yellow]")
                         return 1
 
-                    # landing-page-idc always uses IdPProvider=idc; landing-page uses
-                    # whichever external IdP was configured during init.
-                    idp_provider = (
-                        "idc" if profile.distribution_type == "landing-page-idc" else profile.distribution_idp_provider
-                    )
+                    # IDC is signalled to the template via AuthType=idc (beta
+                    # vocabulary), not IdPProvider — an IDC landing page leaves
+                    # IdPProvider empty. OIDC landing pages pass whichever
+                    # external IdP was configured during init.
+                    is_idc = profile.is_idc_distribution
+                    idp_provider = profile.distribution_idp_provider
 
                     # An internal-scheme ALB needs NAT-routed private subnets (its
                     # nodes never get a public IP, so a direct IGW route can't NAT
@@ -1100,18 +1111,22 @@ class DeployCommand(Command):
                         f"VpcId={vpc_id}",
                         f"PublicSubnetIds={public_subnets}",
                         f"PrivateSubnetIds={private_subnets}",
-                        f"IdPProvider={idp_provider}",
                     ]
 
+                    # Only add IdPProvider for OIDC-based landing pages (not IDC,
+                    # which is selected via AuthType=idc below).
+                    if profile.distribution_idp_provider:
+                        params.append(f"IdPProvider={profile.distribution_idp_provider}")
+
                     # Add IdP-specific parameters
-                    if idp_provider == "idc":
+                    if is_idc:
                         # ALBScheme defaults to internal for IDC deployments (tested via SSM
                         # port forwarding); set distribution_alb_scheme="internet-facing" on
                         # the profile to override for production internet-facing use.
                         alb_scheme = _resolve_alb_scheme(profile)
                         params.append(f"ALBScheme={alb_scheme}")
-                        if getattr(profile, "distribution_idc_saml_metadata_url", None):
-                            params.append(f"IdcSamlMetadataUrl={profile.distribution_idc_saml_metadata_url}")
+                        # SamlMetadataUrl + AuthType=idc are appended in the shared
+                        # IDC block below (beta vocabulary).
                         # The landing page's own admin-nav visibility and
                         # per-group model-authorization checks call sso-admin/
                         # identitystore directly (see get_user_idc_groups_landing),
@@ -1191,7 +1206,7 @@ class DeployCommand(Command):
                     # Lambda itself (self-contained signed session cookies), so
                     # no public certificate is ever needed on the origin. The
                     # template condition (ShouldEnableCloudFront) additionally
-                    # gates this on IdPProvider being idc/cognito.
+                    # gates this on AuthType=idc.
                     if getattr(profile, "distribution_enable_cloudfront", False):
                         params.append("EnableCloudFront=true")
                         # CloudFront VPC origins reach the ALB from CloudFront's
@@ -1206,6 +1221,13 @@ class DeployCommand(Command):
                             )
                             return 1
                         params.append(f"CloudFrontPrefixListId={cf_prefix_list_id}")
+
+                    # Add IDC/SAML auth parameters when auth_type is idc
+                    if profile.effective_auth_type == "idc":
+                        params.append("AuthType=idc")
+                        saml_url = getattr(profile, "distribution_saml_metadata_url", None)
+                        if saml_url:
+                            params.append(f"SamlMetadataUrl={saml_url}")
 
                     # Add deployment timestamp to force custom resource re-execution
                     from datetime import datetime, timezone
@@ -1232,7 +1254,7 @@ class DeployCommand(Command):
                                 "[dim](internet-facing, HTTPS via *.cloudfront.net)[/dim]"
                             )
 
-                        if idp_provider == "idc":
+                        if is_idc:
                             saml_status = outputs.get("IdcSamlConfigurationStatus", "")
                             if "not yet configured" in saml_status.lower() or not saml_status:
                                 console.print("\n[bold yellow]⚠️  SAML Configuration Required:[/bold yellow]")
@@ -1344,8 +1366,9 @@ class DeployCommand(Command):
                         f"[red]Error: Distribution stack is missing required outputs: {', '.join(missing)}.[/red]"
                     )
                     console.print(
-                        "[yellow]The admin console requires distribution_type=landing-page-idc "
-                        "(IdPProvider=idc). Re-deploy the distribution stack with that configuration.[/yellow]"
+                        "[yellow]The admin console requires the IAM Identity Center landing page "
+                        "(distribution_type='landing-page' with auth_type='idc', deployed with "
+                        "AuthType=idc). Re-deploy the distribution stack with that configuration.[/yellow]"
                     )
                     return 1
 
@@ -1721,11 +1744,19 @@ class DeployCommand(Command):
                 # Sidecar bypass detection: opt-in detective control (default off).
                 enable_bypass_detection = getattr(profile, "enable_bypass_detection", False)
 
+                # Cost-based limits ($/user, 0 disables). In cost mode the token
+                # limits above are 0 and the Lambdas skip token checks; cost
+                # enforcement in quota_check takes precedence when configured.
+                monthly_cost_limit = getattr(profile, "monthly_cost_limit_usd", 0) or 0
+                daily_cost_limit = getattr(profile, "daily_cost_limit_usd", 0) or 0
+
                 params = [
                     f"MonthlyTokenLimit={monthly_limit}",
                     f"WarningThreshold80={warning_80}",
                     f"WarningThreshold90={warning_90}",
                     f"DailyTokenLimit={daily_limit or 0}",
+                    f"MonthlyCostLimitUsd={monthly_cost_limit}",
+                    f"DailyCostLimitUsd={daily_cost_limit}",
                     f"DailyEnforcementMode={daily_enforcement}",
                     f"MonthlyEnforcementMode={monthly_enforcement}",
                     f"OidcIssuerUrl={oidc_issuer_url}",
@@ -1992,11 +2023,14 @@ class DeployCommand(Command):
             console.print("\n[cyan]" + "\n".join(lines) + "[/cyan]")
 
         if stack_type == "auth":
+            from claude_code_with_bedrock.models import expand_bedrock_regions, get_all_bedrock_regions
+
             bedrock_regions = profile.allowed_bedrock_regions
             if not bedrock_regions:
-                from claude_code_with_bedrock.models import get_all_bedrock_regions
-
                 bedrock_regions = [r for r in get_all_bedrock_regions() if "gov" not in r]
+            # Expand sentinels (e.g. "all-commercial") into real regions so they
+            # never land in the role's aws:RequestedRegion IAM condition.
+            bedrock_regions = expand_bedrock_regions(bedrock_regions)
 
             stack_name = profile.stack_names.get("auth", f"{profile.identity_pool_name}-stack")
             auth_type = profile.effective_auth_type
@@ -2143,6 +2177,8 @@ class DeployCommand(Command):
                 f"WarningThreshold80={getattr(profile, 'warning_threshold_80', int(monthly_limit * 0.8))}",
                 f"WarningThreshold90={getattr(profile, 'warning_threshold_90', int(monthly_limit * 0.9))}",
                 f"DailyTokenLimit={daily_limit or 0}",
+                f"MonthlyCostLimitUsd={getattr(profile, 'monthly_cost_limit_usd', 0) or 0}",
+                f"DailyCostLimitUsd={getattr(profile, 'daily_cost_limit_usd', 0) or 0}",
                 f"DailyEnforcementMode={getattr(profile, 'daily_enforcement_mode', 'alert')}",
                 f"MonthlyEnforcementMode={getattr(profile, 'monthly_enforcement_mode', 'block')}",
                 f"OidcIssuerUrl={profile.provider_domain}",
@@ -2173,10 +2209,18 @@ class DeployCommand(Command):
                     f"VpcId=<VpcId from {networking_stack}>",
                     f"PublicSubnetIds=<SubnetIds from {networking_stack}>",
                     f"PrivateSubnetIds={private_subnets_hint}",
-                    f"IdPProvider={profile.distribution_idp_provider}",
                 ]
-                if profile.distribution_idp_provider == "idc" and getattr(profile, "sso_region", None):
-                    params.append(f"IdcGroupLookupRegion={profile.sso_region}")
+                # IDC landing page (beta vocabulary: landing-page + auth_type=idc)
+                # is signalled via AuthType=idc and leaves IdPProvider empty.
+                if profile.is_idc_distribution:
+                    params.append("AuthType=idc")
+                    params.append(f"ALBScheme={_resolve_alb_scheme(profile)}")
+                    if getattr(profile, "distribution_saml_metadata_url", None):
+                        params.append(f"SamlMetadataUrl={profile.distribution_saml_metadata_url}")
+                    if getattr(profile, "sso_region", None):
+                        params.append(f"IdcGroupLookupRegion={profile.sso_region}")
+                elif profile.distribution_idp_provider:
+                    params.append(f"IdPProvider={profile.distribution_idp_provider}")
                 if getattr(profile, "distribution_enable_cloudfront", False):
                     params.append("EnableCloudFront=true")
                     cf_prefix_list_id = _resolve_cloudfront_prefix_list_id(region) or "<cloudfront-prefix-list-id>"
@@ -2402,6 +2446,10 @@ class DeployCommand(Command):
         deploying_types = {stack_type for stack_type, _ in stacks_to_deploy}
 
         # Check for orphaned stacks
+        from claude_code_with_bedrock.utils.partition import aws_partition_for_region
+
+        profile_partition = aws_partition_for_region(profile.aws_region)
+
         orphaned = []
         for stack_type in all_stack_types:
             if stack_type not in deploying_types:
@@ -2409,16 +2457,36 @@ class DeployCommand(Command):
                 # CodeBuild and websearch may live in a different region, so
                 # check them there or a cross-region orphan is never detected.
                 stack_name = profile.stack_names.get(stack_type, f"{profile.identity_pool_name}-{stack_type}")
-                mgr = cf_manager
+                check_region = profile.aws_region
                 if stack_type == "codebuild":
-                    cb_region = get_codebuild_region(profile)
-                    if cb_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=cb_region)
+                    check_region = get_codebuild_region(profile)
                 elif stack_type == "websearch":
-                    ws_region = get_websearch_region(profile)
-                    if ws_region != profile.aws_region:
-                        mgr = CloudFormationManager(region=ws_region)
-                status = mgr.get_stack_status(stack_name)
+                    check_region = get_websearch_region(profile)
+
+                # Never probe across partitions: websearch defaults to
+                # us-east-1 (commercial-only service), so a GovCloud deploy
+                # would call a commercial CloudFormation endpoint — typically
+                # unreachable there (SSL/connect errors), and the stack cannot
+                # exist in another partition anyway.
+                if aws_partition_for_region(check_region) != profile_partition:
+                    continue
+
+                mgr = cf_manager
+                if check_region != profile.aws_region:
+                    mgr = CloudFormationManager(region=check_region)
+
+                # Best-effort advisory check: a network/endpoint failure
+                # (air-gapped or proxied environments) must not abort the
+                # deploy — get_stack_status only handles ClientError, so
+                # connection/SSL errors would otherwise propagate.
+                try:
+                    status = mgr.get_stack_status(stack_name)
+                except Exception as e:
+                    console.print(
+                        f"[dim]Skipping orphaned-stack check for {stack_type} "
+                        f"({check_region}): {type(e).__name__}[/dim]"
+                    )
+                    continue
 
                 if status and status not in ["DELETE_COMPLETE", "DELETE_IN_PROGRESS"]:
                     orphaned.append((stack_type, stack_name, status))

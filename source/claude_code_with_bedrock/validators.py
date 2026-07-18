@@ -161,21 +161,22 @@ class ProfileValidator:
         # Validate distribution configuration
         distribution_type = profile_data.get("distribution_type")
         if distribution_type:
-            if distribution_type not in ["presigned-s3", "landing-page", "landing-page-idc"]:
+            if distribution_type not in ["presigned-s3", "landing-page"]:
                 errors.append(
-                    f"Invalid distribution_type: {distribution_type}. "
-                    "Must be 'presigned-s3', 'landing-page', or 'landing-page-idc'"
+                    f"Invalid distribution_type: {distribution_type}. Must be 'presigned-s3' or 'landing-page'"
                 )
 
-            # IAM Identity Center landing page validation. Deployed via
-            # landing-page-distribution.yaml (IdPProvider=idc) — no required
+            # IAM Identity Center landing page = distribution_type "landing-page"
+            # with auth_type "idc" (beta vocabulary), deployed via
+            # landing-page-distribution.yaml with AuthType=idc. No required
             # fields at distribution-setup time: distribution_idc_instance_arn
             # is only needed by the separate admin-console stack (deployed
             # independently, not as part of `ccwb deploy distribution`), and
-            # distribution_idc_saml_metadata_url is set later by `ccwb
+            # distribution_saml_metadata_url is set later by `ccwb
             # configure-saml` once the manual IDC SAML app exists. Validate
-            # format only when either happens to be present.
-            if distribution_type == "landing-page-idc":
+            # format only when either happens to be present, and skip the OIDC
+            # IdP requirements below (an IDC landing page leaves IdPProvider empty).
+            if distribution_type == "landing-page" and profile_data.get("auth_type") == "idc":
                 idc_instance_arn = profile_data.get("distribution_idc_instance_arn")
                 if idc_instance_arn and not ProfileValidator._is_valid_arn(idc_instance_arn):
                     errors.append(f"Invalid distribution_idc_instance_arn format: {idc_instance_arn}")

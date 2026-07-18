@@ -6,7 +6,7 @@ Claude Code with Bedrock supports three distribution methods for sharing package
 
 1. **Presigned S3 URLs** - Simple, no authentication required
 2. **Authenticated Landing Page** - Enterprise-grade with external IdP integration (Okta/Azure/Auth0/Cognito)
-3. **Self-Service Portal (IAM Identity Center)** - the same ALB + Lambda + S3 CloudFormation stack as the Landing Page, with `IdPProvider=idc` (Cognito bridges SAML/IDC to OIDC), plus an optional separate admin console stack for managing models/policies/MCP servers
+3. **Self-Service Portal (IAM Identity Center)** - the same ALB + Lambda + S3 CloudFormation stack as the Landing Page, with `AuthType=idc` (Cognito bridges SAML/IDC to OIDC), plus an optional separate admin console stack for managing models/policies/MCP servers
 
 This guide helps you choose the right option for your organization. For the IAM Identity Center portal specifically, see [idc-self-service-portal.md](idc-self-service-portal.md).
 
@@ -152,10 +152,10 @@ Admin Machine → S3 → Lambda (generates presigned URLs) → User authenticate
 
 ### Self-Service Portal (IAM Identity Center) Setup
 
-1. Run `poetry run ccwb init`
-2. Select "Self-Service Portal (IAM Identity Center)"
+1. Run `poetry run ccwb init` with this profile's `auth_type` set to `idc` (IAM Identity Center)
+2. Select the **Authenticated Landing Page** distribution method — because `auth_type` is `idc`, the wizard configures it as the IAM Identity Center portal (SAML) rather than an external OIDC IdP
 3. Provide (or let the wizard auto-detect) your IAM Identity Center instance ARN and admin group name
-4. Run `poetry run ccwb deploy distribution` — deploys `landing-page-distribution.yaml` (`IdPProvider=idc`), the same CloudFormation template used by the other landing-page types (prints SAML ACS URL/Audience and next steps on completion)
+4. Run `poetry run ccwb deploy distribution` — deploys `landing-page-distribution.yaml` (`AuthType=idc`), the same CloudFormation template used by the other landing-page types (prints SAML ACS URL/Audience and next steps on completion)
 5. Create a **Custom SAML 2.0 application** in IAM Identity Center (manual, AWS console — using the ACS URL/Audience from Step 4's output)
 6. Run `poetry run ccwb configure-saml <metadata-url>` — saves the metadata URL to your profile and re-deploys the distribution stack, letting CloudFormation's conditional SAML identity-provider resource wire itself into Cognito automatically
 7. Assign IAM Identity Center groups to the application
@@ -234,7 +234,7 @@ You can switch between distribution types by:
 3. Run `poetry run ccwb deploy distribution`
 4. CloudFormation will replace the stack with the new type
 
-**Note:** All three distribution types (Presigned S3, Landing Page, and the IAM Identity Center portal) share the same `landing-page-distribution.yaml`/`presigned-s3-distribution.yaml` CloudFormation stack name, so you can't have more than one deployed simultaneously — `ccwb init` only tracks one active `distribution_type` per profile at a time. The admin console (`ccwb deploy admin-console`) is a separate stack and must be destroyed/redeployed independently if you switch away from `landing-page-idc`.
+**Note:** All three distribution types (Presigned S3, Landing Page, and the IAM Identity Center portal) share the same `landing-page-distribution.yaml`/`presigned-s3-distribution.yaml` CloudFormation stack name, so you can't have more than one deployed simultaneously — `ccwb init` only tracks one active `distribution_type` per profile at a time. The admin console (`ccwb deploy admin-console`) is a separate stack and must be destroyed/redeployed independently if you switch away from the IAM Identity Center landing page (auth_type=idc).
 
 ---
 

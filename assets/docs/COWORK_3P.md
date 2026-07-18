@@ -177,6 +177,7 @@ When Claude Cowork starts a session:
 3. The output is cached for `inferenceCredentialHelperTtlSec` seconds (default: 3500, just under the 1h STS token lifetime)
 4. When the cache expires, Claude Desktop automatically re-runs the helper — **no restart required**
 5. If credentials are rejected mid-session, Claude Desktop re-runs with `CLAUDE_HELPER_CONTEXT=mid-session-refresh` for seamless recovery (20s timeout)
+6. Because this mode also sets `inferenceBedrockProfile` (as an AWS SDK region/metadata fallback, not the active auth path), this solution additionally sets `inferenceCredentialKind` to `helper-script` so Claude Desktop doesn't have to pick between the two — without it, Desktop may prefer the profile instead and authentication fails
 
 The credential-process binary handles the `CLAUDE_HELPER_CONTEXT` environment variable:
 - `interactive` → Full browser-based OIDC authentication
@@ -265,6 +266,8 @@ The full set of MDM configuration keys is documented in the [official Anthropic 
 | `isLocalDevMcpEnabled` | boolean | Permit user-added local MCP servers |
 | `managedMcpServers` | string | JSON array of managed MCP server configs |
 | `disabledBuiltinTools` | string | JSON array of tool names to disable |
+| `builtinToolPolicy` | object | Maps a built-in tool name to `allow`/`ask`/`blocked` (whole-tool policy) |
+| `permissions` | object | Command-level rules with `allow`/`ask`/`deny` arrays (Claude Code syntax, e.g. `Bash(git push:*)`, `Read(./.env)`, or a bare tool name); evaluated deny → ask → allow, first match wins |
 
 ### Telemetry
 
