@@ -1077,7 +1077,7 @@ class DeployCommand(Command):
                     # Add IDC/SAML auth parameters when auth_type is idc
                     if profile.effective_auth_type == "idc":
                         params.append("AuthType=idc")
-                        saml_url = getattr(profile, 'distribution_saml_metadata_url', None)
+                        saml_url = getattr(profile, "distribution_saml_metadata_url", None)
                         if saml_url:
                             params.append(f"SamlMetadataUrl={saml_url}")
 
