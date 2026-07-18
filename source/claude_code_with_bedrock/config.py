@@ -111,6 +111,11 @@ class Profile:
     # Monitoring endpoint (saved from deploy, avoids re-reading CloudFormation outputs)
     otel_collector_endpoint: str | None = None  # OTel collector ALB endpoint URL
 
+    # Optional existing security groups (skip creating 0.0.0.0/0 SGs)
+    monitoring_existing_alb_sg_ids: str | None = None  # Comma-separated SG IDs for monitoring ALB
+    monitoring_existing_task_sg_ids: str | None = None  # Comma-separated SG IDs for monitoring ECS tasks
+    distribution_existing_alb_sg_ids: str | None = None  # Comma-separated SG IDs for distribution ALB
+
     # Federation configuration
     federation_type: str = "cognito"  # "cognito" or "direct"
     federated_role_arn: str | None = None  # ARN for Direct STS federation

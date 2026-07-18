@@ -179,6 +179,14 @@ Parameters:
     Default: 'initial'
     Description: Timestamp to force custom resource re-execution on every deployment (auto-populated by deploy command)
 
+  ExistingAlbSecurityGroupIds:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^sg-[0-9a-f]+(,sg-[0-9a-f]+)*$'
+    Description: >-
+      Optional comma-separated list of existing security group IDs for the ALB.
+      When provided, the stack-created ALB security group is not created.
+
 Conditions:
   IsOkta: !Equals [!Ref IdPProvider, 'okta']
   IsAzure: !Equals [!Ref IdPProvider, 'azure']
@@ -187,6 +195,8 @@ Conditions:
   # Note: 'generic' is the terminal fallback in the AuthenticateOidcConfig !If chains
   # (the else branch after Okta/Azure/Auth0/Cognito), so no named condition is needed.
   HasRoute53Zone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasCustomAlbSgs: !Not [!Equals [!Ref ExistingAlbSecurityGroupIds, '']]
+  CreateAlbSg: !Equals [!Ref ExistingAlbSecurityGroupIds, '']
 
 Resources:
   # S3 Bucket for package distribution
@@ -840,6 +850,7 @@ Resources:
   # ALB Security Group
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateAlbSg
     Properties:
       GroupName: !Sub '${IdentityPoolName}-landing-page-alb-sg'
       GroupDescription: Security group for distribution landing page ALB
@@ -864,8 +875,10 @@ Resources:
       Name: !Sub '${IdentityPoolName}-dist-alb'
       Type: application
       Scheme: internet-facing
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
+      SecurityGroups: !If
+        - HasCustomAlbSgs
+        - !Split [',', !Ref ExistingAlbSecurityGroupIds]
+        - [!Ref ALBSecurityGroup]
       Subnets: !Ref PublicSubnetIds
       LoadBalancerAttributes:
         - Key: access_logs.s3.enabled

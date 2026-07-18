@@ -1080,6 +1080,10 @@ class DeployCommand(Command):
                     deployment_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
                     params.append(f"DeploymentTimestamp={deployment_timestamp}")
 
+                    # Pass existing security group IDs when configured
+                    if getattr(profile, "distribution_existing_alb_sg_ids", None):
+                        params.append(f"ExistingAlbSecurityGroupIds={profile.distribution_existing_alb_sg_ids}")
+
                     result = deploy_with_cf(
                         template,
                         stack_name,
@@ -1221,6 +1225,12 @@ class DeployCommand(Command):
                 alb_scheme = monitoring_config.get("alb_scheme", "internet-facing")
                 if alb_scheme == "internal":
                     params.append("ALBScheme=internal")
+
+                # Pass existing security group IDs when configured
+                if getattr(profile, "monitoring_existing_alb_sg_ids", None):
+                    params.append(f"ExistingAlbSecurityGroupIds={profile.monitoring_existing_alb_sg_ids}")
+                if getattr(profile, "monitoring_existing_task_sg_ids", None):
+                    params.append(f"ExistingTaskSecurityGroupIds={profile.monitoring_existing_task_sg_ids}")
 
                 console.print(f"[dim]Using parameters: {params}[/dim]")
                 result = deploy_with_cf(

@@ -73,6 +73,22 @@ Parameters:
       where users connect via VPN, Direct Connect, or internal office networks.
       Default: internet-facing (backwards compatible).
 
+  ExistingAlbSecurityGroupIds:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^sg-[0-9a-f]+(,sg-[0-9a-f]+)*$'
+    Description: >-
+      Optional comma-separated list of existing security group IDs for the ALB.
+      When provided, the stack-created ALB security group is not created.
+
+  ExistingTaskSecurityGroupIds:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^sg-[0-9a-f]+(,sg-[0-9a-f]+)*$'
+    Description: >-
+      Optional comma-separated list of existing security group IDs for ECS tasks.
+      When provided, the stack-created task security group is not created.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
   NoCustomDomain: !Equals [!Ref CustomDomainName, '']
@@ -99,6 +115,10 @@ Conditions:
     - !Condition HasCoWorkToken
   AnalyticsEnabled: !Equals [!Ref EnableAnalytics, 'true']
   IsInternalALB: !Equals [!Ref ALBScheme, 'internal']
+  HasCustomAlbSgs: !Not [!Equals [!Ref ExistingAlbSecurityGroupIds, '']]
+  HasCustomTaskSgs: !Not [!Equals [!Ref ExistingTaskSecurityGroupIds, '']]
+  CreateAlbSg: !Equals [!Ref ExistingAlbSecurityGroupIds, '']
+  CreateTaskSg: !Equals [!Ref ExistingTaskSecurityGroupIds, '']
 
 # Rules section removed - validation handled by deployment script
 
@@ -158,6 +178,7 @@ Resources:
   # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateAlbSg
     Properties:
       GroupDescription: Security group for OTEL Collector ALB
       VpcId: !Ref VpcId
@@ -210,6 +231,7 @@ Resources:
 
   TaskSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateTaskSg
     Properties:
       GroupDescription: Security group for OTEL Collector tasks
       VpcId: !Ref VpcId
@@ -217,7 +239,10 @@ Resources:
         - IpProtocol: tcp
           FromPort: 4317
           ToPort: 4318
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          SourceSecurityGroupId: !If
+            - HasCustomAlbSgs
+            - !Select [0, !Split [',', !Ref ExistingAlbSecurityGroupIds]]
+            - !Ref ALBSecurityGroup
           Description: OTLP ports from ALB
       Tags:
         - Key: Name
@@ -268,8 +293,10 @@ Resources:
         # root cause is client-side connection reuse.)
         - Key: idle_timeout.timeout_seconds
           Value: '300'
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
+      SecurityGroups: !If
+        - HasCustomAlbSgs
+        - !Split [',', !Ref ExistingAlbSecurityGroupIds]
+        - [!Ref ALBSecurityGroup]
       Subnets: !Ref SubnetIds
       Tags:
         - Key: Name
@@ -865,8 +892,10 @@ Resources:
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
-          SecurityGroups:
-            - !Ref TaskSecurityGroup
+          SecurityGroups: !If
+            - HasCustomTaskSgs
+            - !Split [',', !Ref ExistingTaskSecurityGroupIds]
+            - [!Ref TaskSecurityGroup]
           Subnets: !Ref SubnetIds
       LoadBalancers:
         - ContainerName: aws-otel-collector
@@ -891,8 +920,10 @@ Resources:
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
-          SecurityGroups:
-            - !Ref TaskSecurityGroup
+          SecurityGroups: !If
+            - HasCustomTaskSgs
+            - !Split [',', !Ref ExistingTaskSecurityGroupIds]
+            - [!Ref TaskSecurityGroup]
           Subnets: !Ref SubnetIds
       LoadBalancers:
         - ContainerName: aws-otel-collector
