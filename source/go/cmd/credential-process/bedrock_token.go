@@ -19,6 +19,12 @@ const (
 	authPrefix     = "bedrock-api-key-"
 	tokenVersion   = "&Version=1"
 	tokenExpirySec = 43200 // 12 hours
+
+	// emptySHA256Hash is the SHA-256 digest of an empty payload. SigV4 presigned
+	// requests have no body, but the canonical request must hash it explicitly —
+	// "UNSIGNED-PAYLOAD" is only valid for services (like S3) that permit an
+	// unknown/streamed body, and Bedrock rejects signatures built that way.
+	emptySHA256Hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
 // generateBedrockToken creates a presigned Bedrock bearer token from AWS credentials.
@@ -65,8 +71,8 @@ func generateBedrockToken(accessKeyID, secretAccessKey, sessionToken, region str
 	}
 
 	// Canonical request
-	canonicalRequest := fmt.Sprintf("POST\n/\n%s\nhost:%s\n\nhost\nUNSIGNED-PAYLOAD",
-		canonicalQuery.String(), bedrockHost)
+	canonicalRequest := fmt.Sprintf("POST\n/\n%s\nhost:%s\n\nhost\n%s",
+		canonicalQuery.String(), bedrockHost, emptySHA256Hash)
 
 	// String to sign
 	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s/%s/%s/aws4_request\n%s",
