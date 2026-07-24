@@ -934,7 +934,7 @@ def serve_admin_page(user_email: str) -> dict:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Claude Desktop Admin</title>
+    <title>Claude Platform Admin</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -1485,7 +1485,7 @@ def serve_admin_page(user_email: str) -> dict:
     <div class="layout">
         <aside class="sidebar">
             <div class="sidebar-header">
-                <h1>Claude Admin</h1>
+                <h1>Claude Platform Admin</h1>
                 <div class="subtitle">Enterprise Configuration</div>
             </div>
             <nav class="sidebar-nav">

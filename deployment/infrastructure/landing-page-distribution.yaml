@@ -1573,7 +1573,7 @@ Resources:
               <head>
                   <meta charset="UTF-8">
                   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>Claude Code Distribution</title>
+                  <title>Claude Platform Distribution</title>
                   <style>
                       * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                       body {{
@@ -1739,7 +1739,7 @@ Resources:
                   <div class="layout">
                       <aside class="sidebar">
                           <div class="sidebar-header">
-                              <h1>Claude Code</h1>
+                              <h1>Claude Platform</h1>
                               <div class="subtitle">Distribution Portal</div>
                           </div>
                           <nav class="sidebar-nav">
@@ -1934,7 +1934,7 @@ Resources:
               <head>
                   <meta charset="UTF-8">
                   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>Claude Code Distribution</title>
+                  <title>Claude Platform Distribution</title>
                   <style>
                       * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                       body {{
@@ -2069,7 +2069,7 @@ Resources:
               </head>
               <body>
                   <div class="container">
-                      <h1>📦 Claude Code Distribution</h1>
+                      <h1>📦 Claude Platform Distribution</h1>
                       <div class="welcome">
                           <strong>Welcome, {user_email}</strong>
                       </div>
@@ -2817,7 +2817,7 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: !Sub 'Claude Code distribution portal (${IdentityPoolName}) - VPC origin to internal ALB'
+        Comment: !Sub 'Claude Platform distribution portal (${IdentityPoolName}) - VPC origin to internal ALB'
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
