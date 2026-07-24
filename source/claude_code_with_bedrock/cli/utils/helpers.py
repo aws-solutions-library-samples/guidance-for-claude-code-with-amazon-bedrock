@@ -5,6 +5,7 @@
 
 import configparser
 import logging
+import os
 import platform
 from pathlib import Path
 
@@ -57,7 +58,13 @@ def clear_cached_credentials(profile_name: str) -> bool:
     Co-authored-by: peepeepopapapeepeepo (from PR #330)
     """
     try:
-        cred_path = Path.home() / ".aws" / "credentials"
+        # Honor AWS_SHARED_CREDENTIALS_FILE so `ccwb destroy` clears the section
+        # from the same file the AWS SDK (and credential-process) uses. Otherwise
+        # a relocated credentials file (e.g. via MDM) would leave the ccwb section
+        # behind, permanently shadowing credential_process (#797). Raw resolution,
+        # matching credential-process (no ~/$VAR expansion — use an absolute path).
+        env_path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+        cred_path = Path(env_path) if env_path else Path.home() / ".aws" / "credentials"
         if not cred_path.exists():
             return False
 

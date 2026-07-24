@@ -100,7 +100,28 @@ func SaveToCredentialsFile(creds *federation.AWSCredentials, profile string) err
 	return nil
 }
 
+// credentialsFilePath returns the path to the AWS shared credentials file that
+// this binary reads, writes, and clears. It honors AWS_SHARED_CREDENTIALS_FILE
+// so the binary targets the same file the primary consumer resolves credentials
+// from. If this binary ignored it (writing/clearing ~/.aws/credentials while the
+// consumer read the relocated file), a stale session-mode static block in the
+// consumer's file could never be refreshed or cleared by this binary —
+// permanently shadowing credential_process (see RemoveFromCredentialsFile below
+// and #797).
+//
+// Resolution is raw (no ~ or $VAR expansion), matching the aws-sdk-go-v2 and
+// aws-sdk-js-v3 shared-config loaders — the JS SDK is Claude Code's credential
+// consumer, so raw passthrough keeps writer and reader aligned. Note: boto3 and
+// the AWS CLI additionally expand ~ and $VAR on this variable, so those forms
+// are unsupported here (use an absolute path).
+//
+// Scope: only AWS_SHARED_CREDENTIALS_FILE. AWS_CONFIG_FILE points at
+// ~/.aws/config (profile/SSO settings, a different file) — writing session
+// credentials there would be wrong, so it is deliberately not consulted here.
 func credentialsFilePath() string {
+	if p := os.Getenv("AWS_SHARED_CREDENTIALS_FILE"); p != "" {
+		return p
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".aws", "credentials")
 }
