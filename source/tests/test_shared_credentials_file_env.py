@@ -19,6 +19,22 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_home(tmp_path, monkeypatch):
+    """Point Path.home() at a throwaway dir for every test in this module.
+
+    Mirrors the Go suite's isolateHome(t): even a fail-without-fix run (where
+    save falls back to the home path) can never touch the developer's real
+    ~/.aws/credentials. Tests that need their own fake home (e.g. the
+    home-untouched divergence guard) re-patch Path.home() and win, since both
+    use monkeypatch.
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    return fake_home
+
+
 @pytest.fixture
 def auth():
     """A session-mode MultiProviderAuth instance with config/storage mocked out."""
@@ -96,10 +112,7 @@ def test_home_file_untouched_when_env_set(auth, tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     (fake_home / ".aws").mkdir(parents=True)
     home_creds = fake_home / ".aws" / "credentials"
-    sentinel = (
-        "[ClaudeCode]\naws_access_key_id = HOME_SENTINEL\n"
-        "aws_secret_access_key = s\naws_session_token = t\n"
-    )
+    sentinel = "[ClaudeCode]\naws_access_key_id = HOME_SENTINEL\naws_secret_access_key = s\naws_session_token = t\n"
     home_creds.write_text(sentinel)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
 
@@ -164,13 +177,27 @@ def test_read_missing_custom_path_returns_none(auth, tmp_path, monkeypatch):
 
 
 def test_go_python_path_parity(auth, tmp_path, monkeypatch):
-    """Go and Python must resolve the identical path for the same env value.
+    """Go and Python must read/write the SAME file for the same env value.
 
-    The Go credentialsFilePath() returns AWS_SHARED_CREDENTIALS_FILE verbatim
-    when set. Python must match exactly (same string), or the two binaries would
-    read/write different files for the same environment.
+    The Go credentialsFilePath() returns AWS_SHARED_CREDENTIALS_FILE *verbatim*;
+    Python routes it through pathlib.Path, which normalizes (collapses '//',
+    strips trailing '/'). For a canonical path the two are byte-identical, and
+    where they differ textually the OS still resolves them to the same file — so
+    what actually matters is that a file Python writes is openable at the raw
+    string Go uses. This asserts that functional parity directly (not just string
+    equality), using a path with a redundant separator to exercise the one place
+    the two representations diverge.
     """
-    custom = tmp_path / "shared" / "credentials"
-    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(custom))
-    # str() of the Python Path must equal the raw env value the Go binary uses.
-    assert str(auth._credentials_file_path()) == str(custom)
+    # Canonical path: byte-identical resolution (the common case).
+    canonical = tmp_path / "shared" / "credentials"
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(canonical))
+    assert str(auth._credentials_file_path()) == str(canonical)
+
+    # Divergent representation: raw string (Go) has a doubled separator that
+    # Path (Python) collapses. Save via Python, then read back the file at the
+    # exact verbatim string Go would open — proving both target one file.
+    raw_go_path = f"{tmp_path}/shared//credentials2"
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", raw_go_path)
+    auth.save_to_credentials_file(_example_creds(), "ClaudeCode")
+    with open(raw_go_path, encoding="utf-8") as f:
+        assert "AKIAEXAMPLE797" in f.read(), "Go's verbatim path must open the file Python wrote"

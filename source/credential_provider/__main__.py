@@ -1116,6 +1116,9 @@ class MultiProviderAuth:
             try:
                 with _os.fdopen(fd, "w", encoding="utf-8") as f:
                     config.write(f)
+                # Match save_to_credentials_file and the Go binary: explicit 0600
+                # (mkstemp already defaults to 0600, but be explicit for parity).
+                _os.chmod(tmp_path, 0o600)
                 _os.replace(tmp_path, str(credentials_path))
             except Exception:
                 try:
