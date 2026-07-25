@@ -85,6 +85,10 @@ func newQuotaOrderEnv(t *testing.T, stsURL string) string {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir) // Windows
+	// credentialsFilePath now honors AWS_SHARED_CREDENTIALS_FILE (#797); neutralize
+	// it so session read/write stays inside the isolated HOME regardless of the
+	// ambient environment (a dev/CI export would otherwise pollute the real file).
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "")
 	t.Setenv("CLAUDE_CODE_MONITORING_TOKEN", "")
 	t.Setenv("AWS_ENDPOINT_URL_STS", stsURL)
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")

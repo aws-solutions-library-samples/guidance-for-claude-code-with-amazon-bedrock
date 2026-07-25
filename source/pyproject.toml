@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "claude-code-with-bedrock"
-version = "2.5.2"
+version = "2.5.3"
 description = "Deploy and manage Claude Code on Amazon Bedrock"
 authors = ["Claude Code Team <claude-code@example.com>"]
 readme = "../README.md"
@@ -50,7 +50,7 @@ nuitka = "^4.0.8"
 ordered-set = "^4.1.0"
 zstandard = "^0.25.0"
 pyinstaller = "^6.19.0"
-ruff = "^0.15.10"
+ruff = ">=0.15.10,<0.17.0"
 mypy = ">=1.20,<3.0"
 types-requests = "*"
 pre-commit = "^4.5.1"

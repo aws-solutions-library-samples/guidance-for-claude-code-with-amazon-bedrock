@@ -617,16 +617,13 @@ class MultiProviderAuth:
         # a 403 InvalidClientTokenId.
         if self.credential_storage == "session":
             try:
-                credentials_path = Path.home() / ".aws" / "credentials"
-                if credentials_path.exists():
-                    expired_creds = {
-                        "Version": 1,
-                        "AccessKeyId": "EXPIRED",
-                        "SecretAccessKey": "EXPIRED",
-                        "SessionToken": "EXPIRED",
-                        "Expiration": "2000-01-01T00:00:00Z",
-                    }
-                    self.save_to_credentials_file(expired_creds, self.profile)
+                # DELETE the section rather than writing an "EXPIRED" placeholder.
+                # A static block outranks credential_process in the AWS SDK profile
+                # chain, so a lingering placeholder — once #797 routes writes into
+                # the SDK-read relocated file — would permanently shadow
+                # credential_process. Removing the section lets the SDK fall through
+                # and re-invoke it (parity with the Go binary, #767/#768).
+                if self.remove_from_credentials_file(self.profile):
                     cleared_items.append("credentials file")
             except Exception as e:
                 self._debug_print(f"Could not clear credentials file: {e}")
@@ -688,16 +685,13 @@ class MultiProviderAuth:
             if creds_file.exists():
                 creds_file.unlink()
 
-            # For session storage mode, also clear ~/.aws/credentials
+            # For session storage mode, also clear the AWS shared credentials file.
+            # DELETE the section (don't write an "EXPIRED" placeholder): a static
+            # block outranks credential_process in the AWS SDK profile chain, so a
+            # lingering placeholder in the SDK-read file would shadow it permanently
+            # (#797). Removing it lets the SDK fall through (parity with Go #767/#768).
             if self.credential_storage == "session":
-                expired_creds = {
-                    "Version": 1,
-                    "AccessKeyId": "EXPIRED",
-                    "SecretAccessKey": "EXPIRED",
-                    "SessionToken": "EXPIRED",
-                    "Expiration": "2000-01-01T00:00:00Z",
-                }
-                self.save_to_credentials_file(expired_creds, self.profile)
+                self.remove_from_credentials_file(self.profile)
 
             self._debug_print("Cleared STS credentials (monitoring token preserved)")
         except Exception as e:
@@ -948,8 +942,29 @@ class MultiProviderAuth:
             )
         return None
 
+    @staticmethod
+    def _credentials_file_path():
+        """Return the AWS shared credentials file path this provider read/writes.
+
+        Honors AWS_SHARED_CREDENTIALS_FILE so we target the same file the primary
+        consumer resolves credentials from; otherwise a relocated file (e.g. via
+        MDM) would leave the consumer reading one file while this provider
+        writes/clears another, permanently shadowing credential_process (parity
+        with the Go binary; #797).
+
+        Resolution is raw (no ~ or $VAR expansion), matching the Go/JS SDK
+        shared-config loaders (the JS SDK is Claude Code's consumer). boto3 and
+        the AWS CLI additionally expand ~ and $VAR, so those forms are unsupported
+        here — use an absolute path. Scope is AWS_SHARED_CREDENTIALS_FILE only —
+        NOT AWS_CONFIG_FILE, which points at ~/.aws/config (profile/SSO settings).
+        """
+        env_path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+        if env_path:
+            return Path(env_path)
+        return Path.home() / ".aws" / "credentials"
+
     def save_to_credentials_file(self, credentials, profile="ClaudeCode"):
-        """Save credentials to ~/.aws/credentials file
+        """Save credentials to the AWS shared credentials file
 
         Args:
             credentials: Dict with AccessKeyId, SecretAccessKey, SessionToken, Expiration
@@ -958,7 +973,7 @@ class MultiProviderAuth:
         import tempfile
         from configparser import ConfigParser
 
-        credentials_path = Path.home() / ".aws" / "credentials"
+        credentials_path = self._credentials_file_path()
 
         # Create ~/.aws directory if it doesn't exist
         credentials_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1012,7 +1027,7 @@ class MultiProviderAuth:
             raise Exception(f"Failed to save credentials to file: {str(e)}") from e
 
     def read_from_credentials_file(self, profile="ClaudeCode"):
-        """Read credentials from ~/.aws/credentials file
+        """Read credentials from the AWS shared credentials file
 
         Args:
             profile: Profile name to read from credentials file
@@ -1022,7 +1037,7 @@ class MultiProviderAuth:
         """
         from configparser import ConfigParser
 
-        credentials_path = Path.home() / ".aws" / "credentials"
+        credentials_path = self._credentials_file_path()
 
         if not credentials_path.exists():
             return None
@@ -1061,6 +1076,61 @@ class MultiProviderAuth:
         except Exception as e:
             self._debug_print(f"Error reading credentials from file: {e}")
             return None
+
+    def remove_from_credentials_file(self, profile="ClaudeCode"):
+        """Delete a profile section from the AWS shared credentials file.
+
+        Parity with the Go binary's RemoveFromCredentialsFile (#767/#768): the
+        clear/recovery path must DELETE the section, not overwrite it with an
+        "EXPIRED" static placeholder. A static block outranks credential_process
+        in the AWS SDK profile chain, so a lingering placeholder (once #797
+        routed writes into the SDK-read relocated file) would permanently shadow
+        credential_process — the SDK must instead fall through and re-invoke it.
+
+        Preserves unrelated profiles. Uses an atomic temp-write + replace so a
+        crash mid-write can't corrupt the file. No-op (returns False) if the file
+        or section is absent.
+
+        Returns True if the section was removed, False otherwise.
+        """
+        import os as _os
+        import tempfile
+        from configparser import ConfigParser
+
+        credentials_path = self._credentials_file_path()
+        if not credentials_path.exists():
+            return False
+
+        try:
+            # Disable inline comment characters so keys like 'x-expiration' survive.
+            config = ConfigParser(inline_comment_prefixes=())
+            config.read(credentials_path)
+
+            if profile not in config:
+                return False
+
+            config.remove_section(profile)
+
+            # Atomic replace: write to a temp file in the same dir, then os.replace.
+            fd, tmp_path = tempfile.mkstemp(dir=str(credentials_path.parent), prefix=".credentials-")
+            try:
+                with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                    config.write(f)
+                # Match save_to_credentials_file and the Go binary: explicit 0600
+                # (mkstemp already defaults to 0600, but be explicit for parity).
+                _os.chmod(tmp_path, 0o600)
+                _os.replace(tmp_path, str(credentials_path))
+            except Exception:
+                try:
+                    _os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            return True
+
+        except Exception as e:
+            self._debug_print(f"Error removing credentials from file: {e}")
+            return False
 
     def check_credentials_file_expiration(self, profile="ClaudeCode"):
         """Check if credentials in file are expired
