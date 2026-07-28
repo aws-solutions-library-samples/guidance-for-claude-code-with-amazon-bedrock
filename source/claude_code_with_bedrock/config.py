@@ -216,6 +216,16 @@ class Profile:
             return self.auth_type
         return "oidc" if self.sso_enabled else "none"
 
+    @property
+    def is_idc_distribution(self) -> bool:
+        """True when the distribution is the IAM Identity Center landing page.
+
+        An IDC landing page is distribution_type == "landing-page" with
+        auth_type == "idc" (deployed via landing-page-distribution.yaml with
+        AuthType=idc).
+        """
+        return self.distribution_type == "landing-page" and self.effective_auth_type == "idc"
+
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary."""
         return asdict(self)
