@@ -33,6 +33,11 @@ _LAMBDA_DIR = os.path.abspath(
     )
 )
 
+# Add lambda-functions/ parent to path so 'shared' module is importable
+_LAMBDA_FUNCTIONS_DIR = os.path.dirname(_LAMBDA_DIR)
+if _LAMBDA_FUNCTIONS_DIR not in sys.path:
+    sys.path.insert(0, _LAMBDA_FUNCTIONS_DIR)
+
 
 def _oidc_data_header(email: str) -> str:
     """Build a fake (unsigned) x-amzn-oidc-data value — signature verification

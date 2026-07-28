@@ -371,7 +371,7 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       Role: !GetAtt AdminConsoleFunctionRole.Arn
-      Timeout: 30
+      Timeout: 120
       MemorySize: 512
       Environment:
         Variables:
