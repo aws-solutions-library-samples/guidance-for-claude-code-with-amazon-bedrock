@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Bandit Scan
-        uses: shundor/python-bandit-scan@ab1d87dfccc5a0ffab88be3aaac6ffe35c10d6cd
+        uses: shundor/python-bandit-scan@9955228c1cbdc5aeb5e511e0fa232154e2ed2b67
         with:
           # exit_zero keeps Bandit non-blocking: there is an existing backlog of
           # findings (mostly B404/B603 subprocess + B108/B110) that must be triaged
