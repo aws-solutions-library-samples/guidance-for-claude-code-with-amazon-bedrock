@@ -65,7 +65,7 @@ class TestWizardPartitionFiltering:
 
 class TestUsGovTierResolution:
     def test_opus_tier_resolves_govcloud_opus(self):
-        assert resolve_model_for_tier("opus", "us-gov") == "us-gov.anthropic.claude-opus-5"
+        assert resolve_model_for_tier("opus", "us-gov") == "us-gov.anthropic.claude-opus-4-8"
 
     def test_sonnet_tier_resolves_govcloud_sonnet(self):
         assert resolve_model_for_tier("sonnet", "us-gov") == "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -91,6 +91,5 @@ class TestUsGovTierResolution:
         assert resolve_model_for_tier("sonnet", "us").startswith("us.anthropic.claude-sonnet-5")
 
     def test_alias_for_govcloud_model_ids(self):
-        assert get_claude_code_alias("us-gov.anthropic.claude-opus-5") == "opus"
         assert get_claude_code_alias("us-gov.anthropic.claude-opus-4-8") == "opus"
         assert get_claude_code_alias("us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0") == "sonnet"

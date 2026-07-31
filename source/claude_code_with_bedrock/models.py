@@ -284,17 +284,11 @@ _CLAUDE_MODELS_RAW = {
                     "eu-west-3",
                 ],
             },
-        },
-    },
-    "opus-5-govcloud": {
-        "name": "Claude Opus 5 (GovCloud)",
-        "base_model_id": "anthropic.claude-opus-5",
-        "profiles": {
-            "us-gov": {
-                "model_id": "us-gov.anthropic.claude-opus-5",
-                "description": "US GovCloud regions",
-                "source_regions": ["us-gov-west-1", "us-gov-east-1"],
-                "destination_regions": ["us-gov-west-1", "us-gov-east-1"],
+            "au": {
+                "model_id": "au.anthropic.claude-opus-5",
+                "description": "AU CRIS - Australia regions",
+                "source_regions": ["ap-southeast-2", "ap-southeast-4"],
+                "destination_regions": ["ap-southeast-2", "ap-southeast-4"],
             },
         },
     },
@@ -1802,7 +1796,6 @@ MODEL_TIER_PREFERENCES = {
     ],
     "opus": [
         "opus-5",
-        "opus-5-govcloud",
         "opus-4-8",
         "opus-4-8-govcloud",
         "opus-4-7",
@@ -1897,7 +1890,6 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
         all_model_keys = [
             "sonnet-5",
             "opus-5",
-            "opus-5-govcloud",
             "opus-4-8",
             "opus-4-8-govcloud",
             "opus-4-7",

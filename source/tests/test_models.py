@@ -40,7 +40,6 @@ class TestModelConfiguration:
             "sonnet-5",
             "sonnet-4-6",
             "opus-5",
-            "opus-5-govcloud",
             "opus-4-8",
             "opus-4-8-govcloud",
             "opus-4-7",
