@@ -2096,10 +2096,10 @@ def serve_admin_page(user_email: str) -> dict:
                 const gc = groupConfig[group.groupId] || {{ models: [], permissionSetName: null }};
                 let modelTagsHtml = '<div class="model-tags">';
                 if (gc.models.length === 0) modelTagsHtml += '<span style="color:#888;">None</span>';
-                else gc.models.forEach((m, mi) => {{ modelTagsHtml += '<span class="model-tag">' + m.modelName + ' <span class="remove" data-group="' + group.groupId + '" data-idx="' + mi + '" onclick="removeModelByIdx(this)">&times;</span></span>'; }});
+                else gc.models.forEach((m, mi) => {{ modelTagsHtml += '<span class="model-tag">' + escapeHtml(m.modelName) + ' <span class="remove" data-group="' + group.groupId + '" data-idx="' + mi + '" onclick="removeModelByIdx(this)">&times;</span></span>'; }});
                 modelTagsHtml += '</div>';
                 let addHtml = '<div class="add-row"><select id="add-model-' + group.groupId + '" style="font-size:13px;"><option value="">Select model...</option>';
-                models.filter(m => !gc.models.find(gm => gm.modelId === m.modelId)).forEach(m => {{ addHtml += '<option value="' + encodeURIComponent(m.modelId) + '|' + encodeURIComponent(m.modelName) + '">' + m.modelName + '</option>'; }});
+                models.filter(m => !gc.models.find(gm => gm.modelId === m.modelId)).forEach(m => {{ addHtml += '<option value="' + encodeURIComponent(m.modelId) + '|' + encodeURIComponent(m.modelName) + '">' + escapeHtml(m.modelName) + '</option>'; }});
                 addHtml += '</select><button class="btn btn-primary btn-sm" data-group="' + group.groupId + '" onclick="addModelFromBtn(this)">+</button></div>';
                 let psHtml = gc.permissionSetName ? escapeHtml(gc.permissionSetName) + ' <a href="#" onclick="viewPolicy(' + attrArg(gc.permissionSetName) + ');return false;" style="font-size:11px;color:#667eea;">[view]</a>' : '-';
                 html += '<tr><td><strong>' + escapeHtml(group.displayName) + '</strong></td><td>' + modelTagsHtml + '</td><td>' + addHtml + '</td><td>' + psHtml + '</td></tr>';
@@ -2206,10 +2206,10 @@ def serve_admin_page(user_email: str) -> dict:
 
         function renderMcpServers() {{
             const md = document.getElementById('managed-mcp-servers');
-            md.innerHTML = managedMcpServers.length === 0 ? '<p style="color:#888;">No remote MCP servers configured.</p>' : managedMcpServers.map((s, i) => '<div class="card"><div class="card-header"><h5>' + s.name + '</h5><div><span class="badge badge-success">Remote</span> <button class="btn btn-danger btn-sm" onclick="removeManagedMcp(' + i + ')">Remove</button></div></div><div class="card-body"><strong>URL:</strong> <code>' + s.url + '</code>' + (s.description ? '<br>' + s.description : '') + '</div></div>').join('');
+            md.innerHTML = managedMcpServers.length === 0 ? '<p style="color:#888;">No remote MCP servers configured.</p>' : managedMcpServers.map((s, i) => '<div class="card"><div class="card-header"><h5>' + escapeHtml(s.name) + '</h5><div><span class="badge badge-success">Remote</span> <button class="btn btn-danger btn-sm" onclick="removeManagedMcp(' + i + ')">Remove</button></div></div><div class="card-body"><strong>URL:</strong> <code>' + escapeHtml(s.url) + '</code>' + (s.description ? '<br>' + escapeHtml(s.description) : '') + '</div></div>').join('');
 
             const td = document.getElementById('mcp-templates');
-            td.innerHTML = mcpServerTemplates.length === 0 ? '<p style="color:#888;">No local MCP templates configured.</p>' : mcpServerTemplates.map((s, i) => '<div class="card"><div class="card-header"><h5>' + s.name + '</h5><div><span class="badge badge-warning">Local</span> <button class="btn btn-danger btn-sm" onclick="removeMcpTemplate(' + i + ')">Remove</button></div></div><div class="card-body"><strong>Command:</strong> <code>' + s.command + ' ' + (s.args || []).join(' ') + '</code></div></div>').join('');
+            td.innerHTML = mcpServerTemplates.length === 0 ? '<p style="color:#888;">No local MCP templates configured.</p>' : mcpServerTemplates.map((s, i) => '<div class="card"><div class="card-header"><h5>' + escapeHtml(s.name) + '</h5><div><span class="badge badge-warning">Local</span> <button class="btn btn-danger btn-sm" onclick="removeMcpTemplate(' + i + ')">Remove</button></div></div><div class="card-body"><strong>Command:</strong> <code>' + escapeHtml(s.command) + ' ' + escapeHtml((s.args || []).join(' ')) + '</code></div></div>').join('');
         }}
 
         function addManagedMcpServer() {{
