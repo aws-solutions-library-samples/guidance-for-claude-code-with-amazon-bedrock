@@ -36,7 +36,7 @@ The admin console is a **separate, optional** CloudFormation stack (`admin-conso
 
 - **IAM Identity Center enabled** in your AWS account
 - **Groups for Claude Desktop/Code users** — typically synced from your identity provider (Active Directory, Okta, Azure AD). Groups should include `Claude` in the name for the admin console to filter them (e.g. `Claude-Code-Developers`, `Claude-Code-Contractors`)
-- **Admin group** — for administrators who manage the console. Must contain both `Claude` and `Admin` in the name (e.g. `Claude-Code-Admins`, the default)
+- **Admin group** — for administrators who manage the console. Configurable via the `AdminGroupName` CloudFormation parameter (default: `Claude-Code-Admins`). Can be any IAM Identity Center group name — the match is case-insensitive. Note: for groups to appear in the admin console's *management list*, they must contain "Claude" in their display name (this is a separate filter for user-facing groups, not the admin group itself)
 - **Permission to add applications in IAM Identity Center** — after deploying the distribution stack, you'll need permission to create a **Custom SAML 2.0 application** under IAM Identity Center → Applications. This is a manual, one-time step (see Step 2 below) — IDC has no API to create custom SAML applications, and the ACS URL/Audience depend on the Cognito User Pool this stack creates, so it can't be done before deployment.
 - A custom domain + ACM certificate reachable by your users. For test/internal deployments, `ALBScheme=internal` (the default for the IDC landing page) plus [SSM port forwarding](#testing-via-ssm-port-forwarding) lets you validate the setup without exposing the ALB to the internet.
 

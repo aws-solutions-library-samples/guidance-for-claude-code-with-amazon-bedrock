@@ -19,7 +19,7 @@ This guide helps you choose the right option for your organization. For the IAM 
 | **Best For**        | Small teams (< 20 users)           | Large teams (20-100 users)              | Orgs already using IAM Identity Center     |
 | **Authentication**  | None (URLs shared via Slack/email) | IdP (Okta/Azure/Auth0/Cognito)          | Native IAM Identity Center SSO             |
 | **Setup Time**      | 5 minutes                          | 30 minutes                              | 45-60 minutes (SAML + Cognito federation setup) |
-| **Security**        | URL expiry (7 days)                | IdP auth + URL expiry (1 hour)          | Signed session cookies + JWT bootstrap auth |
+| **Security**        | URL expiry (7 days)                | IdP auth + URL expiry (1 hour)          | ALB OIDC auth (direct) or signed session cookies (CloudFront) + JWT bootstrap auth |
 | **Compliance**      | Basic                              | Enterprise-grade                        | Enterprise-grade                           |
 | **User Experience** | Copy/paste URL                     | Navigate to URL, authenticate, download | Navigate to URL, SSO login, download; configs auto-update via bootstrap |
 | **Admin Overhead**  | Generate new URLs when needed      | Set up once, no maintenance             | Admin console for models/policies/MCP servers, group-based access |
