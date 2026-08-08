@@ -58,6 +58,29 @@ def _run(metadata_url="https://portal.sso.us-east-1.amazonaws.com/saml/metadata/
     return tester
 
 
+class TestUrlValidation:
+    """The command must reject non-HTTPS and malformed metadata URLs."""
+
+    @patch("claude_code_with_bedrock.config.Config.get_profile")
+    def test_rejects_http_url(self, mock_get_profile, capsys):
+        mock_get_profile.return_value = _profile()
+        tester = _run(metadata_url="http://portal.sso.us-east-1.amazonaws.com/saml/metadata/xyz")
+        assert tester.status_code == 1
+        assert "HTTPS" in capsys.readouterr().out or "https" in capsys.readouterr().out.lower()
+
+    @patch("claude_code_with_bedrock.config.Config.get_profile")
+    def test_rejects_empty_url(self, mock_get_profile, capsys):
+        mock_get_profile.return_value = _profile()
+        tester = _run(metadata_url="not-a-url")
+        assert tester.status_code == 1
+
+    @patch("claude_code_with_bedrock.config.Config.get_profile")
+    def test_rejects_ftp_url(self, mock_get_profile, capsys):
+        mock_get_profile.return_value = _profile()
+        tester = _run(metadata_url="ftp://example.com/metadata")
+        assert tester.status_code == 1
+
+
 class TestDistributionTypeGuard:
     """The command must refuse to run for anything other than the IDC landing page."""
 

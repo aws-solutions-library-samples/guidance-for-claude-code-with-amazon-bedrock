@@ -12,6 +12,8 @@ resource (conditional on SamlMetadataUrl being set) gets created and wired
 into both the web app client and the bootstrap client.
 """
 
+from urllib.parse import urlparse
+
 from cleo.commands.command import Command
 from cleo.helpers import argument, option
 from rich.console import Console
@@ -48,6 +50,15 @@ class ConfigureSamlCommand(Command):
         """Execute the configure-saml command."""
         console = Console()
         metadata_url = self.argument("metadata-url")
+
+        # Validate URL format and scheme
+        parsed = urlparse(metadata_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            console.print(
+                "[red]Error:[/red] Metadata URL must be a valid HTTPS URL "
+                "(e.g. https://portal.sso.us-east-1.amazonaws.com/saml/metadata/...)."
+            )
+            return 1
 
         config = Config.load()
         profile_name = self.option("profile")
