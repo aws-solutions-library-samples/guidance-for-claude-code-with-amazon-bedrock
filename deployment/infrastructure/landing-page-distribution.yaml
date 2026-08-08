@@ -478,6 +478,8 @@ Resources:
   SessionSigningSecret:
     Type: AWS::SecretsManager::Secret
     Condition: ShouldEnableCloudFront
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Description: !Sub 'HMAC key for signing the ${IdentityPoolName} landing page session cookie (CloudFront path only)'
       GenerateSecretString:
@@ -2111,6 +2113,8 @@ Resources:
   IdcUserPool:
     Type: AWS::Cognito::UserPool
     Condition: IsIdc
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       UserPoolName: !Sub '${IdentityPoolName}-idc-bridge'
       AutoVerifiedAttributes:
@@ -2418,7 +2422,7 @@ Resources:
                   - secretsmanager:DescribeSecret
                   - secretsmanager:TagResource
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}-idc-*'
 
   IdcSecretStoreFunction:
     Type: AWS::Lambda::Function
