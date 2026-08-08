@@ -17,6 +17,45 @@ Parameters:
     Default: 10.0.2.0/24
     Description: CIDR block for public subnet 2
 
+  CreateNatGateway:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create a NAT Gateway plus a pair of NAT-routed private subnets. Required
+      for internal-scheme resources (e.g. an internal ALB) that need outbound
+      internet access — an internet gateway only performs NAT for interfaces
+      that hold a public IP, which internal-scheme ALB nodes never do. Default
+      'false' keeps existing deployments backward-compatible (no new NAT
+      Gateway cost) since most consumers only need the public subnets.
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.0.11.0/24
+    Description: CIDR block for private (NAT-routed) subnet 1. Only used when CreateNatGateway=true.
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.0.12.0/24
+    Description: CIDR block for private (NAT-routed) subnet 2. Only used when CreateNatGateway=true.
+
+  CreateSsmBastion:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create a small (t3.micro) EC2 instance with the SSM agent, reachable
+      only via AWS Systems Manager Session Manager (no SSH, no open inbound
+      ports, no key pair). Intended as a port-forwarding tunnel for testing
+      an internal-scheme ALB (e.g. `aws ssm start-session ... --document-name
+      AWS-StartPortForwardingSessionToRemoteHost`) from a workstation without
+      exposing the ALB to the internet. Default 'false' — most deployments
+      either use an internet-facing ALB or already have a bastion/VPN.
+
+Conditions:
+  ShouldCreateNatGateway: !Equals [!Ref CreateNatGateway, 'true']
+  ShouldCreateSsmBastion: !Equals [!Ref CreateSsmBastion, 'true']
+
 Resources:
   # VPC Resources
   VPC:
@@ -92,6 +131,152 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
+  # NAT Gateway resources (optional, CreateNatGateway=true).
+  # The NAT Gateway itself must live in a public subnet (it needs the IGW
+  # route to reach the internet); the private subnets it serves route their
+  # 0.0.0.0/0 traffic through it instead of through the IGW directly, which
+  # is what actually gives interfaces without a public IP (e.g. an internal
+  # ALB's nodes) a path to the internet.
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: ShouldCreateNatGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-nat-eip
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: ShouldCreateNatGateway
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-nat-gw
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: ShouldCreateNatGateway
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-private-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: ShouldCreateNatGateway
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-private-2
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: ShouldCreateNatGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-private-rt
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: ShouldCreateNatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ShouldCreateNatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ShouldCreateNatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  # SSM Bastion resources (optional, CreateSsmBastion=true).
+  # No inbound security group rules at all — reachability is entirely via
+  # the SSM agent's outbound HTTPS connection to the Systems Manager
+  # service, so there's no open port to scan or attack. Used purely as a
+  # `aws ssm start-session --document-name AWS-StartPortForwardingSessionToRemoteHost`
+  # tunnel target to reach an internal-scheme ALB from outside the VPC.
+  SsmBastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateSsmBastion
+    Properties:
+      GroupDescription: SSM bastion - no inbound rules, outbound HTTPS only for SSM agent and port-forward targets
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound for SSM agent and port-forwarding to ALB
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-ssm-bastion-sg
+
+  SsmBastionRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateSsmBastion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-ssm-bastion-role
+
+  SsmBastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: ShouldCreateSsmBastion
+    Properties:
+      Roles:
+        - !Ref SsmBastionRole
+
+  SsmBastionInstance:
+    Type: AWS::EC2::Instance
+    Condition: ShouldCreateSsmBastion
+    Properties:
+      InstanceType: t3.micro
+      # Latest Amazon Linux 2023 AMI, resolved at deploy time via the public
+      # SSM parameter — avoids hardcoding a region-specific AMI ID.
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref SsmBastionSecurityGroup
+      IamInstanceProfile: !Ref SsmBastionInstanceProfile
+      # No key pair — access is exclusively via SSM Session Manager.
+      Tags:
+        - Key: Name
+          Value: claude-code-otel-ssm-bastion
+        - Key: Purpose
+          Value: ssm-port-forwarding-tunnel
+
 Outputs:
   VpcId:
     Description: The ID of the VPC
@@ -116,4 +301,44 @@ Outputs:
     Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
     Export:
       Name: !Sub "${AWS::StackName}-SubnetIds"
+
+  PrivateSubnet1:
+    Description: The ID of the private (NAT-routed) subnet 1. Only present when CreateNatGateway=true.
+    Condition: ShouldCreateNatGateway
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1"
+
+  PrivateSubnet2:
+    Description: The ID of the private (NAT-routed) subnet 2. Only present when CreateNatGateway=true.
+    Condition: ShouldCreateNatGateway
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2"
+
+  PrivateSubnetIds:
+    Description: Comma-separated list of private (NAT-routed) subnet IDs. Only present when CreateNatGateway=true.
+    Condition: ShouldCreateNatGateway
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetIds"
+
+  NatGatewayId:
+    Description: The ID of the NAT Gateway. Only present when CreateNatGateway=true.
+    Condition: ShouldCreateNatGateway
+    Value: !Ref NatGateway
+    Export:
+      Name: !Sub "${AWS::StackName}-NatGatewayId"
+
+  SsmBastionInstanceId:
+    Description: >-
+      Instance ID of the SSM bastion. Only present when CreateSsmBastion=true.
+      Use with `aws ssm start-session --target <this-value> --document-name
+      AWS-StartPortForwardingSessionToRemoteHost --parameters
+      '{"host":["<alb-dns-name-or-custom-domain>"],"portNumber":["443"],"localPortNumber":["8443"]}'`
+      to tunnel to an internal-scheme ALB.
+    Condition: ShouldCreateSsmBastion
+    Value: !Ref SsmBastionInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-SsmBastionInstanceId"
 
