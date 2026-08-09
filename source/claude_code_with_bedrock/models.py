@@ -196,6 +196,102 @@ _CLAUDE_MODELS_RAW = {
             },
         },
     },
+    "opus-5": {
+        "name": "Claude Opus 5",
+        "base_model_id": "anthropic.claude-opus-5",
+        "profiles": {
+            "us": {
+                "model_id": "us.anthropic.claude-opus-5",
+                "description": "US CRIS - US and Canada regions",
+                "source_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+                "destination_regions": [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                ],
+            },
+            "global": {
+                "model_id": "global.anthropic.claude-opus-5",
+                "description": "Global CRIS - All commercial AWS regions worldwide",
+                "source_regions": [
+                    # North America
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ca-central-1",
+                    "ca-west-1",
+                    # Europe
+                    "eu-central-1",
+                    "eu-central-2",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    # Asia Pacific
+                    "ap-east-2",
+                    "ap-northeast-1",
+                    "ap-northeast-2",
+                    "ap-northeast-3",
+                    "ap-south-1",
+                    "ap-south-2",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-southeast-4",
+                    "ap-southeast-5",
+                    "ap-southeast-7",
+                    # Middle East & Africa
+                    "me-south-1",
+                    "me-central-1",
+                    "af-south-1",
+                    "il-central-1",
+                    # South America
+                    "sa-east-1",
+                    # Mexico
+                    "mx-central-1",
+                ],
+                "destination_regions": ["all-commercial"],
+            },
+            "eu": {
+                "model_id": "eu.anthropic.claude-opus-5",
+                "description": "EU CRIS - European regions",
+                "source_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
+                "destination_regions": [
+                    "eu-central-1",
+                    "eu-north-1",
+                    "eu-south-1",
+                    "eu-south-2",
+                    "eu-west-1",
+                    "eu-west-3",
+                ],
+            },
+            "au": {
+                "model_id": "au.anthropic.claude-opus-5",
+                "description": "AU CRIS - Australia regions",
+                "source_regions": ["ap-southeast-2", "ap-southeast-4"],
+                "destination_regions": ["ap-southeast-2", "ap-southeast-4"],
+            },
+        },
+    },
     "opus-4-8": {
         "name": "Claude Opus 4.8",
         "base_model_id": "anthropic.claude-opus-4-8",
@@ -1698,7 +1794,16 @@ MODEL_TIER_PREFERENCES = {
         "sonnet-3-7",
         "sonnet-3-7-govcloud",
     ],
-    "opus": ["opus-4-8", "opus-4-8-govcloud", "opus-4-7", "opus-4-6", "opus-4-5", "opus-4-1", "opus-4"],
+    "opus": [
+        "opus-5",
+        "opus-4-8",
+        "opus-4-8-govcloud",
+        "opus-4-7",
+        "opus-4-6",
+        "opus-4-5",
+        "opus-4-1",
+        "opus-4",
+    ],
     "fable": ["fable-5"],
 }
 
@@ -1784,6 +1889,7 @@ def resolve_model_for_tier(tier: str, cris_prefix: str) -> str | None:
         # Search all models (newest first) for ANY model with this prefix
         all_model_keys = [
             "sonnet-5",
+            "opus-5",
             "opus-4-8",
             "opus-4-8-govcloud",
             "opus-4-7",

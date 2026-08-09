@@ -101,7 +101,7 @@ jobs:
       - name: Make binaries executable
         run: chmod +x source/go/dist/*
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -336,7 +336,7 @@ jobs:
           role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.should_run.outputs.skip != 'true'
         with:
           python-version: '3.11'

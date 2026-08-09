@@ -87,7 +87,7 @@ class TestUsGovTierResolution:
             )
 
     def test_commercial_tiers_unchanged_by_govcloud_entries(self):
-        assert resolve_model_for_tier("opus", "us") == "us.anthropic.claude-opus-4-8"
+        assert resolve_model_for_tier("opus", "us") == "us.anthropic.claude-opus-5"
         assert resolve_model_for_tier("sonnet", "us").startswith("us.anthropic.claude-sonnet-5")
 
     def test_alias_for_govcloud_model_ids(self):

@@ -286,6 +286,26 @@ def build_response(status_code: int, body: dict) -> dict:
     }
 
 
+def _parse_claim_string(value: str) -> list:
+    """Parse a group claim string into a list of group IDs.
+
+    Handles multiple serialization formats from JWT authorizers:
+    - Comma-separated: "group1,group2,group3"
+    - Bracketed space-separated (API Gateway HTTP API): "[id1 id2 id3]"
+    - Single value: "group1"
+    """
+    value = value.strip()
+    # API Gateway JWT authorizer serializes arrays as '[val1 val2 val3]'
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        # Space-separated inside brackets
+        return [g.strip() for g in inner.split() if g.strip()]
+    # Comma-separated or single value
+    return [g.strip() for g in value.split(",") if g.strip()]
+
+
 def extract_groups_from_claims(claims: dict) -> list:
     """
     Extract group memberships from JWT token claims.
@@ -309,8 +329,7 @@ def extract_groups_from_claims(claims: dict) -> list:
         if isinstance(claim_groups, list):
             groups.extend(claim_groups)
         elif isinstance(claim_groups, str):
-            # Could be comma-separated or single value
-            groups.extend([g.strip() for g in claim_groups.split(",") if g.strip()])
+            groups.extend(_parse_claim_string(claim_groups))
 
     # Cognito groups claim
     if "cognito:groups" in claims:
@@ -318,7 +337,7 @@ def extract_groups_from_claims(claims: dict) -> list:
         if isinstance(claim_groups, list):
             groups.extend(claim_groups)
         elif isinstance(claim_groups, str):
-            groups.extend([g.strip() for g in claim_groups.split(",") if g.strip()])
+            groups.extend(_parse_claim_string(claim_groups))
 
     # Custom department claim (treated as a group for policy matching)
     if "custom:department" in claims:
