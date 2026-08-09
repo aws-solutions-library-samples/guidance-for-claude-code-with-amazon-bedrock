@@ -293,6 +293,7 @@ Tests should be independent and not affect each other:
 import pytest
 from unittest.mock import Mock, patch
 
+
 class TestMyFeature:
     @pytest.fixture(autouse=True)
     def setup(self):
