@@ -2124,7 +2124,7 @@ def serve_admin_page(user_email: str) -> dict:
         function renderModels() {{
             const tbody = document.getElementById('models-body');
             if (models.length === 0) {{ tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#888;padding:40px;">No models available</td></tr>'; return; }}
-            tbody.innerHTML = models.map(m => '<tr><td>' + m.modelName + '</td><td><code style="font-size:12px;">' + m.modelId + '</code></td><td><span class="badge badge-success">' + m.type + '</span></td></tr>').join('');
+            tbody.innerHTML = models.map(m => '<tr><td>' + escapeHtml(m.modelName) + '</td><td><code style="font-size:12px;">' + escapeHtml(m.modelId) + '</code></td><td><span class="badge badge-success">' + escapeHtml(m.type) + '</span></td></tr>').join('');
         }}
 
         function renderPolicies() {{
@@ -2142,10 +2142,10 @@ def serve_admin_page(user_email: str) -> dict:
             }});
 
             const fl = document.getElementById('allowed-folders-list');
-            fl.innerHTML = policies.allowedWorkspaceFolders.length === 0 ? '<span style="color:#888;">No restrictions</span>' : policies.allowedWorkspaceFolders.map((f, i) => '<span class="tool-tag">' + (f.path || f) + ' <span class="remove" onclick="removeAllowedFolder(' + i + ')">&times;</span></span>').join(' ');
+            fl.innerHTML = policies.allowedWorkspaceFolders.length === 0 ? '<span style="color:#888;">No restrictions</span>' : policies.allowedWorkspaceFolders.map((f, i) => '<span class="tool-tag">' + escapeHtml(f.path || f) + ' <span class="remove" onclick="removeAllowedFolder(' + i + ')">&times;</span></span>').join(' ');
 
             const el = document.getElementById('egress-hosts-list');
-            el.innerHTML = policies.coworkEgressAllowedHosts.length === 0 ? '<span style="color:#888;">No restrictions</span>' : policies.coworkEgressAllowedHosts.map((h, i) => '<span class="tool-tag">' + h + ' <span class="remove" onclick="removeEgressHost(' + i + ')">&times;</span></span>').join(' ');
+            el.innerHTML = policies.coworkEgressAllowedHosts.length === 0 ? '<span style="color:#888;">No restrictions</span>' : policies.coworkEgressAllowedHosts.map((h, i) => '<span class="tool-tag">' + escapeHtml(h) + ' <span class="remove" onclick="removeEgressHost(' + i + ')">&times;</span></span>').join(' ');
 
             // Command Permissions (allow/ask/deny). Reuses the tool-tag color
             // classes: allow (neutral/green), ask (amber), deny -> 'blocked' (red).
