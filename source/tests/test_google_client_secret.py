@@ -5,9 +5,17 @@ which use PKCE-only for native apps). Google documents this secret as non-confid
 for installed applications, so it's stored in config.json rather than the OS keyring.
 """
 
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+# ruff: noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from claude_code_with_bedrock.cli.commands.init import InitCommand
+from claude_code_with_bedrock.config import Config, Profile
 
 
 class TestGoogleClientSecretConfig:
@@ -36,16 +44,18 @@ class TestGoogleClientSecretConfig:
         )
 
     def test_init_wizard_prompts_google_secret(self):
-        """The init wizard must prompt for client_secret when provider is Google."""
+        """The init wizard must have a Google branch that writes client_secret to config."""
         init_py = (
             Path(__file__).resolve().parents[2] / "source" / "claude_code_with_bedrock" / "cli" / "commands" / "init.py"
         )
         content = init_py.read_text(encoding="utf-8")
-        # Verify Google-specific handling exists in init wizard
-        assert 'provider_type = "google"' in content
-        # client_secret is stored in OS keyring, not written to config file
-        assert "client_secret" in content, (
-            "Init wizard must handle client_secret for Google provider (stored in keyring)"
+        # A Google-specific provider branch must exist (distinct from the Azure branch)
+        # and must persist the secret to the config dict (not the keyring).
+        assert 'elif provider_type == "google":' in content, (
+            "Init wizard must have a Google branch that collects the OAuth client secret"
+        )
+        assert 'config["client_secret"] = client_secret' in content, (
+            "Google branch must persist client_secret to config.json (non-confidential)"
         )
 
     def test_package_includes_google_client_secret(self):
@@ -81,3 +91,75 @@ class TestGoogleClientSecretConfig:
                     f"Line {i + 1}: Google client_secret should be stored in config.json, "
                     f"not OS keyring (Google documents it as non-confidential)"
                 )
+
+
+class TestGoogleClientSecretRoundTrip:
+    """Re-running init must preserve a saved Google client_secret (config-sync.md)."""
+
+    @staticmethod
+    def _google_profile() -> Profile:
+        return Profile(
+            name="google-test",
+            provider_domain="accounts.google.com",
+            client_id="319-abc.apps.googleusercontent.com",
+            identity_pool_name="claude-code-auth",
+            credential_storage="session",
+            aws_region="us-east-1",
+            provider_type="google",
+            client_secret="GOCSPX-secret-value",
+            federation_type="direct",
+            federated_role_arn="arn:aws:iam::123456789012:role/BedrockGoogleFederatedRole",
+        )
+
+    def test_rerun_preserves_google_client_secret(self):
+        """_check_existing_deployment must restore client_secret from the saved profile."""
+        command = InitCommand()
+        fake_config = Config()
+        profile = self._google_profile()
+        with (
+            patch.object(Config, "load", return_value=fake_config),
+            patch.object(fake_config, "get_profile", return_value=profile),
+            patch.object(InitCommand, "_stack_exists", side_effect=Exception("no creds")),
+        ):
+            rebuilt = command._check_existing_deployment("google-test")
+        assert rebuilt.get("client_secret") == "GOCSPX-secret-value", (
+            "Re-running init dropped the Google client_secret — it must survive the "
+            "profile -> config rebuild so the value pre-fills instead of resetting"
+        )
+
+    def test_save_configuration_persists_client_secret(self):
+        """_save_configuration must write client_secret into the saved Profile."""
+        command = InitCommand()
+        fake_config = Config()
+        saved = {}
+
+        def _capture(profile):
+            saved["profile"] = profile
+
+        config_data = {
+            "provider_type": "google",
+            "client_secret": "GOCSPX-secret-value",
+            "sso_enabled": True,
+            "credential_storage": "session",
+            "okta": {"domain": "accounts.google.com", "client_id": "319-abc.apps.googleusercontent.com"},
+            "aws": {
+                "region": "us-east-1",
+                "identity_pool_name": "claude-code-auth",
+                "stacks": {},
+                "allowed_bedrock_regions": ["us-east-1"],
+            },
+            "monitoring": {"enabled": False},
+            "federation_type": "direct",
+        }
+        with (
+            patch.object(Config, "load", return_value=fake_config),
+            patch.object(fake_config, "get_profile", return_value=None),
+            patch.object(fake_config, "add_profile", side_effect=_capture),
+            patch.object(fake_config, "set_active_profile"),
+            patch.object(fake_config, "save"),
+        ):
+            command._save_configuration(config_data, "google-test")
+
+        assert saved["profile"].client_secret == "GOCSPX-secret-value", (
+            "_save_configuration must persist the Google client_secret to the profile"
+        )

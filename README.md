@@ -1,9 +1,42 @@
 # Guidance for Claude Code and Cowork on Amazon Bedrock
 
-[![Stable Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&label=stable)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases/latest)
+[![Stable Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&label=stable&filter=v*.*.*)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/releases/latest)
 [![Beta Release](https://img.shields.io/github/v/release/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock?style=for-the-badge&include_prereleases&label=beta)](https://github.com/aws-solutions-library-samples/guidance-for-claude-code-with-amazon-bedrock/tree/beta)
 
 This guidance enables enterprise deployment of Claude Code and Claude Cowork on Amazon Bedrock across command-line (CLI) and desktop surfaces — with secure single sign-on (SSO), usage monitoring, and cost controls.
+
+## ℹ️ Maintenance Mode
+
+**This repository is now in maintenance mode on a best-efforts basis.** It remains available as a reference implementation. New contributions without GitHub issues approved by maintainers will not be accepted.
+
+For new deployments of Claude Apps on Amazon Bedrock, we recommend [Claude Apps Gateway](https://code.claude.com/docs/en/claude-apps-gateway) — a self-hosted service that sits between your Claude clients and your model provider. It is included in the `claude` binary, so the same executable that runs Claude Code also runs the gateway. It provides:
+
+- Corporate SSO (OIDC) with centralized policy enforcement
+- Per-user cost attribution and spend caps
+- Managed settings delivery
+- OTLP telemetry routing
+- Single stateless container deployment
+
+**👉 [Get started with Claude Apps Gateway on AWS](https://github.com/aws-samples/anthropic-on-aws/tree/main/claude-apps-gateway)**
+
+**💻 [Deploying both Claude Code CLI and Claude Desktop? Add the Bootstrap Server](https://github.com/aws-samples/anthropic-on-aws/tree/main/claude-apps-gateway-bootstrap)** — delivers managed settings, organization plugins, and per-user configuration to Claude Desktop at sign-in.
+
+<details>
+<summary><strong>Areas where this reference solution complements Claude Apps Gateway today</strong></summary>
+
+The following capabilities are not yet available in Claude Apps Gateway but may appear on its future roadmap. This solution provides reference patterns in the meantime:
+
+- **Claude Desktop** — spend controls and model discovery may be functional, however configuration and managed settings delivery requires MDM or per-user bootstrap server.
+- **AWS IAM Identity Center** — native IDC authentication without external OIDC
+- **Historical usage analytics** — S3 + Athena for long-term usage queries
+- **Multi-platform packaging** — automated installers for Windows, macOS, Linux (note: Claude Apps Gateway is native to Claude Code and requires no additional client-side packages)
+- **Cost tracking via IAM principal-based cost allocation** — Gateway spend controls are based on cost estimates
+
+As Claude Apps Gateway evolves, check Anthropic's documentation for the latest capabilities.
+
+</details>
+
+---
 
 ## Key Features
 
@@ -13,7 +46,8 @@ This guidance enables enterprise deployment of Claude Code and Claude Cowork on 
 - **Multi-Platform**: Windows, macOS, Linux — Go or Python binaries, pre-built from GitHub Releases
 - **One Deployment, Two Surfaces**: Same infrastructure powers both Claude Code CLI and Claude Desktop (which features Chat, Cowork and Code)
 - **Model Flexibility**: Choose from Opus, Sonnet, Haiku with model aliases (e.g. `opusplan` for Opus planning + Sonnet execution)
-- **Native Desktop Experience**: Deploy and manage Claude Cowork (Claude Desktop) via MDM (Jamf, Intune, Group Policy)
+- **Native Desktop Experience**: Deploy and manage Claude Desktop via MDM (Jamf, Intune, Group Policy)
+- **Dynamic Config Delivery**: Deliver per-user settings and [organization plugins](assets/docs/PLUGINS.md#bootstrap-server-delivery-dynamic) to Claude Desktop at sign-in via a bootstrap server — no MDM re-push needed for config changes
 - **Data Residency**: Select your cross-region inference profile (US, EU, AU) to keep data within your compliance boundary
 - **AWS-Native**: Your data, your AWS account, your compliance controls — no Anthropic licensing required
 
@@ -85,6 +119,7 @@ The architecture is modular — start with authentication, then optionally add [
 | **Quota enforcement** (optional) | Quota check API + DynamoDB policies + per-user/team limits | `ccwb deploy --stack quota` |
 | **Analytics** (optional) | S3 data lake + Athena for historical SQL queries on usage data | `ccwb deploy --stack analytics` |
 | **Distribution** (optional) | S3 presigned URLs or self-service landing page with IdP auth | `ccwb deploy --stack distribution` |
+| **Diagnostics** | Installation health checks + resolved config dump | `ccwb doctor` |
 
 See [Monitoring Guide](assets/docs/MONITORING.md), [Quota Guide](assets/docs/QUOTA_MONITORING.md), [Analytics Guide](assets/docs/ANALYTICS.md), and [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed setup.
 ### Authentication Modes
@@ -139,7 +174,11 @@ flowchart LR
     IDC --> OUT
 ```
 
-The **otel-helper** attaches user identity to telemetry so CloudWatch dashboards can show per-user metrics:
+The **otel-helper** binary attaches per-user identity to telemetry:
+
+- **Header mode** (Claude Code CLI): Called once per OTLP export as a header provider. Returns JSON headers containing user identity (email, team, department) extracted from the cached JWT.
+- **Bootstrap mode** (Claude Desktop, recommended): The [bootstrap server](assets/docs/PLUGINS.md#bootstrap-server-delivery-dynamic) delivers per-user `otlpHeaders` at sign-in. Claude Desktop applies these natively — no proxy or helper needed.
+- **Static MDM** (Claude Desktop, basic): Set `otlpHeaders` in MDM config for device-level identity (not per-user unless you create per-device profiles).
 
 ```mermaid
 flowchart LR
@@ -150,23 +189,23 @@ flowchart LR
 
 ### Usage Monitoring
 
-Both Claude Code (CLI) and Claude Desktop (Cowork) emit OpenTelemetry (OTLP) telemetry. The otel-helper attaches user identity — as a one-shot header provider for Claude Code, or as a local proxy for Claude Desktop — so CloudWatch dashboards show per-user metrics. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
+Both Claude Code (CLI) and Claude Desktop emit OpenTelemetry (OTLP) telemetry. For Claude Code, otel-helper provides per-user identity headers. For Claude Desktop, the bootstrap server delivers per-user `otlpHeaders` at sign-in — no local proxy needed. See [Monitoring Guide](assets/docs/MONITORING.md) for detailed configuration.
 
 ```mermaid
 flowchart LR
     CC[Claude Code CLI] -->|OTLP| OH1[otel-helper<br/>header mode]
-    CW[Claude Desktop] -->|OTLP| OH2[otel-helper<br/>proxy mode]
-    OH1 -->|"user identity + Bearer JWT"| COLL[Collector]
-    OH2 -->|"user identity + X-Cowork-Token"| COLL
+    CW[Claude Desktop] -->|OTLP with otlpHeaders| COLL[Collector]
+    OH1 -->|"user identity + Bearer JWT"| COLL
     COLL --> DASH[CloudWatch Dashboards]
 ```
 
-| Surface | How otel-helper is used | Collector mode | Identity in telemetry |
-|---------|------------------------|----------------|----------------------|
-| **Claude Code (CLI)** | Header provider — called once per request, returns JSON headers | Central (ECS/ALB) or Sidecar (local) | User's JWT (email, team, department) |
-| **Claude Desktop (Cowork)** | Local proxy — runs on `localhost:4318`, injects user headers, forwards to collector | Central (ECS/ALB) | Email from IAM ARN (no team/department without OIDC) |
+| Surface | Per-user identity | How | Collector mode |
+|---------|------------------|-----|----------------|
+| **Claude Code (CLI)** | otel-helper (header mode) | Returns identity headers per export | Central or Sidecar |
+| **Claude Desktop (bootstrap)** | Bootstrap server delivers `otlpHeaders` | Per-user from OIDC token at sign-in | Central |
+| **Claude Desktop (static MDM)** | `otlpHeaders` in MDM config | Device-level (not per-user) | Central or Sidecar |
 
-**Local proxy explained:** Claude Desktop doesn't support custom OTLP headers natively. When using a central collector (ECS/ALB), otel-helper runs as a lightweight HTTP proxy on the user's machine. Cowork sends telemetry to `localhost:4318` (configured via MDM), and otel-helper adds user identity headers before forwarding to the remote central collector. This proxy is not needed in sidecar mode, where the local collector reads identity from a cache file directly.
+> **Recommended:** Use the [bootstrap server](assets/docs/PLUGINS.md#bootstrap-server-delivery-dynamic) for per-user Claude Desktop telemetry. It delivers `otlpHeaders` with user identity at sign-in — no local proxy or helper binary needed on the Desktop machine.
 
 **Cost attribution:** Since April 2026, Amazon Bedrock supports [IAM principal cost tracking via CUR 2.0](assets/docs/COST_ATTRIBUTION.md) — per-user costs appear in Cost Explorer automatically from the STS session tags set by credential-process. Note: real-time quota enforcement relies on telemetry emitted from the client rather than actual costs metered by AWS, so figures may differ from CUR.
 
@@ -236,6 +275,7 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Quick Start Guide](QUICK_START.md) - Step-by-step deployment walkthrough
 - [CLI Reference](assets/docs/CLI_REFERENCE.md) - Complete command reference for the `ccwb` tool
+- [Troubleshooting](assets/docs/TROUBLESHOOTING.md) - Common issues, `ccwb doctor`, and how to file bugs
 - [Workshop: Claude Code on Amazon Bedrock](https://catalog.workshops.aws/claude-code-on-amazon-bedrock/en-US) - Companion hands-on workshop
 - [Claude Code deployment patterns and best practices with Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/claude-code-deployment-patterns-and-best-practices-with-amazon-bedrock/) - Blog post covering deployment patterns and best practices
 

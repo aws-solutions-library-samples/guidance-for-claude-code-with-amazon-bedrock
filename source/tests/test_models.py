@@ -37,8 +37,11 @@ class TestModelConfiguration:
         """Test that CLAUDE_MODELS has the expected structure."""
         expected_models = {
             "fable-5",
+            "sonnet-5",
             "sonnet-4-6",
+            "opus-5",
             "opus-4-8",
+            "opus-4-8-govcloud",
             "opus-4-7",
             "opus-4-6",
             "opus-4-5",
@@ -100,6 +103,12 @@ class TestModelConfiguration:
         fable_5_profiles = get_available_profiles_for_model("fable-5")
         assert set(fable_5_profiles) == {"us", "eu", "global"}
 
+        opus_4_8_profiles = get_available_profiles_for_model("opus-4-8")
+        assert set(opus_4_8_profiles) == {"us", "eu", "global"}
+
+        opus_4_7_profiles = get_available_profiles_for_model("opus-4-7")
+        assert set(opus_4_7_profiles) == {"us", "eu", "global"}
+
         opus_4_6_profiles = get_available_profiles_for_model("opus-4-6")
         assert set(opus_4_6_profiles) == {"us", "eu", "au", "global"}  # Opus 4.6 has global and regional profiles
 
@@ -143,6 +152,8 @@ class TestModelConfiguration:
         assert get_model_id_for_profile("opus-4-6", "global") == "global.anthropic.claude-opus-4-6-v1"
 
         # Test Europe profiles
+        assert get_model_id_for_profile("opus-4-8", "eu") == "eu.anthropic.claude-opus-4-8"
+        assert get_model_id_for_profile("opus-4-7", "eu") == "eu.anthropic.claude-opus-4-7"
         assert get_model_id_for_profile("opus-4-6", "eu") == "eu.anthropic.claude-opus-4-6-v1"
         assert get_model_id_for_profile("sonnet-4", "eu") == "eu.anthropic.claude-sonnet-4-20250514-v1:0"
         assert get_model_id_for_profile("sonnet-3-7", "eu") == "eu.anthropic.claude-3-7-sonnet-20250219-v1:0"
@@ -176,10 +187,10 @@ class TestModelConfiguration:
         # Test valid combinations - these should not raise errors
         # (Currently empty lists since regions are TODO, but structure should work)
         source_regions = get_source_regions_for_model_profile("sonnet-4", "us")
-        assert isinstance(source_regions, (list, tuple))
+        assert isinstance(source_regions, list | tuple)
 
         source_regions = get_source_regions_for_model_profile("sonnet-4", "eu")
-        assert isinstance(source_regions, (list, tuple))
+        assert isinstance(source_regions, list | tuple)
 
         # Test invalid combinations
         with pytest.raises(ValueError, match="Unknown model"):
@@ -192,10 +203,10 @@ class TestModelConfiguration:
         """Test getting destination regions for model profiles."""
         # Test valid combinations - these should not raise errors
         dest_regions = get_destination_regions_for_model_profile("sonnet-4", "us")
-        assert isinstance(dest_regions, (list, tuple))
+        assert isinstance(dest_regions, list | tuple)
 
         dest_regions = get_destination_regions_for_model_profile("sonnet-4", "eu")
-        assert isinstance(dest_regions, (list, tuple))
+        assert isinstance(dest_regions, list | tuple)
 
         # Test invalid combinations
         with pytest.raises(ValueError, match="Unknown model"):
@@ -260,8 +271,8 @@ class TestModelConfiguration:
                 # Verify types
                 assert isinstance(model_id, str)
                 assert isinstance(description, str)
-                assert isinstance(source_regions, (list, tuple))
-                assert isinstance(dest_regions, (list, tuple))
+                assert isinstance(source_regions, list | tuple)
+                assert isinstance(dest_regions, list | tuple)
 
                 # Verify model_id appears in display names
                 display_names = get_all_model_display_names()
@@ -525,3 +536,51 @@ class TestResolveModelForTier:
                     assert f"{prefix}." in result, (
                         f"resolve_model_for_tier('{tier}', '{prefix}') = '{result}' wrong prefix"
                     )
+
+
+class TestExpandBedrockRegions:
+    """Region sentinels must never reach an IAM aws:RequestedRegion condition.
+
+    A global inference profile stores the sentinel "all-commercial" in its
+    destination_regions. If that string is passed verbatim as the
+    AllowedBedrockRegions CFN parameter, the role's StringEquals condition on
+    aws:RequestedRegion matches no real region and every bedrock:InvokeModel*
+    call is denied with AccessDenied. expand_bedrock_regions() prevents this.
+    """
+
+    def test_all_commercial_expands_to_real_regions(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        result = expand_bedrock_regions(["all-commercial"])
+        assert "all-commercial" not in result, "sentinel must never survive expansion"
+        assert "us-east-1" in result, "commercial expansion must include us-east-1"
+        # Must be actual AWS region tokens, and exclude GovCloud.
+        assert all("gov" not in r for r in result)
+        assert all(r.count("-") >= 2 for r in result), f"non-region token leaked: {result}"
+
+    def test_no_all_star_sentinel_survives(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        # Any all-* sentinel (even an unknown future one) must be dropped.
+        result = expand_bedrock_regions(["all-commercial", "all-something-new"])
+        assert not any(r.startswith("all-") for r in result)
+
+    def test_concrete_regions_pass_through_and_dedupe(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        assert expand_bedrock_regions(["us-east-1", "us-west-2"]) == ["us-east-1", "us-west-2"]
+        # Duplicates collapse; order of first occurrence preserved.
+        assert expand_bedrock_regions(["us-east-1", "us-east-1"]) == ["us-east-1"]
+
+    def test_empty_list_returns_empty(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        assert expand_bedrock_regions([]) == []
+
+    def test_mixed_sentinel_and_concrete_no_duplicates(self):
+        from claude_code_with_bedrock.models import expand_bedrock_regions
+
+        # us-east-1 appears both explicitly and via the expansion — only once.
+        result = expand_bedrock_regions(["us-east-1", "all-commercial"])
+        assert result.count("us-east-1") == 1
+        assert "all-commercial" not in result

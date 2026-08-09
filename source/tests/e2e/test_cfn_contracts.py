@@ -383,3 +383,38 @@ class TestOtelCollectorAlbIdleTimeout:
     def test_idle_timeout_within_alb_max(self):
         """ALB idle timeout is capped at 4000s by the service."""
         assert 1 <= self._idle_timeout() <= 4000
+
+
+class TestArnPartitionPortability:
+    """ARNs must use ${AWS::Partition}, never a hardcoded partition.
+
+    GovCloud uses the `aws-us-gov` partition and China uses `aws-cn`. A literal
+    `arn:aws:` in a template either fails outright (e.g. an IAM trust principal
+    that can't resolve) or silently never matches in those partitions. The repo
+    already uses `${AWS::Partition}` widely; this guard stops new `arn:aws:`
+    literals from creeping back in (regression: GovCloud deploy support).
+    """
+
+    # The only legitimate literal `aws` that is NOT a partition: the AWS-owned
+    # account alias in managed-policy ARNs, e.g. `arn:${AWS::Partition}:iam::aws:policy/...`.
+    # We strip those before scanning so the check targets the partition position only.
+    @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
+    def test_no_hardcoded_arn_partition(self, template_path):
+        raw = template_path.read_text(encoding="utf-8")
+        offenders = [
+            f"{template_path.name}:{i}: {line.strip()}"
+            for i, line in enumerate(raw.splitlines(), start=1)
+            if "arn:aws:" in line
+        ]
+        assert not offenders, (
+            "Hardcoded ARN partition found — use 'arn:${AWS::Partition}:' so the "
+            "template works in GovCloud (aws-us-gov) and China (aws-cn):\n" + "\n".join(offenders)
+        )
+
+    def test_govcloud_regions_in_elb_account_map(self):
+        """ALB access logging uses an unconditional !FindInMap on the ELB account
+        map, so GovCloud regions must be present or the stack fails to deploy."""
+        template = _load_template("landing-page-distribution.yaml")
+        elb_map = template.get("Mappings", {}).get("ELBServiceAccounts", {})
+        for region in ("us-gov-west-1", "us-gov-east-1"):
+            assert region in elb_map, f"ELBServiceAccounts mapping missing GovCloud region {region}"

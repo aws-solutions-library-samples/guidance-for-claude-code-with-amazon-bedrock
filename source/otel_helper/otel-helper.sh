@@ -1,7 +1,19 @@
 #!/bin/bash
 # ABOUTME: Lightweight shell wrapper for otel-helper that ensures the local OTEL collector
 # ABOUTME: sidecar is running (when present), then checks file cache for headers (avoids PyInstaller startup)
-PROFILE="${AWS_PROFILE:-ClaudeCode}"
+# Resolve profile: explicit --profile argument wins, then CCWB_PROFILE (the
+# ccwb-specific override, same convention as credential-process), then
+# AWS_PROFILE, then the "ClaudeCode" default. Keep in sync with the Go
+# binary's resolveProfile and otel-helper.ps1.
+PROFILE="${CCWB_PROFILE:-${AWS_PROFILE:-ClaudeCode}}"
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "--profile" ] && [ -n "$arg" ]; then
+        PROFILE="$arg"
+    fi
+    prev="$arg"
+done
+export AWS_PROFILE="$PROFILE"
 INSTALL_DIR="$HOME/claude-code-with-bedrock"
 PID_FILE="$INSTALL_DIR/collector.pid"
 CACHE_DIR="$HOME/.claude-code-session"
@@ -15,7 +27,10 @@ RAW_FILE="$CACHE_DIR/${PROFILE}-otel-headers.raw"
 if [ -x "$INSTALL_DIR/otelcol" ] && [ -f "$INSTALL_DIR/collector-config.yaml" ]; then
     if ! { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; }; then
         mkdir -p "$CACHE_DIR"
-        AWS_PROFILE="${PROFILE}-collector" \
+        # AWS_SDK_LOAD_CONFIG: aws-sdk-go v1 components in the collector (the
+        # awsemf exporter) don't read ~/.aws/config (credential_process
+        # profiles) without it; SDK v2 components (sigv4auth) always do.
+        AWS_PROFILE="${PROFILE}-collector" AWS_SDK_LOAD_CONFIG=1 \
         "$INSTALL_DIR/otelcol" --config "$INSTALL_DIR/collector-config.yaml" \
             >> "$CACHE_DIR/collector.log" 2>&1 &
         echo $! > "$PID_FILE"

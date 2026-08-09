@@ -1,9 +1,10 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS := -s -w -X ccwb-go/internal/version.Version=$(VERSION)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS := -s -w -X ccwb-go/internal/version.Version=$(VERSION) -X ccwb-go/internal/version.Commit=$(COMMIT)
 # Windows: do NOT strip (-s -w). Defender cloud ML (Wacatac.B!ml) flags
 # stripped Go binaries and blocks them in subprocess/non-interactive contexts.
 # The .syso PE version-info files help but are not sufficient alone.
-LDFLAGS_WIN := -X ccwb-go/internal/version.Version=$(VERSION)
+LDFLAGS_WIN := -X ccwb-go/internal/version.Version=$(VERSION) -X ccwb-go/internal/version.Commit=$(COMMIT)
 OUT ?= bin
 
 .PHONY: all test clean fmt vet macos-arm64 macos-intel linux-x64 linux-arm64 windows

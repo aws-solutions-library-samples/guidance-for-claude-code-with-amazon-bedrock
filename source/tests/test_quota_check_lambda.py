@@ -581,3 +581,99 @@ class TestIdcUsernameIdentity:
         # Non-SSO role without email should be blocked
         assert body.get("reason") == "missing_identity"
         assert body["allowed"] is False
+
+
+class TestCostBasedEnforcement:
+    """Tests that cost-based quota enforcement reads the correct DDB attributes.
+
+    Regression tests for issue #746: monthly cost enforcement was broken because:
+    1. get_user_usage() didn't include cost fields in its return dict
+    2. get_policy() didn't include monthly_cost_limit/daily_cost_limit
+    3. The lookup key was 'cost_usd' but DDB attribute is 'estimated_cost'
+    """
+
+    def _make_module(self, base_env):
+        env = {
+            **base_env,
+            "ENABLE_FINEGRAINED_QUOTAS": "true",
+        }
+        return _load_quota_check(env)
+
+    def _patch_tables(
+        self,
+        mod,
+        estimated_cost: float,
+        monthly_cost_limit: float,
+        daily_cost_usd: float = 0,
+        daily_cost_limit: float = 0,
+    ):
+        """Mock both quota_table and policies_table with correct call sequence."""
+        from datetime import datetime, timezone
+
+        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        mod.quota_table = MagicMock()
+        # Call 1: get_unblock_status -> no unblock
+        # Call 2: get_user_usage -> usage with estimated_cost
+        mod.quota_table.get_item.side_effect = [
+            {},  # unblock check: no item
+            {
+                "Item": {
+                    "total_tokens": 100000,
+                    "daily_tokens": 1000,
+                    "daily_date": current_date,
+                    "input_tokens": 60000,
+                    "output_tokens": 40000,
+                    "cache_tokens": 0,
+                    "estimated_cost": estimated_cost,
+                    "daily_cost_usd": daily_cost_usd,
+                }
+            },
+        ]
+
+        mod.policies_table = MagicMock()
+        mod.policies_table.get_item.return_value = {
+            "Item": {
+                "pk": "POLICY#default#default",
+                "sk": "CURRENT",
+                "policy_type": "default",
+                "identifier": "default",
+                "monthly_token_limit": 0,
+                "monthly_cost_limit": monthly_cost_limit,
+                "daily_cost_limit": daily_cost_limit,
+                "enforcement_mode": "block",
+                "daily_enforcement_mode": "block",
+                "enabled": True,
+            }
+        }
+
+    def test_monthly_cost_blocks_when_exceeded(self, base_env):
+        """When estimated_cost exceeds monthly_cost_limit, access must be denied."""
+        mod = self._make_module(base_env)
+        self._patch_tables(mod, estimated_cost=95.0, monthly_cost_limit=90.0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is False, (
+            "Monthly cost enforcement failed: estimated_cost ($95) > limit ($90) but access was allowed. "
+            "Check that get_user_usage includes 'estimated_cost' and get_policy includes 'monthly_cost_limit'."
+        )
+        assert body["reason"] == "monthly_cost_exceeded"
+
+    def test_monthly_cost_allows_when_within_limit(self, base_env):
+        """When estimated_cost is below monthly_cost_limit, access is granted."""
+        mod = self._make_module(base_env)
+        self._patch_tables(mod, estimated_cost=45.0, monthly_cost_limit=90.0)
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is True
+
+    def test_daily_cost_blocks_when_exceeded(self, base_env):
+        """When daily_cost_usd exceeds daily_cost_limit, access must be denied."""
+        mod = self._make_module(base_env)
+        self._patch_tables(
+            mod, estimated_cost=10.0, monthly_cost_limit=90.0, daily_cost_usd=12.0, daily_cost_limit=10.0
+        )
+
+        body = _parse(mod.lambda_handler(_build_event(), None))
+        assert body["allowed"] is False
+        assert body["reason"] == "daily_cost_exceeded"

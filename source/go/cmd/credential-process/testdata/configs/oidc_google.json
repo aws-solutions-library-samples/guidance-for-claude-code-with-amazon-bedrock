@@ -1,0 +1,18 @@
+{
+  "profiles": {
+    "ClaudeCode": {
+      "provider_domain": "accounts.google.com",
+      "client_id": "123456789012-abcdefghijklmnop.apps.googleusercontent.com",
+      "client_secret": "GOCSPX-abcdefghijklmnopqrstuvwx",
+      "provider_type": "google",
+      "aws_region": "us-west-2",
+      "federated_role_arn": "arn:aws:iam::987654321098:role/GoogleFederatedRole",
+      "federation_type": "direct",
+      "max_session_duration": 43200,
+      "credential_storage": "session",
+      "oidc_issuer_url": "https://accounts.google.com",
+      "project_attribution_enabled": false,
+      "quota_fail_mode": "open"
+    }
+  }
+}

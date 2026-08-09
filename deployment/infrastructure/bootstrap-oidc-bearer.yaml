@@ -1,0 +1,160 @@
+# ABOUTME: CloudFormation template for the CoWork Bootstrap Server
+# ABOUTME: Deploys an API Gateway HTTP API + Lambda that validates OIDC tokens
+# ABOUTME: and returns per-user configuration for Claude Desktop (CoWork) at sign-in
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CoWork Bootstrap Server — delivers per-user configuration dynamically at sign-in
+  as an alternative to static MDM profiles. Validates OIDC Bearer tokens and returns
+  configuration JSON including inference provider, region, models, and OTEL settings.
+
+Parameters:
+  OidcIssuerUrl:
+    Type: String
+    Description: "OIDC issuer URL (e.g. https://company.okta.com/oauth2/default)"
+    AllowedPattern: "^https://.*"
+    ConstraintDescription: "Must be a valid HTTPS URL"
+
+  OidcClientId:
+    Type: String
+    Description: "OIDC client ID for token audience validation"
+    MinLength: 1
+
+  OidcJwksEndpoint:
+    Type: String
+    Description: "JWKS endpoint URL for JWT signature verification"
+    AllowedPattern: "^https://.*"
+    ConstraintDescription: "Must be a valid HTTPS URL"
+
+  DefaultInferenceRegion:
+    Type: String
+    Description: "Default AWS region for Bedrock inference"
+    Default: "us-east-1"
+
+  DefaultInferenceModels:
+    Type: String
+    Description: "Comma-separated list of allowed model IDs"
+    Default: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+  OtlpEndpoint:
+    Type: String
+    Description: "OpenTelemetry collector endpoint URL (optional)"
+    Default: ""
+
+  WebSearchGatewayUrl:
+    Type: String
+    Description: "AgentCore web search gateway MCP endpoint URL (optional)"
+    Default: ""
+
+  InferenceSessionLifetimeSec:
+    Type: Number
+    Description: "Session lifetime in seconds before re-authentication reminder"
+    Default: 28800
+    MinValue: 3600
+    MaxValue: 86400
+
+Resources:
+  BootstrapFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-bootstrap"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 10
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          # Inline placeholder — real code deployed via package command
+          def lambda_handler(event, context):
+              return {"statusCode": 500, "body": "Not deployed"}
+      Environment:
+        Variables:
+          OIDC_ISSUER_URL: !Ref OidcIssuerUrl
+          OIDC_CLIENT_ID: !Ref OidcClientId
+          OIDC_JWKS_ENDPOINT: !Ref OidcJwksEndpoint
+          DEFAULT_INFERENCE_REGION: !Ref DefaultInferenceRegion
+          DEFAULT_INFERENCE_MODELS: !Ref DefaultInferenceModels
+          OTLP_ENDPOINT: !Ref OtlpEndpoint
+          WEBSEARCH_GATEWAY_URL: !Ref WebSearchGatewayUrl
+          INFERENCE_SESSION_LIFETIME_SEC: !Ref InferenceSessionLifetimeSec
+      Role: !GetAtt BootstrapFunctionRole.Arn
+      Tags:
+        - Key: Application
+          Value: "claude-code-with-bedrock"
+        - Key: Component
+          Value: "bootstrap-server"
+
+  BootstrapFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-bootstrap-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  BootstrapApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      ProtocolType: HTTP
+      Description: "CoWork Bootstrap Server API"
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        MaxAge: 3600
+
+  BootstrapApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref BootstrapApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  BootstrapApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref BootstrapApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt BootstrapFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  BootstrapApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref BootstrapApi
+      RouteKey: "GET /config"
+      Target: !Sub "integrations/${BootstrapApiIntegration}"
+
+  BootstrapApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BootstrapFunction
+      Action: "lambda:InvokeFunction"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${BootstrapApi}/*"
+
+Outputs:
+  BootstrapUrl:
+    Description: "Bootstrap server endpoint URL for MDM bootstrapUrl key"
+    Value: !Sub "https://${BootstrapApi}.execute-api.${AWS::Region}.amazonaws.com/config"
+    Export:
+      Name: !Sub "${AWS::StackName}-BootstrapUrl"
+
+  BootstrapFunctionArn:
+    Description: "Bootstrap Lambda function ARN"
+    Value: !GetAtt BootstrapFunction.Arn
+
+  BootstrapApiId:
+    Description: "API Gateway HTTP API ID"
+    Value: !Ref BootstrapApi

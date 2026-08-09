@@ -104,3 +104,36 @@ For a guided walkthrough of these plugins, see the companion workshop:
 - [Claude Code Plugin Reference](https://code.claude.com/docs/en/plugins) — Full plugin authoring guide
 - [Cowork 3P Configuration Reference](https://claude.com/docs/cowork/3p/configuration) — Managed settings schema
 - [COWORK_3P.md](COWORK_3P.md) — This guidance's Cowork 3P deployment guide
+
+## Bootstrap Server Delivery (Dynamic)
+
+`ccwb init` offers two dynamic delivery modes:
+
+| Mode | What it delivers | Infrastructure |
+|------|-----------------|----------------|
+| **Dynamic with plugins** (device-code auth) | Config + org plugins | API Gateway + Lambda + DynamoDB |
+| **Dynamic config only** (OIDC Bearer) | Config only, no plugins | API Gateway + Lambda (stateless) |
+
+### Setup (Dynamic with plugins — recommended)
+
+```bash
+ccwb init                      # Select "Dynamic with plugins" for CoWork delivery
+ccwb deploy --stack bootstrap  # Deploy bootstrap server
+ccwb plugins add --name my-plugin --repo https://github.com/org/plugins.git --path my-plugin
+ccwb plugins sync              # Push registry to server
+```
+
+Desktop receives `organizationPluginsUrl` in the bootstrap response and git-clones plugins automatically. Plugins with `"installationPreference": "required"` install without user confirmation.
+
+**How delivery works:** `ccwb plugins sync` uploads a registry JSON to the existing S3 bucket. The bootstrap Lambda reads it and serves it at `/plugins/index.json`. Each registry entry points to a git repo — Desktop clones directly from your repo, not through the bootstrap server.
+
+**IdP callback:** Add the bootstrap callback URL (printed after deploy) to your IdP's redirect URIs. Cognito configures this automatically.
+
+### Setup (Dynamic config only)
+
+```bash
+ccwb init                      # Select "Dynamic config only" for CoWork delivery
+ccwb deploy --stack bootstrap  # Deploy lightweight bootstrap (no DynamoDB)
+```
+
+Desktop receives config (region, models, session lifetime) but no plugins. Simpler infrastructure, no state.

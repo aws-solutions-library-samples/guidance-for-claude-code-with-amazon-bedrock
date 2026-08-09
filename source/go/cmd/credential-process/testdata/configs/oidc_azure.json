@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "ClaudeCode": {
+      "provider_domain": "login.microsoftonline.com/a1b2c3d4-e5f6-7890-abcd-ef1234567890/v2.0",
+      "client_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "provider_type": "azure",
+      "aws_region": "eu-west-1",
+      "identity_pool_id": "eu-west-1:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "role_arn": "arn:aws:iam::111222333444:role/AzureCognitoRole",
+      "federation_type": "cognito",
+      "max_session_duration": 28800,
+      "credential_storage": "session",
+      "azure_auth_mode": "public",
+      "oidc_prompt": "select_account",
+      "redirect_port": 8400,
+      "quota_fail_mode": "closed"
+    }
+  }
+}

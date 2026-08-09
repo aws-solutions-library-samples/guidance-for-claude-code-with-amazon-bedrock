@@ -1213,7 +1213,7 @@ class QuotaUsageCommand(Command):
         Returns:
             Dictionary with usage data (total_tokens, daily_tokens, etc.).
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         import boto3
 
@@ -1232,17 +1232,31 @@ class QuotaUsageCommand(Command):
             dynamodb = boto3.resource("dynamodb", region_name=profile.aws_region)
             table = dynamodb.Table(table_name)
 
-            # Get current month
-            current_month = datetime.utcnow().strftime("%Y-%m")
+            # Use tz-aware UTC so the month and day boundaries match the Lambdas
+            # (quota_check/quota_monitor use datetime.now(timezone.utc)). A naive
+            # utcnow() here risks an off-by-one at the day boundary.
+            now = datetime.now(timezone.utc)
+            current_month = now.strftime("%Y-%m")
+            current_date = now.strftime("%Y-%m-%d")
 
             # Query for user's monthly usage
             response = table.get_item(Key={"pk": f"USER#{email}", "sk": f"MONTH#{current_month}"})
 
             item = response.get("Item", {})
+
+            # Apply the same stale-day guard as quota_check.get_user_usage: if the
+            # stored daily_date is not today, the daily counter belongs to a prior
+            # day and must display as 0. Without this, an idle user's frozen
+            # daily_tokens shows a stale over-limit percentage that never resets.
+            daily_tokens = int(item.get("daily_tokens", 0))
+            daily_date = item.get("daily_date")
+            if daily_date != current_date:
+                daily_tokens = 0
+
             return {
                 "total_tokens": int(item.get("total_tokens", 0)),
-                "daily_tokens": int(item.get("daily_tokens", 0)),
-                "daily_date": item.get("daily_date"),
+                "daily_tokens": daily_tokens,
+                "daily_date": daily_date,
                 "input_tokens": int(item.get("input_tokens", 0)),
                 "output_tokens": int(item.get("output_tokens", 0)),
                 "cache_tokens": int(item.get("cache_tokens", 0)),

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"runtime"
 
-	"github.com/99designs/keyring"
 	"ccwb-go/internal/federation"
+	"github.com/99designs/keyring"
 )
 
 const serviceName = "claude-code-with-bedrock"
@@ -91,6 +91,13 @@ func ReadClientSecret(profile string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return readClientSecretImpl(kr, profile)
+}
+
+// readClientSecretImpl is the testable core of ReadClientSecret. Taking the
+// keyringRW interface lets unit tests drive it with a mock so they run on Linux
+// CI, where 99designs/keyring has no Secret Service backend.
+func readClientSecretImpl(kr keyringRW, profile string) (string, error) {
 	item, err := kr.Get(profile + "-client-secret")
 	if err != nil {
 		if errors.Is(err, keyring.ErrKeyNotFound) {
@@ -99,6 +106,32 @@ func ReadClientSecret(profile string) (string, error) {
 		return "", err
 	}
 	return string(item.Data), nil
+}
+
+// SaveClientSecret stores an Azure confidential-client secret in the OS keyring.
+// Key matches what ReadClientSecret and the Python ccwb init wizard use.
+// Pass an empty secret to delete the entry.
+func SaveClientSecret(profile, secret string) error {
+	kr, err := openKeyring()
+	if err != nil {
+		return err
+	}
+	return saveClientSecretImpl(kr, profile, secret)
+}
+
+// saveClientSecretImpl is the testable core of SaveClientSecret (see
+// readClientSecretImpl for why the interface is threaded through).
+func saveClientSecretImpl(kr keyringRW, profile, secret string) error {
+	if secret == "" {
+		if err := kr.Remove(profile + "-client-secret"); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+			return err
+		}
+		return nil
+	}
+	return kr.Set(keyring.Item{
+		Key:  profile + "-client-secret",
+		Data: []byte(secret),
+	})
 }
 
 // ReadMonitoringTokenFromKeyring reads the monitoring token from keyring.

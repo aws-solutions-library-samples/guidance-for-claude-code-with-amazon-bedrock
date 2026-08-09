@@ -59,11 +59,14 @@ func TestGetMonitoringToken_RefreshTokenWiring(t *testing.T) {
 
 // TestGetMonitoringToken_RefreshTokenStoredCallsExchange exercises the path
 // that runs when a refresh_token IS stored. Without mocking the OIDC token
-// endpoint, the exchange itself will fail (test.example.com is unreachable).
-// What we verify is that the exchange is *attempted*: the failure path in
-// tryRefreshToken clears the refresh_token (because the IdP may have revoked
-// it). After calling tryRefreshToken with an unreachable token URL, the
-// stored refresh_token must be cleared.
+// endpoint, the exchange itself will fail (test.invalid.example.com is
+// unreachable). This is a *transient* failure (DNS/network), so tryRefreshToken
+// must RETAIN the refresh_token — clearing on a transient failure is exactly the
+// bug that permanently disabled silent renewal. We assert the token survives and
+// that the exchange was attempted (tryRefreshToken returns nil).
+//
+// The clear-on-failure path is covered separately by the invalid_grant test in
+// refresh_clear_test.go, which serves a real 400 {"error":"invalid_grant"}.
 func TestGetMonitoringToken_RefreshTokenStoredCallsExchange(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
@@ -88,15 +91,16 @@ func TestGetMonitoringToken_RefreshTokenStoredCallsExchange(t *testing.T) {
 	}
 	app := &credentialApp{profile: profile, cfg: cfg, providerType: "okta"}
 
-	// Exchange will fail (network or DNS); tryRefreshToken returns nil and
-	// clears the (presumed-revoked) refresh_token.
+	// Exchange will fail (network or DNS) — a transient failure. tryRefreshToken
+	// returns nil but must NOT clear the refresh_token.
 	if creds := app.tryRefreshToken(); creds != nil {
 		t.Fatalf("tryRefreshToken returned non-nil for unreachable IdP: %+v", creds)
 	}
 
-	// Clearing on failure is the contract — proves the exchange was attempted.
-	if got := storage.LoadRefreshToken(profile, "session"); got != "" {
-		t.Errorf("refresh_token not cleared after failed exchange (got %q); "+
-			"this means tryRefreshToken did NOT attempt the exchange — the wiring is broken", got)
+	// Retaining on a transient failure is the contract — a network blip must not
+	// permanently disable silent renewal.
+	if got := storage.LoadRefreshToken(profile, "session"); got != "rt_test_value" {
+		t.Errorf("refresh_token not retained after transient failure (got %q, want %q); "+
+			"a transient network failure must NOT clear the token", got, "rt_test_value")
 	}
 }

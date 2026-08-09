@@ -135,9 +135,15 @@ func (a *credentialApp) resolveIDCSettings(ctx context.Context) (*idcSettings, i
 func (a *credentialApp) runIDCLogin() int {
 	debugPrint("IDC login (sign-in only) for profile '%s'", a.profile)
 
-	// Generous timeout: the user must approve in a browser, possibly on another
-	// device, before this returns.
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// Timeout must fire JUST BELOW Claude Code's hardcoded 180s awsAuthRefresh
+	// hook timeout (added in Claude Code v2.1.43, issue anthropics/claude-code
+	// #25457; not configurable). If we exceed 180s, Claude Code kills the hook
+	// with no message and the sign-in prompt "quietly disappears". 165s leaves
+	// ~15s for our own actionable timeout error to print and flush before that
+	// kill. When run directly in a terminal (not via the hook) there is no
+	// external limit, but the shorter bound is still a reasonable ceiling for a
+	// human browser approval.
+	ctx, cancel := context.WithTimeout(context.Background(), 165*time.Second)
 	defer cancel()
 
 	s, code := a.resolveIDCSettings(ctx)
@@ -166,8 +172,22 @@ func (a *credentialApp) runIDCLogin() int {
 		}
 	}
 
-	if err := a.runDeviceAuthorization(ctx, s.oidcClient, s.startURL, s.tokenPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: IDC sign-in failed: %v\n", err)
+	if err := a.runDeviceAuthorization(ctx, s.oidcClient, s.startURL, s.tokenPath, true); err != nil {
+		// A timeout is the expected "user didn't finish in time" case, not a real
+		// failure — Claude Code caps this hook at 180s (we stop at 165s). Give a
+		// plain, actionable message whose FIRST line is the takeaway, since Claude
+		// Code may surface only the first stderr line: tell the user this attempt
+		// timed out AND that simply sending another message re-triggers sign-in.
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(os.Stderr, "Sign-in timed out — the code wasn't approved in time.")
+			fmt.Fprintln(os.Stderr, "Send Claude Code another message to show a fresh sign-in link and try again.")
+			return 1
+		}
+		// Non-timeout failure. Lead with a plain-language takeaway on the first
+		// line (Claude Code may show only the first stderr line), then include the
+		// raw detail on a second line for anyone who needs to diagnose it.
+		fmt.Fprintln(os.Stderr, "Sign-in didn't complete. Send Claude Code another message to try again.")
+		fmt.Fprintf(os.Stderr, "Details: %v\n", err)
 		return 1
 	}
 
@@ -356,7 +376,10 @@ func (a *credentialApp) ensureIDCToken(ctx context.Context, oidcClient *ssooidc.
 		return a.refreshIDCTokenLocked(ctx, oidcClient, tokenPath)
 	}
 	debugPrint("No valid or refreshable SSO token cache; starting device authorization")
-	return a.runDeviceAuthorization(ctx, oidcClient, startURL, tokenPath)
+	// loginMode=false: ensureIDCToken runs on the silent credential-export path
+	// (runIDC ← awsCredentialExport), which must never block on a poll the user
+	// can't see. Keeps the fail-fast guarantee for non-interactive invocations.
+	return a.runDeviceAuthorization(ctx, oidcClient, startURL, tokenPath, false)
 }
 
 // refreshIDCTokenLocked refreshes the SSO access token (via the rotating
@@ -474,6 +497,24 @@ func stderrIsTerminal() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
+// canSurfaceVerificationURL reports whether the device-auth verification URL can
+// actually reach the user during a blocking poll — the precondition for running
+// device authorization rather than failing fast. See runDeviceAuthorization for
+// the full rationale. Two cases qualify:
+//
+//	1. stderr is a live terminal (direct CLI use): we print the URL/code live.
+//	2. loginMode (the --login / awsAuthRefresh slot): Claude Code streams the
+//	   hook's stderr live as a status line, so the URL + code reach the user even
+//	   with captured stderr and no local browser (headless/SSH). Verified by
+//	   desktop testing where the status line updated while polling.
+//
+// The silent credential-export path (loginMode=false with captured stderr)
+// returns false, preserving the never-hang guarantee for non-interactive
+// invocations whose stderr is discarded.
+func canSurfaceVerificationURL(loginMode bool) bool {
+	return stderrIsTerminal() || loginMode
+}
+
 // launcherPath returns the absolute path to the claude-bedrock launcher, which
 // lives in the same directory as this binary — so we derive it from
 // os.Executable() rather than assuming it's on the user's PATH. Falls back to
@@ -493,23 +534,32 @@ func (a *credentialApp) launcherPath() string {
 
 // runDeviceAuthorization performs the full SSO OIDC device-authorization flow
 // and writes the resulting token to tokenPath in the SDK's cache format.
-func (a *credentialApp) runDeviceAuthorization(ctx context.Context, oidcClient *ssooidc.Client, startURL, tokenPath string) error {
-	// Fail fast whenever stderr is not an interactive terminal — i.e. we're being
-	// run non-interactively (the Claude Code credential-hook case on every OS).
-	// Device authorization needs the user to read a verification URL/code live,
-	// but when stderr is captured we can't surface it, so polling would just
-	// block for the full timeout and then fail. Exit immediately with an
-	// actionable instruction instead of hanging.
+//
+// loginMode is true when we were invoked via --login (the user-visible
+// awsAuthRefresh slot), and false on the silent credential-export path
+// (runIDC ← awsCredentialExport). It controls whether we may run the blocking
+// device-auth poll when stderr is not a live terminal: see the gate below.
+func (a *credentialApp) runDeviceAuthorization(ctx context.Context, oidcClient *ssooidc.Client, startURL, tokenPath string, loginMode bool) error {
+	// We may only run the blocking device-auth poll if the user can actually SEE
+	// the verification URL while we wait. Two cases satisfy that:
 	//
-	// This intentionally does NOT also require isHeadless(): that heuristic
-	// can't detect a headless WINDOWS host (no DISPLAY equivalent; the switch
-	// assumes Windows/macOS have a desktop browser), so gating on it left
-	// non-SSH headless Windows (SSM Session Manager, services, containers) able
-	// to reach the blocking poll and hang. stderrIsTerminal alone is the correct
-	// signal — even if a browser could open, a captured-stderr caller can't show
-	// the user the code to verify. isHeadless() is used only below, to decide
-	// whether attempting browser.OpenURL is worthwhile in the interactive path.
-	if !stderrIsTerminal() {
+	//   1. stderr is a live terminal — direct CLI use; we print the URL/code and
+	//      the user reads it as we poll.
+	//   2. loginMode (the --login / awsAuthRefresh slot) — Claude Code surfaces
+	//      the hook's stderr live as a status line (verified empirically: the
+	//      "Waiting for sign-in approval — open <url> and enter code <code>" line
+	//      shows WHILE polling, before the command exits). So even with captured
+	//      stderr and no local browser (headless/SSH), the user sees the link +
+	//      code and opens it on another device. On a desktop we additionally pop
+	//      the browser below. This is the mid-session recovery path: the SDK
+	//      reported expired creds, Claude Code ran awsAuthRefresh (--login), we
+	//      poll until approval (our ctx caps at 300s, inside Claude Code's 600s
+	//      hook timeout), cache the token, and exit 0 so the retried call succeeds.
+	//
+	// The silent awsCredentialExport path (loginMode=false, captured stderr) still
+	// fails fast: its stderr is discarded, so a poll would block invisibly. This
+	// is what the original stderrIsTerminal gate protected, and it still does.
+	if !canSurfaceVerificationURL(loginMode) {
 		// Plain-language message: no AWS jargon, explicit absolute path, and a
 		// clear "exit Claude Code, run this in your shell" instruction (the old
 		// "quit ... from your terminal" was ambiguous about WHAT to quit).
@@ -583,7 +633,11 @@ func (a *credentialApp) runDeviceAuthorization(ctx context.Context, oidcClient *
 		}
 	}
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Waiting for approval...")
+	// Claude Code renders the credential hook's FULL stderr block (every line) in
+	// its "Cloud authentication" panel, so the verification URL + code printed
+	// above are already visible. Keep this trailing line plain — repeating the
+	// URL/code here just duplicates them in that panel.
+	fmt.Fprintln(os.Stderr, "Waiting for sign-in approval...")
 
 	// 4. Poll CreateToken until the user approves (or the device code expires).
 	token, err := pollForToken(ctx, oidcClient, reg, devAuth)

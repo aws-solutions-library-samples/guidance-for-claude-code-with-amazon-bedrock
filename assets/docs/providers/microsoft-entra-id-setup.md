@@ -13,6 +13,7 @@ This guide walks you through setting up Microsoft Entra ID from scratch to work 
 7. [Assign Users to Application](#7-assign-users-to-application)
 8. [Collect Required Information](#8-collect-required-information)
 9. [Test the Setup](#9-test-the-setup)
+10. [Web search for Claude Cowork (Entra ID notes)](#10-web-search-for-claude-cowork-entra-id-notes)
 
 ---
 
@@ -336,6 +337,24 @@ curl https://login.microsoftonline.com/{your-tenant-id}/v2.0/.well-known/openid-
 ```
 
 Should return a JSON response with OIDC configuration.
+
+---
+
+## 10. Web search for Claude Cowork (Entra ID notes)
+
+This section applies **only if you enable the optional [AgentCore Gateway web search](../COWORK_3P.md#web-search-via-agentcore-gateway)** for **Claude Cowork**. It is **not** required for the base SSO setup.
+
+### No special Entra setup is required
+
+`ccwb package` injects web search as a **remote MCP** `managedMcpServers` entry authenticated with a `headersHelper` script (see [COWORK_3P.md → Web search](../COWORK_3P.md#web-search-via-agentcore-gateway)). The helper attaches an **id_token** the solution already mints; Claude Desktop does **not** run a fresh OAuth flow for the gateway. Because no [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) `resource` indicator is sent, the earlier Entra limitation (rejecting an unregistered `resource` with **`AADSTS9010010`**, which would have required registering the gateway URL as an Application ID URI) **does not apply** to this path. No Expose-an-API / Application ID URI registration is needed.
+
+> **Historical note:** an earlier design used a raw OAuth client in the MDM entry, which *did* send a `resource` indicator and therefore required registering the gateway URL as an Application ID URI on Entra. The `headersHelper` (id_token) approach removed that requirement.
+
+### Audience validation (informational)
+
+The gateway authorizer validates the token's **`aud` claim against your Client ID using `allowedAudience` only** — it does **not** set `allowedClients` (mixing in `allowedClients` breaks Entra validation). The solution's CloudFormation template already does this (`AllowedAudience: [ClientId]`) and `ccwb deploy` passes your **Client ID** as that value. The bearer is an **id_token**, whose `aud` equals the Client ID on every provider (Entra v2 included), so there is nothing to configure. Leave the `ccwb init` web search audience prompt at its default; `websearch_jwt_audience` is an advanced override for the rare case of a non-default `aud`.
+
+> **Cognito:** likewise no special setup — `allowedAudience = client_id` works out of the box.
 
 ---
 

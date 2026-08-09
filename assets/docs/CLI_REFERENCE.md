@@ -278,6 +278,22 @@ With `--go`, all 5 platforms are always available regardless of the admin's OS. 
 
 **Offline Packaging:**
 
+`ccwb package` normally needs internet on the admin machine for three things: Go module downloads for `source/go`, the OCB (OpenTelemetry Collector Builder) binary from GitHub, and Go module downloads for the OCB-generated collector module (sidecar mode only). A `vendor/` directory cannot cover the collector build — OCB generates a fresh Go module in a temp directory on every run.
+
+For air-gapped environments, use `--prepare-offline` to pre-seed everything:
+
+```bash
+# On an internet-connected machine (same OS/arch and Go version as the offline box):
+poetry run ccwb package --prepare-offline
+# Transfer ccwb-offline-go-bundle.tar.gz to the offline machine, extract, then:
+tar xzf ccwb-offline-go-bundle.tar.gz
+./scripts/prepare-offline-go-bundle.sh install
+source ccwb-offline-go-bundle/offline-env.sh
+poetry run ccwb package
+```
+
+The bundle contains the pinned OCB binary (installed to `~/.cache/ocb/`, where `package.py` looks before downloading) and a pre-populated Go module cache covering both `source/go` and the collector. Because every `go`/`ocb` subprocess inherits the environment, `GOPROXY=off` plus the seeded `GOMODCACHE` satisfies all module resolution — including the `go mod tidy` OCB runs internally. The `prepare` step rehearses a fully offline collector build before archiving, so a bundle that ships is a bundle that works.
+
 **Legacy mode platform details (PyInstaller / Nuitka / Docker):**
 
 PyInstaller is a runtime bundler, not a cross-OS compiler. It emits binaries in the host OS's native format (Mach-O on macOS, ELF on Linux). That constrains which targets each build host can produce:
@@ -1187,3 +1203,51 @@ poetry run ccwb destroy [stack] [options]
 - Warns about manual cleanup requirements (e.g., CloudWatch LogGroups)
 
 **Note:** Some resources like CloudWatch LogGroups may require manual deletion.
+
+### `doctor` - Validate Installation Health
+
+Runs health checks on the local machine to catch misconfigurations and aid troubleshooting.
+
+```bash
+poetry run ccwb doctor [options]
+```
+
+**Options:**
+
+- `--verbose` / `-v` - Show raw JSON from `credential-process --explain` and `otel-helper --status`
+- `--live` / `-l` - Also attempt authentication and check proxy connectivity
+- `--json` - Machine-readable JSON output (for CI or support)
+- `--profile <name>` - Check a specific profile
+
+**Health Checks:**
+
+| Check | What it validates |
+|-------|-------------------|
+| `credential-process` | Binary exists in install dir (.exe/.cmd/.ps1 on Windows) |
+| `config.json` | Present, valid JSON, lists profiles |
+| `aws-profile` | `~/.aws/config` references credential-process |
+| `settings.json` | Claude Code settings file with env/hooks |
+| `explain` | Calls `credential-process --explain` — shows resolved auth mode, provider, quota |
+| `otel-helper` | Telemetry binary exists (only FAIL if monitoring configured) |
+| `otel-status` | Calls `otel-helper --status` — proxy running? headers cached? |
+| `auth-test` | (--live only) Attempts credential check |
+| `proxy-health` | (--live only) TCP connect to OTEL proxy port |
+
+**On failure:** Generates a pre-filled GitHub issue URL with diagnostics, environment, and auth mode.
+
+### Go Binary Diagnostic Flags
+
+These flags are available on the installed Go binaries (v2.5.0+):
+
+```bash
+# Print resolved configuration (no auth, no network)
+credential-process --explain
+
+# Print proxy and cache status
+otel-helper --status
+
+# Show version with commit SHA
+credential-process --version   # → credential-process v2.5.0-beta.91 (62a232f)
+```
+
+`--explain` output includes: auth mode (oidc/idc/passthrough), provider type, federation type, quota config, storage mode, and file paths. Useful for verifying the binary detected the correct configuration before debugging auth failures.

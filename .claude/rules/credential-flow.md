@@ -11,8 +11,8 @@ AWS SDK → credential-process [Go or Python]
   2. If valid + not expired → return immediately (fast path, ~5ms)
   3. If expired → try silent refresh (refresh_token exchange, no browser)
   4. If no refresh_token → OIDC browser flow (or IDC passthrough)
-  5. Exchange token → STS AssumeRoleWithWebIdentity → temporary credentials
-  6. Check quota (if configured) → blocked? exit non-zero
+  5. Check quota with the id_token (if configured) → blocked? exit non-zero
+  6. Exchange token → STS AssumeRoleWithWebIdentity → temporary credentials
   7. Save credentials to cache
   8. Emit OTEL attribution headers to cache file
   9. Print JSON to stdout → AWS SDK uses credentials
@@ -39,10 +39,14 @@ print(json.dumps(credentials))  # only JSON on stdout
 
 ## Quota Integration
 
-Quota check happens AFTER auth but BEFORE outputting credentials:
+Quota check happens AFTER auth (id_token in hand) but BEFORE the STS
+exchange — an over-quota user must never mint or cache fresh AWS
+credentials (#761):
 - If quota blocks → exit non-zero (credential-process contract: no JSON = failure)
 - If quota warns → print warning to stderr, still output credentials
 - Quota check uses the same token (OIDC: Bearer, IDC: SigV4)
+- Check with the in-scope id_token; never re-read it from storage and
+  silently skip when the read comes back empty (fail per quota_fail_mode)
 
 ## OTEL Attribution
 

@@ -15,16 +15,30 @@
 # which is flagged by some AV solutions as an unsigned/unknown binary.
 
 param(
-    [string]$Profile = $env:AWS_PROFILE
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$HelperArgs
 )
 
-if (-not $Profile) { $Profile = "ClaudeCode" }
+# Resolve profile: explicit --profile argument wins, then CCWB_PROFILE (the
+# ccwb-specific override, same convention as credential-process), then
+# AWS_PROFILE, then the "ClaudeCode" default. The argument is parsed by hand
+# because this script is invoked with Go-style flags (otel-helper.cmd passes
+# the same args it gives otel-helper.exe), which PowerShell parameter binding
+# can't map. Keep in sync with the Go binary's resolveProfile and otel-helper.sh.
+$ProfileName = $env:CCWB_PROFILE
+if (-not $ProfileName) { $ProfileName = $env:AWS_PROFILE }
+for ($i = 0; $i -lt $HelperArgs.Count - 1; $i++) {
+    if ($HelperArgs[$i] -in @('--profile', '-profile', '-Profile')) {
+        $ProfileName = $HelperArgs[$i + 1]
+    }
+}
+if (-not $ProfileName) { $ProfileName = "ClaudeCode" }
+$env:AWS_PROFILE = $ProfileName
 
 $installDir = Join-Path $env:USERPROFILE "claude-code-with-bedrock"
 $cacheDir = Join-Path $env:USERPROFILE ".claude-code-session"
-$cacheFile = Join-Path $cacheDir "$Profile-otel-headers.json"
-$rawFile = Join-Path $cacheDir "$Profile-otel-headers.raw"
-$monitoringFile = Join-Path $cacheDir "$Profile-monitoring.json"
+$cacheFile = Join-Path $cacheDir "$ProfileName-otel-headers.json"
+$rawFile = Join-Path $cacheDir "$ProfileName-otel-headers.raw"
+$monitoringFile = Join-Path $cacheDir "$ProfileName-monitoring.json"
 $pidFile = Join-Path $installDir "collector.pid"
 
 # Anti-hammering TTL: how long an empty-headers cache entry is valid (seconds).
@@ -55,17 +69,27 @@ if ((Test-Path $otelcol) -and (Test-Path $collectorConfig)) {
     }
     if (-not $collectorRunning) {
         try {
+            # stdout and stderr must go to SEPARATE files: Start-Process throws
+            # "same file for redirecting both standard output and standard error
+            # is not supported" on Windows if they share one path, which used to
+            # silently prevent the collector from ever starting.
             $logFile = Join-Path $cacheDir "collector.log"
-            $env:AWS_PROFILE = "$Profile-collector"
+            $errFile = Join-Path $cacheDir "collector.err"
+            $env:AWS_PROFILE = "$ProfileName-collector"
+            # aws-sdk-go v1 components in the collector (awsemf exporter) don't
+            # read ~/.aws/config (credential_process profiles) without this;
+            # SDK v2 components (sigv4auth) always do.
+            $env:AWS_SDK_LOAD_CONFIG = "1"
             $proc = Start-Process -FilePath $otelcol -ArgumentList "--config", $collectorConfig `
-                -RedirectStandardOutput $logFile -RedirectStandardError $logFile `
+                -RedirectStandardOutput $logFile -RedirectStandardError $errFile `
                 -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
             if ($proc) {
                 Set-Content -Path $pidFile -Value $proc.Id
             }
-            $env:AWS_PROFILE = $Profile
+            $env:AWS_PROFILE = $ProfileName
         } catch {
             # Collector start failed - non-fatal, continue without sidecar
+            $env:AWS_PROFILE = $ProfileName
         }
     }
 }
@@ -153,7 +177,7 @@ if ($shouldWriteEmpty) {
 $credProcess = Join-Path $installDir "credential-process.exe"
 if (Test-Path $credProcess) {
     try {
-        Start-Process -FilePath $credProcess -ArgumentList "--get-monitoring-token", "--profile", $Profile -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Start-Process -FilePath $credProcess -ArgumentList "--get-monitoring-token", "--profile", $ProfileName -WindowStyle Hidden -ErrorAction SilentlyContinue
     } catch {
         # credential-process unavailable - nothing we can do
     }
