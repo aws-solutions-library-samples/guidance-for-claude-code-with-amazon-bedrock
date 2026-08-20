@@ -10,61 +10,30 @@ stack-created 0.0.0.0/0 security groups. This validates that:
 3. Deploy params are passed when configured
 """
 
-from pathlib import Path
-
-import yaml
-
 from claude_code_with_bedrock.config import Profile
+from tests.cfn_yaml import INFRA_DIR, load_resolved
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = SOURCE_ROOT.parents[0]
-OTEL_TEMPLATE = REPO_ROOT / "deployment" / "infrastructure" / "otel-collector.yaml"
-LANDING_TEMPLATE = REPO_ROOT / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
-
-
-# --- CFN-aware YAML loader (handles !Ref, !Sub, !GetAtt, etc.) ---
-
-
-class _CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_tag_constructor(loader, tag_suffix, node):
-    """Resolve any !Tag to its scalar/sequence/mapping payload (value only)."""
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-_CfnLoader.add_multi_constructor("!", _cfn_tag_constructor)
-
-
-def _load_template(path: Path) -> dict:
-    with open(path, encoding="utf-8") as f:
-        return yaml.load(f, Loader=_CfnLoader)
+OTEL_TEMPLATE = INFRA_DIR / "otel-collector.yaml"
+LANDING_TEMPLATE = INFRA_DIR / "landing-page-distribution.yaml"
 
 
 class TestOtelCollectorTemplate:
     """otel-collector.yaml has existing SG parameters and conditions."""
 
     def test_has_existing_alb_sg_parameter(self):
-        tpl = _load_template(OTEL_TEMPLATE)
+        tpl = load_resolved(OTEL_TEMPLATE)
         params = tpl["Parameters"]
         assert "ExistingAlbSecurityGroupIds" in params
         assert params["ExistingAlbSecurityGroupIds"]["Default"] == ""
 
     def test_has_existing_task_sg_parameter(self):
-        tpl = _load_template(OTEL_TEMPLATE)
+        tpl = load_resolved(OTEL_TEMPLATE)
         params = tpl["Parameters"]
         assert "ExistingTaskSecurityGroupIds" in params
         assert params["ExistingTaskSecurityGroupIds"]["Default"] == ""
 
     def test_has_conditions(self):
-        tpl = _load_template(OTEL_TEMPLATE)
+        tpl = load_resolved(OTEL_TEMPLATE)
         conditions = tpl["Conditions"]
         assert "HasCustomAlbSgs" in conditions
         assert "HasCustomTaskSgs" in conditions
@@ -72,12 +41,12 @@ class TestOtelCollectorTemplate:
         assert "CreateTaskSg" in conditions
 
     def test_alb_sg_is_conditional(self):
-        tpl = _load_template(OTEL_TEMPLATE)
+        tpl = load_resolved(OTEL_TEMPLATE)
         alb_sg = tpl["Resources"]["ALBSecurityGroup"]
         assert alb_sg.get("Condition") == "CreateAlbSg"
 
     def test_task_sg_is_conditional(self):
-        tpl = _load_template(OTEL_TEMPLATE)
+        tpl = load_resolved(OTEL_TEMPLATE)
         task_sg = tpl["Resources"]["TaskSecurityGroup"]
         assert task_sg.get("Condition") == "CreateTaskSg"
 
@@ -86,19 +55,19 @@ class TestLandingPageTemplate:
     """landing-page-distribution.yaml has existing ALB SG parameter and conditions."""
 
     def test_has_existing_alb_sg_parameter(self):
-        tpl = _load_template(LANDING_TEMPLATE)
+        tpl = load_resolved(LANDING_TEMPLATE)
         params = tpl["Parameters"]
         assert "ExistingAlbSecurityGroupIds" in params
         assert params["ExistingAlbSecurityGroupIds"]["Default"] == ""
 
     def test_has_conditions(self):
-        tpl = _load_template(LANDING_TEMPLATE)
+        tpl = load_resolved(LANDING_TEMPLATE)
         conditions = tpl["Conditions"]
         assert "HasCustomAlbSgs" in conditions
         assert "CreateAlbSg" in conditions
 
     def test_alb_sg_is_conditional(self):
-        tpl = _load_template(LANDING_TEMPLATE)
+        tpl = load_resolved(LANDING_TEMPLATE)
         alb_sg = tpl["Resources"]["ALBSecurityGroup"]
         assert alb_sg.get("Condition") == "CreateAlbSg"
 
