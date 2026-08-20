@@ -3,7 +3,7 @@
 
 """Tests for CoWork 3P quota counting in quota_monitor Lambda."""
 
-from pathlib import Path
+from tests.cfn_yaml import INFRA_DIR, REPO_ROOT, load_resolved
 
 
 class TestCoWorkQuotaCounting:
@@ -11,15 +11,8 @@ class TestCoWorkQuotaCounting:
 
     def test_quota_monitor_has_cowork_promql_query(self):
         """The quota_monitor Lambda must query ClaudeCoWork namespace metrics."""
-        lambda_path = (
-            Path(__file__).parent.parent.parent.parent
-            / "deployment"
-            / "infrastructure"
-            / "lambda-functions"
-            / "quota_monitor"
-            / "index.py"
-        )
-        content = lambda_path.read_text()
+        lambda_path = INFRA_DIR / "lambda-functions" / "quota_monitor" / "index.py"
+        content = lambda_path.read_text(encoding="utf-8")
         assert "ClaudeCoWork" in content, "quota_monitor must query ClaudeCoWork namespace"
         assert "token.usage.input" in content, "quota_monitor must query CoWork input tokens"
         assert "token.usage.output" in content, "quota_monitor must query CoWork output tokens"
@@ -27,15 +20,8 @@ class TestCoWorkQuotaCounting:
 
     def test_cowork_query_is_non_fatal(self):
         """CoWork PromQL failure must not crash quota monitoring."""
-        lambda_path = (
-            Path(__file__).parent.parent.parent.parent
-            / "deployment"
-            / "infrastructure"
-            / "lambda-functions"
-            / "quota_monitor"
-            / "index.py"
-        )
-        content = lambda_path.read_text()
+        lambda_path = INFRA_DIR / "lambda-functions" / "quota_monitor" / "index.py"
+        content = lambda_path.read_text(encoding="utf-8")
         # The CoWork query must be wrapped in try/except
         assert "non-fatal" in content.lower() or "non_fatal" in content.lower() or "optional" in content.lower(), (
             "CoWork PromQL query must be wrapped in try/except with non-fatal handling"
@@ -43,17 +29,7 @@ class TestCoWorkQuotaCounting:
 
     def test_cowork_dashboard_has_user_email_dimension(self):
         """CoWork metric filters must include user_email dimension for per-user attribution."""
-        import yaml
-
-        dashboard_path = (
-            Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
-        )
-        loader = yaml.SafeLoader
-        loader.add_multi_constructor(
-            "!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
-        )
-        with open(dashboard_path) as f:
-            template = yaml.load(f, Loader=loader)
+        template = load_resolved(INFRA_DIR / "cowork-dashboard.yaml")
 
         resources = template.get("Resources", {})
         api_request_filters = [
@@ -76,7 +52,7 @@ class TestCoWorkQuotaCounting:
 
     def test_cowork_docs_mention_quota_enforcement(self):
         """COWORK_3P.md must document quota enforcement behavior."""
-        docs_path = Path(__file__).parent.parent.parent.parent / "assets" / "docs" / "COWORK_3P.md"
+        docs_path = REPO_ROOT / "assets" / "docs" / "COWORK_3P.md"
         content = docs_path.read_text(encoding="utf-8")
         assert "## Quota Enforcement" in content
         assert "credential-process" in content

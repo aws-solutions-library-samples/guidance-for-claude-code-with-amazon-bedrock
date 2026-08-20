@@ -74,6 +74,9 @@ select = [
     "B",  # flake8-bugbear
     "C4", # flake8-comprehensions
     "UP", # pyupgrade
+    # Single flake8-bandit rule rather than all of "S": the rest of the family
+    # has a known backlog tracked in .github/workflows/bandit.yml.
+    "S506", # unsafe YAML load — use tests/cfn_yaml.py helpers or safe_load
 ]
 ignore = [
     "E501",  # line too long — enforced by formatter, not linter

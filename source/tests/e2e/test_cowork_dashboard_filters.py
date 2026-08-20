@@ -5,12 +5,12 @@
 
 import json
 import re
-from pathlib import Path
 
 import pytest
-import yaml
 
-DASHBOARD_PATH = Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure" / "cowork-dashboard.yaml"
+from tests.cfn_yaml import INFRA_DIR, load_resolved
+
+DASHBOARD_PATH = INFRA_DIR / "cowork-dashboard.yaml"
 
 
 class TestCoWorkDashboardMetricFilters:
@@ -18,17 +18,7 @@ class TestCoWorkDashboardMetricFilters:
 
     @pytest.fixture(autouse=True)
     def load_template(self):
-        # Add CloudFormation intrinsic function constructors
-        loader = yaml.SafeLoader
-        for tag in ["!Sub", "!Ref", "!GetAtt", "!If", "!Not", "!Equals", "!Select", "!Join", "!Split"]:
-            loader.add_constructor(
-                tag, lambda l, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
-            )
-        loader.add_multi_constructor(
-            "!", lambda l, suffix, n: l.construct_scalar(n) if n.id == "scalar" else l.construct_sequence(n)
-        )
-        with open(DASHBOARD_PATH) as f:
-            self.template = yaml.load(f, Loader=loader)
+        self.template = load_resolved(DASHBOARD_PATH)
         self.resources = self.template.get("Resources", {})
 
     def _get_filters(self):
@@ -150,7 +140,7 @@ class TestCoWorkDashboardBody:
 
     @pytest.fixture(autouse=True)
     def load_body(self):
-        text = DASHBOARD_PATH.read_text()
+        text = DASHBOARD_PATH.read_text(encoding="utf-8")
         # Extract the DashboardBody block that follows `DashboardBody: !Sub |`
         marker = "DashboardBody: !Sub |"
         block = text[text.index(marker) :].splitlines()[1:]
