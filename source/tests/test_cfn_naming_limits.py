@@ -12,12 +12,9 @@ Bug this prevents:
   and the monitoring stack name is {identity_pool_name}-otel-collector (already 31+ chars)
 """
 
-from pathlib import Path
-
 import pytest
-import yaml
 
-INFRA_DIR = Path(__file__).parent.parent.parent / "deployment" / "infrastructure"
+from tests.cfn_yaml import INFRA_DIR, iter_templates, load_resolved
 
 # AWS resource types with strict naming limits
 RESOURCE_NAME_LIMITS = {
@@ -36,45 +33,11 @@ RESOURCES_NO_EXPLICIT_NAME = {
 OTEL_COLLECTOR_TEMPLATE = INFRA_DIR / "otel-collector.yaml"
 
 
-class CFLoader(yaml.SafeLoader):
-    """YAML loader that handles CloudFormation intrinsic functions."""
-
-    pass
-
-
-# Register CF intrinsic constructors
-for tag in [
-    "!Ref",
-    "!Sub",
-    "!GetAtt",
-    "!If",
-    "!Equals",
-    "!Not",
-    "!Select",
-    "!Join",
-    "!Split",
-    "!FindInMap",
-    "!Condition",
-    "!Or",
-    "!And",
-]:
-    CFLoader.add_constructor(
-        tag,
-        lambda loader, node: (
-            loader.construct_scalar(node)
-            if isinstance(node, yaml.ScalarNode)
-            else loader.construct_sequence(node)
-            if isinstance(node, yaml.SequenceNode)
-            else loader.construct_mapping(node)
-        ),
-    )
-
-
 def _get_all_cf_templates():
     """Get all CloudFormation YAML templates."""
     if not INFRA_DIR.exists():
         pytest.skip("deployment/infrastructure/ not found")
-    return list(INFRA_DIR.glob("*.yaml"))
+    return iter_templates()
 
 
 class TestCFResourceNamingLimits:
@@ -99,11 +62,7 @@ class TestCFResourceNamingLimits:
         """
         violations = []
         for template_path in templates:
-            with open(template_path, encoding="utf-8") as f:
-                try:
-                    doc = yaml.load(f, Loader=CFLoader)
-                except yaml.YAMLError:
-                    continue
+            doc = load_resolved(template_path)
 
             if not doc or "Resources" not in doc:
                 continue
@@ -120,8 +79,8 @@ class TestCFResourceNamingLimits:
 
                 name_val = props["Name"]
                 # Allow intrinsic-function-derived names (!Sub, !Join, etc.)
-                # that do NOT reference AWS::StackName. These are loaded by
-                # CFLoader as lists (sequence nodes) or dicts (mapping nodes).
+                # that do NOT reference AWS::StackName. load_resolved yields
+                # these as lists (sequence nodes) or dicts (mapping nodes).
                 # The dangerous pattern is ${AWS::StackName} which can overflow.
                 if isinstance(name_val, (list, dict)):
                     # Check the template string for StackName references
@@ -149,8 +108,7 @@ class TestCFResourceNamingLimits:
         if not OTEL_COLLECTOR_TEMPLATE.exists():
             pytest.skip("otel-collector.yaml not found")
 
-        with open(OTEL_COLLECTOR_TEMPLATE, encoding="utf-8") as f:
-            doc = yaml.load(f, Loader=CFLoader)
+        doc = load_resolved(OTEL_COLLECTOR_TEMPLATE)
 
         violations = []
         for logical_id, resource in doc["Resources"].items():

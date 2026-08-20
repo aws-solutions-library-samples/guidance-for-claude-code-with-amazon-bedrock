@@ -19,39 +19,19 @@ it validates the CloudFormation template, not the embedded buildspec's scalar
 semantics.
 """
 
-from pathlib import Path
-
 import pytest
 import yaml
 
-INFRA_DIR = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure"
+from tests.cfn_yaml import INFRA_DIR, load_resolved
+
 TEMPLATE = INFRA_DIR / "codebuild-windows.yaml"
-
-
-# CloudFormation intrinsic tags (!Sub, !Ref, !GetAtt, ...) break a plain
-# SafeLoader. This loader treats every "!"-tag as its underlying node value,
-# which is enough to reach the BuildSpec block scalars.
-class CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_tag_constructor(loader, tag_suffix, node):
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-CfnLoader.add_multi_constructor("!", _cfn_tag_constructor)
 
 
 def _collect_buildspecs() -> dict[str, str]:
     """Return {project logical id: BuildSpec string} for every build project."""
-    with open(TEMPLATE, encoding="utf-8") as f:
-        template = yaml.load(f, Loader=CfnLoader)
+    # load_resolved collapses the CFN tags (!Sub, !Ref, ...) that a plain
+    # SafeLoader rejects, which is all we need to reach the BuildSpec scalars.
+    template = load_resolved(TEMPLATE)
 
     specs = {}
     for logical_id, resource in template["Resources"].items():

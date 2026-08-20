@@ -3,99 +3,7 @@
 
 """Tests for CloudFormation template configuration."""
 
-from pathlib import Path
-
-import yaml
-
-
-# Custom YAML loader for CloudFormation templates
-class CloudFormationLoader(yaml.SafeLoader):
-    """Custom YAML loader that handles CloudFormation intrinsic functions."""
-
-    pass
-
-
-# Define constructors for CloudFormation intrinsic functions
-def ref_constructor(loader, node):
-    """Handle !Ref function."""
-    return {"Ref": loader.construct_scalar(node)}
-
-
-def getatt_constructor(loader, node):
-    """Handle !GetAtt function."""
-    if isinstance(node, yaml.SequenceNode):
-        return {"Fn::GetAtt": loader.construct_sequence(node)}
-    else:
-        # Handle dot notation
-        value = loader.construct_scalar(node)
-        return {"Fn::GetAtt": value.split(".", 1)}
-
-
-def sub_constructor(loader, node):
-    """Handle !Sub function (scalar or sequence form)."""
-    if node.id == "scalar":
-        return {"Fn::Sub": loader.construct_scalar(node)}
-    return {"Fn::Sub": loader.construct_sequence(node)}
-
-
-def if_constructor(loader, node):
-    """Handle !If function."""
-    return {"Fn::If": loader.construct_sequence(node)}
-
-
-def join_constructor(loader, node):
-    """Handle !Join function."""
-    return {"Fn::Join": loader.construct_sequence(node)}
-
-
-def equals_constructor(loader, node):
-    """Handle !Equals function."""
-    return {"Fn::Equals": loader.construct_sequence(node)}
-
-
-def or_constructor(loader, node):
-    """Handle !Or function."""
-    return {"Fn::Or": loader.construct_sequence(node)}
-
-
-def and_constructor(loader, node):
-    """Handle !And function."""
-    return {"Fn::And": loader.construct_sequence(node)}
-
-
-def not_constructor(loader, node):
-    """Handle !Not function."""
-    return {"Fn::Not": loader.construct_sequence(node)}
-
-
-def condition_constructor(loader, node):
-    """Handle !Condition function."""
-    return {"Condition": loader.construct_scalar(node)}
-
-
-def select_constructor(loader, node):
-    """Handle !Select function."""
-    return {"Fn::Select": loader.construct_sequence(node)}
-
-
-def split_constructor(loader, node):
-    """Handle !Split function."""
-    return {"Fn::Split": loader.construct_sequence(node)}
-
-
-# Register the constructors
-CloudFormationLoader.add_constructor("!Ref", ref_constructor)
-CloudFormationLoader.add_constructor("!GetAtt", getatt_constructor)
-CloudFormationLoader.add_constructor("!Sub", sub_constructor)
-CloudFormationLoader.add_constructor("!If", if_constructor)
-CloudFormationLoader.add_constructor("!Join", join_constructor)
-CloudFormationLoader.add_constructor("!Equals", equals_constructor)
-CloudFormationLoader.add_constructor("!Or", or_constructor)
-CloudFormationLoader.add_constructor("!And", and_constructor)
-CloudFormationLoader.add_constructor("!Not", not_constructor)
-CloudFormationLoader.add_constructor("!Condition", condition_constructor)
-CloudFormationLoader.add_constructor("!Select", select_constructor)
-CloudFormationLoader.add_constructor("!Split", split_constructor)
+from tests.cfn_yaml import INFRA_DIR, load_intrinsics
 
 
 class TestCloudFormationCrossRegion:
@@ -103,11 +11,9 @@ class TestCloudFormationCrossRegion:
 
     def get_template(self):
         """Load the CloudFormation template."""
-        template_path = (
-            Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "cognito-identity-pool.yaml"
-        )
-        with open(template_path, encoding="utf-8") as f:
-            return yaml.load(f, Loader=CloudFormationLoader)
+        # Assertions here read intrinsics in long form ({"Ref": "Foo"}), so this
+        # must be load_intrinsics rather than load_resolved.
+        return load_intrinsics(INFRA_DIR / "cognito-identity-pool.yaml")
 
     def test_allowed_bedrock_regions_default(self):
         """Test that default AllowedBedrockRegions includes all US cross-region regions."""
@@ -283,11 +189,7 @@ class TestBedrockAuthGenericTemplate:
     """
 
     def get_template(self):
-        template_path = (
-            Path(__file__).parent.parent.parent / "deployment" / "infrastructure" / "bedrock-auth-generic.yaml"
-        )
-        with open(template_path, encoding="utf-8") as f:
-            return yaml.load(f, Loader=CloudFormationLoader)
+        return load_intrinsics(INFRA_DIR / "bedrock-auth-generic.yaml")
 
     def test_template_loads(self):
         """Template must parse as valid CloudFormation YAML."""

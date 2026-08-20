@@ -13,34 +13,11 @@ Catches issues like:
 - #398: SSM parameter conflicts on stack updates
 """
 
-import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-INFRA_DIR = Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure"
-
-
-# CloudFormation-aware YAML loader (handles !Ref, !Sub, !GetAtt, etc.)
-class CFNLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_constructor(loader, tag_suffix, node):
-    """Generic constructor for CloudFormation intrinsic functions."""
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    elif isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    elif isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-CFNLoader.add_multi_constructor("!", _cfn_constructor)
+from tests.cfn_yaml import INFRA_DIR, iter_templates, load_resolved
 
 
 def _load_template(name: str) -> dict:
@@ -48,8 +25,7 @@ def _load_template(name: str) -> dict:
     path = INFRA_DIR / name
     if not path.exists():
         pytest.skip(f"Template {name} not found")
-    with open(path, encoding="utf-8") as f:
-        return yaml.load(f, Loader=CFNLoader)
+    return load_resolved(path)
 
 
 def _get_template_parameters(template: dict) -> dict:
@@ -61,7 +37,7 @@ def _get_all_templates() -> list[Path]:
     """List all YAML templates in infrastructure directory."""
     if not INFRA_DIR.exists():
         return []
-    return list(INFRA_DIR.glob("*.yaml"))
+    return iter_templates()
 
 
 class TestCloudFormationTemplateValidity:
@@ -70,15 +46,13 @@ class TestCloudFormationTemplateValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_is_valid_yaml(self, template_path):
         """All templates must be parseable YAML (with CloudFormation intrinsics)."""
-        with open(template_path, encoding="utf-8") as f:
-            content = yaml.load(f, Loader=CFNLoader)
+        content = load_resolved(template_path)
         assert isinstance(content, dict), f"{template_path.name} did not parse to a dict"
 
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_resources(self, template_path):
         """All templates must define at least one Resource."""
-        with open(template_path, encoding="utf-8") as f:
-            content = yaml.load(f, Loader=CFNLoader)
+        content = load_resolved(template_path)
         # Some templates might be utility-only, but most should have Resources
         if "Resources" in content:
             assert len(content["Resources"]) > 0
@@ -86,8 +60,7 @@ class TestCloudFormationTemplateValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_description(self, template_path):
         """Templates should have a Description for CloudFormation console."""
-        with open(template_path, encoding="utf-8") as f:
-            content = yaml.load(f, Loader=CFNLoader)
+        content = load_resolved(template_path)
         # Not strictly required but good practice
         if "AWSTemplateFormatVersion" in content:
             assert "Description" in content, f"{template_path.name} missing Description"
@@ -166,8 +139,7 @@ class TestIAMPolicyValidity:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_iam_actions_use_valid_prefixes(self, template_path):
         """All IAM actions must use valid service prefixes (catches #375)."""
-        with open(template_path, encoding="utf-8") as f:
-            content = yaml.load(f, Loader=CFNLoader)
+        content = load_resolved(template_path)
 
         actions = self._extract_actions(content)
         for action in actions:
@@ -280,8 +252,7 @@ class TestDeployCommandStackNames:
                 continue
 
             # The template should be parseable and have basic structure
-            with open(template_path, encoding="utf-8") as f:
-                content = yaml.load(f, Loader=CFNLoader)
+            content = load_resolved(template_path)
 
             assert "Resources" in content or "AWSTemplateFormatVersion" in content, (
                 f"Template {template_path.name} doesn't look like a valid CloudFormation template"

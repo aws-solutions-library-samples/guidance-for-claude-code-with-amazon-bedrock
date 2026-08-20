@@ -318,6 +318,22 @@ class CloudFormationManager:
         except Exception:
             return []
 
+    def _retained_logical_ids(self, stack_name: str) -> set[str]:
+        """Logical IDs in the stack's template marked DeletionPolicy: Retain."""
+        template_resp = self.cf_client.get_template(StackName=stack_name)
+        template_body = template_resp.get("TemplateBody", {})
+        # CloudFormation returns a YAML template verbatim, short-form intrinsics
+        # (!Ref, !Sub, !GetAtt) included, so it needs the CFN-aware parser.
+        # JSON templates already come back as a dict.
+        if isinstance(template_body, str):
+            template_body = cfn_flip.load_yaml(template_body)
+        resources = template_body.get("Resources", {})
+        return {
+            logical_id
+            for logical_id, resource_def in resources.items()
+            if isinstance(resource_def, dict) and resource_def.get("DeletionPolicy") == "Retain"
+        }
+
     def pre_cleanup_stack(self, stack_name: str, on_event: Callable | None = None) -> None:
         """Pre-clean resources that block CloudFormation deletion.
 
@@ -330,21 +346,21 @@ class CloudFormationManager:
         import logging
 
         try:
-            # Read template to identify Retain resources
-            retained_logical_ids: set[str] = set()
             try:
-                template_resp = self.cf_client.get_template(StackName=stack_name)
-                import yaml
-
-                template_body = template_resp.get("TemplateBody", {})
-                if isinstance(template_body, str):
-                    template_body = yaml.safe_load(template_body)
-                resources = template_body.get("Resources", {})
-                for logical_id, resource_def in resources.items():
-                    if isinstance(resource_def, dict) and resource_def.get("DeletionPolicy") == "Retain":
-                        retained_logical_ids.add(logical_id)
+                retained_logical_ids = self._retained_logical_ids(stack_name)
             except Exception as e:
-                logging.debug(f"Could not parse template for {stack_name}: {e}")
+                # Without the retention list there is no way to tell a disposable
+                # bucket from one the operator asked to keep, so don't pre-clean
+                # at all. A stack delete that stalls on a non-empty bucket is
+                # recoverable; emptying a Retain bucket is not.
+                message = (
+                    f"Skipping pre-clean of {stack_name}: could not determine which resources "
+                    f"are retained ({e}). Empty any leftover buckets manually if the delete stalls."
+                )
+                logging.warning(message)
+                if on_event:
+                    on_event(message)
+                return
 
             response = self.cf_client.describe_stack_resources(StackName=stack_name)
             for resource in response.get("StackResources", []):

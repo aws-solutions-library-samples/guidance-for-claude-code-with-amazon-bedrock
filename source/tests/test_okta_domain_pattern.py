@@ -10,34 +10,14 @@ so it must be a valid FQDN with no scheme/path/port, but need not be on okta.com
 """
 
 import re
-from pathlib import Path
 
 import pytest
-import yaml
 
-INFRA_DIR = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure"
-
-
-class CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_tag_constructor(loader, tag_suffix, node):
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    elif isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    elif isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-
-
-CfnLoader.add_multi_constructor("!", _cfn_tag_constructor)
+from tests.cfn_yaml import INFRA_DIR, load_resolved
 
 
 def _okta_domain_pattern() -> str:
-    template_path = INFRA_DIR / "bedrock-auth-okta.yaml"
-    with open(template_path, encoding="utf-8") as f:
-        template = yaml.load(f, Loader=CfnLoader)
+    template = load_resolved(INFRA_DIR / "bedrock-auth-okta.yaml")
     return template["Parameters"]["OktaDomain"]["AllowedPattern"]
 
 

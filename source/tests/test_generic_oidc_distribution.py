@@ -11,42 +11,19 @@ ForgeRock, etc.) through the validator, config round-trip, deploy params, and CF
 from pathlib import Path
 
 import pytest
-import yaml
 
 from claude_code_with_bedrock.config import Profile
 from claude_code_with_bedrock.validators import validate_profile
+from tests.cfn_yaml import INFRA_DIR, load_resolved
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = SOURCE_ROOT.parents[0]
 DEPLOY_PY = SOURCE_ROOT / "claude_code_with_bedrock" / "cli" / "commands" / "deploy.py"
 INIT_PY = SOURCE_ROOT / "claude_code_with_bedrock" / "cli" / "commands" / "init.py"
-LANDING_TEMPLATE = REPO_ROOT / "deployment" / "infrastructure" / "landing-page-distribution.yaml"
-
-
-# --- CFN-aware YAML loader (handles !Ref, !Sub, !GetAtt, etc.) ---
-
-
-class _CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_tag_constructor(loader, tag_suffix, node):
-    """Resolve any !Tag to its scalar/sequence/mapping payload (value only)."""
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-_CfnLoader.add_multi_constructor("!", _cfn_tag_constructor)
+LANDING_TEMPLATE = INFRA_DIR / "landing-page-distribution.yaml"
 
 
 def _load_landing_template() -> dict:
-    with open(LANDING_TEMPLATE, encoding="utf-8") as f:
-        return yaml.load(f, Loader=_CfnLoader)
+    return load_resolved(LANDING_TEMPLATE)
 
 
 class TestGenericDistributionValidator:

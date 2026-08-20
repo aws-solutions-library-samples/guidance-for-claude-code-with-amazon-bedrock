@@ -27,16 +27,15 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import yaml
-
 # ruff: noqa: E402
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from claude_code_with_bedrock.cli.commands.init import InitCommand
 from claude_code_with_bedrock.config import Config, Profile
+from tests.cfn_yaml import INFRA_DIR, load_resolved
 
-LAMBDA_DIR = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure" / "lambda-functions"
-TEMPLATE = Path(__file__).resolve().parents[2] / "deployment" / "infrastructure" / "quota-monitoring.yaml"
+LAMBDA_DIR = INFRA_DIR / "lambda-functions"
+TEMPLATE = INFRA_DIR / "quota-monitoring.yaml"
 
 
 def _load_lambda(name: str, env: dict):
@@ -136,18 +135,7 @@ class TestInitRoundTrip:
 
 
 def _load_template() -> dict:
-    class CFNLoader(yaml.SafeLoader):
-        pass
-
-    def _cfn(loader, suffix, node):  # noqa: ARG001 - yaml constructor signature
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_mapping(node)
-
-    CFNLoader.add_multi_constructor("!", _cfn)
-    return yaml.load(TEMPLATE.read_text(encoding="utf-8"), Loader=CFNLoader)
+    return load_resolved(TEMPLATE)
 
 
 class TestTemplateWiring:

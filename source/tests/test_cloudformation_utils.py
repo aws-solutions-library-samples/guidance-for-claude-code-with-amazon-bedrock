@@ -288,3 +288,88 @@ class TestValidateTemplate:
         )
         with pytest.raises(TemplateValidationError):
             cfn_manager.validate_template(small_template)
+
+
+class TestPreCleanupStackRespectsRetain:
+    """Pre-cleaning must never empty a bucket marked DeletionPolicy: Retain.
+
+    CloudFormation hands back the template verbatim, so short-form intrinsics
+    (!Ref, !Sub) are present and a plain safe_load rejects the whole document.
+    When that parse failure was swallowed the retention list came back empty and
+    `ccwb destroy` emptied every bucket in the stack — including the CloudTrail
+    audit-log and landing-page buckets that are explicitly marked to be kept.
+    """
+
+    RETAIN_TEMPLATE = """AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-cloudtrail'
+  ScratchBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ScratchBucketName
+"""
+
+    @staticmethod
+    def _stack_resources():
+        return {
+            "StackResources": [
+                {
+                    "LogicalResourceId": "CloudTrailBucket",
+                    "PhysicalResourceId": "mystack-cloudtrail",
+                    "ResourceType": "AWS::S3::Bucket",
+                },
+                {
+                    "LogicalResourceId": "ScratchBucket",
+                    "PhysicalResourceId": "mystack-scratch",
+                    "ResourceType": "AWS::S3::Bucket",
+                },
+            ]
+        }
+
+    def test_retain_survives_short_form_intrinsics(self, cfn_manager):
+        """The retention list must be readable from a template using !Sub/!Ref."""
+        cfn_manager._cf_client.get_template.return_value = {"TemplateBody": self.RETAIN_TEMPLATE}
+        assert cfn_manager._retained_logical_ids("mystack") == {"CloudTrailBucket"}
+
+    def test_retained_bucket_is_not_emptied(self, cfn_manager):
+        cfn_manager._cf_client.get_template.return_value = {"TemplateBody": self.RETAIN_TEMPLATE}
+        cfn_manager._cf_client.describe_stack_resources.return_value = self._stack_resources()
+
+        with patch.object(cfn_manager, "_empty_bucket") as empty_bucket:
+            cfn_manager.pre_cleanup_stack("mystack")
+
+        emptied = [call.args[0] for call in empty_bucket.call_args_list]
+        assert "mystack-cloudtrail" not in emptied, "emptied a DeletionPolicy: Retain bucket"
+        assert emptied == ["mystack-scratch"], "the disposable bucket should still be emptied"
+
+    def test_json_template_body_still_works(self, cfn_manager):
+        """JSON templates arrive already parsed as a dict, not a string."""
+        cfn_manager._cf_client.get_template.return_value = {
+            "TemplateBody": {
+                "Resources": {
+                    "CloudTrailBucket": {"Type": "AWS::S3::Bucket", "DeletionPolicy": "Retain"},
+                    "ScratchBucket": {"Type": "AWS::S3::Bucket"},
+                }
+            }
+        }
+        assert cfn_manager._retained_logical_ids("mystack") == {"CloudTrailBucket"}
+
+    def test_unreadable_template_skips_precleaning_entirely(self, cfn_manager):
+        """With retention unknown, empty nothing and say so.
+
+        A stack delete that stalls on a non-empty bucket is recoverable; emptying
+        a bucket the operator asked to keep is not.
+        """
+        cfn_manager._cf_client.get_template.side_effect = Exception("AccessDenied")
+        cfn_manager._cf_client.describe_stack_resources.return_value = self._stack_resources()
+        events = []
+
+        with patch.object(cfn_manager, "_empty_bucket") as empty_bucket:
+            cfn_manager.pre_cleanup_stack("mystack", on_event=events.append)
+
+        empty_bucket.assert_not_called()
+        assert events and "Skipping pre-clean" in events[0]
