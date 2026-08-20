@@ -61,6 +61,49 @@ class CoworkGenerateCommand(Command):
             flag=False,
             default=None,
         ),
+        option(
+            "auth-type",
+            "a",
+            description="Authentication type: profile (credential_process) or idc (native IAM Identity Center SSO)",
+            flag=False,
+            default="profile",
+        ),
+        option(
+            "idc-start-url",
+            description="IAM Identity Center start URL (required for --auth-type=idc)",
+            flag=False,
+            default=None,
+        ),
+        option(
+            "idc-region",
+            description="IAM Identity Center region (defaults to Bedrock region)",
+            flag=False,
+            default=None,
+        ),
+        option(
+            "idc-account-id",
+            description="AWS account ID for IAM Identity Center",
+            flag=False,
+            default=None,
+        ),
+        option(
+            "idc-role-name",
+            description="IAM Identity Center permission set/role name",
+            flag=False,
+            default=None,
+        ),
+        option(
+            "model-id",
+            description="Full Bedrock model ID with label (format: model-id|Label Name, use | as separator)",
+            flag=False,
+            default=None,
+        ),
+        option(
+            "deployment-uuid",
+            description="Deployment organization UUID",
+            flag=False,
+            default=None,
+        ),
     ]
 
     def handle(self) -> int:
@@ -101,23 +144,76 @@ class CoworkGenerateCommand(Command):
         # Determine Bedrock region
         bedrock_region = get_source_region_for_profile(profile)
 
-        # Derive model aliases
+        # Get auth type and IDC options
+        auth_type = self.option("auth-type")
+        if auth_type not in ("profile", "idc"):
+            console.print(f"[red]Invalid auth-type '{auth_type}'. Must be 'profile' or 'idc'.[/red]")
+            return 1
+
+        idc_start_url = self.option("idc-start-url")
+        idc_region = self.option("idc-region") or bedrock_region
+        idc_account_id = self.option("idc-account-id")
+        idc_role_name = self.option("idc-role-name")
+        deployment_uuid = self.option("deployment-uuid")
+
+        # Validate IDC options if using IDC auth
+        if auth_type == "idc":
+            if not idc_start_url:
+                console.print("[red]--idc-start-url is required when using --auth-type=idc[/red]")
+                return 1
+            if not idc_account_id:
+                console.print("[red]--idc-account-id is required when using --auth-type=idc[/red]")
+                return 1
+            if not idc_role_name:
+                console.print("[red]--idc-role-name is required when using --auth-type=idc[/red]")
+                return 1
+
+        # Derive model aliases or use model-id with label
+        model_id_option = self.option("model-id")
         models_option = self.option("models")
-        if models_option:
+        models_with_labels = None
+        model_aliases = []
+
+        if model_id_option:
+            # Parse model-id|Label format (use | as separator since model IDs contain :)
+            models_with_labels = []
+            for model_spec in model_id_option.split(","):
+                if "|" in model_spec:
+                    model_id, label = model_spec.split("|", 1)
+                    models_with_labels.append({"name": model_id.strip(), "labelOverride": label.strip()})
+                else:
+                    models_with_labels.append({"name": model_spec.strip()})
+        elif models_option:
             model_aliases = [m.strip() for m in models_option.split(",")]
         else:
             model_aliases = derive_model_aliases()
 
         console.print(f"\n[dim]Profile: {profile_name}[/dim]")
+        console.print(f"[dim]Auth type: {auth_type}[/dim]")
         console.print(f"[dim]Bedrock region: {bedrock_region}[/dim]")
-        console.print(f"[dim]Models: {', '.join(model_aliases)}[/dim]")
+        if models_with_labels:
+            console.print(
+                f"[dim]Models: {', '.join(m.get('labelOverride', m['name']) for m in models_with_labels)}[/dim]"
+            )
+        else:
+            console.print(f"[dim]Models: {', '.join(model_aliases)}[/dim]")
         console.print(f"[dim]Output: {output_dir}[/dim]")
+        if auth_type == "idc":
+            console.print(f"[dim]IDC Start URL: {idc_start_url}[/dim]")
+            console.print(f"[dim]IDC Role: {idc_role_name}[/dim]")
 
         # Build the MDM configuration using shared utility
         mdm_config = build_mdm_config(
             bedrock_region=bedrock_region,
             model_aliases=model_aliases,
             profile_name=profile_name,
+            auth_type=auth_type,
+            idc_start_url=idc_start_url,
+            idc_region=idc_region,
+            idc_account_id=idc_account_id,
+            idc_role_name=idc_role_name,
+            models_with_labels=models_with_labels,
+            deployment_org_uuid=deployment_uuid,
             extra_keys=profile.cowork_3p_extra_keys or None,
             credential_mode=getattr(profile, "cowork_credential_mode", "helper"),
             credential_helper_ttl_sec=getattr(profile, "cowork_credential_helper_ttl_sec", 3500),

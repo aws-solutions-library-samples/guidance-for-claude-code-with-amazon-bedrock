@@ -87,6 +87,10 @@ class Profile:
 
     # IDC/SAML distribution config (only populated when auth_type == "idc" and distribution_type == "landing-page")
     distribution_saml_metadata_url: str | None = None  # SAML metadata URL from IAM Identity Center
+    distribution_idc_instance_arn: str | None = None  # IAM Identity Center instance ARN (admin console stack)
+    distribution_idc_admin_group: str = "Claude-Code-Admins"  # IDC group granted /admin console access
+    distribution_alb_scheme: str | None = None  # "internal" (default) | "internet-facing"
+    distribution_enable_cloudfront: bool = False  # Front the internal ALB with a CloudFront VPC origin
 
     # Quota monitoring configuration
     quota_monitoring_enabled: bool = False  # Enable per-user token quota monitoring

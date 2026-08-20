@@ -166,8 +166,29 @@ class ProfileValidator:
                     f"Invalid distribution_type: {distribution_type}. Must be 'presigned-s3' or 'landing-page'"
                 )
 
-            # Landing page requires additional fields
-            if distribution_type == "landing-page":
+            # IAM Identity Center landing page = distribution_type "landing-page"
+            # with auth_type "idc" (beta vocabulary), deployed via
+            # landing-page-distribution.yaml with AuthType=idc. No required
+            # fields at distribution-setup time: distribution_idc_instance_arn
+            # is only needed by the separate admin-console stack (deployed
+            # independently, not as part of `ccwb deploy distribution`), and
+            # distribution_saml_metadata_url is set later by `ccwb
+            # configure-saml` once the manual IDC SAML app exists. Validate
+            # format only when either happens to be present, and skip the OIDC
+            # IdP requirements below (an IDC landing page leaves IdPProvider empty).
+            if distribution_type == "landing-page" and profile_data.get("auth_type") == "idc":
+                idc_instance_arn = profile_data.get("distribution_idc_instance_arn")
+                if idc_instance_arn and not ProfileValidator._is_valid_arn(idc_instance_arn):
+                    errors.append(f"Invalid distribution_idc_instance_arn format: {idc_instance_arn}")
+
+                alb_scheme = profile_data.get("distribution_alb_scheme")
+                if alb_scheme and alb_scheme not in ("internal", "internet-facing"):
+                    errors.append(
+                        f"Invalid distribution_alb_scheme: {alb_scheme}. Must be 'internal' or 'internet-facing'"
+                    )
+
+            # External OIDC landing page requires additional fields
+            elif distribution_type == "landing-page":
                 dist_provider = profile_data.get("distribution_idp_provider")
                 if not dist_provider:
                     errors.append("distribution_idp_provider is required for landing-page distribution")
@@ -327,7 +348,9 @@ class ProfileValidator:
             return False
 
         # Basic ARN format: arn:partition:service:region:account-id:resource
-        arn_pattern = r"^arn:[a-z\-]+:[a-z0-9\-]+:[a-z0-9\-]*:\d{12}:.+$"
+        # Note: Some services like SSO have special ARN formats with empty region/account
+        # e.g., arn:aws:sso:::instance/ssoins-xxx
+        arn_pattern = r"^arn:[a-z\-]+:[a-z0-9\-]+:[a-z0-9\-]*:(\d{12})?:.+$"
         return bool(re.match(arn_pattern, arn))
 
     @staticmethod

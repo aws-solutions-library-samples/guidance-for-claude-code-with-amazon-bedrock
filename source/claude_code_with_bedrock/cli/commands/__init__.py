@@ -4,6 +4,7 @@
 """CLI commands for Claude Code with Bedrock."""
 
 from .builds import BuildsCommand
+from .configure_saml import ConfigureSamlCommand
 from .cowork import CoworkGenerateCommand
 from .deploy import DeployCommand
 from .destroy import DestroyCommand
@@ -23,4 +24,5 @@ __all__ = [
     "DestroyCommand",
     "CoworkGenerateCommand",
     "QuotaCommand",
+    "ConfigureSamlCommand",
 ]
