@@ -8,61 +8,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
-REPO_ROOT = Path(__file__).parent.parent.parent.parent
-TEMPLATES_DIR = REPO_ROOT / "deployment" / "infrastructure"
+from tests.cfn_yaml import INFRA_DIR, load_intrinsics
 
-
-# --- CFN-aware YAML loader (handles !Ref, !Sub, etc.) ---
-
-
-class _CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _multi_constructor(tag_name):
-    """Handle CFN tags that can appear as scalar, sequence, or mapping."""
-
-    def constructor(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {tag_name: loader.construct_scalar(node)}
-        elif isinstance(node, yaml.SequenceNode):
-            return {tag_name: loader.construct_sequence(node)}
-        elif isinstance(node, yaml.MappingNode):
-            return {tag_name: loader.construct_mapping(node)}
-
-    return constructor
-
-
-_CFN_TAGS = {
-    "!Ref": "Ref",
-    "!Sub": "Fn::Sub",
-    "!GetAtt": "Fn::GetAtt",
-    "!If": "Fn::If",
-    "!Join": "Fn::Join",
-    "!Select": "Fn::Select",
-    "!Split": "Fn::Split",
-    "!Equals": "Fn::Equals",
-    "!And": "Fn::And",
-    "!Or": "Fn::Or",
-    "!Not": "Fn::Not",
-    "!FindInMap": "Fn::FindInMap",
-    "!GetAZs": "Fn::GetAZs",
-    "!Cidr": "Fn::Cidr",
-    "!Condition": "Condition",
-    "!Transform": "Fn::Transform",
-    "!Base64": "Fn::Base64",
-    "!ImportValue": "Fn::ImportValue",
-}
-
-for _yaml_tag, _cfn_key in _CFN_TAGS.items():
-    _CfnLoader.add_constructor(_yaml_tag, _multi_constructor(_cfn_key))
-
-
-def _load_cfn_template(path: Path) -> dict:
-    with open(path, encoding="utf-8") as f:
-        return yaml.load(f, Loader=_CfnLoader)
+TEMPLATES_DIR = INFRA_DIR
 
 
 # --- Helpers ---
@@ -130,7 +79,7 @@ class TestTemplateStructure:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_resources(self, template_path):
         """Every template must define at least one Resource."""
-        template = _load_cfn_template(template_path)
+        template = load_intrinsics(template_path)
 
         assert "Resources" in template, f"{template_path.name} missing Resources section"
         assert len(template["Resources"]) > 0
@@ -138,6 +87,6 @@ class TestTemplateStructure:
     @pytest.mark.parametrize("template_path", _get_all_templates(), ids=lambda p: p.name)
     def test_template_has_description(self, template_path):
         """Every template should have a Description."""
-        template = _load_cfn_template(template_path)
+        template = load_intrinsics(template_path)
 
         assert "Description" in template, f"{template_path.name} missing Description"

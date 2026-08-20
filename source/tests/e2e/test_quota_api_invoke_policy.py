@@ -3,12 +3,11 @@
 
 """Tests for quota API invoke policy in CloudFormation template."""
 
-from pathlib import Path
-
 import pytest
-import yaml
 
-TEMPLATE_PATH = Path(__file__).parent.parent.parent.parent / "deployment" / "infrastructure" / "quota-monitoring.yaml"
+from tests.cfn_yaml import INFRA_DIR, load_resolved
+
+TEMPLATE_PATH = INFRA_DIR / "quota-monitoring.yaml"
 
 
 class TestQuotaApiInvokePolicy:
@@ -16,16 +15,7 @@ class TestQuotaApiInvokePolicy:
 
     @pytest.fixture(autouse=True)
     def load_template(self):
-        # Add CloudFormation intrinsic function constructors
-        loader = yaml.SafeLoader
-        loader.add_multi_constructor(
-            "!",
-            lambda loader, suffix, node: (
-                loader.construct_scalar(node) if node.id == "scalar" else loader.construct_sequence(node)
-            ),
-        )
-        with open(TEMPLATE_PATH) as f:
-            self.template = yaml.load(f, Loader=loader)
+        self.template = load_resolved(TEMPLATE_PATH)
         self.resources = self.template.get("Resources", {})
         self.outputs = self.template.get("Outputs", {})
 
