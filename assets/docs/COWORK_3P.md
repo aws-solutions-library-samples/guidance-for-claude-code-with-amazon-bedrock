@@ -266,6 +266,8 @@ The full set of MDM configuration keys is documented in the [official Anthropic 
 | `isLocalDevMcpEnabled` | boolean | Permit user-added local MCP servers |
 | `managedMcpServers` | string | JSON array of managed MCP server configs |
 | `disabledBuiltinTools` | string | JSON array of tool names to disable |
+| `builtinToolPolicy` | object | Maps a built-in tool name to `allow`/`ask`/`blocked` (whole-tool policy) |
+| `permissions` | object | Command-level rules with `allow`/`ask`/`deny` arrays (Claude Code syntax, e.g. `Bash(git push:*)`, `Read(./.env)`, or a bare tool name); evaluated deny → ask → allow, first match wins |
 
 ### Telemetry
 

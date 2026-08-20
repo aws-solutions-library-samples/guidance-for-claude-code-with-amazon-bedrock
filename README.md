@@ -283,7 +283,7 @@ See [QUICK_START.md](QUICK_START.md#platform-builds) for build configuration.
 
 - [Architecture Guide](assets/docs/ARCHITECTURE.md) - System architecture and design decisions
 - [Deployment Guide](assets/docs/DEPLOYMENT.md) - Advanced deployment options
-- [Distribution Comparison](assets/docs/distribution/comparison.md) - Presigned URLs vs Landing Page
+- [Distribution Comparison](assets/docs/distribution/comparison.md) - Presigned URLs vs Landing Page vs Self-Service Portal (IAM Identity Center)
 - [Local Testing Guide](assets/docs/LOCAL_TESTING.md) - Testing before deployment
 
 ### Monitoring & Analytics

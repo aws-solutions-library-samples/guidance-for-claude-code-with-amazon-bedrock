@@ -521,13 +521,22 @@ How to deliver the installer package to end users:
 | Option | How it works | Best for |
 |---|---|---|
 | **Presigned S3 URLs** | `ccwb distribute` uploads to S3 and generates a time-limited link (48h default) you share via Slack/email | Any team size, no extra infrastructure |
-| **Authenticated Landing Page** | Self-service web portal — users log in with SSO and download the right binary for their OS | Large orgs needing compliance, audit trail, self-service |
+| **Authenticated Landing Page** | Self-service web portal — users log in with an external IdP (Okta/Azure/Auth0/Cognito) and download the right binary for their OS | Large orgs needing compliance, audit trail, self-service |
+| **Self-Service Portal (IAM Identity Center)** | Same ALB + Lambda + S3 CloudFormation stack as the Landing Page (`AuthType=idc`), with native IAM Identity Center SSO via a Cognito SAML bridge. Add an optional separate admin console stack for model/policy/MCP server management and dynamic Claude Desktop config updates via bootstrap. | Orgs already using IAM Identity Center for workforce SSO |
 | **Disabled** | You distribute the `dist/` folder manually (zip + email, shared drive, artifact repo) | Simple pilots, internal testing |
 
 If you choose **Landing Page**, the wizard asks for:
 - IdP provider for the web portal (can be different from your developer IdP)
 - Custom domain for the download portal (e.g. `downloads.company.com`)
 - Route53 hosted zone
+
+The **Self-Service Portal (IAM Identity Center)** is the same **Landing Page** distribution with this profile's `auth_type` set to `idc` — there's no separate distribution choice. When `auth_type` is `idc` and you pick the Landing Page, the wizard asks for:
+- Your IAM Identity Center instance ARN (auto-detected when possible)
+- Your admin group name (default: `Claude-Code-Admins`) — members of this group get access to the optional admin console's `/admin` path
+- ALB scheme (`internal` by default, for SSM-tunnel testing; `internet-facing` for production)
+- The SAML metadata URL (can be left blank on first deploy and set later via `ccwb configure-saml`)
+
+This deploys the same CloudFormation stack as the other landing-page types (with `AuthType=idc`) when you run `ccwb deploy distribution`. After deploying, you'll manually create a Custom SAML 2.0 application in IAM Identity Center, then run `poetry run ccwb configure-saml <metadata-url>` to wire it into Cognito. Optionally run `poetry run ccwb deploy admin-console` afterward to add the `/admin` console. See [assets/docs/distribution/idc-self-service-portal.md](assets/docs/distribution/idc-self-service-portal.md) for the full walkthrough.
 
 ---
 
@@ -731,7 +740,7 @@ This will:
 
 ### Step 6: Distribute Packages to Users
 
-You have three options for sharing packages with users. The distribution method is configured during `ccwb init` (Step 2).
+You have four options for sharing packages with users. The distribution method is configured during `ccwb init` (Step 2).
 
 #### Option 1: Manual Sharing
 
@@ -766,7 +775,7 @@ Generates presigned URLs (default 48-hour expiry) that you share with users via 
 
 #### Option 3: Authenticated Landing Page
 
-Self-service portal with IdP authentication:
+Self-service portal with external IdP authentication:
 
 ```bash
 # Deploy landing page infrastructure (if not done during Step 3)
@@ -781,6 +790,24 @@ Users visit your landing page URL, authenticate with SSO, and download packages 
 **Best for:** Self-service portal with compliance and audit requirements
 
 **Setup:** Select "landing-page" distribution type during `ccwb init` (Step 2), then deploy distribution infrastructure
+
+#### Option 4: Self-Service Portal (IAM Identity Center)
+
+Self-service portal with native IAM Identity Center SSO and an optional admin console for managing models, policies, and MCP servers:
+
+```bash
+# Deploy the distribution stack (if not done during Step 3)
+poetry run ccwb deploy distribution
+
+# Optional: deploy the admin console (separate stack, attaches /admin to the same ALB)
+poetry run ccwb deploy admin-console
+```
+
+Users visit the portal's landing page URL, sign in with IAM Identity Center, and download configs for their platform. Configs also self-update automatically via the bootstrap API — no re-distribution needed for policy or model changes.
+
+**Best for:** Organizations already using IAM Identity Center for workforce SSO who want a persistent admin console instead of redeploying for every config change
+
+**Setup:** With this profile's `auth_type` set to `idc`, select the **Authenticated Landing Page** distribution method during `ccwb init` (Step 2) — the wizard then configures it as the IAM Identity Center portal (SAML). Deploy distribution infrastructure, then create a Custom SAML 2.0 application in IAM Identity Center and run `poetry run ccwb configure-saml <metadata-url>` to complete the Cognito federation. See [assets/docs/distribution/idc-self-service-portal.md](assets/docs/distribution/idc-self-service-portal.md) for the full walkthrough.
 
 See [Distribution Comparison](assets/docs/distribution/comparison.md) for detailed feature comparison and setup guides.
 
