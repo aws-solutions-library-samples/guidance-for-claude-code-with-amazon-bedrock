@@ -113,6 +113,8 @@ class TestIAMPolicyValidity:
         "cur",
         "es",
         "aoss",
+        "sso",
+        "identitystore",
     }
 
     def _extract_actions(self, template: dict) -> list[str]:
