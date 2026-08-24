@@ -49,7 +49,22 @@ Parameters:
       - 'false'
     Description: Enable CloudWatch monitoring for Bedrock usage
 
+  ExistingOIDCProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of a pre-existing IAM OIDC provider for this issuer URL. Leave empty
+      (default) to create a new provider. Provide an existing provider's ARN to
+      reuse it instead of creating a duplicate - useful when deploying multiple
+      profiles that share the same identity provider in one AWS account/region
+      (IAM allows only one OIDC provider per issuer URL per account). The
+      existing provider's ClientIdList must already include this profile's
+      client ID.
+    AllowedPattern: '^(arn:aws[a-zA-Z-]*:iam::[0-9]{12}:oidc-provider/.+)?$'
+    ConstraintDescription: Must be empty or a valid IAM OIDC provider ARN
+
 Conditions:
+  CreateOIDCProvider: !Equals [!Ref ExistingOIDCProviderArn, '']
   UseDirectIAM: !Equals [!Ref FederationType, direct]
   UseCognitoIdentity: !Equals [!Ref FederationType, cognito]
   MonitoringEnabled: !Equals [!Ref EnableMonitoring, 'true']
@@ -64,6 +79,7 @@ Resources:
 
   AzureOIDCProvider:
     Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDCProvider
     Properties:
       Url: !Sub 'https://login.microsoftonline.com/${AzureTenantId}/v2.0'
       ClientIdList:
@@ -159,7 +175,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !GetAtt AzureOIDCProvider.Arn
+              Federated: !If
+                - CreateOIDCProvider
+                - !GetAtt AzureOIDCProvider.Arn
+                - !Ref ExistingOIDCProviderArn
             Action:
               - 'sts:AssumeRoleWithWebIdentity'
               - 'sts:TagSession'
@@ -185,7 +204,10 @@ Resources:
       AllowUnauthenticatedIdentities: false
       AllowClassicFlow: false
       OpenIdConnectProviderARNs:
-        - !GetAtt AzureOIDCProvider.Arn
+        - !If
+          - CreateOIDCProvider
+          - !GetAtt AzureOIDCProvider.Arn
+          - !Ref ExistingOIDCProviderArn
 
   CognitoAuthenticatedRole:
     Type: AWS::IAM::Role
@@ -324,7 +346,10 @@ Outputs:
 
   OIDCProviderArn:
     Description: ARN of the Azure AD OIDC Provider
-    Value: !GetAtt AzureOIDCProvider.Arn
+    Value: !If
+      - CreateOIDCProvider
+      - !GetAtt AzureOIDCProvider.Arn
+      - !Ref ExistingOIDCProviderArn
     Export:
       Name: !Sub '${AWS::StackName}-OIDCProviderArn'
 

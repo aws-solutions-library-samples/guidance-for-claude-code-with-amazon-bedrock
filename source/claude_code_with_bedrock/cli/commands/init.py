@@ -944,6 +944,32 @@ class InitCommand(Command):
             ).ask()
             config["max_session_duration"] = int(duration_str) if duration_str else _default_duration
 
+            # Existing OIDC Provider (optional)
+            console.print("\n[bold]Existing OIDC Provider (optional)[/bold]")
+            console.print(
+                "[dim]If you've already deployed a profile in this AWS account that uses the same\n"
+                "identity provider, IAM already has an OIDC provider for it. Paste that provider's\n"
+                "ARN here to reuse it (avoids an EntityAlreadyExists error on the second deploy).\n"
+                "Leave blank to create a new one. The existing provider's allowed client IDs must\n"
+                "already include this profile's client ID.[/dim]"
+            )
+            existing_oidc_provider_arn = questionary.text(
+                "Existing IAM OIDC provider ARN (leave blank to create one):",
+                default=config.get("existing_oidc_provider_arn") or "",
+                validate=lambda x: (
+                    # Mirror the CFN AllowedPattern so the wizard fails fast instead
+                    # of deferring to a CloudFormation ConstraintDescription at deploy.
+                    x == ""
+                    or bool(re.match(r"^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:oidc-provider/.+$", x))
+                    or "Must be empty or a valid IAM OIDC provider ARN (arn:aws:iam::<acct>:oidc-provider/...)"
+                ),
+                instruction="(only needed for multiple profiles sharing one provider in the same account)",
+            ).ask()
+            if existing_oidc_provider_arn is None:
+                return None
+
+            config["existing_oidc_provider_arn"] = existing_oidc_provider_arn or None
+
             # Save progress
             progress.save_step("oidc_complete", config)
 
@@ -2904,6 +2930,34 @@ class InitCommand(Command):
 
         return 0
 
+    @staticmethod
+    def _derive_role_name(identity_pool_name: str, provider_type: str | None = None) -> str:
+        """Derive a per-profile federation IAM role name.
+
+        Keeps the template's provider-branded default and appends the identity pool
+        name as a per-profile suffix: ``Bedrock<Provider>FederatedRole-<pool>`` (e.g.
+        ``BedrockAzureFederatedRole-wmgccwb2``). The ``Bedrock`` prefix guarantees the
+        result starts with a letter, so it satisfies the template's FederatedRoleName
+        AllowedPattern ('^[a-zA-Z][a-zA-Z0-9-_]*$') regardless of the pool name (which
+        may start with a digit). Truncated to MaxLength 64, suffix preserved.
+        """
+        # Mirror the per-template FederatedRoleName defaults.
+        defaults = {
+            "okta": "BedrockOktaFederatedRole",
+            "auth0": "BedrockAuth0FederatedRole",
+            "azure": "BedrockAzureFederatedRole",
+            "cognito": "BedrockCognitoFederatedRole",
+            "google": "BedrockGoogleFederatedRole",
+            "generic": "BedrockOidcFederatedRole",
+        }
+        prefix = defaults.get(provider_type or "", "BedrockFederatedRole")
+        pool = re.sub(r"[^a-zA-Z0-9_-]", "-", identity_pool_name or "")
+        if not pool:
+            return prefix
+        # Truncate the whole name to MaxLength 64, preserving the leading prefix
+        # (which guarantees a letter start). A very long pool name is cut at the end.
+        return f"{prefix}-{pool}"[:64]
+
     def _save_configuration(self, config_data: dict[str, Any], profile_name: str) -> None:
         """Save configuration to file.
 
@@ -2969,6 +3023,8 @@ class InitCommand(Command):
             "oidc_token_endpoint": config_data.get("oidc_token_endpoint"),
             "oidc_jwks_uri": config_data.get("oidc_jwks_uri"),
             "oidc_thumbprint": config_data.get("oidc_thumbprint"),
+            "existing_oidc_provider_arn": config_data.get("existing_oidc_provider_arn"),
+            "federated_role_name": config_data.get("federated_role_name"),
             "federation_type": config_data.get("federation_type", "cognito"),
             "max_session_duration": config_data.get("max_session_duration", 28800),
             "sso_enabled": config_data.get("sso_enabled", True),
@@ -3035,6 +3091,18 @@ class InitCommand(Command):
             "redirect_port": config_data.get("redirect_port"),
             "extra_files": config_data.get("extra_files", []),
         }
+
+        # Issue #528: give NEW profiles a per-profile IAM role name derived from the
+        # identity pool name so multiple profiles in one account don't collide on the
+        # federation role. Existing profiles keep their current value (None -> template
+        # default) so a re-run of init never renames a deployed role (which would change
+        # its ARN and break the packaged config.json).
+        if existing_profile:
+            wizard_fields["federated_role_name"] = getattr(existing_profile, "federated_role_name", None)
+        elif wizard_fields.get("federation_type") == "direct":
+            wizard_fields["federated_role_name"] = self._derive_role_name(
+                wizard_fields["identity_pool_name"], wizard_fields.get("provider_type")
+            )
 
         if existing_profile:
             # Update existing profile — preserves fields not managed by the wizard
@@ -3361,6 +3429,13 @@ class InitCommand(Command):
                 "oidc_token_endpoint",
                 "oidc_jwks_uri",
                 "oidc_thumbprint",
+                # Issue #528: restore the reused-provider ARN so a re-run of init
+                # pre-fills the prompt with the saved value instead of blank. Without
+                # this, the prompt defaults to "" -> user presses Enter -> the field is
+                # wiped -> the next deploy recreates the shared provider and fails with
+                # EntityAlreadyExists (the exact bug this feature prevents). Must mirror
+                # _save_configuration, which persists existing_oidc_provider_arn.
+                "existing_oidc_provider_arn",
             ):
                 if getattr(profile, oidc_field, None):
                     existing_config[oidc_field] = getattr(profile, oidc_field)
