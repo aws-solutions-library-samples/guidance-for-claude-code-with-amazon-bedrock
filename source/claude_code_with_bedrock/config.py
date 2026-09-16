@@ -330,6 +330,11 @@ class Profile:
                 if any(r.startswith("us-") for r in regions):
                     data["cross_region_profile"] = "us"
 
+        # Strip whitespace from string fields that are used in HTTP headers or filenames
+        for str_field in ("name", "provider_domain", "client_id", "aws_region", "identity_pool_name"):
+            if str_field in data and isinstance(data[str_field], str):
+                data[str_field] = data[str_field].strip()
+
         # Filter out any keys not in the Profile dataclass to prevent TypeError
         import dataclasses
 
